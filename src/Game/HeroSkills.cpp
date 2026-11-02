@@ -1,0 +1,4566 @@
+#include <Windows.h>
+
+#include "Game/HeroSkills.hpp"
+#ifdef UNLEASHED_SELF_TESTS
+#include "output/MockBackend.hpp"
+#endif
+
+#include "Game/AimFirePhase.hpp"
+#include "Game/Overwatch.hpp"
+#include "Game/Target.hpp"
+#include "output/OutputRuntime.hpp"
+#include "Utils/Diagnostics.hpp"
+#include "Utils/InputLabels.hpp"
+#include "Utils/ProcessConnection.hpp"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+
+namespace OW {
+namespace {
+
+    using Clock = std::chrono::steady_clock;
+
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kDegToRad = kPi / 180.0f;
+    constexpr float kRadToDeg = 180.0f / kPi;
+    constexpr auto kBriefPulse = std::chrono::milliseconds(20);
+    constexpr auto kActionPulseDebounce = std::chrono::milliseconds(500);
+    constexpr float kPitchDoneEpsilonRad = 0.35f * kDegToRad;
+    constexpr float kYawDoneEpsilonRad = 0.35f * kDegToRad;
+    constexpr float kViewpointPitchLimitRad = 89.85f * kDegToRad;
+    constexpr float kViewpointFloorReadyPitchRad = 88.5f * kDegToRad;
+    constexpr float kViewpointReturnDoneEpsilonRad = 2.0f * kDegToRad;
+    constexpr float kViewpointYawReturnEpsilonRad = 2.0f * kDegToRad;
+    constexpr auto kViewpointFloorSettle = std::chrono::milliseconds(18);
+    constexpr auto kViewpointReturnTimeout = std::chrono::milliseconds(450);
+    constexpr auto kViewpointYawRestoreBudget = std::chrono::milliseconds(140);
+    constexpr auto kViewpointDebugInterval = std::chrono::milliseconds(100);
+    constexpr uint16_t kStateScriptAmmo = 0x35;
+    constexpr uint16_t kReloadStateSkill = 0x4BF;
+    constexpr int kZaryaAmmoClipSize = 100;
+    constexpr double kZaryaPrimaryAmmoPerSecond = 20.0;
+    constexpr double kZaryaSecondaryAmmoCost = 25.0;
+    constexpr int kZaryaAutoRightThresholdMin = 1;
+    constexpr int kZaryaAutoRightThresholdMax = 5;
+    constexpr int kZaryaAutoRightThresholdLeadAmmo = 3;
+    constexpr int kZaryaAutoRightHoldBaseMs = 200;
+    constexpr int kZaryaAutoRightHoldJitterMs = 10;
+    constexpr int kZaryaAutoRightLeftReleaseBaseMs = 100;
+    constexpr int kZaryaAutoRightLeftReleaseJitterMs = 5;
+    constexpr auto kZaryaAutoRightRestoreSettle = std::chrono::milliseconds(10);
+    constexpr auto kZaryaReloadSuccessMinDuration = std::chrono::milliseconds(900);
+    constexpr auto kZaryaBudgetLogInterval = std::chrono::milliseconds(250);
+    constexpr float kGenjiComboMinDistance = 10.0f;
+    constexpr float kGenjiComboFallbackFollowupRange = 8.0f;
+    constexpr int kGenjiComboOpeningFlickMs = 8;
+    constexpr int kGenjiComboFinalFlickMs = 8;
+    constexpr int kGenjiComboFrontTurnMs = 20;
+    constexpr int kGenjiComboOverheadTurnMs = 14;
+    constexpr int kGenjiComboBehindTurnMs = 8;
+    constexpr int kGenjiComboRightHoldMs = 22;
+    constexpr int kGenjiComboShiftHoldMs = 35;
+    constexpr int kGenjiComboMeleeHoldMs = 24;
+    constexpr int kGenjiComboAfterOpeningFireMs = 18;
+    constexpr int kGenjiComboAfterTurnMs = 12;
+    constexpr int kGenjiComboAfterFinalFireMs = 18;
+    constexpr int kGenjiComboMinDashWaitMs = 180;
+    constexpr int kGenjiComboMaxDashWaitMs = 380;
+    constexpr float kGenjiComboDashMsPerMeter = 18.0f;
+    using SequenceWorkerExitReason = HeroSkillDetail::SequenceWorkerExitReason;
+
+    struct SequenceWorkerCompletion {
+        std::atomic<SequenceWorkerExitReason> reason{
+            SequenceWorkerExitReason::Running };
+        std::atomic<size_t> stepIndex{ 0 };
+        std::atomic<std::int64_t> stepStartedMs{ 0 };
+        std::atomic<int> stepDurationMs{ 0 };
+        std::atomic<std::int64_t> lastShotStartedMs{ 0 };
+    };
+
+    struct SequenceRuntime {
+        bool active = false;
+        bool rearmBlockedUntilRelease = false;
+        size_t stepIndex = 0;
+        int currentMask = 0;
+        Clock::time_point stepStarted{};
+        int effectiveDurationMs = 0;
+        Clock::time_point lastShotStarted{};
+        std::jthread worker{};
+        std::shared_ptr<SequenceWorkerCompletion> workerCompletion{};
+        Clock::time_point hitMonitorStarted{};
+        Clock::time_point hitLastChange{};
+        uint64_t hitTargetAddress = 0;
+        float hitLastHealth = std::numeric_limits<float>::quiet_NaN();
+        int hitDamageEvents = 0;
+        bool hitHasSample = false;
+    };
+
+    enum class GenjiDashPositionClass {
+        Front,
+        Overhead,
+        Behind
+    };
+
+    namespace GenjiComboPhase {
+        constexpr int Idle = 0;
+        constexpr int OpeningFire = 1;
+        constexpr int AfterOpeningFire = 2;
+        constexpr int Shift = 3;
+        constexpr int DashWait = 4;
+        constexpr int AfterTurn = 5;
+        constexpr int FinalFire = 6;
+        constexpr int AfterFinalFire = 7;
+        constexpr int Melee = 8;
+        constexpr int Completed = 9;
+        constexpr int Cancelled = 10;
+    }
+
+    struct GenjiComboRuntime {
+        bool active = false;
+        bool prevKeyDown = false;
+        int phase = GenjiComboPhase::Idle;
+        Clock::time_point phaseStarted{};
+        uint64_t targetKey = 0;
+        float initialDistance = 0.0f;
+        int dashWaitMs = kGenjiComboMinDashWaitMs;
+        GenjiDashPositionClass dashClass = GenjiDashPositionClass::Front;
+        bool rightDown = false;
+        bool shiftDown = false;
+        bool meleeDown = false;
+    };
+
+    namespace ViewpointPhase {
+        constexpr int Idle = 0;
+        constexpr int PitchDown = 1;
+        constexpr int PitchUp = 2;
+        constexpr int Completed = 3;
+        constexpr int Cancelled = 4;
+    }
+
+    struct ViewpointRuntime {
+        int phase = 0;        // 0=idle, 1=pitchDown, 2=pitchUp, 3=completed, 4=cancelled
+        bool prevKeyDown = false;
+        Clock::time_point phaseStarted{};
+        Clock::time_point lastTick{};
+        Clock::time_point lastDebugLog{};
+        Clock::time_point floorReadyStarted{};
+        Clock::time_point secondaryPressedAt{};
+        Clock::time_point fireDelayStarted{};
+        Clock::time_point jumpPressedAt{};
+        Vector3 initialAngles{};
+        float pitchDownSpeedDeg = 0.0f;
+        float pitchUpTargetAngle = 0.0f;
+        float pitchUpSpeedDeg = 0.0f;
+        int skillVk = VK_RBUTTON;
+        int jumpVk = 0;
+        bool fired = false;
+        bool jumped = false;
+        bool secondaryDown = false;
+        bool jumpDown = false;
+    };
+
+    struct CandidateEntity {
+        uint64_t entityAddress = 0;
+        int entityIndex = -1;
+        float distance = 0.0f;
+        float vitalityPercent = 0.0f;
+        float angularOffset = 0.0f;
+        Vector3 position{};
+        Vector3 velocity{};
+    };
+
+    struct TrajectoryParams {
+        float speed = 60.0f;
+        float maxRange = 45.0f;
+        float gravity = 0.0f;
+        float projectileRadius = 0.0f;
+        float preFireDelayMs = 0.0f;
+    };
+
+    struct SkillProjectileRuntime {
+        float speed = 0.0f;
+        float maxRange = 0.0f;
+        bool gravity = false;
+        float projectileRadius = 0.0f;
+        float preFireDelayMs = 0.0f;
+    };
+
+    struct SkillAimCandidate {
+        bool valid = false;
+        c_entity entity{};
+        int entityIndex = -1;
+        uint64_t entityKey = 0;
+        int boneId = 0;
+        float distance = 0.0f;
+        float vitalityPercent = 0.0f;
+        float fovScore = 0.0f;
+        float hitWindow = 0.0f;
+        Vector3 rawAimPoint{};
+        Vector3 aimPoint{};
+    };
+
+    struct SkillAimSessionRuntime {
+        bool active = false;
+        bool blockedUntilRelease = false;
+        Clock::time_point started{};
+    };
+
+    struct AmmoGuardSample {
+        int ammo = -1;
+        int stateAmmo = -1;
+        int reserveAmmoPath = -1;
+        int reserveState = -1;
+        int rawStateAmmo = -1;
+        int rawReserveState = -1;
+        int budgetAmmo = -1;
+        int source = 0;
+        uint64_t skillBase = 0;
+        uint64_t heroId = 0;
+    };
+
+    struct AmmoGuardLogState {
+        int ammo = -2;
+        int stateAmmo = -2;
+        int reserveAmmoPath = -2;
+        int reserveState = -2;
+        int rawStateAmmo = -2;
+        int rawReserveState = -2;
+        int budgetAmmo = -2;
+        int source = -1;
+        Clock::time_point lastLog{};
+    };
+
+    struct ZaryaAmmoProbeRuntime {
+        bool lastReloading = false;
+        Clock::time_point reloadStarted{};
+        bool reloadQualified = false;
+        bool budgetArmed = false;
+        double ammo = -1.0;
+        bool leftWasDown = false;
+        bool rightWasDown = false;
+        bool autoRightSent = false;
+        int autoRightThreshold = 0;
+        Clock::time_point lastObserved{};
+        Clock::time_point lastBudgetLog{};
+        int lastLoggedAmmo = -1000;
+    };
+
+    struct ZaryaAutoRightTiming {
+        std::chrono::milliseconds rightHold{};
+        std::chrono::milliseconds leftReleaseDelay{};
+        std::chrono::milliseconds afterLeftRelease{};
+    };
+
+    struct SequenceAmmoBudgetState {
+        int remaining = -1;
+        int reserve = 1;
+        bool blocked = false;
+        bool reloadObserved = false;
+        bool lastReloading = false;
+    };
+
+    std::unordered_map<std::string, SequenceRuntime> g_sequences;
+    std::unordered_map<std::string, GenjiComboRuntime> g_genjiCombos;
+    std::unordered_map<std::string, ViewpointRuntime> g_viewpoints;
+    // ProcessHeroSkills runs on the hero runtime thread while disconnect
+    // cleanup is initiated by the process-connection thread. Serialize every
+    // access to the mutable hero runtime containers across that boundary.
+    std::mutex g_heroSkillRuntimeMutex;
+    std::unordered_map<std::string, Clock::time_point> g_lastActionExecutions;
+    std::unordered_map<std::string, Clock::time_point> g_lastSkillGuardLogs;
+    std::unordered_map<std::string, AmmoGuardLogState> g_lastAmmoGuardSamples;
+    std::unordered_map<std::string, ZaryaAmmoProbeRuntime> g_zaryaAmmoProbes;
+    std::unordered_map<std::string, SequenceAmmoBudgetState> g_sequenceAmmoBudgets;
+    std::unordered_map<std::string, SkillAimSessionRuntime> g_skillAimSessions;
+    std::mutex g_sequenceAmmoBudgetMutex;
+    std::mt19937 g_random{ std::random_device{}() };
+    std::mutex g_randomMutex;
+    std::atomic<bool> g_anyInputSequenceActive{ false };
+    std::atomic<bool> g_anyInputSequenceActivationHeld{ false };
+    std::uint64_t g_lastTimedOutputGeneration = 0;
+    bool g_lastTimedOutputGateOpen = false;
+    uint64_t g_lastHeroId = 0;
+
+    void RefreshAnyInputSequenceActive();
+    bool IsActionDebounced(const std::string& runtimeKey);
+    bool ShouldLogSkillGuard(const std::string& runtimeKey);
+    void MarkActionExecuted(const std::string& runtimeKey);
+    OutputScheduler& TimedOutputScheduler();
+    bool TryMapVkToOutputControl(int vk, OutputControl& control);
+    bool ConsumeSequenceAmmoBudgetForStep(const std::string& runtimeKey,
+                                          int previousMask,
+                                          int nextMask,
+                                          bool ammoGuardEnabled,
+                                          int reserveAmmo);
+
+    int MapHotkeyToVK(int hotkey);
+
+    bool UseSequenceWorker()
+    {
+        static const bool enabled = [] {
+            char value[16] = {};
+            const DWORD length = GetEnvironmentVariableA(
+                "UNLEASHED_SEQUENCE_WORKER",
+                value,
+                static_cast<DWORD>(sizeof(value)));
+            const bool workerEnabled = length == 0 || length >= sizeof(value) || value[0] != '0';
+            Diagnostics::Aim("sequence.worker_mode enabled=%d", workerEnabled ? 1 : 0);
+            return workerEnabled;
+        }();
+
+        return enabled;
+    }
+
+    bool SkillControls(const HeroSkillDefinition& definition, HeroSkillControlFlags control)
+    {
+        return HasHeroSkillControl(definition, control);
+    }
+
+    bool IsZaryaReloadAmmoProbeDefinition(const HeroSkillDefinition& definition)
+    {
+        return definition.heroId == static_cast<uint64_t>(eHero::HERO_ZARYA) &&
+            std::string(definition.skillId ? definition.skillId : "") == "reload-ammo-probe";
+    }
+
+    bool IsGenjiDashComboDefinition(const HeroSkillDefinition& definition)
+    {
+        return definition.heroId == static_cast<uint64_t>(eHero::HERO_GENJI) &&
+            std::string(definition.skillId ? definition.skillId : "") == "dash-combo";
+    }
+
+    int PickZaryaAutoRightThreshold()
+    {
+        std::uniform_int_distribution<int> distribution(
+            kZaryaAutoRightThresholdMin,
+            kZaryaAutoRightThresholdMax);
+        std::lock_guard<std::mutex> lock(g_randomMutex);
+        return distribution(g_random);
+    }
+
+    int PickZaryaJitteredMs(int baseMs, int jitterMs, int minMs, int maxMs)
+    {
+        std::uniform_int_distribution<int> distribution(-jitterMs, jitterMs);
+        std::lock_guard<std::mutex> lock(g_randomMutex);
+        return std::clamp(baseMs + distribution(g_random), minMs, maxMs);
+    }
+
+    ZaryaAutoRightTiming PickZaryaAutoRightTiming()
+    {
+        const int rightHoldMs = PickZaryaJitteredMs(
+            kZaryaAutoRightHoldBaseMs,
+            kZaryaAutoRightHoldJitterMs,
+            1,
+            1000);
+        const int leftReleaseDelayMs = PickZaryaJitteredMs(
+            kZaryaAutoRightLeftReleaseBaseMs,
+            kZaryaAutoRightLeftReleaseJitterMs,
+            0,
+            rightHoldMs);
+        return {
+            std::chrono::milliseconds(rightHoldMs),
+            std::chrono::milliseconds(leftReleaseDelayMs),
+            std::chrono::milliseconds(rightHoldMs - leftReleaseDelayMs)
+        };
+    }
+
+    bool IsActivationKeyHeld(int activationKey)
+    {
+        const int vk = Labels::AimActivationKeyVk(activationKey);
+        if (vk <= 0)
+            return false;
+
+        return AimbotDetail::IsInputVkDown(vk, activationKey);
+    }
+
+    bool SequenceDiagnosticsEnabled()
+    {
+        return Config::aimVerboseLog;
+    }
+
+    std::string SequenceOwnerKey(const std::string& skillId)
+    {
+        return "hero:sequence:" + skillId;
+    }
+
+    std::string ViewpointOwnerKey(const std::string& skillId)
+    {
+        return "hero:viewpoint:" + skillId;
+    }
+
+    std::string GenjiComboOwnerKey(const std::string& runtimeKey)
+    {
+        return "hero:genji_combo:" + runtimeKey;
+    }
+
+    std::vector<OutputControl> MouseControlsForMask(int mask)
+    {
+        std::vector<OutputControl> controls;
+        mask &= 0x07;
+        controls.reserve(3);
+        for (int bit = 0; bit < 3; ++bit) {
+            if ((mask & (1 << bit)) != 0) {
+                controls.push_back({
+                    OutputControlKind::MouseButton,
+                    static_cast<std::uint16_t>(bit)
+                });
+            }
+        }
+        return controls;
+    }
+
+    bool SetSequenceButtonMask(const std::string& skillId,
+                               int prevMask,
+                               int newMask,
+                               std::uint64_t expectedGeneration = 0)
+    {
+        prevMask &= 0x07;
+        newMask &= 0x07;
+        if (prevMask == newMask)
+            return true;
+
+        std::vector<OutputControl> controls = MouseControlsForMask(newMask);
+        const bool accepted = expectedGeneration == 0
+            ? TimedOutputScheduler().SetManualControls(
+                SequenceOwnerKey(skillId),
+                OutputOwnerSource::Sequence,
+                std::move(controls))
+            : TimedOutputScheduler().SetManualControlsForGeneration(
+                SequenceOwnerKey(skillId),
+                OutputOwnerSource::Sequence,
+                std::move(controls),
+                expectedGeneration);
+        if (!accepted) {
+            Diagnostics::Warn(
+                "Hero skill sequence output failed. skill=%s prevMask=0x%02X newMask=0x%02X",
+                skillId.c_str(),
+                prevMask,
+                newMask);
+            return false;
+        }
+
+        if (SequenceDiagnosticsEnabled()) {
+            Diagnostics::Aim(
+                "sequence.button_owner skill=%s prevMask=0x%02X newMask=0x%02X",
+                skillId.c_str(),
+                prevMask,
+                newMask);
+        }
+        return true;
+    }
+
+    // VK → USB HID key code for the most common game keys.
+    // Unmapped VK codes return 0 (no-op).
+    unsigned char VkToHidKeyCode(int vk)
+    {
+        switch (vk) {
+        case VK_SPACE:  return 0x2C; // KEY_SPACEBAR
+        case VK_LCONTROL:
+        case VK_RCONTROL: return 0xE0; // KEY_LEFT_CONTROL
+        case VK_LSHIFT:
+        case VK_RSHIFT:   return 0xE1; // KEY_LEFT_SHIFT
+        case VK_LMENU:
+        case VK_RMENU:    return 0xE2; // KEY_LEFT_ALT
+        case 0x46:        return 0x09; // F key
+        case 0x45:        return 0x08; // E key
+        case 0x51:        return 0x14; // Q key
+        case 0x52:        return 0x15; // R key
+        case 0x56:        return 0x19; // V key
+        case VK_TAB:      return 0x2B; // KEY_TAB
+        case VK_CAPITAL:  return 0x39; // KEY_CAPS_LOCK
+        default:          return 0;
+        }
+    }
+
+    bool AddOutputControlForVk(std::vector<OutputControl>& controls, int vk)
+    {
+        OutputControl control{};
+        if (!TryMapVkToOutputControl(vk, control))
+            return false;
+        if (std::find(controls.begin(), controls.end(), control) == controls.end())
+            controls.push_back(control);
+        return true;
+    }
+
+    bool SetViewpointOutputs(const std::string& skillId, const ViewpointRuntime& runtime)
+    {
+        std::vector<OutputControl> controls;
+        controls.reserve(2);
+        if (runtime.secondaryDown && !AddOutputControlForVk(controls, runtime.skillVk))
+            return false;
+        if (runtime.jumpDown && !AddOutputControlForVk(controls, runtime.jumpVk))
+            return false;
+        return TimedOutputScheduler().SetManualControls(
+            ViewpointOwnerKey(skillId),
+            OutputOwnerSource::Viewpoint,
+            std::move(controls));
+    }
+
+    [[nodiscard]] bool BeginSecondaryPulse(const std::string& skillId,
+                                           ViewpointRuntime& runtime,
+                                           Clock::time_point now)
+    {
+        if (runtime.secondaryDown)
+            return true;
+
+        if (runtime.skillVk <= 0) {
+            Diagnostics::Warn("Hero skill viewpoint skill pulse failed. skill=%s vk=%d",
+                skillId.c_str(),
+                runtime.skillVk);
+            return false;
+        }
+
+        runtime.secondaryDown = true;
+        if (!SetViewpointOutputs(skillId, runtime)) {
+            runtime.secondaryDown = false;
+            Diagnostics::Warn("Hero skill viewpoint skill pulse failed. skill=%s vk=%d",
+                skillId.c_str(),
+                runtime.skillVk);
+            return false;
+        }
+
+        Diagnostics::Info("Hero skill viewpoint skill pulse start. skill=%s vk=%d",
+            skillId.c_str(),
+            runtime.skillVk);
+        runtime.secondaryPressedAt = now;
+        return true;
+    }
+
+    [[nodiscard]] bool BeginKeyboardPulse(const std::string& skillId,
+                                          ViewpointRuntime& runtime,
+                                          int vk,
+                                          Clock::time_point now)
+    {
+        if (vk <= 0 || vk > 255)
+            return false;
+        if (runtime.jumpDown)
+            return true;
+
+        runtime.jumpDown = true;
+        if (!SetViewpointOutputs(skillId, runtime)) {
+            runtime.jumpDown = false;
+            return false;
+        }
+
+        Diagnostics::Info("Hero skill viewpoint keyboard pulse start. skill=%s vk=%d",
+            skillId.c_str(), vk);
+        runtime.jumpPressedAt = now;
+        return true;
+    }
+
+    void UpdateViewpointPulses(const std::string& skillId, ViewpointRuntime& runtime, Clock::time_point now)
+    {
+        if (runtime.secondaryDown && now - runtime.secondaryPressedAt >= kBriefPulse) {
+            runtime.secondaryDown = false;
+            if (!SetViewpointOutputs(skillId, runtime)) {
+                (void)TimedOutputScheduler().Cancel(ViewpointOwnerKey(skillId));
+                runtime.jumpDown = false;
+                runtime.phase = ViewpointPhase::Cancelled;
+                Diagnostics::Warn(
+                    "Hero skill viewpoint secondary release failed. skill=%s",
+                    skillId.c_str());
+                return;
+            }
+            runtime.fired = true;
+            runtime.fireDelayStarted = now;
+            Diagnostics::Info("Hero skill viewpoint secondary pulse end. skill=%s", skillId.c_str());
+        }
+
+        if (runtime.jumpDown && now - runtime.jumpPressedAt >= kBriefPulse) {
+            runtime.jumpDown = false;
+            if (!SetViewpointOutputs(skillId, runtime)) {
+                (void)TimedOutputScheduler().Cancel(ViewpointOwnerKey(skillId));
+                runtime.secondaryDown = false;
+                runtime.phase = ViewpointPhase::Cancelled;
+                Diagnostics::Warn(
+                    "Hero skill viewpoint keyboard release failed. skill=%s vk=%d",
+                    skillId.c_str(),
+                    runtime.jumpVk);
+                return;
+            }
+            Diagnostics::Info("Hero skill viewpoint keyboard pulse end. skill=%s vk=%d",
+                skillId.c_str(), runtime.jumpVk);
+        }
+    }
+
+    long long MillisecondsSince(Clock::time_point start, Clock::time_point now)
+    {
+        if (start.time_since_epoch().count() == 0)
+            return 0;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+    }
+
+    void LogSequenceHitSummary(const std::string& skillId, const SequenceRuntime& runtime)
+    {
+        if (!runtime.hitHasSample)
+            return;
+
+        const Clock::time_point now = Clock::now();
+        Diagnostics::Aim("sequence.hit_summary skill=%s target=0x%llX damageEvents=%d durationMs=%lld lastHealth=%.1f",
+            skillId.c_str(),
+            static_cast<unsigned long long>(runtime.hitTargetAddress),
+            runtime.hitDamageEvents,
+            MillisecondsSince(runtime.hitMonitorStarted, now),
+            runtime.hitLastHealth);
+    }
+
+    bool IsSequenceHitCandidate(const c_entity& entity, const c_entity& local, bool requireEnemyTeam)
+    {
+        if (!entity.address || entity.address == local.address)
+            return false;
+        if (!entity.HasUsableBody(GetTickCount(),EntitySceneGeneration()))
+            return false;
+        if (!std::isfinite(entity.PlayerHealth) || entity.PlayerHealth <= 0.0f)
+            return false;
+        if (requireEnemyTeam && !TargetingDetail::TargetTeamMatches(entity, 0, local))
+            return false;
+        return true;
+    }
+
+    Vector3 SequenceHitProbePosition(const c_entity& entity)
+    {
+        if (!TargetingDetail::IsZeroVector(entity.chest_pos))
+            return entity.chest_pos;
+        if (!TargetingDetail::IsZeroVector(entity.neck_pos))
+            return entity.neck_pos;
+        if (!TargetingDetail::IsZeroVector(entity.head_pos))
+            return entity.head_pos;
+        return entity.pos;
+    }
+
+    bool TryPickSequenceHitTarget(const std::vector<c_entity>& snapshot,
+                                  const c_entity& local,
+                                  const SequenceRuntime& runtime,
+                                  c_entity& outTarget,
+                                  int& outIndex)
+    {
+        if (runtime.hitTargetAddress != 0) {
+            for (size_t index = 0; index < snapshot.size(); ++index) {
+                const c_entity& entity = snapshot[index];
+                if (entity.address == runtime.hitTargetAddress &&
+                    IsSequenceHitCandidate(entity, local, false)) {
+                    outTarget = entity;
+                    outIndex = static_cast<int>(index);
+                    return true;
+                }
+            }
+        }
+
+        const int configuredIndex = Config::Targetenemyi;
+        if (TargetingDetail::IsValidIndex(configuredIndex, snapshot.size())) {
+            const c_entity& configured = snapshot[static_cast<size_t>(configuredIndex)];
+            if (IsSequenceHitCandidate(configured, local, false)) {
+                outTarget = configured;
+                outIndex = configuredIndex;
+                return true;
+            }
+        }
+
+        const Vector2 crosshair = TargetingDetail::CrosshairCenter();
+        const Matrix view = SnapshotViewMatrix();
+        float bestScore = (std::numeric_limits<float>::max)();
+        int bestIndex = -1;
+        bool found = false;
+
+        auto scan = [&](bool requireEnemyTeam) {
+            for (size_t index = 0; index < snapshot.size(); ++index) {
+                const c_entity& entity = snapshot[index];
+                if (!IsSequenceHitCandidate(entity, local, requireEnemyTeam))
+                    continue;
+
+                const Vector3 position = SequenceHitProbePosition(entity);
+                if (TargetingDetail::IsZeroVector(position))
+                    continue;
+
+                Vector2 projected{};
+                if (!view.WorldToScreen(position, &projected, Vector2(WX, WY), false))
+                    continue;
+
+                if (!std::isfinite(projected.X) || !std::isfinite(projected.Y))
+                    continue;
+
+                const float score = crosshair.Distance(projected);
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIndex = static_cast<int>(index);
+                    found = true;
+                }
+            }
+        };
+
+        scan(true);
+        if (!found)
+            scan(false);
+
+        if (!found || !TargetingDetail::IsValidIndex(bestIndex, snapshot.size()))
+            return false;
+
+        outTarget = snapshot[static_cast<size_t>(bestIndex)];
+        outIndex = bestIndex;
+        return true;
+    }
+
+    void UpdateSequenceHitTiming(const std::string& skillId, SequenceRuntime& runtime)
+    {
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        c_entity target{};
+        int targetIndex = -1;
+        if (!TryPickSequenceHitTarget(snapshot, local, runtime, target, targetIndex))
+            return;
+
+        const Clock::time_point now = Clock::now();
+        if (runtime.hitMonitorStarted.time_since_epoch().count() == 0)
+            runtime.hitMonitorStarted = now;
+
+        if (!runtime.hitHasSample || runtime.hitTargetAddress != target.address) {
+            runtime.hitTargetAddress = target.address;
+            runtime.hitLastHealth = target.PlayerHealth;
+            runtime.hitLastChange = now;
+            runtime.hitHasSample = true;
+            runtime.hitDamageEvents = 0;
+            Diagnostics::Aim("sequence.hit_target skill=%s index=%d target=0x%llX health=%.1f hero=0x%llX",
+                skillId.c_str(),
+                targetIndex,
+                static_cast<unsigned long long>(target.address),
+                target.PlayerHealth,
+                static_cast<unsigned long long>(target.HeroID));
+            return;
+        }
+
+        const float delta = target.PlayerHealth - runtime.hitLastHealth;
+        if (std::fabs(delta) < 0.5f)
+            return;
+
+        if (delta < 0.0f)
+            ++runtime.hitDamageEvents;
+
+        Diagnostics::Aim("sequence.hit_timing skill=%s target=0x%llX index=%d tMs=%lld dtMs=%lld health=%.1f delta=%.1f damageEvents=%d",
+            skillId.c_str(),
+            static_cast<unsigned long long>(target.address),
+            targetIndex,
+            MillisecondsSince(runtime.hitMonitorStarted, now),
+            MillisecondsSince(runtime.hitLastChange, now),
+            target.PlayerHealth,
+            delta,
+            runtime.hitDamageEvents);
+
+        runtime.hitLastHealth = target.PlayerHealth;
+        runtime.hitLastChange = now;
+    }
+
+    void ReleaseViewpointOutputs(const std::string& skillId, ViewpointRuntime& runtime)
+    {
+        (void)TimedOutputScheduler().Cancel(ViewpointOwnerKey(skillId));
+        runtime.secondaryDown = false;
+        runtime.jumpDown = false;
+    }
+
+    void CancelSequence(const std::string& skillId, SequenceRuntime& runtime, const char* reason)
+    {
+        const bool hadWorker = runtime.worker.joinable();
+        if (hadWorker) {
+            runtime.worker.request_stop();
+            runtime.worker.join();
+        }
+
+        (void)TimedOutputScheduler().Cancel(SequenceOwnerKey(skillId));
+        runtime.currentMask = 0;
+
+        LogSequenceHitSummary(skillId, runtime);
+
+        if (runtime.active || hadWorker) {
+            Diagnostics::Info("Hero skill sequence cancelled. skill=%s reason=%s",
+                skillId.c_str(), reason ? reason : "unknown");
+        }
+        runtime = SequenceRuntime{};
+        RefreshAnyInputSequenceActive();
+    }
+
+    void CancelSequenceAndBlockUntilRelease(const std::string& skillId,
+                                            SequenceRuntime& runtime,
+                                            const char* reason)
+    {
+        CancelSequence(skillId, runtime, reason);
+        runtime.rearmBlockedUntilRelease = true;
+        Diagnostics::Warn(
+            "Hero skill sequence rearm blocked until activation release. skill=%s reason=%s",
+            skillId.c_str(),
+            reason ? reason : "unknown");
+    }
+
+    void CancelViewpoint(const std::string& skillId, ViewpointRuntime& runtime, const char* reason)
+    {
+        const bool wasActive = runtime.phase == ViewpointPhase::PitchDown ||
+            runtime.phase == ViewpointPhase::PitchUp;
+        ReleaseViewpointOutputs(skillId, runtime);
+        runtime.phase = ViewpointPhase::Cancelled;
+        runtime.lastTick = Clock::now();
+        if (wasActive) {
+            Diagnostics::Warn("Hero skill viewpoint controller cancelled. skill=%s reason=%s",
+                skillId.c_str(), reason ? reason : "unknown");
+        }
+    }
+
+    bool TryReadCurrentViewAngles(Vector3& angles)
+    {
+        Vector3 direction = ReadPlayerControllerViewDirection(
+            SDK ? SDK->g_player_controller.load(std::memory_order_acquire) : 0);
+        float length = std::sqrt(direction.X * direction.X + direction.Y * direction.Y + direction.Z * direction.Z);
+        if (std::isfinite(direction.X) && std::isfinite(direction.Y) &&
+            std::isfinite(direction.Z) && length > 0.5f && length < 1.5f) {
+            angles = DirectionToAimEuler(direction);
+            return true;
+        }
+
+        Matrix view{}, viewXor{};
+        GetViewMatricesSnapshot(view, viewXor);
+        (void)view;
+        const DirectX::XMFLOAT3 forward = viewXor.get_rotation();
+        length = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+        if (!std::isfinite(forward.x) || !std::isfinite(forward.y) ||
+            !std::isfinite(forward.z) || length <= 0.5f || length >= 1.5f) {
+            return false;
+        }
+
+        angles = DirectionToAimEuler(Vector3(forward.x, forward.y, forward.z));
+        return true;
+    }
+
+    float NormalizeAngle(float value)
+    {
+        while (value > kPi)
+            value -= 2.0f * kPi;
+        while (value < -kPi)
+            value += 2.0f * kPi;
+        return value;
+    }
+
+    float ClampDelta(float delta, float maxStep)
+    {
+        return std::clamp(delta, -maxStep, maxStep);
+    }
+
+    float ClampViewPitchTarget(float pitchRad)
+    {
+        return std::clamp(pitchRad, -kViewpointPitchLimitRad, kViewpointPitchLimitRad);
+    }
+
+    const char* ViewpointPhaseName(int phase)
+    {
+        switch (phase) {
+        case ViewpointPhase::Idle: return "idle";
+        case ViewpointPhase::PitchDown: return "pitchDown";
+        case ViewpointPhase::PitchUp: return "pitchUp";
+        case ViewpointPhase::Completed: return "completed";
+        case ViewpointPhase::Cancelled: return "cancelled";
+        default: return "unknown";
+        }
+    }
+
+    bool ShouldLogViewpointTick(ViewpointRuntime& runtime, Clock::time_point now)
+    {
+        if (runtime.lastDebugLog.time_since_epoch().count() != 0 &&
+            now - runtime.lastDebugLog < kViewpointDebugInterval) {
+            return false;
+        }
+
+        runtime.lastDebugLog = now;
+        return true;
+    }
+
+    bool IsPitchWithin(float targetPitch, float epsilonRad)
+    {
+        Vector3 current{};
+        return TryReadCurrentViewAngles(current) &&
+            std::fabs(targetPitch - current.X) <= epsilonRad;
+    }
+
+    bool IsYawWithin(float targetYaw, float epsilonRad)
+    {
+        Vector3 current{};
+        return TryReadCurrentViewAngles(current) &&
+            std::fabs(NormalizeAngle(targetYaw - current.Y)) <= epsilonRad;
+    }
+
+    void LogViewpointTick(const std::string& skillId,
+                          ViewpointRuntime& runtime,
+                          float targetPitch,
+                          float targetYaw,
+                          float speedDeg,
+                          float deltaSeconds,
+                          Clock::time_point now)
+    {
+        if (!Config::aimVerboseLog)
+            return;
+        if (!ShouldLogViewpointTick(runtime, now))
+            return;
+
+        Vector3 current{};
+        if (!TryReadCurrentViewAngles(current)) {
+            Diagnostics::Warn("Hero skill viewpoint tick read failed. skill=%s phase=%s",
+                skillId.c_str(), ViewpointPhaseName(runtime.phase));
+            return;
+        }
+
+        Diagnostics::Info("Hero skill viewpoint tick. skill=%s phase=%s currentPitch=%.2f targetPitch=%.2f deltaPitch=%.2f currentYaw=%.2f targetYaw=%.2f deltaYaw=%.2f speed=%.2f dt=%.4f fired=%d jumped=%d",
+            skillId.c_str(),
+            ViewpointPhaseName(runtime.phase),
+            current.X * kRadToDeg,
+            targetPitch * kRadToDeg,
+            (targetPitch - current.X) * kRadToDeg,
+            current.Y * kRadToDeg,
+            targetYaw * kRadToDeg,
+            NormalizeAngle(targetYaw - current.Y) * kRadToDeg,
+            speedDeg,
+            deltaSeconds,
+            runtime.fired ? 1 : 0,
+            runtime.jumped ? 1 : 0);
+    }
+
+    float DeltaSeconds(ViewpointRuntime& runtime, Clock::time_point now)
+    {
+        if (runtime.lastTick.time_since_epoch().count() == 0) {
+            runtime.lastTick = now;
+            return 1.0f / 144.0f;
+        }
+
+        const float dt = std::chrono::duration<float>(now - runtime.lastTick).count();
+        runtime.lastTick = now;
+        return std::clamp(dt, 1.0f / 1000.0f, 0.1f);
+    }
+
+    float PickPhaseSpeed(float baseSpeed, float randomRange)
+    {
+        baseSpeed = std::clamp(baseSpeed, 0.0f, 4000.0f);
+        randomRange = std::clamp(randomRange, 0.0f, 4000.0f);
+        if (randomRange <= 0.0f)
+            return baseSpeed;
+
+        const float low = (std::max)(0.0f, baseSpeed - randomRange);
+        const float high = (std::min)(4000.0f, baseSpeed + randomRange);
+        if (high <= low)
+            return low;
+
+        std::uniform_real_distribution<float> distribution(low, high);
+        std::lock_guard<std::mutex> lock(g_randomMutex);
+        return distribution(g_random);
+    }
+
+    float PickSignedJitter(float range)
+    {
+        range = std::clamp(range, 0.0f, 20.0f);
+        if (range <= 0.0f)
+            return 0.0f;
+
+        std::uniform_real_distribution<float> distribution(-range, range);
+        std::lock_guard<std::mutex> lock(g_randomMutex);
+        return distribution(g_random);
+    }
+
+    int PickSequenceDurationMs(const Config::HeroSkillSequenceStep& step)
+    {
+        float speedScale = step.speedScale;
+        if (!std::isfinite(speedScale))
+            speedScale = 1.0f;
+        speedScale = std::clamp(speedScale, 0.5f, 2.0f);
+
+        float duration = static_cast<float>(std::clamp(step.durationMs, 0, 1000)) * speedScale;
+        const int jitterMs = std::clamp(step.jitterMs, 0, 50);
+        if (jitterMs > 0) {
+            std::uniform_int_distribution<int> distribution(-jitterMs, jitterMs);
+            std::lock_guard<std::mutex> lock(g_randomMutex);
+            duration += static_cast<float>(distribution(g_random));
+        }
+
+        return std::clamp(static_cast<int>(std::lround(duration)), 5, 1000);
+    }
+
+    int NominalSequenceDurationMs(const Config::HeroSkillSequenceStep& step)
+    {
+        float speedScale = std::isfinite(step.speedScale) ? step.speedScale : 1.0f;
+        speedScale = std::clamp(speedScale, 0.5f, 2.0f);
+        const float duration =
+            static_cast<float>(std::clamp(step.durationMs, 0, 1000)) * speedScale;
+        return std::clamp(static_cast<int>(std::lround(duration)), 5, 1000);
+    }
+
+    std::int64_t SequenceClockMilliseconds(Clock::time_point value)
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            value.time_since_epoch()).count();
+    }
+
+    Clock::time_point SequenceClockFromMilliseconds(std::int64_t value)
+    {
+        return Clock::time_point(std::chrono::milliseconds((std::max)(std::int64_t{ 0 }, value)));
+    }
+
+    bool SequenceShotEdge(int previousMask, int nextMask)
+    {
+        return (nextMask & 0x01) != 0 && (previousMask & 0x01) == 0;
+    }
+
+    AimFirePhase::Tuning SequenceFirePhaseTuning(const Config::HeroSkillSettings& settings)
+    {
+        AimFirePhase::Tuning tuning{};
+        tuning.pauseMs = settings.sequencePostFirePauseMs;
+        tuning.recoveryMs = settings.sequenceRecoveryMs;
+        tuning.pauseYawScale = settings.sequencePostFireYawScale;
+        tuning.pausePitchScale = settings.sequencePostFirePitchScale;
+        tuning.preFireBoostWindowMs = settings.sequencePreFireBoostWindowMs;
+        tuning.preFireBoostScale = settings.sequencePreFireBoostScale;
+        return tuning;
+    }
+
+    float TimeUntilNextSequenceShotMs(
+        const std::vector<Config::HeroSkillSequenceStep>& steps,
+        size_t stepIndex,
+        float elapsedInStepMs,
+        int effectiveDurationMs)
+    {
+        if (steps.empty())
+            return 0.0f;
+
+        stepIndex %= steps.size();
+        float remaining = (std::max)(
+            0.0f,
+            static_cast<float>(effectiveDurationMs) - (std::max)(0.0f, elapsedInStepMs));
+        int previousMask = steps[stepIndex].buttonMask;
+        for (size_t offset = 1; offset <= steps.size(); ++offset) {
+            const size_t nextIndex = (stepIndex + offset) % steps.size();
+            const int nextMask = steps[nextIndex].buttonMask;
+            if (SequenceShotEdge(previousMask, nextMask))
+                return remaining;
+
+            remaining += static_cast<float>(NominalSequenceDurationMs(steps[nextIndex]));
+            previousMask = nextMask;
+        }
+
+        return 2000.0f;
+    }
+
+    AimFirePhase::Phase ResolveSequenceTrackingPhase(
+        const std::vector<Config::HeroSkillSequenceStep>& steps,
+        const Config::HeroSkillSettings& settings,
+        size_t stepIndex,
+        Clock::time_point stepStarted,
+        int effectiveDurationMs,
+        Clock::time_point lastShotStarted)
+    {
+        if (!settings.sequencePhaseAwareTracking || steps.empty() ||
+            stepStarted.time_since_epoch().count() <= 0) {
+            return {};
+        }
+
+        const Clock::time_point now = Clock::now();
+        const float elapsedInStepMs = static_cast<float>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - stepStarted).count()) /
+            1000.0f;
+        const bool shotObserved = lastShotStarted.time_since_epoch().count() > 0;
+        const float elapsedSinceShotMs = shotObserved
+            ? static_cast<float>(
+                std::chrono::duration_cast<std::chrono::microseconds>(now - lastShotStarted).count()) /
+                1000.0f
+            : 0.0f;
+        const float untilNextShotMs = TimeUntilNextSequenceShotMs(
+            steps,
+            stepIndex,
+            elapsedInStepMs,
+            effectiveDurationMs);
+        return AimFirePhase::ResolveTimeline(
+            elapsedSinceShotMs,
+            untilNextShotMs,
+            shotObserved,
+            SequenceFirePhaseTuning(settings));
+    }
+
+    bool EnterSequenceStep(const std::string& skillId,
+                           int& currentMask,
+                           const Config::HeroSkillSequenceStep& step,
+                           std::uint64_t expectedGeneration = 0)
+    {
+        if (!SetSequenceButtonMask(
+                skillId,
+                currentMask,
+                step.buttonMask,
+                expectedGeneration)) {
+            return false;
+        }
+        currentMask = step.buttonMask;
+        return true;
+    }
+
+    void SleepUntilSequenceDeadline(std::stop_token stopToken, Clock::time_point deadline)
+    {
+        while (!stopToken.stop_requested()) {
+            const Clock::time_point now = Clock::now();
+            if (now >= deadline)
+                return;
+
+            const auto remaining = deadline - now;
+            if (remaining > std::chrono::milliseconds(2))
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            else
+                std::this_thread::yield();
+        }
+    }
+
+    const char* SequenceWorkerExitReasonName(SequenceWorkerExitReason reason)
+    {
+        switch (reason) {
+        case SequenceWorkerExitReason::Running:       return "running";
+        case SequenceWorkerExitReason::StopRequested: return "stop_requested";
+        case SequenceWorkerExitReason::RuntimeChanged:return "runtime_changed";
+        case SequenceWorkerExitReason::AmmoBudget:    return "ammo_guard_budget";
+        case SequenceWorkerExitReason::OutputFailure: return "output_failed";
+        default:                                      return "unknown";
+        }
+    }
+
+    bool SequenceWorkerRuntimeStillValid(std::uint64_t startGeneration)
+    {
+        const OutputRuntimeState current = CurrentOutputRuntimeState();
+        return HeroSkillDetail::SequenceWorkerRuntimeMatches(
+            startGeneration,
+            current.backendGeneration,
+            current.outputGateOpen);
+    }
+
+    void RunSequenceWorker(std::stop_token stopToken,
+                           std::string skillId,
+                           std::vector<Config::HeroSkillSequenceStep> steps,
+                           bool ammoGuardEnabled,
+                           int ammoGuardReserve,
+                           std::uint64_t startGeneration,
+                           std::shared_ptr<SequenceWorkerCompletion> completion)
+    {
+        timeBeginPeriod(1);
+
+        int currentMask = 0;
+        size_t stepIndex = 0;
+        SequenceWorkerExitReason exitReason = SequenceWorkerExitReason::StopRequested;
+        Diagnostics::Info("Hero skill sequence worker started. skill=%s steps=%zu",
+            skillId.c_str(), steps.size());
+
+        while (!stopToken.stop_requested() && !steps.empty()) {
+            if (!SequenceWorkerRuntimeStillValid(startGeneration)) {
+                exitReason = SequenceWorkerExitReason::RuntimeChanged;
+                break;
+            }
+            if (stepIndex >= steps.size())
+                stepIndex = 0;
+
+            const Config::HeroSkillSequenceStep& step = steps[stepIndex];
+            const int durationMs = PickSequenceDurationMs(step);
+            if (ConsumeSequenceAmmoBudgetForStep(
+                    skillId,
+                    currentMask,
+                    step.buttonMask,
+                    ammoGuardEnabled,
+                    ammoGuardReserve)) {
+                exitReason = SequenceWorkerExitReason::AmmoBudget;
+                break;
+            }
+            if (!SequenceWorkerRuntimeStillValid(startGeneration)) {
+                exitReason = SequenceWorkerExitReason::RuntimeChanged;
+                break;
+            }
+            const int previousMask = currentMask;
+            if (!EnterSequenceStep(
+                    skillId,
+                    currentMask,
+                    step,
+                    startGeneration)) {
+                exitReason = SequenceWorkerRuntimeStillValid(startGeneration)
+                    ? SequenceWorkerExitReason::OutputFailure
+                    : SequenceWorkerExitReason::RuntimeChanged;
+                break;
+            }
+
+            const Clock::time_point stepStarted = Clock::now();
+            if (completion) {
+                completion->stepIndex.store(stepIndex, std::memory_order_release);
+                completion->stepDurationMs.store(durationMs, std::memory_order_release);
+                completion->stepStartedMs.store(
+                    SequenceClockMilliseconds(stepStarted),
+                    std::memory_order_release);
+                if (SequenceShotEdge(previousMask, step.buttonMask)) {
+                    completion->lastShotStartedMs.store(
+                        SequenceClockMilliseconds(stepStarted),
+                        std::memory_order_release);
+                }
+            }
+
+            if (SequenceDiagnosticsEnabled()) {
+                Diagnostics::Aim("sequence.step skill=%s step=%zu mask=0x%02X durationMs=%d baseMs=%d scale=%.3f jitterMs=%d",
+                    skillId.c_str(),
+                    stepIndex + 1,
+                    step.buttonMask,
+                    durationMs,
+                    step.durationMs,
+                    step.speedScale,
+                    step.jitterMs);
+            }
+
+            SleepUntilSequenceDeadline(
+                stopToken,
+                stepStarted + std::chrono::milliseconds(durationMs));
+            ++stepIndex;
+        }
+
+        (void)TimedOutputScheduler().Cancel(SequenceOwnerKey(skillId));
+        timeEndPeriod(1);
+        if (completion) {
+            completion->reason.store(exitReason, std::memory_order_release);
+        }
+        Diagnostics::Info(
+            "Hero skill sequence worker stopped. skill=%s reason=%s",
+            skillId.c_str(),
+            SequenceWorkerExitReasonName(exitReason));
+    }
+
+    void BeginViewpoint(const std::string& skillId,
+                        ViewpointRuntime& runtime,
+                        const Config::HeroSkillSettings& params)
+    {
+        const bool prevKeyDown = runtime.prevKeyDown;
+        runtime = ViewpointRuntime{};
+        runtime.prevKeyDown = prevKeyDown;
+
+        Vector3 currentAngles{};
+        if (!TryReadCurrentViewAngles(currentAngles)) {
+            runtime.phase = ViewpointPhase::Cancelled;
+            Diagnostics::Warn("Hero skill viewpoint start failed: no view angle. skill=%s", skillId.c_str());
+            return;
+        }
+
+        runtime.initialAngles = currentAngles;
+
+        const float pitchDownTargetDeg = std::clamp(params.pitchDownTargetAngle, 0.0f, 180.0f);
+        const float effectivePitchDownTarget = ClampViewPitchTarget(pitchDownTargetDeg * kDegToRad);
+        const float effectivePitchDownTargetDeg = effectivePitchDownTarget * kRadToDeg;
+        const int durationBaseMs = std::clamp(params.pitchDownDurationMs, 20, 100);
+        const float durationJitterMs = std::clamp(params.pitchDownDurationJitter, 0.0f, 50.0f);
+        const float pitchUpReturnJitterDeg = PickSignedJitter(params.pitchUpOffsetJitter);
+        const float durationMs = (std::max)(
+            1.0f,
+            PickPhaseSpeed(static_cast<float>(durationBaseMs),
+                           durationJitterMs));
+
+        runtime.pitchDownSpeedDeg = std::clamp((pitchDownTargetDeg / durationMs) * 1000.0f, 0.0f, 4000.0f);
+        runtime.pitchUpTargetAngle = ClampViewPitchTarget(runtime.initialAngles.X + pitchUpReturnJitterDeg * kDegToRad);
+        const float pitchUpTravelDeg = std::fabs(effectivePitchDownTargetDeg - runtime.pitchUpTargetAngle * kRadToDeg);
+        runtime.pitchUpSpeedDeg = std::clamp((pitchUpTravelDeg / durationMs) * 1000.0f, 0.0f, 4000.0f);
+        runtime.skillVk = MapHotkeyToVK(params.skillKey >= 0 ? params.skillKey : params.key);
+        runtime.jumpVk = std::clamp(params.jumpKeyCode, 0, 255);
+        runtime.phase = ViewpointPhase::PitchDown;
+        runtime.phaseStarted = Clock::now();
+        runtime.lastTick = runtime.phaseStarted;
+
+        Diagnostics::Info("Hero skill viewpoint started. skill=%s durationMs=%.2f requestedDownTarget=%.2f effectiveDownTarget=%.2f downSpeed=%.2f returnJitter=%.2f effectiveUpTarget=%.2f upSpeed=%.2f initialPitch=%.2f initialYaw=%.2f",
+            skillId.c_str(),
+            durationMs,
+            pitchDownTargetDeg,
+            effectivePitchDownTargetDeg,
+            runtime.pitchDownSpeedDeg,
+            pitchUpReturnJitterDeg,
+            runtime.pitchUpTargetAngle * kRadToDeg,
+            runtime.pitchUpSpeedDeg,
+            runtime.initialAngles.X * kRadToDeg,
+            runtime.initialAngles.Y * kRadToDeg);
+    }
+
+    // Rough pixels-per-degree constant for fast viewpoint moves.
+    // Bypasses sensitivity calibration and move-splitting — we just want raw speed.
+    constexpr float kViewpointPixelsPerDegree = 18.0f;
+
+    void FastRawMouseMove(float pitchDeg, float yawDeg)
+    {
+        const int px = static_cast<int>(std::lround(yawDeg * kViewpointPixelsPerDegree));
+        const int py = static_cast<int>(std::lround(pitchDeg * kViewpointPixelsPerDegree));
+
+        if (px == 0 && py == 0)
+            return;
+        if (ShouldSuppressOutput("fast_raw_mouse_move"))
+            return;
+        const OutputRuntimeState runtime = CurrentOutputRuntimeState();
+        if (!runtime.outputGateOpen || runtime.backendGeneration == 0)
+            return;
+        (void)V2::Output::DispatchMouseMoveForGeneration(
+            runtime.backendGeneration,
+            px,
+            py,
+            0);
+    }
+
+    bool MovePitchToward(float targetPitch, float speedDeg, float deltaSeconds)
+    {
+        Vector3 current{};
+        if (!TryReadCurrentViewAngles(current))
+            return false;
+
+        const float deltaPitch = targetPitch - current.X;
+        if (std::fabs(deltaPitch) <= kPitchDoneEpsilonRad)
+            return true;
+
+        const float maxStepRad = (std::max)(0.0f, speedDeg) * kDegToRad * deltaSeconds;
+        if (maxStepRad <= 0.0f)
+            return false;
+
+        const float stepRad = ClampDelta(deltaPitch, maxStepRad);
+        FastRawMouseMove(stepRad * kRadToDeg, 0.0f);
+
+        return false;
+    }
+
+    bool MoveYawToward(float targetYaw, float speedDeg, float deltaSeconds)
+    {
+        Vector3 current{};
+        if (!TryReadCurrentViewAngles(current))
+            return false;
+
+        const float deltaYaw = NormalizeAngle(targetYaw - current.Y);
+        if (std::fabs(deltaYaw) <= kYawDoneEpsilonRad)
+            return true;
+
+        const float maxStepRad = (std::max)(0.0f, speedDeg) * kDegToRad * deltaSeconds;
+        if (maxStepRad <= 0.0f)
+            return false;
+
+        const float stepRad = ClampDelta(deltaYaw, maxStepRad);
+        FastRawMouseMove(0.0f, stepRad * kRadToDeg);
+
+        return false;
+    }
+
+    struct ScopedTrackingConfig {
+        Config::HeroPreset originalPreset{};
+        bool active = false;
+
+        explicit ScopedTrackingConfig(const Config::HeroSkillTrackingParams& params)
+        {
+            originalPreset = Config::MakeHeroPresetFromCurrent();
+
+            Config::HeroPreset overlay = originalPreset;
+            overlay.aimBehavior = Config::ClampAimBehaviorIndex(params.aimBehavior);
+            overlay.aimBehaviorPresetId = Config::ClampAimBehaviorPresetId(params.aimBehaviorPresetId);
+            overlay.aimMethod = Config::ClampAimMethodIndex(params.method);
+            overlay.aimMode = Config::IsTrackingBehavior(overlay.aimBehavior) ? 0 : 1;
+            overlay.fov = params.fov;
+            overlay.smooth = params.speedScale;
+            overlay.bone = params.bone;
+            overlay.autoBone = params.bone == Config::kAimBoneClosest;
+            overlay.aimBoneMask = HeroSkillDetail::TrackingBoneMaskForSelection(params.bone);
+            overlay.hitbox = params.hitbox;
+            Config::ApplyHeroPresetToGlobals(overlay);
+            active = true;
+        }
+
+        ~ScopedTrackingConfig()
+        {
+            if (!active)
+                return;
+
+            Config::ApplyHeroPresetToGlobals(originalPreset);
+        }
+    };
+
+    void RunTrackingOverlayTick(const std::string& skillId,
+                                const Config::HeroSkillTrackingParams& params,
+                                bool prediction,
+                                const AimFirePhase::Phase& phase = {})
+    {
+        const int behavior = Config::ClampAimBehaviorIndex(params.aimBehavior);
+        const float trackingScale = std::clamp(phase.trackingScale, 0.0f, 3.0f);
+        const float yawScale = std::clamp(phase.yawScale, 0.0f, 1.0f);
+        const float pitchScale = std::clamp(phase.pitchScale, 0.0f, 1.0f);
+        if (params.fov <= 0.0f || params.speedScale <= 0.0f || trackingScale <= 0.0f)
+            return;
+
+        Config::HeroSkillTrackingParams effectiveParams = params;
+        effectiveParams.speedScale = std::clamp(params.speedScale * trackingScale, 0.0f, 300.0f);
+        ScopedTrackingConfig trackingOverride(effectiveParams);
+        const int method = Config::ActiveAimBehaviorPreset(behavior)
+            ? Config::AimBehaviorMethod(behavior)
+            : Config::ClampAimMethodIndex(params.method);
+        const Vector3 targetVector = GetVector3(prediction);
+        c_entity target{};
+        if (AimbotDetail::IsZeroVector(targetVector) ||
+            !AimbotDetail::IsPrimaryTargetActionable(target)) {
+            return;
+        }
+
+        const float smoothInput = Config::AimBehaviorSmoothInput(behavior, effectiveParams.speedScale);
+        AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
+            targetVector,
+            Config::IsFlickBehavior(behavior),
+            smoothInput,
+            Config::AimBehaviorAcceleration(behavior),
+            method);
+        if (!AimbotDetail::IsZeroVector(aim.smoothed_angle)) {
+            Vector3 outputAngle = aim.local_angle;
+            const Vector3 delta = aim.smoothed_angle - aim.local_angle;
+            outputAngle.X += delta.X * pitchScale;
+            outputAngle.Y += delta.Y * yawScale;
+            outputAngle.Z += delta.Z;
+            AimbotDetail::MoveAimDelta(aim.local_angle, outputAngle);
+            if (Config::aimVerboseLog) {
+                Diagnostics::Aim("sequence.aim_tick skill=%s behavior=%d method=%d speedScale=%.3f phaseScale=%.3f yawScale=%.3f pitchScale=%.3f paused=%d recovery=%d prefire=%d fov=%.3f prediction=%d targetIndex=%d",
+                    skillId.c_str(),
+                    behavior,
+                    method,
+                    effectiveParams.speedScale,
+                    trackingScale,
+                    yawScale,
+                    pitchScale,
+                    phase.paused ? 1 : 0,
+                    phase.recovering ? 1 : 0,
+                    phase.preFireBoost ? 1 : 0,
+                    params.fov,
+                    prediction ? 1 : 0,
+                    Config::Targetenemyi);
+            }
+        }
+    }
+
+    bool IsFiniteVector(const Vector3& value)
+    {
+        return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+    }
+
+    bool IsUsablePosition(const Vector3& value)
+    {
+        return IsFiniteVector(value) && value != Vector3(0.0f, 0.0f, 0.0f);
+    }
+
+    Vector3 SourcePositionForAction(const c_entity& local)
+    {
+        const Vector3 camera = TargetingDetail::CameraPosition();
+        if (IsUsablePosition(camera))
+            return camera;
+        if (IsUsablePosition(local.head_pos))
+            return local.head_pos;
+        return local.pos;
+    }
+
+    Vector3 CandidatePositionForAction(const c_entity& entity)
+    {
+        if (IsUsablePosition(entity.head_pos))
+            return entity.head_pos;
+        if (IsUsablePosition(entity.chest_pos))
+            return entity.chest_pos;
+        if (IsUsablePosition(entity.neck_pos))
+            return entity.neck_pos;
+        return entity.pos;
+    }
+
+    float VitalityPercent(const c_entity& entity)
+    {
+        if (!std::isfinite(entity.PlayerHealth) || entity.PlayerHealth <= 0.0f)
+            return 0.0f;
+
+        float maxHealth = entity.PlayerHealthMax;
+        if (!std::isfinite(maxHealth) || maxHealth <= 0.0f)
+            maxHealth = entity.MaxHealth;
+        if (!std::isfinite(maxHealth) || maxHealth <= 0.0f)
+            return std::clamp(entity.PlayerHealth, 0.0f, 100.0f);
+
+        return std::clamp((entity.PlayerHealth / maxHealth) * 100.0f, 0.0f, 100.0f);
+    }
+
+    float ApproximateAngularOffsetDegrees(const Vector3& position)
+    {
+        Matrix view{}, viewXor{};
+        GetViewMatricesSnapshot(view, viewXor);
+        (void)viewXor;
+
+        Vector2 projected{};
+        if (!view.WorldToScreen(position, &projected, Vector2(WX, WY)))
+            return 0.0f;
+
+        const Vector2 crosshair = TargetingDetail::CrosshairCenter();
+        const float width = WX > 0.0f ? WX : static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
+        const float height = WY > 0.0f ? WY : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
+        const float diagonal = std::sqrt(width * width + height * height);
+        if (diagonal <= 0.0f)
+            return 0.0f;
+
+        return (crosshair.Distance(projected) / diagonal) * 90.0f;
+    }
+
+    TrajectoryParams GetTrajectoryParams(const char* skillId)
+    {
+        const std::string skill = skillId ? skillId : "";
+        if (skill == "sleep-dart")
+            return { 60.0f, 45.0f, 0.0f, 0.2f, 320.0f };
+        if (skill == "chain-hook")
+            return { 62.0f, 20.0f, 0.0f, 0.5f, 100.0f };
+        if (skill == "pulse-bomb")
+            return { 15.0f, 5.0f, 20.0f, 0.0f, 0.0f };
+        if (skill == "helix-rockets")
+            return { 50.0f, 40.0f, 0.0f, 0.32f, 0.0f };
+        if (skill == "sticky-bombs")
+            return { 50.0f, 35.0f, 0.0f, 0.2f, 0.0f };
+        if (skill == "whip-shot")
+            return { 80.0f, 20.0f, 0.0f, 0.3f, 0.0f };
+        if (skill == "accretion")
+            return { 37.5f, 35.0f, 20.0f, 0.5f, 0.0f };
+        return { 60.0f, 40.0f, 0.0f, 0.0f, 0.0f };
+    }
+
+    SkillProjectileRuntime ResolveSkillProjectileRuntime(const Config::HeroSkillSettings& settings,
+                                                         const TrajectoryParams& params)
+    {
+        SkillProjectileRuntime runtime{};
+        runtime.speed = settings.projectileSpeed > 0.0f ? settings.projectileSpeed : params.speed;
+        runtime.maxRange = params.maxRange;
+        runtime.gravity = settings.projectileGravity || params.gravity > 0.0f;
+        runtime.projectileRadius = settings.projectileRadius > 0.0f
+            ? settings.projectileRadius
+            : params.projectileRadius;
+        runtime.preFireDelayMs = settings.preFireDelayMs > 0.0f
+            ? settings.preFireDelayMs
+            : params.preFireDelayMs;
+        return runtime;
+    }
+
+    Vector3 ComputePredictedPosition(const Vector3& targetPos,
+                                     const Vector3& targetVel,
+                                     const Vector3& srcPos,
+                                     float projectileSpeed,
+                                     float gravity)
+    {
+        if (!IsFiniteVector(targetPos) || !IsFiniteVector(targetVel) ||
+            !IsFiniteVector(srcPos) || projectileSpeed <= 0.0f) {
+            return targetPos;
+        }
+
+        const float distance = srcPos.DistTo(targetPos);
+        const float travelTime = distance / projectileSpeed;
+        Vector3 predicted = targetPos + targetVel * travelTime;
+        if (gravity > 0.0f) {
+            // This project uses world Y as the vertical axis.
+            predicted.Y += 0.5f * gravity * travelTime * travelTime;
+        }
+        return predicted;
+    }
+
+    CandidateEntity FindBestCandidate(const Config::HeroSkillSettings& settings, float maxRange)
+    {
+        CandidateEntity best{};
+        if (!std::isfinite(maxRange) || maxRange <= 0.0f)
+            return best;
+
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source))
+            return best;
+
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        const int requiredTargets = (std::max)(1, settings.minTargets);
+        int matchingTargets = 0;
+        float bestDistance = maxRange;
+
+        for (size_t index = 0; index < snapshot.size(); ++index) {
+            const c_entity& entity = snapshot[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
+                continue;
+            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
+                continue;
+            if ((entity.imort || entity.barrprot) && !Config::switch_team)
+                continue;
+
+            const Vector3 position = CandidatePositionForAction(entity);
+            if (!IsUsablePosition(position))
+                continue;
+
+            const float distance = source.DistTo(position);
+            if (!std::isfinite(distance) || distance > maxRange)
+                continue;
+
+            const float vitality = VitalityPercent(entity);
+            if (vitality > settings.enemyHealthThreshold)
+                continue;
+
+            ++matchingTargets;
+            if (best.entityIndex < 0 || distance < bestDistance) {
+                bestDistance = distance;
+                best.entityAddress = entity.address;
+                best.entityIndex = static_cast<int>(index);
+                best.distance = distance;
+                best.vitalityPercent = vitality;
+                best.angularOffset = ApproximateAngularOffsetDegrees(position);
+                best.position = position;
+                best.velocity = entity.velocity;
+            }
+        }
+
+        if (matchingTargets < requiredTargets)
+            return CandidateEntity{};
+        return best;
+    }
+
+    Vector3 SkillAimPointForEntity(c_entity& entity, int boneSetting)
+    {
+        Vector3 aimPoint = TargetingDetail::ConfiguredBonePosition(entity, boneSetting);
+        if (IsUsablePosition(aimPoint))
+            return aimPoint;
+        return CandidatePositionForAction(entity);
+    }
+
+    bool ResolveSkillAimPointForEntity(c_entity& entity,
+                                       int boneSetting,
+                                       const TargetingDetail::FovRuntimeContext& fovContext,
+                                       int& outBoneId,
+                                       Vector3& outPoint)
+    {
+        if (boneSetting == Config::kAimBoneClosest) {
+            const Matrix view = OW::SnapshotViewMatrix();
+            const Vector2 crosshair = TargetingDetail::CrosshairCenter();
+            if (TargetingDetail::TrySelectClosestCoreAimPoint(
+                    entity,
+                    fovContext,
+                    view,
+                    crosshair,
+                    outBoneId,
+                    outPoint)) {
+                return true;
+            }
+        }
+
+        const int normalizedBone = Config::NormalizeAimBone(boneSetting);
+        outBoneId = AimBoneToSkeletonBoneId(normalizedBone);
+        outPoint = SkillAimPointForEntity(entity, normalizedBone);
+        return IsUsablePosition(outPoint);
+    }
+
+    float ResolveSkillHitWindow(const c_entity& entity,
+                                int boneId,
+                                const SkillProjectileRuntime& projectile,
+                                float hitboxScalePercent)
+    {
+        const float boneRadius = ResolveBoneHitboxRadius(
+            entity.HeroID,
+            boneId,
+            Config::kLegacyDefaultHitboxRadius);
+        const float resolvedWindow = (std::max)(0.0f, boneRadius + projectile.projectileRadius);
+        return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
+    }
+
+    float AutoMeleeBoneScore(const TargetingDetail::FovRuntimeContext& fovContext,
+                             const Vector3& source,
+                             const Vector3& point)
+    {
+        if (fovContext.valid) {
+            const float score = TargetingDetail::FovScoreDeg(fovContext, point);
+            if (std::isfinite(score))
+                return score;
+        }
+
+        return source.DistTo(point);
+    }
+
+    bool ResolveAutoMeleeBone(c_entity& entity,
+                              int boneSetting,
+                              const TargetingDetail::FovRuntimeContext& fovContext,
+                              const Vector3& source,
+                              int& outBoneId,
+                              Vector3& outPoint,
+                              float& outScore)
+    {
+        bool found = false;
+        float bestScore = (std::numeric_limits<float>::max)();
+
+        auto considerBone = [&](int boneId, const Vector3& point) {
+            if (!IsUsablePosition(point) || point == entity.pos)
+                return;
+
+            const float score = AutoMeleeBoneScore(fovContext, source, point);
+            if (!std::isfinite(score))
+                return;
+
+            if (!found || score < bestScore) {
+                found = true;
+                bestScore = score;
+                outBoneId = boneId;
+                outPoint = point;
+                outScore = score;
+            }
+        };
+
+        if (boneSetting == Config::kAimBoneClosest) {
+            static constexpr std::array<int, 3> kCoreBones{
+                BONE_HEAD,
+                BONE_NECK,
+                BONE_CHEST,
+            };
+            for (int boneId : kCoreBones)
+                considerBone(boneId, TargetingDetail::CoreBoneHitboxCenter(entity, boneId));
+            if (found)
+                return true;
+        }
+
+        const int normalizedBone = Config::NormalizeAimBone(boneSetting);
+        const int boneId = AimBoneToSkeletonBoneId(normalizedBone);
+        Vector3 point = TargetingDetail::ConfiguredBonePosition(entity, normalizedBone);
+        if (!IsUsablePosition(point))
+            point = CandidatePositionForAction(entity);
+        considerBone(boneId, point);
+        return found;
+    }
+
+    bool IsAutoMeleeHitReady(const SkillAimCandidate& candidate)
+    {
+        if (!candidate.valid || !IsUsablePosition(candidate.aimPoint) ||
+            candidate.hitWindow <= 0.0f) {
+            return false;
+        }
+
+        const AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
+            candidate.aimPoint,
+            false,
+            1.0f,
+            0.0f);
+        if (!IsFiniteVector(aim.local_angle) ||
+            !IsFiniteVector(aim.target_angle) ||
+            !IsFiniteVector(aim.local_pos)) {
+            return false;
+        }
+
+        return OW::in_range(
+            aim.local_angle,
+            aim.target_angle,
+            aim.local_pos,
+            candidate.aimPoint,
+            candidate.hitWindow);
+    }
+
+    SkillAimCandidate FindBestAutoMeleeCandidate(const Config::HeroSkillSettings& settings)
+    {
+        SkillAimCandidate best{};
+        const float effectiveRange = settings.distance;
+        if (!std::isfinite(effectiveRange) || effectiveRange <= 0.0f)
+            return best;
+
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source))
+            return best;
+
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        const TargetingDetail::FovRuntimeContext fovContext =
+            TargetingDetail::SnapshotFovRuntimeContext();
+        const SkillProjectileRuntime meleeProjectile{};
+        const float maxHealth = std::clamp(settings.enemyHealthThreshold, 0.0f, 500.0f);
+
+        float bestScore = (std::numeric_limits<float>::max)();
+        float bestDistance = (std::numeric_limits<float>::max)();
+
+        for (size_t index = 0; index < snapshot.size(); ++index) {
+            c_entity entity = snapshot[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
+                continue;
+            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
+                continue;
+            if ((entity.imort || entity.barrprot) && !Config::switch_team)
+                continue;
+            if (entity.skill1act && entity.HeroID == eHero::HERO_VENTURE)
+                continue;
+            if (!std::isfinite(entity.PlayerHealth) ||
+                entity.PlayerHealth <= 0.0f ||
+                entity.PlayerHealth > maxHealth) {
+                continue;
+            }
+
+            int boneId = BONE_CHEST;
+            Vector3 aimPoint{};
+            float fovScore = 0.0f;
+            if (!ResolveAutoMeleeBone(
+                    entity,
+                    settings.tracking.bone,
+                    fovContext,
+                    source,
+                    boneId,
+                    aimPoint,
+                    fovScore)) {
+                continue;
+            }
+
+            const float distance = source.DistTo(aimPoint);
+            if (!std::isfinite(distance) || distance > effectiveRange)
+                continue;
+
+            SkillAimCandidate candidate{};
+            candidate.valid = true;
+            candidate.entity = entity;
+            candidate.entityIndex = static_cast<int>(index);
+            candidate.entityKey = entity.address ? entity.address : entity.LinkBase;
+            candidate.boneId = boneId;
+            candidate.distance = distance;
+            candidate.vitalityPercent = entity.PlayerHealth;
+            candidate.fovScore = fovScore;
+            candidate.hitWindow = ResolveSkillHitWindow(
+                entity,
+                boneId,
+                meleeProjectile,
+                settings.tracking.hitbox);
+            candidate.rawAimPoint = aimPoint;
+            candidate.aimPoint = aimPoint;
+
+            if (!IsAutoMeleeHitReady(candidate))
+                continue;
+
+            if (fovScore < bestScore ||
+                (std::fabs(fovScore - bestScore) <= 0.001f && distance < bestDistance)) {
+                best = candidate;
+                bestScore = fovScore;
+                bestDistance = distance;
+            }
+        }
+
+        return best;
+    }
+
+    SkillAimCandidate FindBestSkillAimCandidate(const Config::HeroSkillSettings& settings,
+                                                const SkillProjectileRuntime& projectile,
+                                                float minRange = 0.0f)
+    {
+        SkillAimCandidate best{};
+        const float effectiveRange = settings.distance > 0.0f
+            ? (std::min)(settings.distance, projectile.maxRange)
+            : projectile.maxRange;
+        if (!std::isfinite(effectiveRange) || effectiveRange <= 0.0f)
+            return best;
+        const float effectiveMinRange = std::clamp(
+            std::isfinite(minRange) ? minRange : 0.0f,
+            0.0f,
+            effectiveRange);
+
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source))
+            return best;
+
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        const int requiredTargets = (std::max)(1, settings.minTargets);
+        const int boneSetting = settings.tracking.bone == Config::kAimBoneClosest
+            ? Config::kAimBoneClosest
+            : Config::NormalizeAimBone(settings.tracking.bone);
+        const TargetingDetail::FovRuntimeContext fovContext =
+            TargetingDetail::SnapshotFovRuntimeContext();
+        const ProjectileRuntimeSpec projectileSpec{
+            projectile.speed,
+            projectile.gravity,
+            false
+        };
+
+        int matchingTargets = 0;
+        float bestScore = (std::numeric_limits<float>::max)();
+        float bestDistance = (std::numeric_limits<float>::max)();
+
+        for (size_t index = 0; index < snapshot.size(); ++index) {
+            c_entity entity = snapshot[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
+                continue;
+            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
+                continue;
+            if ((entity.imort || entity.barrprot) && !Config::switch_team)
+                continue;
+
+            const float vitality = VitalityPercent(entity);
+            if (vitality > settings.enemyHealthThreshold)
+                continue;
+
+            int selectedBoneId = BONE_CHEST;
+            Vector3 rawAimPoint{};
+            if (!ResolveSkillAimPointForEntity(
+                    entity,
+                    boneSetting,
+                    fovContext,
+                    selectedBoneId,
+                    rawAimPoint)) {
+                continue;
+            }
+
+            const float rawDistance = source.DistTo(rawAimPoint);
+            if (!std::isfinite(rawDistance) ||
+                rawDistance < effectiveMinRange ||
+                rawDistance > effectiveRange) {
+                continue;
+            }
+
+            ++matchingTargets;
+
+            Vector3 aimPoint = rawAimPoint;
+            if (settings.prediction && projectile.speed > 0.0f) {
+                const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
+                    entity,
+                    rawAimPoint,
+                    projectileSpec,
+                    true,
+                    false,
+                    projectile.preFireDelayMs);
+                aimPoint = lead.finalAimPoint;
+            }
+
+            if (!IsUsablePosition(aimPoint))
+                continue;
+
+            const float aimedDistance = source.DistTo(aimPoint);
+            if (!std::isfinite(aimedDistance) ||
+                aimedDistance > effectiveRange + projectile.projectileRadius) {
+                continue;
+            }
+
+            float fovScore = 0.0f;
+            if (!TargetingDetail::IsWithinFovDeg(
+                    fovContext,
+                    aimPoint,
+                    settings.tracking.fov,
+                    &fovScore)) {
+                continue;
+            }
+
+            if (fovScore < bestScore ||
+                (std::fabs(fovScore - bestScore) <= 0.001f && aimedDistance < bestDistance)) {
+                best.valid = true;
+                best.entity = entity;
+                best.entityIndex = static_cast<int>(index);
+                best.entityKey = entity.address ? entity.address : entity.LinkBase;
+                best.boneId = selectedBoneId;
+                best.distance = aimedDistance;
+                best.vitalityPercent = vitality;
+                best.fovScore = fovScore;
+                best.rawAimPoint = rawAimPoint;
+                best.aimPoint = aimPoint;
+                best.hitWindow = ResolveSkillHitWindow(
+                    entity,
+                    selectedBoneId,
+                    projectile,
+                    settings.tracking.hitbox);
+                bestScore = fovScore;
+                bestDistance = aimedDistance;
+            }
+        }
+
+        if (matchingTargets < requiredTargets)
+            return SkillAimCandidate{};
+        return best;
+    }
+
+    bool MoveSkillAimAndCheckReady(const std::string& runtimeKey,
+                                   const Config::HeroSkillSettings& settings,
+                                   const SkillAimCandidate& candidate,
+                                   const SkillProjectileRuntime& projectile)
+    {
+        if (!candidate.valid || !IsUsablePosition(candidate.aimPoint))
+            return false;
+
+        const int behavior = Config::ClampAimBehaviorIndex(settings.tracking.aimBehavior);
+        if (settings.tracking.fov <= 0.0f || settings.tracking.speedScale <= 0.0f)
+            return false;
+
+        const float smoothInput = Config::AimBehaviorSmoothInput(
+            behavior,
+            settings.tracking.speedScale);
+        AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
+            candidate.aimPoint,
+            Config::IsFlickBehavior(behavior),
+            smoothInput,
+            Config::AimBehaviorAcceleration(behavior),
+            Config::AimBehaviorMethod(behavior));
+        if (!IsFiniteVector(aim.local_angle) ||
+            !IsFiniteVector(aim.target_angle) ||
+            !IsFiniteVector(aim.local_pos) ||
+            candidate.hitWindow <= 0.0f) {
+            return false;
+        }
+
+        const bool hitBeforeMove = OW::in_range(
+            aim.local_angle,
+            aim.target_angle,
+            aim.local_pos,
+            candidate.aimPoint,
+            candidate.hitWindow);
+
+        bool hitAfterMove = hitBeforeMove;
+        if (!AimbotDetail::IsZeroVector(aim.smoothed_angle)) {
+            AimbotDetail::MoveAimDelta(aim.local_angle, aim.smoothed_angle);
+            hitAfterMove = OW::in_range(
+                aim.smoothed_angle,
+                aim.target_angle,
+                aim.local_pos,
+                candidate.aimPoint,
+                candidate.hitWindow);
+        }
+
+        if (Config::aimVerboseLog) {
+            Diagnostics::Aim("skill.aim_tick skill=%s behavior=%d speedScale=%.3f fov=%.3f prediction=%d projectileSpeed=%.3f preFireMs=%.3f targetIndex=%d fovScore=%.3f distance=%.3f hitWindow=%.3f ready[before/after]=%d/%d raw=(%.3f,%.3f,%.3f) aim=(%.3f,%.3f,%.3f)",
+                runtimeKey.c_str(),
+                behavior,
+                settings.tracking.speedScale,
+                settings.tracking.fov,
+                settings.prediction ? 1 : 0,
+                projectile.speed,
+                projectile.preFireDelayMs,
+                candidate.entityIndex,
+                candidate.fovScore,
+                candidate.distance,
+                candidate.hitWindow,
+                hitBeforeMove ? 1 : 0,
+                hitAfterMove ? 1 : 0,
+                candidate.rawAimPoint.X,
+                candidate.rawAimPoint.Y,
+                candidate.rawAimPoint.Z,
+                candidate.aimPoint.X,
+                candidate.aimPoint.Y,
+                candidate.aimPoint.Z);
+        }
+
+        // Keyboard/button skill commands are intentionally prioritized ahead
+        // of queued motion. Fire only from the observed pre-move state so the
+        // output queue cannot execute the skill before its aiming correction.
+        return hitBeforeMove;
+    }
+
+    int MapHotkeyToVK(int hotkey)
+    {
+        return Labels::AimActivationKeyVk(hotkey);
+    }
+
+    int SkillOutputVk(const Config::HeroSkillSettings& settings)
+    {
+        return MapHotkeyToVK(settings.skillKey >= 0 ? settings.skillKey : settings.key);
+    }
+
+    OutputScheduler& TimedOutputScheduler()
+    {
+        return RuntimeOutputScheduler();
+    }
+
+    bool TryMapVkToOutputControl(int vk, OutputControl& control)
+    {
+        switch (vk) {
+        case VK_LBUTTON:
+            control = { OutputControlKind::MouseButton, 0 };
+            return true;
+        case VK_RBUTTON:
+            control = { OutputControlKind::MouseButton, 1 };
+            return true;
+        case VK_MBUTTON:
+            control = { OutputControlKind::MouseButton, 2 };
+            return true;
+        default:
+            break;
+        }
+
+        const unsigned char hidCode = VkToHidKeyCode(vk);
+        if (hidCode == 0)
+            return false;
+        control = {
+            hidCode >= 0xE0 && hidCode <= 0xE7
+                ? OutputControlKind::KeyboardModifier
+                : OutputControlKind::KeyboardUsage,
+            hidCode
+        };
+        return true;
+    }
+
+    bool StartTimedHotkey(const std::string& runtimeKey, int vk, std::chrono::milliseconds duration)
+    {
+        OutputControl control{};
+        if (vk <= 0 || !TryMapVkToOutputControl(vk, control))
+            return false;
+
+        duration = (std::max)(duration, kBriefPulse);
+        return TimedOutputScheduler().ScheduleTimedHold(
+            runtimeKey,
+            OutputOwnerSource::HeroTimedAction,
+            { control },
+            duration);
+    }
+
+    bool StartZaryaAutoRightPulse(const std::string& runtimeKey,
+                                  bool releaseLeftDuringPulse,
+                                  ZaryaAutoRightTiming timing)
+    {
+        struct PulseState
+        {
+            std::atomic<bool> maskedLeft{ false };
+            std::atomic<bool> releasedLeft{ false };
+            std::atomic<bool> rightPressed{ false };
+            std::atomic<bool> restoredLeft{ false };
+            std::atomic<bool> completed{ false };
+        };
+
+        const auto state = std::make_shared<PulseState>();
+        const std::string physicalLeftMaskKey =
+            runtimeKey + ":physical_lmb_mask";
+        const auto logCompletion = [runtimeKey, releaseLeftDuringPulse, timing, state](
+            const char* outcome) {
+            Diagnostics::Aim(
+                "zarya.ammo_probe pulse_done skill=%s outcome=%s releaseLeft=%d releasedLeft=%d rightPressed=%d restoredLeft=%d xMs=%lld yMs=%lld zMs=%lld",
+                runtimeKey.c_str(),
+                outcome,
+                releaseLeftDuringPulse ? 1 : 0,
+                state->releasedLeft.load(std::memory_order_acquire) ? 1 : 0,
+                state->rightPressed.load(std::memory_order_acquire) ? 1 : 0,
+                state->restoredLeft.load(std::memory_order_acquire) ? 1 : 0,
+                static_cast<long long>(timing.rightHold.count()),
+                static_cast<long long>(timing.leftReleaseDelay.count()),
+                static_cast<long long>(timing.afterLeftRelease.count()));
+        };
+
+        OutputActionPlan plan{};
+        plan.key = runtimeKey;
+        plan.ownerSource = OutputOwnerSource::ZaryaPulse;
+        plan.acquire = { { OutputControlKind::MouseButton, 1 } };
+
+        const auto generatedLeftOwnerHeld = []() {
+            return TimedOutputScheduler().IsControlHeld(
+                { OutputControlKind::MouseButton, 0 });
+        };
+
+        if (releaseLeftDuringPulse) {
+            OutputActionStep releaseLeft{};
+            releaseLeft.afterStart = timing.leftReleaseDelay;
+            releaseLeft.callback = [
+                state,
+                generatedLeftOwnerHeld,
+                physicalLeftMaskKey](std::uint64_t generation) {
+                // Temporarily mask physical LMB rather than inventing a
+                // positive "physical" lease. Generated owners remain usable
+                // while the mask is active and cannot later steal the user's
+                // still-held physical button when their final lease releases.
+                if (generatedLeftOwnerHeld())
+                    return;
+                if (!OW::AcquirePhysicalMouseMaskLease(
+                        physicalLeftMaskKey,
+                        OutputOwnerSource::ZaryaPulse,
+                        0x01u,
+                        generation)) {
+                    return;
+                }
+                state->maskedLeft.store(true, std::memory_order_release);
+                const bool released =
+                    V2::Output::DispatchForceReleaseMouseButtonForGeneration(
+                        generation, 0) == success;
+                state->releasedLeft.store(released, std::memory_order_release);
+                if (!released) {
+                    state->restoredLeft.store(
+                        OW::ReleasePhysicalMouseMaskLease(
+                            physicalLeftMaskKey,
+                            OutputOwnerSource::ZaryaPulse,
+                            generation),
+                        std::memory_order_release);
+                    throw std::runtime_error("Zarya physical LMB release failed");
+                }
+            };
+            plan.steps.push_back(std::move(releaseLeft));
+        }
+
+        OutputActionStep releaseRight{};
+        releaseRight.afterStart = timing.rightHold;
+        releaseRight.release = { { OutputControlKind::MouseButton, 1 } };
+        if (!releaseLeftDuringPulse) {
+            releaseRight.callback = [state, logCompletion](std::uint64_t) {
+                state->completed.store(true, std::memory_order_release);
+                logCompletion("completed");
+            };
+            releaseRight.complete = true;
+        }
+        plan.steps.push_back(std::move(releaseRight));
+
+        if (releaseLeftDuringPulse) {
+            OutputActionStep restoreLeft{};
+            restoreLeft.afterStart = timing.rightHold + kZaryaAutoRightRestoreSettle;
+            restoreLeft.callback = [
+                state,
+                logCompletion,
+                physicalLeftMaskKey](std::uint64_t generation) {
+                if (state->maskedLeft.load(std::memory_order_acquire) &&
+                    !state->restoredLeft.load(std::memory_order_acquire)) {
+                    const bool restored = OW::ReleasePhysicalMouseMaskLease(
+                        physicalLeftMaskKey,
+                        OutputOwnerSource::ZaryaPulse,
+                        generation);
+                    state->restoredLeft.store(restored, std::memory_order_release);
+                    if (!restored)
+                        throw std::runtime_error("Zarya physical LMB unmask failed");
+                }
+                state->completed.store(true, std::memory_order_release);
+                logCompletion("completed");
+            };
+            restoreLeft.complete = true;
+            plan.steps.push_back(std::move(restoreLeft));
+        }
+
+        plan.cancelCleanup = [state, logCompletion, physicalLeftMaskKey](
+            OutputActionCancelReason reason,
+            std::uint64_t generation) {
+            if (state->maskedLeft.load(std::memory_order_acquire) &&
+                !state->restoredLeft.load(std::memory_order_acquire)) {
+                state->restoredLeft.store(
+                    OW::ReleasePhysicalMouseMaskLease(
+                        physicalLeftMaskKey,
+                        OutputOwnerSource::ZaryaPulse,
+                        generation),
+                    std::memory_order_release);
+            }
+            if (!state->completed.load(std::memory_order_acquire)) {
+                logCompletion(
+                    reason == OutputActionCancelReason::RuntimeChanged
+                        ? "runtime_changed"
+                        : (reason == OutputActionCancelReason::OutputFailure
+                            ? "output_failure"
+                            : "cancelled"));
+            }
+        };
+
+        const bool scheduled = TimedOutputScheduler().Schedule(std::move(plan));
+        if (scheduled)
+            state->rightPressed.store(true, std::memory_order_release);
+        return scheduled;
+    }
+
+    const char* GenjiDashPositionClassName(GenjiDashPositionClass value)
+    {
+        switch (value) {
+        case GenjiDashPositionClass::Front: return "front";
+        case GenjiDashPositionClass::Overhead: return "overhead";
+        case GenjiDashPositionClass::Behind: return "behind";
+        default: return "unknown";
+        }
+    }
+
+    const char* GenjiComboPhaseName(int phase)
+    {
+        switch (phase) {
+        case GenjiComboPhase::Idle: return "idle";
+        case GenjiComboPhase::OpeningFire: return "opening_fire";
+        case GenjiComboPhase::AfterOpeningFire: return "after_opening_fire";
+        case GenjiComboPhase::Shift: return "shift";
+        case GenjiComboPhase::DashWait: return "dash_wait";
+        case GenjiComboPhase::AfterTurn: return "after_turn";
+        case GenjiComboPhase::FinalFire: return "final_fire";
+        case GenjiComboPhase::AfterFinalFire: return "after_final_fire";
+        case GenjiComboPhase::Melee: return "melee";
+        case GenjiComboPhase::Completed: return "completed";
+        case GenjiComboPhase::Cancelled: return "cancelled";
+        default: return "unknown";
+        }
+    }
+
+    uint64_t EntityRuntimeKey(const c_entity& entity)
+    {
+        return entity.address ? entity.address : entity.LinkBase;
+    }
+
+    int ScaledGenjiMoveMs(int baseMs, const Config::HeroSkillSettings& settings)
+    {
+        const float speedScale = std::clamp(
+            std::isfinite(settings.tracking.speedScale) ? settings.tracking.speedScale / 100.0f : 1.0f,
+            0.25f,
+            1.5f);
+        return std::clamp(static_cast<int>(std::lround(static_cast<float>(baseMs) / speedScale)), 1, 20);
+    }
+
+    int GenjiTurnMoveMs(GenjiDashPositionClass dashClass, const Config::HeroSkillSettings& settings)
+    {
+        switch (dashClass) {
+        case GenjiDashPositionClass::Behind:
+            return ScaledGenjiMoveMs(kGenjiComboBehindTurnMs, settings);
+        case GenjiDashPositionClass::Overhead:
+            return ScaledGenjiMoveMs(kGenjiComboOverheadTurnMs, settings);
+        case GenjiDashPositionClass::Front:
+        default:
+            return ScaledGenjiMoveMs(kGenjiComboFrontTurnMs, settings);
+        }
+    }
+
+    int GenjiDashWaitMs(float distance)
+    {
+        if (!std::isfinite(distance) || distance <= 0.0f)
+            return kGenjiComboMinDashWaitMs;
+
+        return std::clamp(
+            static_cast<int>(std::lround(distance * kGenjiComboDashMsPerMeter)),
+            kGenjiComboMinDashWaitMs,
+            kGenjiComboMaxDashWaitMs);
+    }
+
+    bool BuildSkillAimCandidateFromEntity(const Config::HeroSkillSettings& settings,
+                                          const SkillProjectileRuntime& projectile,
+                                          const c_entity& local,
+                                          c_entity entity,
+                                          int entityIndex,
+                                          float maxRange,
+                                          SkillAimCandidate& outCandidate)
+    {
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source))
+            return false;
+
+        const int boneSetting = settings.tracking.bone == Config::kAimBoneClosest
+            ? Config::kAimBoneClosest
+            : Config::NormalizeAimBone(settings.tracking.bone);
+        const TargetingDetail::FovRuntimeContext fovContext =
+            TargetingDetail::SnapshotFovRuntimeContext();
+        int selectedBoneId = BONE_CHEST;
+        Vector3 rawAimPoint{};
+        if (!ResolveSkillAimPointForEntity(
+                entity,
+                boneSetting,
+                fovContext,
+                selectedBoneId,
+                rawAimPoint)) {
+            return false;
+        }
+
+        const float rawDistance = source.DistTo(rawAimPoint);
+        if (!std::isfinite(rawDistance) || rawDistance > maxRange)
+            return false;
+
+        Vector3 aimPoint = rawAimPoint;
+        if (settings.prediction && projectile.speed > 0.0f) {
+            const ProjectileRuntimeSpec projectileSpec{
+                projectile.speed,
+                projectile.gravity,
+                false
+            };
+            const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
+                entity,
+                rawAimPoint,
+                projectileSpec,
+                true,
+                false,
+                projectile.preFireDelayMs);
+            aimPoint = lead.finalAimPoint;
+        }
+
+        if (!IsUsablePosition(aimPoint))
+            return false;
+
+        const float aimedDistance = source.DistTo(aimPoint);
+        if (!std::isfinite(aimedDistance) || aimedDistance > maxRange + projectile.projectileRadius)
+            return false;
+
+        outCandidate = {};
+        outCandidate.valid = true;
+        outCandidate.entity = entity;
+        outCandidate.entityIndex = entityIndex;
+        outCandidate.entityKey = EntityRuntimeKey(entity);
+        outCandidate.boneId = selectedBoneId;
+        outCandidate.distance = aimedDistance;
+        outCandidate.vitalityPercent = VitalityPercent(entity);
+        outCandidate.rawAimPoint = rawAimPoint;
+        outCandidate.aimPoint = aimPoint;
+        outCandidate.hitWindow = ResolveSkillHitWindow(
+            entity,
+            selectedBoneId,
+            projectile,
+            settings.tracking.hitbox);
+        return true;
+    }
+
+    SkillAimCandidate FindGenjiFollowupCandidate(const Config::HeroSkillSettings& settings,
+                                                 const SkillProjectileRuntime& projectile,
+                                                 uint64_t targetKey)
+    {
+        SkillAimCandidate fallback{};
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        const float maxRange = settings.distance > 0.0f
+            ? (std::min)(settings.distance, projectile.maxRange)
+            : projectile.maxRange;
+        if (!std::isfinite(maxRange) || maxRange <= 0.0f)
+            return fallback;
+
+        const float fallbackRange = (std::min)(maxRange, kGenjiComboFallbackFollowupRange);
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        float bestFallbackDistance = (std::numeric_limits<float>::max)();
+
+        for (size_t index = 0; index < snapshot.size(); ++index) {
+            c_entity entity = snapshot[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
+                continue;
+            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
+                continue;
+            if ((entity.imort || entity.barrprot) && !Config::switch_team)
+                continue;
+
+            const float vitality = VitalityPercent(entity);
+            if (vitality > settings.enemyHealthThreshold)
+                continue;
+
+            SkillAimCandidate candidate{};
+            if (!BuildSkillAimCandidateFromEntity(
+                    settings,
+                    projectile,
+                    local,
+                    entity,
+                    static_cast<int>(index),
+                    maxRange,
+                    candidate)) {
+                continue;
+            }
+
+            if (targetKey != 0 && candidate.entityKey == targetKey)
+                return candidate;
+
+            if (candidate.distance <= fallbackRange && candidate.distance < bestFallbackDistance) {
+                fallback = candidate;
+                bestFallbackDistance = candidate.distance;
+            }
+        }
+
+        return fallback;
+    }
+
+    bool ProjectToScreen(const Vector3& position, Vector2& projected)
+    {
+        Matrix view{}, viewXor{};
+        GetViewMatricesSnapshot(view, viewXor);
+        (void)viewXor;
+        return view.WorldToScreen(position, &projected, Vector2(WX, WY), false);
+    }
+
+    GenjiDashPositionClass ClassifyGenjiDashPosition(const SkillAimCandidate& candidate,
+                                                     const Config::HeroSkillSettings& settings)
+    {
+        if (!candidate.valid || !IsUsablePosition(candidate.aimPoint))
+            return GenjiDashPositionClass::Behind;
+
+        ScopedTrackingConfig trackingOverride(settings.tracking);
+        const int method = Config::ClampAimMethodIndex(settings.tracking.method);
+        const AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
+            candidate.aimPoint,
+            false,
+            1.0f,
+            0.0f,
+            method);
+        if (!IsFiniteVector(aim.local_angle) || !IsFiniteVector(aim.target_angle))
+            return GenjiDashPositionClass::Behind;
+
+        const float yawDeltaDeg = std::fabs(NormalizeAngle(
+            aim.target_angle.Y - aim.local_angle.Y)) * kRadToDeg;
+        const float pitchDeltaDeg = (aim.target_angle.X - aim.local_angle.X) * kRadToDeg;
+
+        Vector2 projected{};
+        const bool onScreen = ProjectToScreen(candidate.aimPoint, projected);
+        const Vector2 crosshair = TargetingDetail::CrosshairCenter();
+        const float screenHeight = WY > 0.0f
+            ? WY
+            : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
+        const bool highOnScreen = onScreen &&
+            projected.Y < crosshair.Y - (std::max)(120.0f, screenHeight * 0.12f);
+
+        const Vector3 camera = TargetingDetail::CameraPosition();
+        const Vector3 delta = candidate.aimPoint - camera;
+        const float horizontal = std::sqrt(delta.X * delta.X + delta.Z * delta.Z);
+        const bool verticallyOverhead =
+            std::isfinite(delta.Y) && std::isfinite(horizontal) &&
+            delta.Y > 1.75f && horizontal < 6.0f;
+
+        if (!onScreen || yawDeltaDeg >= 110.0f)
+            return GenjiDashPositionClass::Behind;
+        if (highOnScreen || verticallyOverhead || pitchDeltaDeg < -22.0f)
+            return GenjiDashPositionClass::Overhead;
+        return GenjiDashPositionClass::Front;
+    }
+
+    bool MoveGenjiAimToPoint(const std::string& runtimeKey,
+                             const Config::HeroSkillSettings& settings,
+                             const Vector3& aimPoint,
+                             int moveMs,
+                             float yawJitterDeg,
+                             const char* phaseName)
+    {
+        if (!IsUsablePosition(aimPoint) || settings.tracking.speedScale <= 0.0f)
+            return false;
+
+        ScopedTrackingConfig trackingOverride(settings.tracking);
+        const int method = Config::ClampAimMethodIndex(settings.tracking.method);
+        const AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
+            aimPoint,
+            false,
+            1.0f,
+            0.0f,
+            method);
+        if (!IsFiniteVector(aim.local_angle) || !IsFiniteVector(aim.target_angle))
+            return false;
+
+        Vector3 targetAngle = aim.target_angle;
+        targetAngle.Y += yawJitterDeg * kDegToRad;
+        AimbotDetail::MoveAimDelta(aim.local_angle, targetAngle, std::clamp(moveMs, 1, 20));
+
+        Diagnostics::Aim("genji.combo flick skill=%s phase=%s moveMs=%d yawJitterDeg=%.2f deltaPitchDeg=%.2f deltaYawDeg=%.2f target=(%.3f,%.3f,%.3f)",
+            runtimeKey.c_str(),
+            phaseName ? phaseName : "unknown",
+            moveMs,
+            yawJitterDeg,
+            (targetAngle.X - aim.local_angle.X) * kRadToDeg,
+            NormalizeAngle(targetAngle.Y - aim.local_angle.Y) * kRadToDeg,
+            aimPoint.X,
+            aimPoint.Y,
+            aimPoint.Z);
+        return true;
+    }
+
+    void SetGenjiComboPhase(GenjiComboRuntime& runtime, int phase)
+    {
+        runtime.phase = phase;
+        runtime.phaseStarted = Clock::now();
+    }
+
+    bool GenjiComboPhaseElapsed(const GenjiComboRuntime& runtime, int milliseconds)
+    {
+        return Clock::now() - runtime.phaseStarted >= std::chrono::milliseconds(milliseconds);
+    }
+
+    bool SetGenjiComboOutputs(const std::string& runtimeKey,
+                              const GenjiComboRuntime& runtime)
+    {
+        std::vector<OutputControl> controls;
+        controls.reserve(3);
+        if (runtime.rightDown && !AddOutputControlForVk(controls, VK_RBUTTON))
+            return false;
+        if (runtime.shiftDown && !AddOutputControlForVk(controls, VK_LSHIFT))
+            return false;
+        if (runtime.meleeDown && !AddOutputControlForVk(controls, 0x56))
+            return false;
+        return TimedOutputScheduler().SetManualControls(
+            GenjiComboOwnerKey(runtimeKey),
+            OutputOwnerSource::GenjiCombo,
+            std::move(controls));
+    }
+
+    void FinishGenjiCombo(const std::string& runtimeKey,
+                          GenjiComboRuntime& runtime,
+                          const char* reason,
+                          bool completed)
+    {
+        (void)TimedOutputScheduler().Cancel(GenjiComboOwnerKey(runtimeKey));
+
+        const bool prevKeyDown = runtime.prevKeyDown;
+        runtime = GenjiComboRuntime{};
+        runtime.prevKeyDown = prevKeyDown;
+        runtime.phase = completed ? GenjiComboPhase::Completed : GenjiComboPhase::Cancelled;
+        Diagnostics::Aim("genji.combo %s skill=%s reason=%s",
+            completed ? "completed" : "cancelled",
+            runtimeKey.c_str(),
+            reason ? reason : "");
+        RefreshAnyInputSequenceActive();
+    }
+
+    bool BeginGenjiDashCombo(const std::string& runtimeKey,
+                             GenjiComboRuntime& runtime,
+                             const Config::HeroSkillSettings& settings,
+                             const SkillAimCandidate& candidate)
+    {
+        runtime = GenjiComboRuntime{};
+        runtime.active = true;
+        runtime.prevKeyDown = true;
+        runtime.targetKey = candidate.entityKey;
+        runtime.initialDistance = candidate.distance;
+        runtime.dashWaitMs = GenjiDashWaitMs(candidate.distance);
+        g_anyInputSequenceActive.store(true, std::memory_order_release);
+        MarkActionExecuted(runtimeKey);
+
+        if (!MoveGenjiAimToPoint(
+                runtimeKey,
+                settings,
+                candidate.aimPoint,
+                ScaledGenjiMoveMs(kGenjiComboOpeningFlickMs, settings),
+                0.0f,
+                "opening")) {
+            FinishGenjiCombo(runtimeKey, runtime, "opening_flick_failed", false);
+            return false;
+        }
+
+        runtime.rightDown = true;
+        if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+            runtime.rightDown = false;
+            FinishGenjiCombo(runtimeKey, runtime, "opening_right_down_failed", false);
+            return false;
+        }
+
+        SetGenjiComboPhase(runtime, GenjiComboPhase::OpeningFire);
+        Diagnostics::Aim("genji.combo started skill=%s target=0x%llX distance=%.2f dashWaitMs=%d",
+            runtimeKey.c_str(),
+            static_cast<unsigned long long>(runtime.targetKey),
+            runtime.initialDistance,
+            runtime.dashWaitMs);
+        return true;
+    }
+
+    bool AdvanceGenjiDashCombo(const std::string& runtimeKey,
+                               GenjiComboRuntime& runtime,
+                               const Config::HeroSkillSettings& settings,
+                               const SkillProjectileRuntime& projectile)
+    {
+        if (!runtime.active)
+            return false;
+
+        switch (runtime.phase) {
+        case GenjiComboPhase::OpeningFire:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboRightHoldMs))
+                return true;
+            runtime.rightDown = false;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                FinishGenjiCombo(runtimeKey, runtime, "opening_right_up_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::AfterOpeningFire);
+            return true;
+
+        case GenjiComboPhase::AfterOpeningFire:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboAfterOpeningFireMs))
+                return true;
+            runtime.shiftDown = true;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                runtime.shiftDown = false;
+                FinishGenjiCombo(runtimeKey, runtime, "shift_down_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::Shift);
+            return true;
+
+        case GenjiComboPhase::Shift:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboShiftHoldMs))
+                return true;
+            runtime.shiftDown = false;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                FinishGenjiCombo(runtimeKey, runtime, "shift_up_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::DashWait);
+            return true;
+
+        case GenjiComboPhase::DashWait: {
+            if (!GenjiComboPhaseElapsed(runtime, runtime.dashWaitMs))
+                return true;
+            const SkillAimCandidate followup =
+                FindGenjiFollowupCandidate(settings, projectile, runtime.targetKey);
+            if (!followup.valid) {
+                FinishGenjiCombo(runtimeKey, runtime, "followup_target_lost", false);
+                return false;
+            }
+
+            runtime.dashClass = ClassifyGenjiDashPosition(followup, settings);
+            const float yawJitter = PickSignedJitter(3.0f);
+            const int moveMs = GenjiTurnMoveMs(runtime.dashClass, settings);
+            if (!MoveGenjiAimToPoint(
+                    runtimeKey,
+                    settings,
+                    followup.aimPoint,
+                    moveMs,
+                    yawJitter,
+                    GenjiDashPositionClassName(runtime.dashClass))) {
+                FinishGenjiCombo(runtimeKey, runtime, "turn_flick_failed", false);
+                return false;
+            }
+
+            Diagnostics::Aim("genji.combo dash_class skill=%s class=%s moveMs=%d yawJitterDeg=%.2f distance=%.2f target=0x%llX",
+                runtimeKey.c_str(),
+                GenjiDashPositionClassName(runtime.dashClass),
+                moveMs,
+                yawJitter,
+                followup.distance,
+                static_cast<unsigned long long>(followup.entityKey));
+            SetGenjiComboPhase(runtime, GenjiComboPhase::AfterTurn);
+            return true;
+        }
+
+        case GenjiComboPhase::AfterTurn: {
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboAfterTurnMs))
+                return true;
+            const SkillAimCandidate followup =
+                FindGenjiFollowupCandidate(settings, projectile, runtime.targetKey);
+            if (!followup.valid) {
+                FinishGenjiCombo(runtimeKey, runtime, "final_target_lost", false);
+                return false;
+            }
+
+            if (!MoveGenjiAimToPoint(
+                    runtimeKey,
+                    settings,
+                    followup.aimPoint,
+                    ScaledGenjiMoveMs(kGenjiComboFinalFlickMs, settings),
+                    0.0f,
+                    "final")) {
+                FinishGenjiCombo(runtimeKey, runtime, "final_flick_failed", false);
+                return false;
+            }
+
+            runtime.rightDown = true;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                runtime.rightDown = false;
+                FinishGenjiCombo(runtimeKey, runtime, "final_right_down_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::FinalFire);
+            return true;
+        }
+
+        case GenjiComboPhase::FinalFire:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboRightHoldMs))
+                return true;
+            runtime.rightDown = false;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                FinishGenjiCombo(runtimeKey, runtime, "final_right_up_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::AfterFinalFire);
+            return true;
+
+        case GenjiComboPhase::AfterFinalFire:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboAfterFinalFireMs))
+                return true;
+            runtime.meleeDown = true;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                runtime.meleeDown = false;
+                FinishGenjiCombo(runtimeKey, runtime, "melee_down_failed", false);
+                return false;
+            }
+            SetGenjiComboPhase(runtime, GenjiComboPhase::Melee);
+            return true;
+
+        case GenjiComboPhase::Melee:
+            if (!GenjiComboPhaseElapsed(runtime, kGenjiComboMeleeHoldMs))
+                return true;
+            runtime.meleeDown = false;
+            if (!SetGenjiComboOutputs(runtimeKey, runtime)) {
+                FinishGenjiCombo(runtimeKey, runtime, "melee_up_failed", false);
+                return false;
+            }
+            FinishGenjiCombo(runtimeKey, runtime, "done", true);
+            return true;
+
+        case GenjiComboPhase::Completed:
+        case GenjiComboPhase::Cancelled:
+        case GenjiComboPhase::Idle:
+        default:
+            FinishGenjiCombo(runtimeKey, runtime, GenjiComboPhaseName(runtime.phase), false);
+            return false;
+        }
+    }
+
+    bool EvaluateGenjiDashComboAction(const std::string& runtimeKey,
+                                      const Config::HeroSkillSettings& settings)
+    {
+        GenjiComboRuntime& runtime = g_genjiCombos[runtimeKey];
+        const bool held = IsActivationKeyHeld(settings.key);
+        const SkillProjectileRuntime projectile = ResolveSkillProjectileRuntime(
+            settings,
+            { 75.0f, 40.0f, 0.0f, 0.125f, 0.0f });
+
+        if (runtime.active) {
+            runtime.prevKeyDown = held;
+            return AdvanceGenjiDashCombo(runtimeKey, runtime, settings, projectile);
+        }
+
+        if (!held) {
+            runtime.prevKeyDown = false;
+            return false;
+        }
+        if (runtime.prevKeyDown || IsActionDebounced(runtimeKey))
+            return false;
+
+        Config::HeroSkillSettings candidateSettings = settings;
+        candidateSettings.distance = settings.distance > 0.0f
+            ? (std::min)(settings.distance, 20.0f)
+            : 20.0f;
+        const SkillAimCandidate candidate = FindBestSkillAimCandidate(
+            candidateSettings,
+            projectile,
+            kGenjiComboMinDistance);
+        if (!candidate.valid) {
+            if (ShouldLogSkillGuard(runtimeKey)) {
+                Diagnostics::Aim("genji.combo guard skill=%s reason=no_target minDistance=%.2f maxDistance=%.2f fov=%.2f",
+                    runtimeKey.c_str(),
+                    kGenjiComboMinDistance,
+                    candidateSettings.distance,
+                    settings.tracking.fov);
+            }
+            return false;
+        }
+
+        const bool started = BeginGenjiDashCombo(runtimeKey, runtime, candidateSettings, candidate);
+        runtime.prevKeyDown = started;
+        return started;
+    }
+
+    bool IsActionDebounced(const std::string& runtimeKey)
+    {
+        const auto item = g_lastActionExecutions.find(runtimeKey);
+        if (item == g_lastActionExecutions.end())
+            return false;
+
+        return Clock::now() - item->second < kActionPulseDebounce;
+    }
+
+    void MarkActionExecuted(const std::string& runtimeKey)
+    {
+        g_lastActionExecutions[runtimeKey] = Clock::now();
+    }
+
+    bool ReadLocalReloadingFast(const c_entity& local, bool& reloading)
+    {
+        reloading = Config::reloading;
+        if (!SDK || !local.SkillBase)
+            return false;
+
+        __try {
+            reloading = OW::IsSkillActivate1(local.SkillBase + 0x40, 0, kReloadStateSkill);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            reloading = Config::reloading;
+            return false;
+        }
+    }
+
+    void ResetZaryaAmmoProbeBudgetLog(ZaryaAmmoProbeRuntime& runtime)
+    {
+        runtime.lastBudgetLog = {};
+        runtime.lastLoggedAmmo = -1000;
+    }
+
+    void LogZaryaAmmoProbeBudget(const std::string& runtimeKey,
+                                 ZaryaAmmoProbeRuntime& runtime,
+                                 const char* reason,
+                                 bool leftDown,
+                                 bool rightDown,
+                                 Clock::time_point now)
+    {
+        const int ammoInt = runtime.budgetArmed
+            ? static_cast<int>(std::floor(runtime.ammo + 0.001))
+            : -1;
+        const bool forced = reason && reason[0] != '\0';
+        const bool changed = ammoInt != runtime.lastLoggedAmmo;
+        const bool periodic = runtime.lastBudgetLog.time_since_epoch().count() == 0 ||
+            now - runtime.lastBudgetLog >= kZaryaBudgetLogInterval;
+        if (!forced && (!changed || !periodic))
+            return;
+
+        runtime.lastBudgetLog = now;
+        runtime.lastLoggedAmmo = ammoInt;
+        Diagnostics::Aim("zarya.ammo_probe budget skill=%s reason=%s ammo=%.1f threshold=%d left=%d right=%d autoRight=%d",
+            runtimeKey.c_str(),
+            forced ? reason : "tick",
+            runtime.ammo,
+            runtime.autoRightThreshold,
+            leftDown ? 1 : 0,
+            rightDown ? 1 : 0,
+            runtime.autoRightSent ? 1 : 0);
+    }
+
+    void ArmZaryaAmmoProbeBudget(const std::string& runtimeKey,
+                                 ZaryaAmmoProbeRuntime& runtime,
+                                 Clock::time_point now,
+                                 bool leftDown,
+                                 bool rightDown,
+                                 long long reloadDurationMs)
+    {
+        runtime.budgetArmed = true;
+        runtime.ammo = static_cast<double>(kZaryaAmmoClipSize);
+        runtime.leftWasDown = leftDown;
+        runtime.rightWasDown = rightDown;
+        runtime.autoRightSent = false;
+        runtime.autoRightThreshold = PickZaryaAutoRightThreshold();
+        runtime.lastObserved = now;
+        ResetZaryaAmmoProbeBudgetLog(runtime);
+
+        Diagnostics::Aim("zarya.ammo_probe reload_success skill=%s durationMs=%lld seedAmmo=%d threshold=%d",
+            runtimeKey.c_str(),
+            reloadDurationMs,
+            kZaryaAmmoClipSize,
+            runtime.autoRightThreshold);
+        LogZaryaAmmoProbeBudget(runtimeKey, runtime, "reload_seed", leftDown, rightDown, now);
+    }
+
+    void UpdateZaryaAmmoProbe(const std::string& runtimeKey,
+                              const Config::HeroSkillSettings& settings,
+                              const c_entity& local)
+    {
+        ZaryaAmmoProbeRuntime& runtime = g_zaryaAmmoProbes[runtimeKey];
+        const Clock::time_point now = Clock::now();
+        const bool leftDown = AimbotDetail::IsInputVkDown(VK_LBUTTON);
+        const bool rightDown = AimbotDetail::IsInputVkDown(VK_RBUTTON);
+
+        bool reloading = false;
+        const bool fastReloadRead = ReadLocalReloadingFast(local, reloading);
+        if (reloading) {
+            if (!runtime.lastReloading) {
+                runtime.reloadStarted = now;
+                runtime.reloadQualified = false;
+                runtime.budgetArmed = false;
+                runtime.ammo = -1.0;
+                runtime.autoRightSent = false;
+                runtime.autoRightThreshold = 0;
+                ResetZaryaAmmoProbeBudgetLog(runtime);
+                Diagnostics::Aim("zarya.ammo_probe reload_start skill=%s source=%s skillBase=0x%llX",
+                    runtimeKey.c_str(),
+                    fastReloadRead ? "fast" : "cache",
+                    static_cast<unsigned long long>(local.SkillBase));
+            }
+
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - runtime.reloadStarted);
+            if (!runtime.reloadQualified && elapsed >= kZaryaReloadSuccessMinDuration) {
+                runtime.reloadQualified = true;
+                Diagnostics::Aim("zarya.ammo_probe reload_qualified skill=%s durationMs=%lld",
+                    runtimeKey.c_str(),
+                    static_cast<long long>(elapsed.count()));
+            }
+
+            runtime.lastReloading = true;
+            runtime.leftWasDown = leftDown;
+            runtime.rightWasDown = rightDown;
+            runtime.lastObserved = now;
+            return;
+        }
+
+        if (runtime.lastReloading) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - runtime.reloadStarted);
+            if (runtime.reloadQualified || elapsed >= kZaryaReloadSuccessMinDuration) {
+                ArmZaryaAmmoProbeBudget(
+                    runtimeKey,
+                    runtime,
+                    now,
+                    leftDown,
+                    rightDown,
+                    static_cast<long long>(elapsed.count()));
+            } else {
+                Diagnostics::Aim("zarya.ammo_probe reload_too_short skill=%s durationMs=%lld",
+                    runtimeKey.c_str(),
+                    static_cast<long long>(elapsed.count()));
+                runtime.budgetArmed = false;
+                runtime.ammo = -1.0;
+                runtime.autoRightThreshold = 0;
+            }
+
+            runtime.lastReloading = false;
+            runtime.reloadStarted = {};
+            runtime.reloadQualified = false;
+            runtime.leftWasDown = leftDown;
+            runtime.rightWasDown = rightDown;
+            runtime.lastObserved = now;
+            return;
+        }
+
+        runtime.lastReloading = false;
+        if (!runtime.budgetArmed) {
+            runtime.leftWasDown = leftDown;
+            runtime.rightWasDown = rightDown;
+            runtime.lastObserved = now;
+            return;
+        }
+
+        if (runtime.lastObserved.time_since_epoch().count() == 0)
+            runtime.lastObserved = now;
+
+        double elapsedSeconds = std::chrono::duration<double>(now - runtime.lastObserved).count();
+        elapsedSeconds = std::clamp(elapsedSeconds, 0.0, 0.25);
+
+        if (runtime.leftWasDown && elapsedSeconds > 0.0) {
+            runtime.ammo -= kZaryaPrimaryAmmoPerSecond * elapsedSeconds;
+        }
+
+        const bool manualRightEdge = !runtime.rightWasDown && rightDown;
+        if (manualRightEdge)
+            runtime.ammo -= kZaryaSecondaryAmmoCost;
+
+        runtime.ammo = std::clamp(runtime.ammo, 0.0, static_cast<double>(kZaryaAmmoClipSize));
+        runtime.lastObserved = now;
+        runtime.leftWasDown = leftDown;
+        runtime.rightWasDown = rightDown;
+
+        LogZaryaAmmoProbeBudget(
+            runtimeKey,
+            runtime,
+            manualRightEdge ? "manual_right" : "",
+            leftDown,
+            rightDown,
+            now);
+
+        const int thresholdAmmo = runtime.autoRightThreshold > 0
+            ? runtime.autoRightThreshold
+            : kZaryaAutoRightThresholdMin;
+        const int triggerAmmo = leftDown
+            ? std::clamp(thresholdAmmo + kZaryaAutoRightThresholdLeadAmmo, 1, kZaryaAmmoClipSize)
+            : thresholdAmmo;
+        if (!runtime.autoRightSent && runtime.ammo <= static_cast<double>(triggerAmmo) && !rightDown) {
+            const std::string pulseKey = runtimeKey + ":auto_right";
+            runtime.autoRightSent = true;
+            const bool releaseLeftDuringPulse = leftDown;
+            const ZaryaAutoRightTiming timing = PickZaryaAutoRightTiming();
+            if (StartZaryaAutoRightPulse(pulseKey, releaseLeftDuringPulse, timing)) {
+                runtime.ammo = std::clamp(
+                    runtime.ammo - kZaryaSecondaryAmmoCost,
+                    0.0,
+                    static_cast<double>(kZaryaAmmoClipSize));
+                MarkActionExecuted(runtimeKey);
+                Diagnostics::Aim("zarya.ammo_probe auto_right skill=%s threshold=%d triggerAmmo=%d xMs=%lld yMs=%lld zMs=%lld releaseLeft=%d ammoAfter=%.1f",
+                    runtimeKey.c_str(),
+                    thresholdAmmo,
+                    triggerAmmo,
+                    static_cast<long long>(timing.rightHold.count()),
+                    static_cast<long long>(timing.leftReleaseDelay.count()),
+                    static_cast<long long>(timing.afterLeftRelease.count()),
+                    releaseLeftDuringPulse ? 1 : 0,
+                    runtime.ammo);
+                LogZaryaAmmoProbeBudget(runtimeKey, runtime, "auto_right", leftDown, true, now);
+            } else {
+                Diagnostics::Aim("zarya.ammo_probe auto_right_skip skill=%s threshold=%d triggerAmmo=%d xMs=%lld yMs=%lld zMs=%lld releaseLeft=%d ammo=%.1f reason=timed_action_active",
+                    runtimeKey.c_str(),
+                    thresholdAmmo,
+                    triggerAmmo,
+                    static_cast<long long>(timing.rightHold.count()),
+                    static_cast<long long>(timing.leftReleaseDelay.count()),
+                    static_cast<long long>(timing.afterLeftRelease.count()),
+                    releaseLeftDuringPulse ? 1 : 0,
+                    runtime.ammo);
+            }
+        }
+    }
+
+    bool IsRuntimeActionDefinition(const HeroSkillDefinition& definition)
+    {
+        const std::string skill = definition.skillId ? definition.skillId : "";
+        return skill == "sleep-dart" ||
+            skill == "chain-hook" ||
+            skill == "rocket-punch" ||
+            skill == "pulse-bomb" ||
+            skill == "recall" ||
+            skill == "wraith-form" ||
+            skill == "transcendence" ||
+            skill == "helix-rockets" ||
+            skill == "sticky-bombs" ||
+            skill == "whip-shot" ||
+            skill == "accretion";
+    }
+
+    bool IsAutoMeleeDefinition(const HeroSkillDefinition& definition)
+    {
+        return std::string(definition.skillId ? definition.skillId : "") == "auto-melee";
+    }
+
+    bool IsDefensiveResponseDefinition(const HeroSkillDefinition& definition)
+    {
+        const std::string skill = definition.skillId ? definition.skillId : "";
+        return skill == "wraith-form" ||
+            skill == "recall" ||
+            skill == "transcendence";
+    }
+
+    bool SkillCooldownReadySentinel(float cooldown)
+    {
+        return std::isfinite(cooldown) && std::fabs(cooldown - 1.0f) <= 0.001f;
+    }
+
+    bool SkillCooldownActive(bool active, float cooldown)
+    {
+        return !active && std::isfinite(cooldown) && cooldown > 0.05f &&
+            !SkillCooldownReadySentinel(cooldown);
+    }
+
+    bool IsInRechargeInterval(const HeroSkillDefinition& definition,
+                              const Config::HeroSkillSettings& settings,
+                              const c_entity& local)
+    {
+        if (!settings.cooldownGuard)
+            return false;
+
+        switch (definition.inputAction) {
+        case HeroSkillInputAction::PrimaryFire:
+            return Config::reloading;
+        case HeroSkillInputAction::Ability1:
+            return SkillCooldownActive(local.skill1act, local.skillcd1);
+        case HeroSkillInputAction::Ability2:
+        case HeroSkillInputAction::SecondaryFire:
+            return SkillCooldownActive(local.skill2act, local.skillcd2);
+        case HeroSkillInputAction::Ultimate:
+            return !std::isfinite(local.ultimate) || local.ultimate < 100.0f;
+        default:
+            return false;
+        }
+    }
+
+    bool IsManualCooldownActive(const std::string& runtimeKey,
+                                const Config::HeroSkillSettings& settings)
+    {
+        if (!std::isfinite(settings.cooldown) || settings.cooldown <= 0.001f)
+            return false;
+
+        const auto item = g_lastActionExecutions.find(runtimeKey);
+        if (item == g_lastActionExecutions.end())
+            return false;
+
+        const auto cooldown = std::chrono::duration<float>(settings.cooldown);
+        return Clock::now() - item->second < cooldown;
+    }
+
+    bool ShouldLogSkillGuard(const std::string& runtimeKey)
+    {
+        Clock::time_point& lastLog = g_lastSkillGuardLogs[runtimeKey];
+        const Clock::time_point now = Clock::now();
+        if (lastLog.time_since_epoch().count() != 0 &&
+            now - lastLog < std::chrono::milliseconds(500)) {
+            return false;
+        }
+        lastLog = now;
+        return true;
+    }
+
+    bool IsSequenceActive(const std::string& runtimeKey)
+    {
+        const auto item = g_sequences.find(runtimeKey);
+        return item != g_sequences.end() && item->second.active;
+    }
+
+    bool IsGenjiComboActive(const std::string& runtimeKey)
+    {
+        const auto item = g_genjiCombos.find(runtimeKey);
+        return item != g_genjiCombos.end() && item->second.active;
+    }
+
+    void RefreshAnyInputSequenceActive()
+    {
+        bool active = false;
+        for (const auto& item : g_sequences) {
+            const SequenceRuntime& runtime = item.second;
+            if (runtime.active || runtime.worker.joinable() || runtime.currentMask != 0) {
+                active = true;
+                break;
+            }
+        }
+        if (!active) {
+            for (const auto& item : g_genjiCombos) {
+                const GenjiComboRuntime& runtime = item.second;
+                if (runtime.active || runtime.rightDown || runtime.shiftDown || runtime.meleeDown) {
+                    active = true;
+                    break;
+                }
+            }
+        }
+        g_anyInputSequenceActive.store(active, std::memory_order_release);
+    }
+
+    bool UsesAsheAmmoBudgetFallback(const std::string& runtimeKey)
+    {
+        static const std::string asheFirePatternKey =
+            std::to_string(static_cast<uint64_t>(eHero::HERO_ASHE)) + ":fire-pattern";
+        return runtimeKey == asheFirePatternKey;
+    }
+
+    int AsheAmmoClipSize()
+    {
+        return 12;
+    }
+
+    int ClampSequenceReserve(int reserveAmmo)
+    {
+        return std::clamp(reserveAmmo, 0, 50);
+    }
+
+    int CountSequenceShotEvents(int previousMask, int nextMask)
+    {
+        const bool previousLeft = (previousMask & 0x01) != 0;
+        const bool previousRight = (previousMask & 0x02) != 0;
+        const bool nextLeft = (nextMask & 0x01) != 0;
+        const bool nextRight = (nextMask & 0x02) != 0;
+
+        const bool hipShot = !previousLeft && nextLeft && !nextRight;
+        const bool scopedReleaseShot = previousLeft && previousRight && !nextLeft && nextRight;
+        return (hipShot ? 1 : 0) + (scopedReleaseShot ? 1 : 0);
+    }
+
+    void ResetSequenceAmmoBudget(const std::string& runtimeKey)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return;
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        SequenceAmmoBudgetState& budget = g_sequenceAmmoBudgets[runtimeKey];
+        budget.remaining = AsheAmmoClipSize();
+        budget.blocked = false;
+    }
+
+    void UpdateSequenceAmmoBudgetReloadState(const std::string& runtimeKey,
+                                             const c_entity& local,
+                                             int reserveAmmo)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return;
+
+        bool reloading = Config::reloading;
+        (void)ReadLocalReloadingFast(local, reloading);
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        SequenceAmmoBudgetState& budget = g_sequenceAmmoBudgets[runtimeKey];
+        budget.reserve = ClampSequenceReserve(reserveAmmo);
+        const bool wasReloading = budget.reloadObserved && budget.lastReloading;
+
+        if (wasReloading && !reloading) {
+            budget.remaining = AsheAmmoClipSize();
+            budget.blocked = false;
+            Diagnostics::Aim("sequence.ammo_budget reload_reset skill=%s remaining=%d reserve=%d",
+                runtimeKey.c_str(),
+                budget.remaining,
+                budget.reserve);
+        }
+
+        budget.lastReloading = reloading;
+        budget.reloadObserved = true;
+    }
+
+    void UpdateSequenceAmmoBudgetFromRead(const std::string& runtimeKey, int reserveAmmo, int ammo)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return;
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        SequenceAmmoBudgetState& budget = g_sequenceAmmoBudgets[runtimeKey];
+        budget.reserve = ClampSequenceReserve(reserveAmmo);
+        if (ammo >= 0) {
+            budget.remaining = ammo;
+            budget.blocked = ammo <= budget.reserve;
+        } else if (budget.remaining < 0) {
+            budget.remaining = AsheAmmoClipSize();
+            budget.blocked = false;
+        }
+    }
+
+    int SequenceAmmoBudgetRemaining(const std::string& runtimeKey)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return -1;
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        const auto item = g_sequenceAmmoBudgets.find(runtimeKey);
+        if (item == g_sequenceAmmoBudgets.end())
+            return -1;
+        return item->second.remaining;
+    }
+
+    bool IsSequenceAmmoBudgetBlocking(const std::string& runtimeKey, int reserveAmmo)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return false;
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        SequenceAmmoBudgetState& budget = g_sequenceAmmoBudgets[runtimeKey];
+        budget.reserve = ClampSequenceReserve(reserveAmmo);
+        if (budget.remaining < 0)
+            budget.remaining = AsheAmmoClipSize();
+        budget.blocked = budget.remaining <= budget.reserve;
+        return budget.blocked;
+    }
+
+    bool ConsumeSequenceAmmoBudgetForStep(const std::string& runtimeKey,
+                                          int previousMask,
+                                          int nextMask,
+                                          bool ammoGuardEnabled,
+                                          int reserveAmmo)
+    {
+        if (!UsesAsheAmmoBudgetFallback(runtimeKey))
+            return false;
+
+        const int shotEvents = CountSequenceShotEvents(previousMask, nextMask);
+        if (shotEvents <= 0)
+            return false;
+
+        std::lock_guard<std::mutex> lock(g_sequenceAmmoBudgetMutex);
+        SequenceAmmoBudgetState& budget = g_sequenceAmmoBudgets[runtimeKey];
+        budget.reserve = ClampSequenceReserve(reserveAmmo);
+        if (budget.remaining < 0)
+            budget.remaining = AsheAmmoClipSize();
+
+        if (ammoGuardEnabled && budget.remaining <= budget.reserve) {
+            budget.blocked = true;
+            Diagnostics::Aim("sequence.ammo_budget block skill=%s remaining=%d reserve=%d shotEvents=%d",
+                runtimeKey.c_str(),
+                budget.remaining,
+                budget.reserve,
+                shotEvents);
+            return true;
+        }
+
+        budget.remaining = (std::max)(0, budget.remaining - shotEvents);
+        budget.blocked = ammoGuardEnabled && budget.remaining <= budget.reserve;
+        Diagnostics::Aim("sequence.ammo_budget consume skill=%s remaining=%d reserve=%d shotEvents=%d blocked=%d enabled=%d",
+            runtimeKey.c_str(),
+            budget.remaining,
+            budget.reserve,
+            shotEvents,
+            budget.blocked ? 1 : 0,
+            ammoGuardEnabled ? 1 : 0);
+        return false;
+    }
+
+    int RoundedAmmoValue(float value)
+    {
+        if (!std::isfinite(value) || value < 0.0f || value > 300.0f)
+            return -1;
+        if (value > 0.0f && value < 0.01f)
+            return -1;
+        return static_cast<int>(std::lround(value));
+    }
+
+    bool IsClipAmmoCandidate(int value)
+    {
+        return value >= 0 && value <= AsheAmmoClipSize();
+    }
+
+    int ReadRawSkillListAmmoValue(uint64_t skillBase, uint16_t wantedId)
+    {
+        if (!SDK || !skillBase)
+            return -1;
+
+        __try {
+            const uint64_t skillContainer = SDK->RPM<uint64_t>(skillBase + 0x1848);
+            if (!skillContainer)
+                return -1;
+
+            const uint64_t rawList = SDK->RPM<uint64_t>(skillContainer + 0x10);
+            const uint32_t rawSize = SDK->RPM<uint32_t>(skillContainer + 0x18);
+            if (!rawList || rawSize == 0 || rawSize > 512)
+                return -1;
+
+            constexpr int kOffsets[] = { 0x30, 0x34, 0x38, 0x3C, 0x40, 0x48, 0x50, 0x60 };
+            int zeroCandidate = -1;
+            for (uint32_t index = 0; index < rawSize; ++index) {
+                const uint64_t entry = rawList + static_cast<uint64_t>(index) * 0x80;
+                if (SDK->RPM<uint16_t>(entry) != wantedId)
+                    continue;
+
+                for (const int offset : kOffsets) {
+                    const int floatValue = RoundedAmmoValue(SDK->RPM<float>(entry + offset));
+                    if (IsClipAmmoCandidate(floatValue)) {
+                        if (floatValue > 0)
+                            return floatValue;
+                        zeroCandidate = 0;
+                    }
+
+                    const int intValue = SDK->RPM<int>(entry + offset);
+                    if (IsClipAmmoCandidate(intValue)) {
+                        if (intValue > 0)
+                            return intValue;
+                        zeroCandidate = 0;
+                    }
+                }
+            }
+            return zeroCandidate;
+        } __except (1) {
+            return -1;
+        }
+    }
+
+    AmmoGuardSample TryReadLocalAmmoRemaining(const c_entity& local)
+    {
+        AmmoGuardSample sample{};
+        sample.skillBase = local.SkillBase;
+        sample.heroId = local.HeroID;
+        if (!local.SkillBase)
+            return sample;
+
+        const uint64_t base = local.SkillBase + 0x40;
+        sample.stateAmmo = OW::readammo(base, 0, kStateScriptAmmo);
+        sample.reserveAmmoPath = OW::readammo(base, 0x0B, kStateScriptAmmo);
+        sample.reserveState = OW::readammo(base, 0, 0x0B);
+        sample.rawStateAmmo = ReadRawSkillListAmmoValue(local.SkillBase, kStateScriptAmmo);
+        sample.rawReserveState = ReadRawSkillListAmmoValue(local.SkillBase, 0x0B);
+
+        const int candidates[] = {
+            sample.stateAmmo,
+            sample.reserveAmmoPath,
+            sample.reserveState,
+            sample.rawStateAmmo,
+            sample.rawReserveState,
+        };
+
+        for (size_t index = 0; index < std::size(candidates); ++index) {
+            const int candidate = candidates[index];
+            if (candidate >= 0 && candidate <= 12) {
+                sample.ammo = candidate;
+                sample.source = static_cast<int>(index) + 1;
+                return sample;
+            }
+        }
+
+        for (size_t index = 0; index < std::size(candidates); ++index) {
+            const int candidate = candidates[index];
+            if (candidate >= 0) {
+                sample.ammo = candidate;
+                sample.source = static_cast<int>(index) + 1;
+                return sample;
+            }
+        }
+
+        return sample;
+    }
+
+    void LogAmmoGuardSample(const std::string& runtimeKey,
+                            const AmmoGuardSample& sample,
+                            int reserveAmmo,
+                            bool blocking)
+    {
+        AmmoGuardLogState& state = g_lastAmmoGuardSamples[runtimeKey];
+        const Clock::time_point now = Clock::now();
+        const bool changed =
+            state.ammo != sample.ammo ||
+            state.stateAmmo != sample.stateAmmo ||
+            state.reserveAmmoPath != sample.reserveAmmoPath ||
+            state.reserveState != sample.reserveState ||
+            state.rawStateAmmo != sample.rawStateAmmo ||
+            state.rawReserveState != sample.rawReserveState ||
+            state.budgetAmmo != sample.budgetAmmo ||
+            state.source != sample.source;
+        const bool periodic = state.lastLog.time_since_epoch().count() == 0 ||
+            now - state.lastLog >= std::chrono::milliseconds(500);
+
+        if (!changed && !blocking && !periodic)
+            return;
+
+        state.ammo = sample.ammo;
+        state.stateAmmo = sample.stateAmmo;
+        state.reserveAmmoPath = sample.reserveAmmoPath;
+        state.reserveState = sample.reserveState;
+        state.rawStateAmmo = sample.rawStateAmmo;
+        state.rawReserveState = sample.rawReserveState;
+        state.budgetAmmo = sample.budgetAmmo;
+        state.source = sample.source;
+        state.lastLog = now;
+
+        Diagnostics::Aim("sequence.ammo_guard skill=%s ammo=%d reserve=%d blocking=%d source=%d stateAmmo=%d reserveAmmoPath=%d reserveState=%d rawStateAmmo=%d rawReserveState=%d budgetAmmo=%d hero=0x%llX skillBase=0x%llX",
+            runtimeKey.c_str(),
+            sample.ammo,
+            reserveAmmo,
+            blocking ? 1 : 0,
+            sample.source,
+            sample.stateAmmo,
+            sample.reserveAmmoPath,
+            sample.reserveState,
+            sample.rawStateAmmo,
+            sample.rawReserveState,
+            sample.budgetAmmo,
+            static_cast<unsigned long long>(sample.heroId),
+            static_cast<unsigned long long>(sample.skillBase));
+    }
+
+    bool IsAmmoGuardBlocking(const std::string& runtimeKey,
+                             const Config::HeroSkillSettings& settings,
+                             const c_entity& local)
+    {
+        if (!settings.ammoGuard)
+            return false;
+
+        const int reserveAmmo = std::clamp(settings.ammoGuardReserve, 0, 50);
+        AmmoGuardSample sample = TryReadLocalAmmoRemaining(local);
+        UpdateSequenceAmmoBudgetFromRead(runtimeKey, reserveAmmo, sample.ammo);
+
+        if (sample.ammo < 0 && UsesAsheAmmoBudgetFallback(runtimeKey)) {
+            sample.budgetAmmo = SequenceAmmoBudgetRemaining(runtimeKey);
+            sample.ammo = sample.budgetAmmo;
+            sample.source = 6;
+        }
+
+        const bool blocking = sample.ammo >= 0 &&
+            (sample.ammo <= reserveAmmo || IsSequenceAmmoBudgetBlocking(runtimeKey, reserveAmmo));
+        LogAmmoGuardSample(runtimeKey, sample, reserveAmmo, blocking);
+
+        if (sample.ammo < 0)
+            return false;
+
+        if (!blocking)
+            return false;
+
+        return true;
+    }
+
+    bool AdvanceSkillAimSession(const std::string& runtimeKey,
+                                bool held,
+                                float maxAimTimeMs)
+    {
+        SkillAimSessionRuntime& runtime = g_skillAimSessions[runtimeKey];
+        if (!held) {
+            runtime = {};
+            return false;
+        }
+        if (runtime.blockedUntilRelease)
+            return false;
+
+        const Clock::time_point now = Clock::now();
+        if (!runtime.active) {
+            runtime.active = true;
+            runtime.started = now;
+        }
+
+        const float limitMs = std::clamp(
+            std::isfinite(maxAimTimeMs) ? maxAimTimeMs : 650.0f,
+            0.0f,
+            5000.0f);
+        if (limitMs <= 0.0f)
+            return true;
+
+        const float elapsedMs = static_cast<float>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - runtime.started).count()) /
+            1000.0f;
+        if (elapsedMs <= limitMs)
+            return true;
+
+        runtime.active = false;
+        runtime.blockedUntilRelease = true;
+        Diagnostics::Aim(
+            "skill.aim_timeout skill=%s elapsedMs=%.3f limitMs=%.3f blockedUntilRelease=1",
+            runtimeKey.c_str(),
+            elapsedMs,
+            limitMs);
+        return false;
+    }
+
+    bool EvaluateTrajectoryAction(const std::string& runtimeKey,
+                                   const HeroSkillDefinition& definition,
+                                   const Config::HeroSkillSettings& settings,
+                                   const TrajectoryParams& params)
+    {
+        const bool held = IsActivationKeyHeld(settings.key);
+        if (SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
+            if (!AdvanceSkillAimSession(runtimeKey, held, settings.maxAimTimeMs))
+                return false;
+        } else if (!held) {
+            return false;
+        }
+
+        if (SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
+            const SkillProjectileRuntime projectile =
+                ResolveSkillProjectileRuntime(settings, params);
+            ScopedTrackingConfig trackingOverride(settings.tracking);
+            const SkillAimCandidate candidate = FindBestSkillAimCandidate(settings, projectile);
+            if (!candidate.valid)
+                return false;
+
+            if (!MoveSkillAimAndCheckReady(runtimeKey, settings, candidate, projectile))
+                return false;
+
+            if (IsActionDebounced(runtimeKey))
+                return false;
+
+            const int vk = SkillOutputVk(settings);
+            if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+                return false;
+
+            MarkActionExecuted(runtimeKey);
+            g_skillAimSessions.erase(runtimeKey);
+            Diagnostics::Info("Hero skill aimed trajectory fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f fovScore=%.2f hitWindow=%.3f projectileSpeed=%.1f preFireMs=%.1f vk=%d",
+                definition.skillId ? definition.skillId : "",
+                candidate.entityIndex,
+                candidate.distance,
+                candidate.vitalityPercent,
+                candidate.fovScore,
+                candidate.hitWindow,
+                projectile.speed,
+                projectile.preFireDelayMs,
+                vk);
+            return true;
+        }
+
+        const float effectiveRange = settings.distance > 0.0f
+            ? (std::min)(settings.distance, params.maxRange)
+            : params.maxRange;
+
+        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
+        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
+            return false;
+
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        const Vector3 source = SourcePositionForAction(local);
+        Vector3 targetPosition = candidate.position;
+        if (settings.prediction) {
+            targetPosition = ComputePredictedPosition(
+                candidate.position,
+                candidate.velocity,
+                source,
+                params.speed,
+                params.gravity);
+        }
+
+        if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
+            return false;
+
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill trajectory action fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f offset=%.2f",
+            definition.skillId ? definition.skillId : "",
+            candidate.entityIndex,
+            candidate.distance,
+            candidate.vitalityPercent,
+            candidate.angularOffset);
+        return true;
+    }
+
+    bool EvaluateAutoMeleeAction(const std::string& runtimeKey,
+                                 const HeroSkillDefinition& definition,
+                                 const Config::HeroSkillSettings& settings)
+    {
+        const SkillAimCandidate candidate = FindBestAutoMeleeCandidate(settings);
+        if (!candidate.valid || IsActionDebounced(runtimeKey))
+            return false;
+
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill auto melee fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f fovScore=%.2f bone=%d hitWindow=%.3f vk=%d",
+            definition.skillId ? definition.skillId : "",
+            candidate.entityIndex,
+            candidate.distance,
+            candidate.vitalityPercent,
+            candidate.fovScore,
+            candidate.boneId,
+            candidate.hitWindow,
+            vk);
+        return true;
+    }
+
+    bool EvaluateChargeReleaseAction(const std::string& runtimeKey,
+                                     const HeroSkillDefinition& definition,
+                                     const Config::HeroSkillSettings& settings)
+    {
+        if (!IsActivationKeyHeld(settings.key))
+            return false;
+
+        const float effectiveRange = settings.distance > 0.0f
+            ? (std::min)(settings.distance, 20.0f)
+            : 20.0f;
+        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
+        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
+            return false;
+
+        const float chargeScale = std::clamp(candidate.distance / effectiveRange, 0.0f, 1.0f);
+        const int chargeMs = std::clamp(static_cast<int>(chargeScale * 1000.0f), 200, 1000);
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, std::chrono::milliseconds(chargeMs)))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill charge-release action fired. skill=%s targetIndex=%d distance=%.2f holdMs=%d",
+            definition.skillId ? definition.skillId : "",
+            candidate.entityIndex,
+            candidate.distance,
+            chargeMs);
+        return true;
+    }
+
+    bool EvaluateHealthThresholdAction(const std::string& runtimeKey,
+                                       const HeroSkillDefinition& definition,
+                                       const Config::HeroSkillSettings& settings,
+                                       const c_entity& local)
+    {
+        if (!std::isfinite(local.PlayerHealth) || local.PlayerHealth <= 0.0f)
+            return false;
+
+        const bool absolute = SkillControls(definition, HeroSkillControls::HealthAbsolute);
+        const float currentHealth = absolute ? local.PlayerHealth : VitalityPercent(local);
+        if (currentHealth > settings.healthThreshold || IsActionDebounced(runtimeKey))
+            return false;
+
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill health-threshold action fired. skill=%s health=%.1f threshold=%.1f absolute=%d vk=%d",
+            definition.skillId ? definition.skillId : "",
+            currentHealth,
+            settings.healthThreshold,
+            absolute ? 1 : 0,
+            vk);
+        return true;
+    }
+
+    bool IsThreatSkillActiveForDefensiveResponse(const std::string& skillId, const c_entity& entity)
+    {
+        if (skillId == "wraith-form" || skillId == "recall") {
+            return (entity.HeroID == eHero::HERO_ANA && entity.skill1act) ||
+                (entity.HeroID == eHero::HERO_ROADHOG && entity.skill1act) ||
+                (entity.HeroID == eHero::HERO_SIGMA && entity.skill2act) ||
+                (entity.HeroID == eHero::HERO_BRIGITTE && entity.skill1act);
+        }
+
+        if (skillId == "transcendence") {
+            const bool threatHero =
+                entity.HeroID == eHero::HERO_SOMBRA ||
+                entity.HeroID == eHero::HERO_REINHARDT;
+            return threatHero && std::isfinite(entity.ultimate) && entity.ultimate >= 99.0f;
+        }
+
+        return false;
+    }
+
+    bool IsEnemyFacingLocalHorizontal(const c_entity& enemy,
+                                      const c_entity& local,
+                                      float coneAngleDeg = 25.0f)
+    {
+        const Vector3 enemyPoint = CandidatePositionForAction(enemy);
+        Vector3 localPoint = CandidatePositionForAction(local);
+        if (!IsUsablePosition(localPoint))
+            localPoint = SourcePositionForAction(local);
+        if (!IsUsablePosition(enemyPoint) || !IsUsablePosition(localPoint))
+            return false;
+
+        Vector3 toLocal = localPoint - enemyPoint;
+        toLocal.Y = 0.0f;
+        const float toLocalLength = toLocal.Size();
+        if (!std::isfinite(toLocalLength) || toLocalLength <= 0.0001f)
+            return false;
+        toLocal = toLocal / toLocalLength;
+
+        Vector3 enemyForward(std::sin(enemy.Rot.X), 0.0f, std::cos(enemy.Rot.X));
+        const float forwardLength = enemyForward.Size();
+        if (!std::isfinite(forwardLength) || forwardLength <= 0.0001f)
+            return false;
+        enemyForward = enemyForward / forwardLength;
+
+        const float dot = std::clamp(enemyForward | toLocal, -1.0f, 1.0f);
+        const float threshold = std::cos(std::clamp(coneAngleDeg, 1.0f, 90.0f) * kDegToRad);
+        return dot >= threshold;
+    }
+
+    bool FindDefensiveThreatCandidate(const std::string& skillId,
+                                      const Config::HeroSkillSettings& settings,
+                                      const c_entity& local,
+                                      SkillAimCandidate& outCandidate)
+    {
+        const float effectiveRange = settings.distance;
+        if (!std::isfinite(effectiveRange) || effectiveRange <= 0.0f)
+            return false;
+
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source))
+            return false;
+
+        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
+        float bestDistance = (std::numeric_limits<float>::max)();
+        for (size_t index = 0; index < snapshot.size(); ++index) {
+            c_entity entity = snapshot[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
+                continue;
+            if (!entity.Vis)
+                continue;
+            if (!IsThreatSkillActiveForDefensiveResponse(skillId, entity))
+                continue;
+            if ((skillId == "wraith-form" || skillId == "recall") &&
+                !IsEnemyFacingLocalHorizontal(entity, local)) {
+                continue;
+            }
+
+            const Vector3 position = CandidatePositionForAction(entity);
+            if (!IsUsablePosition(position))
+                continue;
+
+            const float distance = source.DistTo(position);
+            if (!std::isfinite(distance) || distance > effectiveRange)
+                continue;
+
+            if (distance < bestDistance) {
+                outCandidate = {};
+                outCandidate.valid = true;
+                outCandidate.entity = entity;
+                outCandidate.entityIndex = static_cast<int>(index);
+                outCandidate.entityKey = entity.address ? entity.address : entity.LinkBase;
+                outCandidate.distance = distance;
+                outCandidate.vitalityPercent = VitalityPercent(entity);
+                outCandidate.rawAimPoint = position;
+                outCandidate.aimPoint = position;
+                bestDistance = distance;
+            }
+        }
+
+        return outCandidate.valid;
+    }
+
+    bool EvaluateDefensiveResponseAction(const std::string& runtimeKey,
+                                         const HeroSkillDefinition& definition,
+                                         const Config::HeroSkillSettings& settings,
+                                         const c_entity& local)
+    {
+        if (IsActionDebounced(runtimeKey))
+            return false;
+
+        const std::string skillId = definition.skillId ? definition.skillId : "";
+        bool healthTrigger = false;
+        if (SkillControls(definition, HeroSkillControls::HealthAbsolute) ||
+            SkillControls(definition, HeroSkillControls::HealthThreshold)) {
+            if (std::isfinite(local.PlayerHealth) && local.PlayerHealth > 0.0f) {
+                const bool absolute = SkillControls(definition, HeroSkillControls::HealthAbsolute);
+                const float currentHealth = absolute ? local.PlayerHealth : VitalityPercent(local);
+                healthTrigger = currentHealth <= settings.healthThreshold;
+            }
+        }
+
+        SkillAimCandidate threat{};
+        const bool threatTrigger = FindDefensiveThreatCandidate(skillId, settings, local, threat);
+        if (!healthTrigger && !threatTrigger)
+            return false;
+
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill defensive response fired. skill=%s reason=%s targetIndex=%d hero=0x%llX distance=%.2f localHp=%.1f threshold=%.1f vk=%d",
+            skillId.c_str(),
+            healthTrigger ? "health" : "threat",
+            threat.valid ? threat.entityIndex : -1,
+            threat.valid ? static_cast<unsigned long long>(threat.entity.HeroID) : 0ull,
+            threat.valid ? threat.distance : 0.0f,
+            local.PlayerHealth,
+            settings.healthThreshold,
+            vk);
+        return true;
+    }
+
+    bool EvaluateChargedConditionAction(const std::string& runtimeKey,
+                                        const HeroSkillDefinition& definition,
+                                        const Config::HeroSkillSettings& settings)
+    {
+        if (!IsActivationKeyHeld(settings.key))
+            return false;
+
+        const c_entity local = TargetingDetail::SnapshotLocalEntity();
+        if (!std::isfinite(local.ultimate) || local.ultimate < 100.0f)
+            return false;
+
+        const TrajectoryParams params = GetTrajectoryParams(definition.skillId);
+        const float effectiveRange = settings.distance > 0.0f
+            ? (std::min)(settings.distance, params.maxRange)
+            : params.maxRange;
+        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
+        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
+            return false;
+
+        const Vector3 source = SourcePositionForAction(local);
+        Vector3 targetPosition = candidate.position;
+        if (settings.prediction) {
+            targetPosition = ComputePredictedPosition(
+                candidate.position,
+                candidate.velocity,
+                source,
+                params.speed,
+                params.gravity);
+        }
+        if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
+            return false;
+
+        const int vk = SkillOutputVk(settings);
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+            return false;
+
+        MarkActionExecuted(runtimeKey);
+        Diagnostics::Info("Hero skill charged-condition action fired. skill=%s targetIndex=%d distance=%.2f ultimate=%.1f",
+            definition.skillId ? definition.skillId : "",
+            candidate.entityIndex,
+            candidate.distance,
+            local.ultimate);
+        return true;
+    }
+
+    void CancelSkill(const std::string& skillId, bool cancelTimedAction)
+    {
+        if (cancelTimedAction) {
+            (void)TimedOutputScheduler().Cancel(skillId);
+            (void)TimedOutputScheduler().Cancel(skillId + ":auto_right");
+        }
+
+        auto sequence = g_sequences.find(skillId);
+        if (sequence != g_sequences.end())
+            CancelSequence(skillId, sequence->second, "disabled_or_inactive");
+
+        auto genjiCombo = g_genjiCombos.find(skillId);
+        if (genjiCombo != g_genjiCombos.end() &&
+            (genjiCombo->second.active || genjiCombo->second.rightDown ||
+             genjiCombo->second.shiftDown || genjiCombo->second.meleeDown)) {
+            FinishGenjiCombo(skillId, genjiCombo->second, "disabled_or_inactive", false);
+        }
+
+        auto viewpoint = g_viewpoints.find(skillId);
+        if (viewpoint != g_viewpoints.end())
+            CancelViewpoint(skillId, viewpoint->second, "disabled_or_inactive");
+
+        g_lastActionExecutions.erase(skillId);
+        g_lastSkillGuardLogs.erase(skillId);
+        g_lastAmmoGuardSamples.erase(skillId);
+        g_zaryaAmmoProbes.erase(skillId);
+        g_skillAimSessions.erase(skillId);
+    }
+
+    std::string RuntimeSkillKey(uint64_t heroId, const char* skillId)
+    {
+        return std::to_string(heroId) + ":" + (skillId ? skillId : "");
+    }
+
+} // namespace
+
+bool AnyInputSequenceActive()
+{
+    return g_anyInputSequenceActive.load(std::memory_order_acquire);
+}
+
+bool AnyInputSequenceActivationHeld()
+{
+    return g_anyInputSequenceActivationHeld.load(std::memory_order_acquire);
+}
+
+ExecutionToken ActiveInputSequenceToken()
+{
+    return MakeExecutionToken(ExecutionSource::SequenceInternal, AnyInputSequenceActive());
+}
+
+bool ShouldBlockForActiveSequence(ExecutionSource requester)
+{
+    if (requester == ExecutionSource::SequenceInternal)
+        return false;
+
+    const bool sequenceClaimsExecution = HeroSkillDetail::SequenceClaimsExecution(
+        AnyInputSequenceActive(),
+        AnyInputSequenceActivationHeld(),
+        requester);
+    return ShouldYieldToExecution(
+        MakeExecutionToken(requester),
+        MakeExecutionToken(ExecutionSource::SequenceInternal, sequenceClaimsExecution));
+}
+
+void RunInputSequence(const std::string& skillId,
+                      const std::vector<Config::HeroSkillSequenceStep>& steps,
+                      int key,
+                      const Config::HeroSkillTrackingParams& trackingParams,
+                      bool prediction,
+                      const Config::HeroSkillSettings& phaseSettings,
+                      bool ammoGuardEnabled,
+                      int ammoGuardReserve)
+{
+    SequenceRuntime& runtime = g_sequences[skillId];
+    const bool held = IsActivationKeyHeld(key);
+    const bool useWorker = UseSequenceWorker();
+
+    if (useWorker && runtime.active && runtime.workerCompletion) {
+        const SequenceWorkerExitReason exitReason =
+            runtime.workerCompletion->reason.load(std::memory_order_acquire);
+        if (exitReason != SequenceWorkerExitReason::Running) {
+            const char* reason = SequenceWorkerExitReasonName(exitReason);
+            if (HeroSkillDetail::SequenceWorkerExitRequiresRelease(exitReason)) {
+                CancelSequenceAndBlockUntilRelease(skillId, runtime, reason);
+            } else {
+                CancelSequence(skillId, runtime, reason);
+            }
+            return;
+        }
+    }
+
+    const bool wasRearmBlocked = runtime.rearmBlockedUntilRelease;
+    if (!HeroSkillDetail::AdvanceSequenceRearmGate(
+            runtime.rearmBlockedUntilRelease, held)) {
+        if (wasRearmBlocked && !runtime.rearmBlockedUntilRelease) {
+            Diagnostics::Info(
+                "Hero skill sequence rearmed after activation release. skill=%s",
+                skillId.c_str());
+        }
+        return;
+    }
+
+    if (!held || steps.empty()) {
+        if (runtime.active)
+            CancelSequence(skillId, runtime, held ? "empty_steps" : "activation_released");
+        return;
+    }
+
+    if (!runtime.active) {
+        runtime.active = true;
+        runtime.stepIndex = 0;
+        runtime.currentMask = 0;
+        runtime.stepStarted = Clock::now();
+        runtime.effectiveDurationMs = PickSequenceDurationMs(steps.front());
+        g_anyInputSequenceActive.store(true, std::memory_order_release);
+        MarkActionExecuted(skillId);
+
+        if (useWorker) {
+            const OutputRuntimeState workerRuntime =
+                CurrentOutputRuntimeState();
+            if (!HeroSkillDetail::SequenceWorkerRuntimeMatches(
+                    workerRuntime.backendGeneration,
+                    workerRuntime.backendGeneration,
+                    workerRuntime.outputGateOpen)) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "runtime_unavailable");
+                return;
+            }
+            runtime.workerCompletion = std::make_shared<SequenceWorkerCompletion>();
+            runtime.worker = std::jthread(RunSequenceWorker,
+                skillId,
+                std::vector<Config::HeroSkillSequenceStep>(steps.begin(), steps.end()),
+                ammoGuardEnabled,
+                ammoGuardReserve,
+                workerRuntime.backendGeneration,
+                runtime.workerCompletion);
+        } else {
+            if (ConsumeSequenceAmmoBudgetForStep(
+                    skillId, runtime.currentMask, steps.front().buttonMask, ammoGuardEnabled, ammoGuardReserve)) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "ammo_guard_budget");
+                return;
+            }
+            const int previousMask = runtime.currentMask;
+            if (!EnterSequenceStep(skillId, runtime.currentMask, steps.front())) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "output_failed");
+                return;
+            }
+            if (SequenceShotEdge(previousMask, steps.front().buttonMask))
+                runtime.lastShotStarted = runtime.stepStarted;
+        }
+
+        Diagnostics::Info("Hero skill sequence started. skill=%s steps=%zu activationKey=%d",
+            skillId.c_str(), steps.size(), key);
+
+        if (SequenceDiagnosticsEnabled() && !useWorker) {
+            const Config::HeroSkillSequenceStep& step = steps.front();
+            Diagnostics::Aim("sequence.step skill=%s step=%zu mask=0x%02X durationMs=%d baseMs=%d scale=%.3f jitterMs=%d",
+                skillId.c_str(),
+                runtime.stepIndex + 1,
+                step.buttonMask,
+                runtime.effectiveDurationMs,
+                step.durationMs,
+                step.speedScale,
+                step.jitterMs);
+        }
+    } else if (!useWorker) {
+        if (runtime.stepIndex >= steps.size()) {
+            runtime.stepIndex = 0;
+            runtime.stepStarted = Clock::now();
+            runtime.effectiveDurationMs = PickSequenceDurationMs(steps.front());
+            if (ConsumeSequenceAmmoBudgetForStep(
+                    skillId, runtime.currentMask, steps.front().buttonMask, ammoGuardEnabled, ammoGuardReserve)) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "ammo_guard_budget");
+                return;
+            }
+            const int previousMask = runtime.currentMask;
+            if (!EnterSequenceStep(skillId, runtime.currentMask, steps.front())) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "output_failed");
+                return;
+            }
+            if (SequenceShotEdge(previousMask, steps.front().buttonMask))
+                runtime.lastShotStarted = runtime.stepStarted;
+        }
+
+        const Clock::time_point now = Clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - runtime.stepStarted);
+        if (elapsed.count() >= runtime.effectiveDurationMs) {
+            runtime.stepIndex = (runtime.stepIndex + 1) % steps.size();
+            const Config::HeroSkillSequenceStep& nextStep = steps[runtime.stepIndex];
+            runtime.stepStarted = now;
+            runtime.effectiveDurationMs = PickSequenceDurationMs(nextStep);
+            if (ConsumeSequenceAmmoBudgetForStep(
+                    skillId, runtime.currentMask, nextStep.buttonMask, ammoGuardEnabled, ammoGuardReserve)) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "ammo_guard_budget");
+                return;
+            }
+            const int previousMask = runtime.currentMask;
+            if (!EnterSequenceStep(skillId, runtime.currentMask, nextStep)) {
+                CancelSequenceAndBlockUntilRelease(
+                    skillId, runtime, "output_failed");
+                return;
+            }
+            if (SequenceShotEdge(previousMask, nextStep.buttonMask))
+                runtime.lastShotStarted = runtime.stepStarted;
+
+            if (SequenceDiagnosticsEnabled()) {
+                Diagnostics::Aim("sequence.step skill=%s step=%zu mask=0x%02X durationMs=%d baseMs=%d scale=%.3f jitterMs=%d",
+                    skillId.c_str(),
+                    runtime.stepIndex + 1,
+                    nextStep.buttonMask,
+                    runtime.effectiveDurationMs,
+                    nextStep.durationMs,
+                    nextStep.speedScale,
+                    nextStep.jitterMs);
+            }
+        }
+    }
+
+    size_t phaseStepIndex = runtime.stepIndex;
+    Clock::time_point phaseStepStarted = runtime.stepStarted;
+    int phaseStepDurationMs = runtime.effectiveDurationMs;
+    Clock::time_point phaseLastShotStarted = runtime.lastShotStarted;
+    if (useWorker && runtime.workerCompletion) {
+        phaseStepIndex = runtime.workerCompletion->stepIndex.load(std::memory_order_acquire);
+        phaseStepStarted = SequenceClockFromMilliseconds(
+            runtime.workerCompletion->stepStartedMs.load(std::memory_order_acquire));
+        phaseStepDurationMs = runtime.workerCompletion->stepDurationMs.load(std::memory_order_acquire);
+        phaseLastShotStarted = SequenceClockFromMilliseconds(
+            runtime.workerCompletion->lastShotStartedMs.load(std::memory_order_acquire));
+    }
+    if (phaseStepDurationMs <= 0 && !steps.empty())
+        phaseStepDurationMs = NominalSequenceDurationMs(steps[phaseStepIndex % steps.size()]);
+
+    const AimFirePhase::Phase trackingPhase = ResolveSequenceTrackingPhase(
+        steps,
+        phaseSettings,
+        phaseStepIndex,
+        phaseStepStarted,
+        phaseStepDurationMs,
+        phaseLastShotStarted);
+    RunTrackingOverlayTick(skillId, trackingParams, prediction, trackingPhase);
+    UpdateSequenceHitTiming(skillId, runtime);
+}
+
+HeroSkillRunState RunViewpointController(const std::string& skillId,
+                                         const Config::HeroSkillSettings& params)
+{
+    ViewpointRuntime& runtime = g_viewpoints[skillId];
+    const bool keyDown = IsActivationKeyHeld(params.key);
+
+    if (!RuntimeWorkersRunning()) {
+        CancelViewpoint(skillId, runtime, "runtime_stopped");
+        runtime.prevKeyDown = keyDown;
+        return HeroSkillRunState::Cancelled;
+    }
+
+    const bool active = runtime.phase == ViewpointPhase::PitchDown ||
+        runtime.phase == ViewpointPhase::PitchUp;
+    if (!active && keyDown && !runtime.prevKeyDown)
+        BeginViewpoint(skillId, runtime, params);
+
+    runtime.prevKeyDown = keyDown;
+
+    const Clock::time_point now = Clock::now();
+    UpdateViewpointPulses(skillId, runtime, now);
+
+    switch (runtime.phase) {
+    case ViewpointPhase::Idle:
+    case ViewpointPhase::Completed:
+        return HeroSkillRunState::Completed;
+    case ViewpointPhase::Cancelled:
+        return HeroSkillRunState::Cancelled;
+    case ViewpointPhase::PitchDown: {
+        const float dt = DeltaSeconds(runtime, now);
+        const float targetPitch = ClampViewPitchTarget(
+            std::clamp(params.pitchDownTargetAngle, 0.0f, 180.0f) * kDegToRad);
+        LogViewpointTick(skillId, runtime, targetPitch, runtime.initialAngles.Y, runtime.pitchDownSpeedDeg, dt, now);
+        const bool pitchDone = MovePitchToward(targetPitch, runtime.pitchDownSpeedDeg, dt);
+
+        Vector3 current{};
+        const bool haveCurrent = TryReadCurrentViewAngles(current);
+        const bool nearFloor = haveCurrent && current.X >= kViewpointFloorReadyPitchRad;
+        if (nearFloor) {
+            if (runtime.floorReadyStarted.time_since_epoch().count() == 0)
+                runtime.floorReadyStarted = now;
+        } else {
+            runtime.floorReadyStarted = {};
+        }
+
+        const bool floorSettled = nearFloor && now - runtime.floorReadyStarted >= kViewpointFloorSettle;
+        if (pitchDone || floorSettled) {
+            Diagnostics::Info("Hero skill viewpoint pitch down reached. skill=%s targetPitch=%.2f currentPitch=%.2f settled=%d",
+                skillId.c_str(),
+                targetPitch * kRadToDeg,
+                haveCurrent ? current.X * kRadToDeg : 0.0f,
+                floorSettled ? 1 : 0);
+            if (!BeginSecondaryPulse(skillId, runtime, now)) {
+                CancelViewpoint(skillId, runtime, "secondary_output_failed");
+                return HeroSkillRunState::Cancelled;
+            }
+            runtime.phase = ViewpointPhase::PitchUp;
+            runtime.phaseStarted = now;
+            runtime.lastTick = runtime.phaseStarted;
+            runtime.lastDebugLog = {};
+            runtime.floorReadyStarted = {};
+        }
+        break;
+    }
+    case ViewpointPhase::PitchUp: {
+        const float dt = DeltaSeconds(runtime, now);
+        const float downTargetPitch = ClampViewPitchTarget(
+            std::clamp(params.pitchDownTargetAngle, 0.0f, 180.0f) * kDegToRad);
+        if (!runtime.fired) {
+            LogViewpointTick(skillId, runtime, downTargetPitch, runtime.initialAngles.Y, runtime.pitchDownSpeedDeg, dt, now);
+            MovePitchToward(downTargetPitch, runtime.pitchDownSpeedDeg, dt);
+            break;
+        }
+
+        const int fireDelayMs = std::clamp(params.fireDelayMs, 0, 100);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - runtime.fireDelayStarted);
+        if (!runtime.jumped && elapsed.count() < fireDelayMs) {
+            LogViewpointTick(skillId, runtime, downTargetPitch, runtime.initialAngles.Y, runtime.pitchDownSpeedDeg, dt, now);
+            MovePitchToward(downTargetPitch, runtime.pitchDownSpeedDeg, dt);
+            break;
+        }
+
+        if (!runtime.jumped) {
+            Vector3 verifiedAngles{};
+            if (TryReadCurrentViewAngles(verifiedAngles)) {
+                if (runtime.jumpVk > 0 && !BeginKeyboardPulse(skillId, runtime, runtime.jumpVk, now)) {
+                    Diagnostics::Warn("Hero skill keyboard pulse failed. skill=%s vk=%d",
+                        skillId.c_str(), runtime.jumpVk);
+                    CancelViewpoint(skillId, runtime, "jump_output_failed");
+                    return HeroSkillRunState::Cancelled;
+                }
+                runtime.jumped = true;
+                Diagnostics::Info("Hero skill viewpoint jump gate passed. skill=%s pitch=%.2f yaw=%.2f elapsedMs=%lld",
+                    skillId.c_str(),
+                    verifiedAngles.X * kRadToDeg,
+                    verifiedAngles.Y * kRadToDeg,
+                    static_cast<long long>(elapsed.count()));
+            }
+            break;
+        }
+
+        LogViewpointTick(skillId, runtime, runtime.pitchUpTargetAngle, runtime.initialAngles.Y, runtime.pitchUpSpeedDeg, dt, now);
+        const auto returnElapsed = now - runtime.phaseStarted;
+        const bool returnTimedOut = returnElapsed >= kViewpointReturnTimeout;
+        bool pitchDone = IsPitchWithin(runtime.pitchUpTargetAngle, kViewpointReturnDoneEpsilonRad);
+        if (!pitchDone && !returnTimedOut)
+            pitchDone = MovePitchToward(runtime.pitchUpTargetAngle, runtime.pitchUpSpeedDeg, dt);
+
+        bool yawDone = IsYawWithin(runtime.initialAngles.Y, kViewpointYawReturnEpsilonRad);
+        if (pitchDone && !yawDone && !returnTimedOut &&
+            returnElapsed < kViewpointYawRestoreBudget) {
+            yawDone = MoveYawToward(runtime.initialAngles.Y, runtime.pitchUpSpeedDeg, dt);
+        }
+
+        if (runtime.jumped && !runtime.jumpDown &&
+            (returnTimedOut || (pitchDone && (yawDone || returnElapsed >= kViewpointYawRestoreBudget)))) {
+            runtime.phase = ViewpointPhase::Completed;
+            Diagnostics::Info("Hero skill viewpoint completed. skill=%s timeout=%d pitchDone=%d yawDone=%d",
+                skillId.c_str(),
+                returnTimedOut ? 1 : 0,
+                pitchDone ? 1 : 0,
+                yawDone ? 1 : 0);
+            return HeroSkillRunState::Completed;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return HeroSkillRunState::InProgress;
+}
+
+namespace {
+
+void CancelActiveSkillStateLocked()
+{
+    g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
+
+    for (auto& item : g_sequences)
+        CancelSequence(item.first, item.second, "cancel_all");
+
+    for (auto& item : g_genjiCombos) {
+        if (item.second.active || item.second.rightDown ||
+            item.second.shiftDown || item.second.meleeDown) {
+            FinishGenjiCombo(item.first, item.second, "cancel_all", false);
+        }
+    }
+
+    for (auto& item : g_viewpoints)
+        CancelViewpoint(item.first, item.second, "cancel_all");
+
+    // Hero cancellation must not disturb independent global aim, trigger or
+    // one-shot GameAction owners that share the scheduler.
+    TimedOutputScheduler().CancelSource(OutputOwnerSource::HeroTimedAction);
+    TimedOutputScheduler().CancelSource(OutputOwnerSource::ZaryaPulse);
+    TimedOutputScheduler().CancelSource(OutputOwnerSource::Sequence);
+    TimedOutputScheduler().CancelSource(OutputOwnerSource::Viewpoint);
+    TimedOutputScheduler().CancelSource(OutputOwnerSource::GenjiCombo);
+    g_lastActionExecutions.clear();
+    g_zaryaAmmoProbes.clear();
+    g_skillAimSessions.clear();
+    RefreshAnyInputSequenceActive();
+}
+
+} // namespace
+
+void CancelActiveSkill()
+{
+    std::lock_guard<std::mutex> lock(g_heroSkillRuntimeMutex);
+    CancelActiveSkillStateLocked();
+}
+
+void ProcessHeroSkills()
+{
+    OW::Config::ScopedConfigRead configRead;
+    // A backend transaction closes the controller gate, then waits here before
+    // cancelling scheduler state. This keeps one hero tick from moving on the
+    // old backend and scheduling its action on the replacement generation.
+    std::lock_guard<std::mutex> producerTransitionLock(
+        RuntimeOutputProducerTransitionMutex());
+    std::lock_guard<std::mutex> lock(g_heroSkillRuntimeMutex);
+
+    const OutputRuntimeState outputRuntime =
+        CurrentOutputRuntimeState();
+    const bool generationChanged =
+        g_lastTimedOutputGeneration != 0 &&
+        outputRuntime.backendGeneration != g_lastTimedOutputGeneration;
+    const bool outputGateClosed =
+        g_lastTimedOutputGateOpen && !outputRuntime.outputGateOpen;
+
+    // Quiesce independent producers before SynchronizeRuntime is allowed to
+    // resume a paused scheduler on a new generation. The worker also carries
+    // its own expected-generation barrier; this ordering is not its only
+    // protection.
+    if (generationChanged || outputGateClosed)
+        CancelActiveSkillStateLocked();
+
+    const bool outputReady =
+        TimedOutputScheduler().SynchronizeRuntime(outputRuntime);
+    g_lastTimedOutputGeneration = outputRuntime.backendGeneration;
+    g_lastTimedOutputGateOpen = outputRuntime.outputGateOpen;
+
+    if (!outputReady) {
+        g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
+        // A failed unmask can outlive cancellation. Retry safety cleanup even
+        // while normal output is gated; positive remasks remain gate-blocked.
+        (void)RetryPendingPhysicalMouseMaskLeases();
+        return;
+    }
+
+    if (!RuntimeWorkersRunning() || !ProcessConnection::IsConnected()) {
+        CancelActiveSkillStateLocked();
+        (void)RetryPendingPhysicalMouseMaskLeases();
+        return;
+    }
+
+    const c_entity localSnapshot = TargetingDetail::SnapshotLocalEntity();
+    const uint64_t heroId = localSnapshot.HeroID;
+    if(!localSnapshot.HasUsableBody(GetTickCount(),EntitySceneGeneration())) {
+        CancelActiveSkillStateLocked();
+        (void)RetryPendingPhysicalMouseMaskLeases();
+        return;
+    }
+    if (heroId != g_lastHeroId) {
+        // A hero switch is an explicit ownership boundary for all producers.
+        // Stop the old hero's independent sequence worker first; otherwise it
+        // can reacquire output in the gap after a global CancelAll.
+        CancelActiveSkillStateLocked();
+        TimedOutputScheduler().CancelAllAndJoin(
+            OutputActionCancelReason::RuntimeChanged);
+        g_lastHeroId = heroId;
+    }
+
+    // Retry only after invalid producers have been cancelled. This prevents a
+    // pending positive mask from being rebuilt for a disconnected or old hero;
+    // generation changes clear stale leases without touching the new backend.
+    (void)RetryPendingPhysicalMouseMaskLeases();
+
+    if (heroId == 0) {
+        g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
+        return;
+    }
+
+    bool processedAnyForHero = false;
+    bool anySequenceActivationHeld = false;
+    for (const HeroSkillDefinition& definition : AllHeroSkillDefinitions()) {
+        if (!IsHeroSkillDefinitionActiveForRuntime(definition, heroId))
+            continue;
+
+        processedAnyForHero = true;
+        const std::string skillKey = RuntimeSkillKey(heroId, definition.skillId);
+        Config::HeroSkillSettings settings = Config::GetHeroSkillSettings(
+            heroId,
+            definition.skillId ? definition.skillId : "",
+            definition.defaultSettings);
+
+        if (!settings.enabled) {
+            CancelSkill(skillKey, true);
+            continue;
+        }
+
+        const bool ownsCompositeOutput =
+            SkillControls(definition, HeroSkillControls::SequenceSteps) ||
+            SkillControls(definition, HeroSkillControls::ComboAction);
+        if (!ownsCompositeOutput) {
+            const int configuredOutputHotkey = settings.skillKey >= 0
+                ? settings.skillKey
+                : settings.key;
+            const int resolvedOutputHotkey = ResolveHeroSkillOutputHotkey(
+                configuredOutputHotkey,
+                definition.inputAction);
+            if (resolvedOutputHotkey != configuredOutputHotkey) {
+                if (ShouldLogSkillGuard(skillKey + ":unsupported_output_key")) {
+                    Diagnostics::Warn(
+                        "Hero skill output hotkey is unsupported by the active output layer; using the action default. skill=%s configured=%d fallback=%d",
+                        skillKey.c_str(),
+                        configuredOutputHotkey,
+                        resolvedOutputHotkey);
+                }
+                settings.skillKey = resolvedOutputHotkey;
+            }
+        }
+
+        if (IsZaryaReloadAmmoProbeDefinition(definition)) {
+            UpdateZaryaAmmoProbe(skillKey, settings, localSnapshot);
+            continue;
+        }
+
+        const bool sequenceSkill = SkillControls(definition, HeroSkillControls::SequenceSteps);
+        const bool genjiComboSkill = IsGenjiDashComboDefinition(definition);
+        const bool sequenceActive = sequenceSkill && IsSequenceActive(skillKey);
+        const bool genjiComboActive = genjiComboSkill && IsGenjiComboActive(skillKey);
+        const bool sequenceActivationHeld = sequenceSkill &&
+            IsActivationKeyHeld(settings.key);
+        if (sequenceActivationHeld) {
+            anySequenceActivationHeld = true;
+            // Publish immediately on the press edge; defer clearing until the
+            // whole hero pass confirms that no enabled sequence hotkey is held.
+            g_anyInputSequenceActivationHeld.store(true, std::memory_order_release);
+        }
+        if (sequenceSkill)
+            UpdateSequenceAmmoBudgetReloadState(skillKey, localSnapshot, settings.ammoGuardReserve);
+        if (sequenceSkill && !sequenceActive && AimbotDetail::IsInputVkDown('R'))
+            ResetSequenceAmmoBudget(skillKey);
+
+        if (!sequenceActive && !genjiComboActive &&
+            IsInRechargeInterval(definition, settings, localSnapshot)) {
+            CancelSkill(skillKey, false);
+            if (ShouldLogSkillGuard(skillKey)) {
+                Diagnostics::Aim("skill.cooldown_guard block skill=%s input=%d reloading=%d skillcd1=%.3f skillcd2=%.3f ultimate=%.1f",
+                    skillKey.c_str(),
+                    static_cast<int>(definition.inputAction),
+                    Config::reloading ? 1 : 0,
+                    localSnapshot.skillcd1,
+                    localSnapshot.skillcd2,
+                    localSnapshot.ultimate);
+            }
+            continue;
+        }
+
+        if (!sequenceActive && !genjiComboActive &&
+            IsManualCooldownActive(skillKey, settings)) {
+            if (ShouldLogSkillGuard(skillKey)) {
+                Diagnostics::Aim("skill.manual_cooldown block skill=%s cooldown=%.3f",
+                    skillKey.c_str(),
+                    settings.cooldown);
+            }
+            continue;
+        }
+
+        if (IsAmmoGuardBlocking(skillKey, settings, localSnapshot)) {
+            CancelSkill(skillKey, false);
+            continue;
+        }
+
+        if (IsAutoMeleeDefinition(definition)) {
+            EvaluateAutoMeleeAction(skillKey, definition, settings);
+            continue;
+        }
+
+        if (genjiComboSkill) {
+            EvaluateGenjiDashComboAction(skillKey, settings);
+            continue;
+        }
+
+        if (sequenceSkill) {
+            RunInputSequence(skillKey,
+                             settings.sequenceSteps,
+                             settings.key,
+                             settings.tracking,
+                             settings.prediction,
+                             settings,
+                             settings.ammoGuard,
+                             settings.ammoGuardReserve);
+        }
+
+        if (SkillControls(definition, HeroSkillControls::PitchControl) ||
+            SkillControls(definition, HeroSkillControls::PhaseTiming)) {
+            RunViewpointController(skillKey, settings);
+        }
+
+        if (!IsRuntimeActionDefinition(definition))
+            continue;
+
+        if (IsDefensiveResponseDefinition(definition)) {
+            EvaluateDefensiveResponseAction(skillKey, definition, settings, localSnapshot);
+        } else if (SkillControls(definition, HeroSkillControls::HealthThreshold) ||
+                   SkillControls(definition, HeroSkillControls::HealthAbsolute)) {
+            EvaluateHealthThresholdAction(skillKey, definition, settings, localSnapshot);
+        } else if (definition.category == HeroSkillCategory::Ultimate &&
+                   !SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
+            EvaluateChargedConditionAction(skillKey, definition, settings);
+        } else if (definition.inputAction == HeroSkillInputAction::SecondaryFire &&
+                   std::string(definition.skillId ? definition.skillId : "") == "rocket-punch") {
+            EvaluateChargeReleaseAction(skillKey, definition, settings);
+        } else {
+            EvaluateTrajectoryAction(skillKey, definition, settings, GetTrajectoryParams(definition.skillId));
+        }
+    }
+
+    if (!processedAnyForHero)
+        CancelActiveSkillStateLocked();
+
+    g_anyInputSequenceActivationHeld.store(
+        processedAnyForHero && anySequenceActivationHeld,
+        std::memory_order_release);
+}
+
+#ifdef UNLEASHED_SELF_TESTS
+// Seeds real ownership and calls real cancellation consumers; the caller selects Mock.
+bool RunHeroSkillRuntimeStopSelfTest()
+{
+    const std::string key = "f01b-stop";
+    auto seed = [&] {
+        auto& runtime = g_viewpoints[key];
+        runtime = ViewpointRuntime{};
+        runtime.phase = ViewpointPhase::PitchDown;
+        runtime.secondaryDown = true;
+        runtime.jumpDown = true;
+        runtime.jumpVk = VK_SPACE;
+        return SetViewpointOutputs(key, runtime) &&
+            V2::Output::MockHardwareMgr.Snapshot().outputMouseButtons != 0 &&
+            V2::Output::MockHardwareMgr.Snapshot().outputKeyboardKeys != 0;
+    };
+    auto released = [&] {
+        const auto& runtime = g_viewpoints[key];
+        const auto output = V2::Output::MockHardwareMgr.Snapshot();
+        return runtime.phase == ViewpointPhase::Cancelled &&
+            !runtime.secondaryDown && !runtime.jumpDown &&
+            output.outputMouseButtons == 0 && output.outputKeyboardKeys == 0;
+    };
+    // Establish the current scheduler generation before seeding active ownership.
+    ProcessHeroSkills();
+    bool ok = !RuntimeWorkersRunning() && seed();
+    Config::HeroSkillSettings settings{};
+    settings.key = -1;
+    ok &= RunViewpointController(key, settings) == HeroSkillRunState::Cancelled && released();
+    ok &= seed();
+    ProcessHeroSkills();
+    ok &= released();
+    CancelActiveSkill();
+    g_viewpoints.erase(key);
+    return ok;
+}
+#endif
+
+} // namespace OW

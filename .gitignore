@@ -1,0 +1,49 @@
+# Visual Studio / local IDE state
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# CMake build tree and generated files
+# Keep this project on one local build directory: build/
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+
+# MSVC build artifacts
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.pch
+*.tlog
+*.lastbuildstate
+*.res
+
+# Runtime / debug leftovers
+*.log
+*.tmp
+*.temp
+*.cache
+
+# Packaged release outputs
+dist/
+
+# Machine-local config variants
+config/*.local.cfg
+config/*private*.cfg
+DMA_SCAN_RESULTS.txt
+
+# Generated runtime output and current local evidence
+logs/
+evidence/
+crash_dumps/
+__pycache__/

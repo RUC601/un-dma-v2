@@ -1,0 +1,16 @@
+* text=auto
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+
+*.dll binary
+*.exe binary
+*.lib binary
+*.pdb binary
+*.obj binary
+*.png binary
+*.ico binary
+*.dat binary
+data/overwatch_weapon_cadence_20260714.tsv whitespace=-blank-at-eol

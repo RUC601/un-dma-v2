@@ -1,0 +1,196 @@
+#include "Text.hpp"
+#include "Features/UiLabels.hpp"
+#include <imgui.h>
+#include <cstring>
+namespace UI::Text {
+struct UiTextPair {
+    const char* en;
+    const char* zh;
+};
+
+static constexpr UiTextPair kUiText[] = {
+    { "Not opened", "未打开" },
+    { "Aiming", "瞄准" },
+    { "Visuals", "可视化" },
+    { "Theme", "主题" },
+    { "Settings", "设置" },
+    { "Aim", "瞄准" },
+    { "Trigger", "触发" },
+    { "Skills", "技能" },
+    { "Combo", "连招" },
+    { "Players", "玩家" },
+    { "General", "通用" },
+    { "Aim FOV", "瞄准视野" },
+    { "Diagnostics", "诊断" },
+    { "Behavior", "行为" },
+    { "Method", "方法" },
+    { "Output Device", "输出设备" },
+    { "Screen", "屏幕" },
+    { "Config Profile", "配置档案" },
+    { "Active Profile", "当前档案" },
+    { "Folder", "文件夹" },
+    { "Open", "打开" },
+    { "New Profile", "新建档案" },
+    { "Create", "创建" },
+    { "Menu", "菜单" },
+    { "Toggle Key", "菜单热键" },
+    { "Language", "语言" },
+    { "Application", "应用" },
+    { "UNDMA CN", "UNDMA CN" },
+    { "Overlay", "Overlay" },
+    { "Close UN", "关闭 UN" },
+    { "Reconnect UN", "重连 UN" },
+    { "Minimize Overlay", "最小化 Overlay" },
+    { "Runtime Version", "运行版本" },
+    { "Process", "进程" },
+    { "Save...", "保存..." },
+    { "Save Current Hero + System", "保存当前英雄及系统设置" },
+    { "Save All Changes", "保存全部改动" },
+    { "Saved all changes", "已保存全部改动" },
+    { "Saved system settings", "已保存系统设置" },
+    { "Changes take effect immediately and save automatically after 4 seconds without edits. Switching profiles or exiting saves pending changes. Save All Changes saves immediately.",
+      "修改立即生效，停止修改 4 秒后自动保存。切换档案或正常退出时会补存改动；点击保存全部改动可立即保存。" },
+    { "Created config profile", "已创建配置档案" },
+    { "Config profile already exists", "配置档案已存在" },
+    { "Saved ", "已保存 " },
+    { " config", " 配置" },
+    { "global", "全局" },
+    { "Aim and Trigger have separate slot lists for the selected hero. Save Config writes that hero's JSON config.",
+      "瞄准和触发为所选英雄使用独立槽位列表。保存配置会写入该英雄的 JSON 配置。" },
+    { "All uses the current local hero or global config fallback. Aim and Trigger slot lists are separate.",
+      "All 会使用当前本地英雄或全局配置后备。瞄准和触发槽位列表彼此独立。" },
+    { "Choose current hero + system, or all edited heroes + system. New profiles contain all current edits.",
+      "可保存当前英雄及系统设置，或全部已编辑英雄及系统设置。新档案会包含当前全部改动。" },
+    { "Save all edited hero and system settings.",
+      "保存所有已编辑英雄及系统设置。" },
+    { "Force a fresh target-process PID scan and SDK attach.",
+      "强制重新扫描目标进程 PID 并附加 SDK。" },
+    { "Hide the entire overlay to check Codex or other apps. Restore the canvas and menu with the menu hotkey (Home by default) or the taskbar. UN keeps running.",
+      "收起整层 Overlay，方便查看 Codex 或其他软件。按菜单热键（默认 Home）或点击任务栏可恢复画布和菜单；UN 继续运行。" },
+    { "Diagnostics", "诊断" },
+    { "Hotkey Probe", "热键探测" },
+    { "n/a", "不可用" },
+    { "DOWN", "按下" },
+    { "up", "抬起" },
+    { "Fire Recorder", "开火记录" },
+    { "Stop", "停止" },
+    { "Start", "开始" },
+    { "Dry Run (Log Only)", "干运行(仅日志)" },
+    { "(NO cursor movement)", "(不会移动光标)" },
+    { "Show Log Overlay", "显示日志浮层" },
+    { "Clear Log", "清空日志" },
+    { "Verbose Aim Logs", "详细瞄准日志" },
+    { "Warning: verbose logging may impact performance", "警告：详细日志可能影响性能" },
+    { "Log Interval (ms)", "日志间隔(ms)" },
+    { "Behavior", "行为" },
+    { "Preset", "预设" },
+    { "Preset Name", "预设名称" },
+    { "Method Preset", "方法预设" },
+    { "Base Speed Scale", "基础速度比例" },
+    { "Start Speed Limit", "起步限速" },
+    { "Initial Speed Cap", "初始速度上限" },
+    { "Cap Rise", "速度上限增幅" },
+    { "Restart On Target Change", "换目标重新起步" },
+    { "Move Split", "分段移动" },
+    { "Split Chunk", "分段大小" },
+    { "Split Delay", "分段延迟" },
+    { "Save New", "另存新项" },
+    { "Delete", "删除" },
+    { "Pitch Scale", "俯仰缩放" },
+    { "Overshoot Curve", "过冲曲线" },
+    { "Overshoot Gain", "过冲增益" },
+    { "Overshoot Reset", "过冲复位" },
+    { "Method", "方法" },
+    { "Angular Speed", "角速度" },
+    { "P Gain", "P 增益" },
+    { "I Gain", "I 增益" },
+    { "D Gain", "D 增益" },
+    { "Max Integral", "最大积分" },
+    { "Deadzone", "死区" },
+    { "Control Points", "控制点" },
+    { "Curvature", "曲率" },
+    { "Curve Speed", "曲线速度" },
+    { "Near Degrees", "近距角度" },
+    { "Mid Degrees", "中距角度" },
+    { "Far Degrees", "远距角度" },
+    { "Near Scale", "近距缩放" },
+    { "Mid Scale", "中距缩放" },
+    { "Far Scale", "远距缩放" },
+    { "Acceleration", "加速度" },
+    { "Output Settings", "输出设备设置" },
+    { "Enable Output", "启用输出设备" },
+    { "Device Type", "设备类型" },
+    { "IP", "IP" },
+    { "Port", "端口" },
+    { "Monitor Port", "监听端口" },
+    { "MAC", "MAC" },
+    { "COM Port", "COM 端口" },
+    { "Mock Status", "模拟状态" },
+    { "Ready", "就绪" },
+    { "Not initialized", "未初始化" },
+    { "Base Counts/Rad", "基础计数/弧度" },
+    { "Current Game Sens", "当前游戏灵敏度" },
+    { "Auto Read Game Sens", "自动读取游戏灵敏度" },
+    { "Read", "读取" },
+    { "Effective Game Sens", "生效游戏灵敏度" },
+    { "Host DPI (DMA)", "主机 DPI (DMA)" },
+    { "Mouse DPI", "鼠标 DPI" },
+    { "Reference Game Sens", "参考游戏灵敏度" },
+    { "Use Current", "用当前值" },
+    { "Auto Sens Scale", "自动灵敏度缩放" },
+    { "Input Delay (ms)", "输入延迟(ms)" },
+    { "Block Output When Menu Open", "菜单打开时阻断输出" },
+    { "Debug Logging", "调试日志" },
+    { "Mock Fault", "模拟故障" },
+    { "Mock Reset", "模拟重置" },
+    { "Reset", "重置" },
+    { "Mock Stats", "模拟统计" },
+    { "Counts Calibration", "计数校准" },
+    { "Calibrating...", "校准中..." },
+    { "Calibrate", "校准" },
+    { "Not calibrated", "未校准" },
+    { "Run", "运行" },
+    { "Connection Test", "连接测试" },
+    { "Test", "测试" },
+    { "Restart NIC", "重启网卡" },
+    { "Monitor Firewall", "监听防火墙" },
+    { "Fix Firewall", "修复防火墙" },
+    { "Disabled", "已禁用" },
+    { "Target Screen", "目标屏幕" },
+    { "Local Width", "本机宽度" },
+    { "Local Height", "本机高度" },
+    { "DMA Width", "DMA 宽度" },
+    { "DMA Height", "DMA 高度" },
+    { "Fallback Width", "后备宽度" },
+    { "Fallback Height", "后备高度" },
+};
+static_assert(static_cast<size_t>(UiText::Count) == IM_ARRAYSIZE(kUiText));
+
+
+
+const char* Get(UiText id, bool chinese) {
+    const size_t index = static_cast<size_t>(id);
+    if (index >= static_cast<size_t>(IM_ARRAYSIZE(kUiText)))
+        return "";
+
+    const char* text = chinese
+        ? kUiText[index].zh
+        : kUiText[index].en;
+    return (text && text[0] != '\0') ? text : kUiText[index].en;
+}
+
+const char* Label(const char* text, bool chinese) {
+    if (!text) return "";
+    static constexpr UiTextPair extra[] = {
+    { "No verified active layout. Open Diagnostics to choose or retry.", "尚无已核验的运行布局。可在诊断页选择或重新连接。" },
+    { "Device rate is not measured in this build.", "本版本尚未测量设备输出频率。" },
+    { "MAKCU Controller / Medius: unavailable until their action mapping and protocol are established.", "MAKCU Controller / Medius 暂不可用，仍需确认动作映射和协议。" },
+    };
+    for (const auto& item : extra)
+        if (std::strcmp(text, item.en) == 0) return chinese ? item.zh : item.en;
+    for (const auto& item : kUiText)
+        if (std::strcmp(text, item.en) == 0)
+            return chinese ? item.zh : item.en;
+    return UI::UiLabel(text, chinese);
+}
+}

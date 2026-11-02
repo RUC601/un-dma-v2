@@ -1,0 +1,4309 @@
+#include "Utils/TestServer.hpp"
+
+#ifdef UNLEASHED_TEST_SERVER
+
+#define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <Windows.h>
+#include "Utils/RuntimeTrace.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "Game/Decrypt.hpp"
+#include "Game/GameData.hpp"
+#include "Game/HeroPerks.hpp"
+#include "Game/Overwatch.hpp"
+#include "Game/Target.hpp"
+#include "Utils/Config.hpp"
+#include "Utils/Diagnostics.hpp"
+#include "Utils/ProcessConnection.hpp"
+
+namespace TestServer {
+namespace {
+
+constexpr int kSchemaVersion = 1;
+constexpr const char* kBindAddress = "127.0.0.1";
+constexpr size_t kMaxRequestBytes = 8192;
+constexpr size_t kTargetHistoryCapacity = 1024;
+constexpr int kTargetHistoryPeriodMs = 8;
+
+std::mutex g_lifecycleMutex;
+std::thread g_serverThread;
+std::thread g_targetHistoryThread;
+std::atomic<bool> g_running{ false };
+std::shared_ptr<std::atomic<bool>> g_runFlag;
+SOCKET g_listenSocket = INVALID_SOCKET;
+struct ClientWorker {
+    SOCKET socket = INVALID_SOCKET;
+    std::shared_ptr<std::atomic<bool>> done;
+    std::thread thread;
+};
+std::mutex g_clientsMutex;
+std::vector<ClientWorker> g_clients;
+std::atomic<uint16_t> g_port{ 19550 };
+std::atomic<bool> g_allowWildcardCors{ false };
+
+struct RequestTarget {
+    std::string path;
+    std::unordered_map<std::string, std::string> query;
+};
+
+struct EntityQuery {
+    float maxDistanceM = 50.0f;
+    std::string team = "enemy";
+    bool includeDead = false;
+    bool teamDebug = false;
+    int limit = 32;
+    std::vector<std::string> warnings;
+};
+
+struct TargetHistorySample {
+    uint64_t sequence = 0;
+    uint64_t capturedAtMs = 0;
+    std::string targetJson;
+};
+
+std::mutex g_targetHistoryMutex;
+std::vector<TargetHistorySample> g_targetHistory;
+uint64_t g_targetHistorySequence = 0;
+
+uint64_t TimestampMs()
+{
+    const auto now = std::chrono::system_clock::now();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+}
+
+std::string JsonEscape(const std::string& value)
+{
+    std::ostringstream out;
+    out << std::hex << std::uppercase << std::setfill('0');
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '\\': out << "\\\\"; break;
+        case '"':  out << "\\\""; break;
+        case '\b': out << "\\b"; break;
+        case '\f': out << "\\f"; break;
+        case '\n': out << "\\n"; break;
+        case '\r': out << "\\r"; break;
+        case '\t': out << "\\t"; break;
+        default:
+            if (ch < 0x20)
+                out << "\\u" << std::setw(4) << static_cast<int>(ch);
+            else
+                out << static_cast<char>(ch);
+            break;
+        }
+    }
+    return out.str();
+}
+
+void AppendJsonString(std::ostringstream& out, const std::string& value)
+{
+    out << '"' << JsonEscape(value) << '"';
+}
+
+void AppendStringArray(std::ostringstream& out, const std::vector<std::string>& values)
+{
+    out << '[';
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        AppendJsonString(out, values[index]);
+    }
+    out << ']';
+}
+
+void AppendNumberOrNull(std::ostringstream& out, float value)
+{
+    if (!std::isfinite(value)) {
+        out << "null";
+        return;
+    }
+    out << std::setprecision(6) << value;
+}
+
+bool IsFiniteVector(const OW::Vector3& value)
+{
+    return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+}
+
+void AppendVectorOrNull(std::ostringstream& out, const OW::Vector3& value)
+{
+    if (!IsFiniteVector(value)) {
+        out << "null";
+        return;
+    }
+
+    out << "{\"x\":";
+    AppendNumberOrNull(out, value.X);
+    out << ",\"y\":";
+    AppendNumberOrNull(out, value.Y);
+    out << ",\"z\":";
+    AppendNumberOrNull(out, value.Z);
+    out << '}';
+}
+
+OW::Vector3 YawForwardFromRotation(const OW::Vector3& rotation)
+{
+    if (!IsFiniteVector(rotation))
+        return OW::Vector3{};
+    return OW::Vector3(
+        static_cast<float>(std::sin(rotation.X)),
+        0.0f,
+        static_cast<float>(std::cos(rotation.X)));
+}
+
+int SkeletonValidCount(const OW::c_entity& entity)
+{
+    return static_cast<int>(
+        std::count(entity.skeleton_bone_valid.begin(), entity.skeleton_bone_valid.end(), true));
+}
+
+bool IsTrainingBotEntity(const OW::c_entity& entity)
+{
+    return OW::GameData::IsTrainingBotHeroId(entity.HeroID);
+}
+
+bool IsKnownRealHeroEntity(const OW::c_entity& entity)
+{
+    return OW::GameData::IsKnownHeroId(entity.HeroID) &&
+        !IsTrainingBotEntity(entity);
+}
+
+bool IsZeroRotation(const OW::Vector3& rotation)
+{
+    constexpr float kZeroRotationEpsilon = 0.0001f;
+    return IsFiniteVector(rotation) &&
+        std::fabs(rotation.X) <= kZeroRotationEpsilon &&
+        std::fabs(rotation.Y) <= kZeroRotationEpsilon &&
+        std::fabs(rotation.Z) <= kZeroRotationEpsilon;
+}
+
+void AppendIntArray(std::ostringstream& out, const std::array<int, 18>& values)
+{
+    out << '[';
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        out << values[index];
+    }
+    out << ']';
+}
+
+void AppendBoolArray(std::ostringstream& out, const std::array<bool, 18>& values)
+{
+    out << '[';
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        out << (values[index] ? "true" : "false");
+    }
+    out << ']';
+}
+
+void AppendSkeletonVectors(std::ostringstream& out, const OW::c_entity& entity)
+{
+    out << '[';
+    for (size_t index = 0; index < entity.skeleton_bones.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        if (!entity.skeleton_bone_valid[index])
+            out << "null";
+        else
+            AppendVectorOrNull(out, entity.skeleton_bones[index]);
+    }
+    out << ']';
+}
+
+void AppendSkeletonDiagnosticJson(std::ostringstream& out, const OW::c_entity& entity, bool includeVectors)
+{
+    const auto renderMap = entity.GetRenderSkel();
+    const int validCount = SkeletonValidCount(entity);
+
+    out << "{\"valid_count\":" << validCount
+        << ",\"render_map\":";
+    AppendIntArray(out, renderMap);
+    out << ",\"valid_slots\":";
+    AppendBoolArray(out, entity.skeleton_bone_valid);
+    if (includeVectors) {
+        out << ",\"world_slots\":";
+        AppendSkeletonVectors(out, entity);
+    }
+    out << '}';
+}
+
+std::string HexString(uint64_t value)
+{
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(value));
+    return buffer;
+}
+
+void AppendHexString(std::ostringstream& out, uint64_t value)
+{
+    AppendJsonString(out, HexString(value));
+}
+
+void AppendHexOrNull(std::ostringstream& out, uint64_t value)
+{
+    if (value == 0) {
+        out << "null";
+        return;
+    }
+    AppendHexString(out, value);
+}
+
+void AppendEnemyAngleProbeJson(std::ostringstream& out, uint64_t enemyAngleBase)
+{
+    out << "{\"base\":";
+    AppendHexOrNull(out, enemyAngleBase);
+    out << ",\"view_direction_address\":";
+    AppendHexOrNull(
+        out,
+        enemyAngleBase ? enemyAngleBase + OW::kPlayerControllerViewDirectionOffset : 0);
+
+    OW::Vector3 viewDirection{};
+    if (enemyAngleBase && OW::SDK)
+        viewDirection = OW::SDK->RPM<OW::Vector3>(
+            enemyAngleBase + OW::kPlayerControllerViewDirectionOffset);
+
+    const float length = std::sqrt(
+        viewDirection.X * viewDirection.X +
+        viewDirection.Y * viewDirection.Y +
+        viewDirection.Z * viewDirection.Z);
+    const bool valid =
+        IsFiniteVector(viewDirection) &&
+        length > 0.5f &&
+        length < 1.5f;
+
+    out << ",\"view_direction\":";
+    AppendVectorOrNull(out, viewDirection);
+    out << ",\"view_direction_length\":";
+    AppendNumberOrNull(out, length);
+    out << ",\"valid\":" << (valid ? "true" : "false");
+    out << ",\"aim_euler\":";
+    AppendVectorOrNull(out, valid ? OW::DirectionToAimEuler(viewDirection) : OW::Vector3{});
+    out << '}';
+}
+
+void AppendDmaWindowFields(std::ostringstream& out, const Diagnostics::DmaWindowStats& window)
+{
+    uint64_t maxCallsiteLatencyUs = 0;
+    const char* maxCallsiteName = "Unknown";
+    for (int i = 0; i < static_cast<int>(Diagnostics::DmaCallsite::Count); ++i) {
+        if (window.perCallsiteMaxUs[i] > maxCallsiteLatencyUs) {
+            maxCallsiteLatencyUs = window.perCallsiteMaxUs[i];
+            maxCallsiteName = Diagnostics::ToString(static_cast<Diagnostics::DmaCallsite>(i));
+        }
+    }
+
+    out << ",\"window_ms\":" << window.windowMs
+        << ",\"window_total\":" << window.totalReads
+        << ",\"window_failed\":" << window.failedReads
+        << ",\"window_max_latency_us\":" << window.maxLatencyUs
+        << ",\"window_slow_threshold_us\":" << window.slowThresholdUs
+        << ",\"window_slow_reads\":" << window.slowReads
+        << ",\"window_slow_failed\":" << window.slowFailedReads
+        << ",\"window_max_callsite\":";
+    AppendJsonString(out, maxCallsiteName);
+    out << ",\"window_max_callsite_latency_us\":" << maxCallsiteLatencyUs
+        << ",\"window_callsite\":{";
+    for (int i = 0; i < static_cast<int>(Diagnostics::DmaCallsite::Count); ++i) {
+        if (i != 0)
+            out << ',';
+        AppendJsonString(out, Diagnostics::ToString(static_cast<Diagnostics::DmaCallsite>(i)));
+        out << ":{\"reads\":" << window.perCallsiteReads[i]
+            << ",\"failed\":" << window.perCallsiteFailedReads[i]
+            << ",\"max_latency_us\":" << window.perCallsiteMaxUs[i]
+            << ",\"success_max_latency_us\":" << window.perCallsiteSuccessMaxUs[i]
+            << ",\"failed_max_latency_us\":" << window.perCallsiteFailedMaxUs[i]
+            << ",\"slow_reads\":" << window.perCallsiteSlowReads[i]
+            << ",\"slow_failed\":" << window.perCallsiteSlowFailedReads[i]
+            << '}';
+    }
+    out << '}';
+}
+
+void AppendDmaSlowReadSamples(
+    std::ostringstream& out,
+    uint64_t windowMs,
+    uint64_t minLatencyUs,
+    size_t maxSamples)
+{
+    const auto samples = Diagnostics::GetDmaSlowReadSamples(
+        windowMs,
+        minLatencyUs,
+        maxSamples);
+    out << ",\"slow_samples_window_ms\":" << windowMs
+        << ",\"slow_samples_min_latency_us\":" << minLatencyUs
+        << ",\"slow_samples\":[";
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const auto& sample = samples[i];
+        if (i != 0)
+            out << ',';
+        out << "{\"sequence\":" << sample.sequence
+            << ",\"thread_id\":" << sample.threadId
+            << ",\"callsite\":";
+        AppendJsonString(out, Diagnostics::ToString(sample.callsite));
+        out << ",\"success\":" << (sample.success ? "true" : "false")
+            << ",\"latency_us\":" << sample.latencyUs
+            << ",\"started_tick_ms\":" << sample.startedTickMs
+            << ",\"completed_tick_ms\":" << sample.completedTickMs
+            << ",\"completed_age_ms\":" << sample.completedAgeMs
+            << ",\"started_age_ms\":" << sample.startedAgeMs
+            << '}';
+    }
+    out << ']';
+}
+
+void AppendEntityPipelineJson(std::ostringstream& out, const Diagnostics::StatusSnapshot& snapshot)
+{
+    const auto& scan = snapshot.entityPipelineScan;
+    const auto& process = snapshot.entityPipelineProcess;
+    const auto& phase = process.phase;
+    const auto& lifecycle = process.lifecycle;
+
+    out << "{\"scan\":{\"scan_loop_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.loopHz));
+    out << ",\"scan_due_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.dueHz));
+    out << ",\"scan_started_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.startedHz));
+    out << ",\"scan_completed_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.completedHz));
+    out << ",\"scan_loop_count\":" << scan.loopCount
+        << ",\"scan_due_count\":" << scan.dueCount
+        << ",\"scan_skip_pending_count\":" << scan.skipPendingCount
+        << ",\"scan_skip_not_due_count\":" << scan.skipNotDueCount
+        << ",\"scan_skip_stable_topology_count\":" << scan.skipStableTopologyCount
+        << ",\"scan_started_count\":" << scan.startedCount
+        << ",\"scan_completed_count\":" << scan.completedCount
+        << ",\"scan_failed_count\":" << scan.failedCount
+        << ",\"scan_get_ow_entities_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.getOwEntitiesMs));
+    out << ",\"scan_result_raw_count\":" << scan.resultRawCount
+        << ",\"scan_max_get_ow_entities_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.maxGetOwEntitiesMs));
+    out << ",\"scan_max_get_ow_entities_generation\":"
+        << scan.maxGetOwEntitiesGeneration
+        << ",\"scan_max_get_ow_entities_records\":"
+        << scan.maxGetOwEntitiesRecords
+        << ",\"scan_max_get_ow_entities_pairs\":"
+        << scan.maxGetOwEntitiesPairs
+        << ",\"scan_max_record_build_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.maxGetOwEntitiesRecordBuildMs));
+    out << ",\"scan_max_match_link_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.maxGetOwEntitiesMatchLinkMs));
+    out << ",\"scan_max_cn_ne_target_map_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.maxGetOwEntitiesTargetMapMs));
+    out << ",\"scan_max_component_only_validation_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(scan.maxGetOwEntitiesComponentValidationMs));
+    out << ",\"scan_max_dma_reads_delta\":"
+        << scan.maxGetOwEntitiesDmaReadsDelta
+        << ",\"scan_max_dma_fail_delta\":"
+        << scan.maxGetOwEntitiesDmaFailDelta
+        << ",\"scan_max_dma_range_diag_enabled\":"
+        << (scan.maxGetOwEntitiesDmaRangeDiagEnabled ? "true" : "false")
+        << ",\"scan_max_dma_range_reads\":"
+        << scan.maxGetOwEntitiesDmaRangeReads
+        << ",\"scan_max_dma_range_failed\":"
+        << scan.maxGetOwEntitiesDmaRangeFailed
+        << ",\"scan_max_dma_range_max_latency_us\":"
+        << scan.maxGetOwEntitiesDmaRangeMaxLatencyUs
+        << ",\"scan_max_dma_range_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            scan.maxGetOwEntitiesDmaRangeMaxCallsite)));
+    out << ",\"scan_max_dma_range_scanner_reads\":"
+        << scan.maxGetOwEntitiesDmaRangeScannerReads
+        << ",\"scan_max_dma_range_scanner_max_latency_us\":"
+        << scan.maxGetOwEntitiesDmaRangeScannerMaxLatencyUs
+        << ",\"scan_max_dma_range_scanner_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            scan.maxGetOwEntitiesDmaRangeScannerMaxCallsite)));
+    out << ",\"scan_max_dma_range_foreign_reads\":"
+        << scan.maxGetOwEntitiesDmaRangeForeignReads
+        << ",\"scan_max_dma_range_foreign_max_latency_us\":"
+        << scan.maxGetOwEntitiesDmaRangeForeignMaxLatencyUs
+        << ",\"scan_max_dma_range_foreign_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            scan.maxGetOwEntitiesDmaRangeForeignMaxCallsite)));
+    out << ",\"scan_max_dma_range_root_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeRootMaxUs
+        << ",\"scan_max_dma_range_list_read_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeListReadMaxUs
+        << ",\"scan_max_dma_range_record_header_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeRecordHeaderMaxUs
+        << ",\"scan_max_dma_range_record_pool_id_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeRecordPoolIdMaxUs
+        << ",\"scan_max_dma_range_target_map_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeTargetMapMaxUs
+        << ",\"scan_max_dma_range_component_validation_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeComponentValidationMaxUs
+        << ",\"scan_max_dma_range_viewmatrix_max_us\":"
+        << scan.maxGetOwEntitiesDmaRangeViewMatrixMaxUs
+        << ",\"scan_max_cn_ne_entity_list_root_cache_hit_count\":"
+        << scan.maxGetOwEntitiesRootCacheHitCount
+        << ",\"scan_max_cn_ne_entity_list_root_cache_read_count\":"
+        << scan.maxGetOwEntitiesRootCacheReadCount
+        << ",\"scan_max_cn_ne_entity_list_root_cache_store_count\":"
+        << scan.maxGetOwEntitiesRootCacheStoreCount
+        << ",\"scan_max_cn_ne_entity_list_root_cache_expired_count\":"
+        << scan.maxGetOwEntitiesRootCacheExpiredCount
+        << ",\"scan_max_cn_ne_entity_list_root_cache_stale_hit_count\":"
+        << scan.maxGetOwEntitiesRootCacheStaleHitCount
+        << ",\"scan_max_list_read_skipped_count\":"
+        << scan.maxGetOwEntitiesListReadSkippedCount
+        << ",\"scan_max_cn_ne_entity_list_read_negative_cache_hit_count\":"
+        << scan.maxGetOwEntitiesListReadNegativeCacheHitCount
+        << ",\"scan_max_cn_ne_entity_list_read_negative_cache_store_count\":"
+        << scan.maxGetOwEntitiesListReadNegativeCacheStoreCount
+        << ",\"scan_max_cn_ne_entity_list_read_negative_cache_expired_count\":"
+        << scan.maxGetOwEntitiesListReadNegativeCacheExpiredCount
+        << ",\"scan_max_cn_ne_entity_list_read_negative_cache_stale_hit_count\":"
+        << scan.maxGetOwEntitiesListReadNegativeCacheStaleHitCount
+        << ",\"scan_max_cn_ne_entity_list_read_cache_hit_count\":"
+        << scan.maxGetOwEntitiesListReadCacheHitCount
+        << ",\"scan_max_cn_ne_entity_list_read_cache_store_count\":"
+        << scan.maxGetOwEntitiesListReadCacheStoreCount
+        << ",\"scan_max_cn_ne_entity_list_read_cache_expired_count\":"
+        << scan.maxGetOwEntitiesListReadCacheExpiredCount
+        << ",\"scan_max_cn_ne_entity_list_read_cache_stale_hit_count\":"
+        << scan.maxGetOwEntitiesListReadCacheStaleHitCount
+        << ",\"scan_max_record_match_id_direct_read_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdDirectReadCount
+        << ",\"scan_max_record_match_id_direct_zero_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdDirectZeroCount
+        << ",\"scan_max_record_match_id_header_hit_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdHeaderHitCount
+        << ",\"scan_max_record_match_id_header_miss_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdHeaderMissCount
+        << ",\"scan_max_record_match_id_header_match_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdHeaderMatchCount
+        << ",\"scan_max_record_match_id_header_mismatch_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdHeaderMismatchCount
+        << ",\"scan_max_record_match_id_header_use_count\":"
+        << scan.maxGetOwEntitiesRecordMatchIdHeaderUseCount
+        << ",\"scan_max_persistent_refresh_count\":"
+        << scan.maxGetOwEntitiesPersistentRefreshCount
+        << ",\"scan_max_persistent_stale_hit_count\":"
+        << scan.maxGetOwEntitiesPersistentStaleHitCount
+        << ",\"scan_publish_attempt_count\":" << scan.publishAttemptCount
+        << ",\"scan_publish_success_count\":" << scan.publishSuccessCount
+        << ",\"scan_overwritten_count\":" << scan.overwrittenCount
+        << ",\"scan_pending_age_ms\":" << scan.pendingAgeMs
+        << ",\"scan_generation\":" << scan.generation
+        << ",\"scan_last_success_age_ms\":" << scan.lastSuccessAgeMs
+        << ",\"scan_cold_topology_enabled\":"
+        << (scan.coldTopologyScanEnabled ? "true" : "false")
+        << ",\"scan_topology_rescan_request_count\":"
+        << scan.topologyRescanRequestCount
+        << ",\"scan_topology_count_probe_count\":"
+        << scan.topologyCountProbeCount
+        << ",\"scan_topology_count_probe_change_count\":"
+        << scan.topologyCountProbeChangeCount
+        << ",\"scan_topology_candidate_count\":"
+        << scan.topologyCandidateCount
+        << "},\"process\":{\"entity_cycle_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(process.entityCycleMs));
+    out << ",\"entity_cycle_raw_count\":" << process.rawCount
+        << ",\"entity_cycle_validated_count\":" << process.validatedCount
+        << ",\"entity_cycle_published_count\":" << process.publishedCount
+        << ",\"entity_cycle_dma_reads_delta\":" << process.dmaReadsDelta
+        << ",\"entity_cycle_dma_fail_delta\":" << process.dmaFailDelta
+        << ",\"phases\":{\"phase_begin_frame_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.beginFrameMs));
+    out << ",\"phase_consume_scan_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.consumeScanMs));
+    out << ",\"phase_previous_snapshot_copy_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.previousSnapshotCopyMs));
+    out << ",\"phase_prefetch_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.prefetchMs));
+    out << ",\"phase_previous_index_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.previousIndexMs));
+    out << ",\"phase_hot_scatter_prepare_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.hotScatterPrepareMs));
+    out << ",\"phase_hot_scatter_execute_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.hotScatterExecuteMs));
+    out << ",\"phase_base_cache_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.baseCacheMs));
+    out << ",\"phase_base_decrypt_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.baseDecryptMs));
+    out << ",\"phase_health_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.healthMs));
+    out << ",\"phase_hero_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.heroMs));
+    out << ",\"phase_visibility_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.visibilityMs));
+    out << ",\"phase_skeleton_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.skeletonMs));
+    out << ",\"phase_skeleton_velocity_read_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.skeletonVelocityReadMs));
+    out << ",\"phase_skeleton_cache_call_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.skeletonCacheCallMs));
+    out << ",\"phase_skill_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.skillMs));
+    out << ",\"phase_team_name_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.teamNameMs));
+    out << ",\"phase_team_name_hero_lookup_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.teamNameHeroLookupMs));
+    out << ",\"phase_team_name_bot_adjust_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.teamNameBotAdjustMs));
+    out << ",\"phase_team_name_battle_tag_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.teamNameBattleTagMs));
+    out << ",\"phase_team_name_team_read_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.teamNameTeamReadMs));
+    out << ",\"phase_local_select_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.localSelectMs));
+    out << ",\"phase_publish_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.publishMs));
+    out << ",\"phase_record_sync_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.recordSyncMs));
+    out << ",\"phase_entity_loop_wall_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityLoopWallMs));
+    out << ",\"phase_entity_loop_setup_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityLoopSetupMs));
+    out << ",\"phase_entity_header_special_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityHeaderSpecialMs));
+    out << ",\"phase_entity_header_component_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityHeaderComponentMs));
+    out << ",\"phase_entity_header_link_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityHeaderLinkMs));
+    out << ",\"phase_entity_special_probe_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entitySpecialProbeMs));
+    out << ",\"phase_entity_cache_apply_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityCacheApplyMs));
+    out << ",\"phase_entity_cache_match_id_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityCacheMatchIdMs));
+    out << ",\"phase_entity_cache_record_update_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityCacheRecordUpdateMs));
+    out << ",\"phase_entity_hot_fields_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityHotFieldsMs));
+    out << ",\"phase_entity_rotation_position_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityRotationPositionMs));
+    out << ",\"phase_entity_loop_gap_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.entityLoopGapMs));
+    out << ",\"phase_cycle_gap_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(phase.cycleGapMs));
+    out << "}},\"hot\":{\"hot_scatter_requested_count\":" << process.hotScatterRequestedCount
+        << ",\"hot_scatter_prepare_requested_count\":" << process.hotScatterPrepareRequestedCount
+        << ",\"hot_scatter_prepare_success_count\":" << process.hotScatterPrepareSuccessCount
+        << ",\"hot_scatter_prepare_fail_count\":" << process.hotScatterPrepareFailCount
+        << ",\"hot_scatter_execute_count\":" << process.hotScatterExecuteCount
+        << ",\"hot_scatter_execute_fail_count\":" << process.hotScatterExecuteFailCount
+        << ",\"hot_scatter_bytes_requested\":" << process.hotScatterBytesRequested
+        << ",\"hot_scatter_bytes_read\":" << process.hotScatterBytesRead
+        << ",\"hot_scatter_short_read_count\":" << process.hotScatterShortReadCount
+        << ",\"hot_scatter_batch_items\":" << process.hotScatterBatchItems
+        << ",\"hot_scatter_batch_requests\":" << process.hotScatterBatchRequests
+        << ",\"hot_scatter_estimated_unique_pages\":" << process.hotScatterEstimatedUniquePages
+        << ",\"hot_scatter_success_count\":" << process.hotScatterSuccessCount
+        << ",\"hot_scatter_partial_count\":" << process.hotScatterPartialCount
+        << ",\"visibility_scatter_hit_count\":" << process.visibilityScatterHitCount
+        << ",\"skeleton_cache_hit_count\":" << process.skeletonCacheHitCount
+        << ",\"skeleton_cache_miss_count\":" << process.skeletonCacheMissCount
+        << ",\"skeleton_exact_bone_read_count\":" << process.skeletonExactBoneReadCount
+        << ",\"skeleton_block_read_bytes\":" << process.skeletonBlockReadBytes
+        << ",\"skeleton_slow_call_count\":" << process.skeletonSlowCallCount
+        << ",\"skeleton_max_call_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(process.skeletonMaxCallMs));
+    out << ",\"skeleton_max_call_op\":" << process.skeletonMaxCallOp
+        << ",\"skeleton_max_call_hero_id\":\"0x" << std::hex
+        << process.skeletonMaxCallHeroId << std::dec << "\""
+        << ",\"skeleton_max_call_entity\":\"0x" << std::hex
+        << process.skeletonMaxCallEntity << std::dec << "\""
+        << ",\"skeleton_max_call_bone_base\":\"0x" << std::hex
+        << process.skeletonMaxCallBoneBase << std::dec << "\""
+        << ",\"skeleton_max_call_velocity_base\":\"0x" << std::hex
+        << process.skeletonMaxCallVelocityBase << std::dec << "\""
+        << ",\"skeleton_max_call_velocity_bone_data\":\"0x" << std::hex
+        << process.skeletonMaxCallVelocityBoneData << std::dec << "\""
+        << ",\"skeleton_max_call_cache_hit\":"
+        << (process.skeletonMaxCallCacheHit ? "true" : "false")
+        << ",\"skeleton_max_call_cache_valid\":"
+        << (process.skeletonMaxCallCacheValid ? "true" : "false")
+        << ",\"skeleton_max_call_fallback\":"
+        << (process.skeletonMaxCallFallback ? "true" : "false")
+        << ",\"skeleton_max_call_max_mapped_index\":"
+        << process.skeletonMaxCallMaxMappedIndex
+        << ",\"skeleton_max_call_success\":"
+        << (process.skeletonMaxCallSuccess ? "true" : "false")
+        << "},\"cold\":{\"base_cache_hit_count\":" << process.baseCacheHitCount
+        << ",\"base_cache_miss_count\":" << process.baseCacheMissCount
+        << ",\"base_decrypt_attempt_count\":" << process.baseDecryptAttemptCount
+        << ",\"base_decrypt_success_count\":" << process.baseDecryptSuccessCount
+        << ",\"base_decrypt_fail_count\":" << process.baseDecryptFailCount
+        << ",\"base_decrypt_slow_call_count\":" << process.baseDecryptSlowCallCount
+        << ",\"base_decrypt_fallback_attempt_count\":"
+        << process.baseDecryptFallbackAttemptCount
+        << ",\"base_decrypt_fallback_success_count\":"
+        << process.baseDecryptFallbackSuccessCount
+        << ",\"base_decrypt_fallback_fail_count\":"
+        << process.baseDecryptFallbackFailCount
+        << ",\"base_decrypt_unique_key_count\":"
+        << process.baseDecryptUniqueKeyCount
+        << ",\"base_decrypt_duplicate_key_count\":"
+        << process.baseDecryptDuplicateKeyCount
+        << ",\"base_decrypt_max_duplicate_key_count\":"
+        << process.baseDecryptMaxDuplicateKeyCount
+        << ",\"base_decrypt_max_duplicate_key_type\":"
+        << process.baseDecryptMaxDuplicateKeyType
+        << ",\"base_decrypt_max_duplicate_key_parent\":\"0x" << std::hex
+        << process.baseDecryptMaxDuplicateKeyParent << std::dec << "\""
+        << ",\"base_decrypt_max_call_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(process.baseDecryptMaxCallMs));
+    out << ",\"base_decrypt_max_call_type\":" << process.baseDecryptMaxCallType
+        << ",\"base_decrypt_max_call_parent\":\"0x" << std::hex
+        << process.baseDecryptMaxCallParent << std::dec << "\""
+        << ",\"base_decrypt_max_call_success\":"
+        << (process.baseDecryptMaxCallSuccess ? "true" : "false")
+        << ",\"team_name_slow_call_count\":" << process.teamNameSlowCallCount
+        << ",\"team_name_max_call_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(process.teamNameMaxCallMs));
+    out << ",\"team_name_max_call_op\":" << process.teamNameMaxCallOp
+        << ",\"team_name_max_call_hero_id\":\"0x" << std::hex
+        << process.teamNameMaxCallHeroId << std::dec << "\""
+        << ",\"team_name_max_call_link_base\":\"0x" << std::hex
+        << process.teamNameMaxCallLinkBase << std::dec << "\""
+        << ",\"team_name_max_call_team_base\":\"0x" << std::hex
+        << process.teamNameMaxCallTeamBase << std::dec << "\""
+        << ",\"team_name_max_call_success\":"
+        << (process.teamNameMaxCallSuccess ? "true" : "false")
+        << ",\"skill_due_count\":" << process.skillDueCount
+        << ",\"skill_read_count\":" << process.skillReadCount
+        << ",\"skill_skipped_not_due_count\":" << process.skillSkippedNotDueCount
+        << "},\"fallback\":{\"hot_scatter_fallback_read_count\":"
+        << process.hotScatterFallbackReadCount
+        << ",\"skeleton_fallback_get_bone_pos_count\":" << process.skeletonFallbackGetBonePosCount
+        << ",\"visibility_fallback_count\":" << process.visibilityFallbackCount
+        << "},\"lifecycle\":{\"entity_record_created_count\":"
+        << lifecycle.entityRecordCreatedCount
+        << ",\"entity_record_updated_actor_count\":"
+        << lifecycle.entityRecordUpdatedActorCount
+        << ",\"entity_record_link_changed_count\":"
+        << lifecycle.entityRecordLinkChangedCount
+        << ",\"entity_record_link_changed_same_component_count\":"
+        << lifecycle.entityRecordLinkChangedSameComponentCount
+        << ",\"entity_record_link_changed_component_changed_count\":"
+        << lifecycle.entityRecordLinkChangedComponentChangedCount
+        << ",\"entity_record_link_changed_same_hero_count\":"
+        << lifecycle.entityRecordLinkChangedSameHeroCount
+        << ",\"entity_record_link_changed_hero_changed_count\":"
+        << lifecycle.entityRecordLinkChangedHeroChangedCount
+        << ",\"entity_record_link_changed_hero_unknown_count\":"
+        << lifecycle.entityRecordLinkChangedHeroUnknownCount
+        << ",\"entity_record_link_changed_match_key_count\":"
+        << lifecycle.entityRecordLinkChangedMatchKeyCount
+        << ",\"entity_record_link_changed_link_key_count\":"
+        << lifecycle.entityRecordLinkChangedLinkKeyCount
+        << ",\"entity_record_link_changed_component_key_count\":"
+        << lifecycle.entityRecordLinkChangedComponentKeyCount
+        << ",\"entity_record_mark_missing_count\":"
+        << lifecycle.entityRecordMarkMissingCount
+        << ",\"entity_record_mark_dead_count\":"
+        << lifecycle.entityRecordMarkDeadCount
+        << ",\"entity_record_expired_count\":"
+        << lifecycle.entityRecordExpiredCount
+        << ",\"entity_scene_generation\":" << lifecycle.sceneGeneration
+        << ",\"entity_scene_clear_count\":" << lifecycle.sceneClearCount
+        << ",\"entity_seat_expired_count\":" << lifecycle.seatExpiredCount
+        << ",\"entity_stale_scene_rejected_count\":" << lifecycle.staleSceneRejectedCount
+        << ",\"entity_empty_scene_pending\":" << (lifecycle.emptyScenePending ? "true" : "false")
+        << ",\"entity_empty_scene_age_ms\":" << lifecycle.emptySceneAgeMs
+        << ",\"entity_record_scan_miss_soft_gap_count\":"
+        << lifecycle.entityRecordScanMissSoftGapCount
+        << ",\"entity_record_scan_miss_hard_gap_count\":"
+        << lifecycle.entityRecordScanMissHardGapCount
+        << ",\"entity_record_scan_miss_grace_append_count\":"
+        << lifecycle.entityRecordScanMissGraceAppendCount
+        << ",\"entity_record_scan_miss_grace_drop_count\":"
+        << lifecycle.entityRecordScanMissGraceDropCount
+        << ",\"entity_record_scan_miss_hot_read_success_count\":"
+        << lifecycle.entityRecordScanMissHotReadSuccessCount
+        << ",\"entity_record_scan_miss_hot_read_fail_count\":"
+        << lifecycle.entityRecordScanMissHotReadFailCount
+        << ",\"component_cache_hit_count\":"
+        << lifecycle.componentCacheHitCount
+        << ",\"component_cache_miss_count\":"
+        << lifecycle.componentCacheMissCount
+        << ",\"component_cache_invalidate_interval_count\":"
+        << lifecycle.componentCacheInvalidateIntervalCount
+        << ",\"component_cache_invalidate_interval_skipped_lifetime_count\":"
+        << lifecycle.componentCacheInvalidateIntervalSkippedLifetimeCount
+        << ",\"component_cache_invalidate_link_change_count\":"
+        << lifecycle.componentCacheInvalidateLinkChangeCount
+        << ",\"component_cache_invalidate_health_resurrect_count\":"
+        << lifecycle.componentCacheInvalidateHealthResurrectCount
+        << ",\"component_cache_invalidate_hero_change_count\":"
+        << lifecycle.componentCacheInvalidateHeroChangeCount
+        << ",\"component_cache_link_change_previous_match_id_known_count\":"
+        << lifecycle.componentCacheLinkChangePreviousMatchIdKnownCount
+        << ",\"component_cache_link_change_previous_match_id_zero_count\":"
+        << lifecycle.componentCacheLinkChangePreviousMatchIdZeroCount
+        << ",\"component_cache_link_change_previous_match_id_unknown_count\":"
+        << lifecycle.componentCacheLinkChangePreviousMatchIdUnknownCount
+        << ",\"component_cache_link_change_record_alias_hit_count\":"
+        << lifecycle.componentCacheLinkChangeRecordAliasHitCount
+        << ",\"component_cache_link_change_record_alias_miss_count\":"
+        << lifecycle.componentCacheLinkChangeRecordAliasMissCount
+        << ",\"component_cache_link_change_record_published_count\":"
+        << lifecycle.componentCacheLinkChangeRecordPublishedCount
+        << ",\"component_cache_link_change_record_bases_valid_count\":"
+        << lifecycle.componentCacheLinkChangeRecordBasesValidCount
+        << ",\"component_cache_link_change_record_match_key_count\":"
+        << lifecycle.componentCacheLinkChangeRecordMatchKeyCount
+        << ",\"component_cache_link_change_record_link_key_count\":"
+        << lifecycle.componentCacheLinkChangeRecordLinkKeyCount
+        << ",\"component_cache_link_change_record_component_key_count\":"
+        << lifecycle.componentCacheLinkChangeRecordComponentKeyCount
+        << ",\"component_cache_link_retain_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainAttemptCount
+        << ",\"component_cache_link_retain_success_count\":"
+        << lifecycle.componentCacheLinkRetainSuccessCount
+        << ",\"component_cache_link_retain_rejected_disabled_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedDisabledCount
+        << ",\"component_cache_link_retain_rejected_record_store_disabled_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedRecordStoreDisabledCount
+        << ",\"component_cache_link_retain_rejected_missing_record_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedMissingRecordCount
+        << ",\"component_cache_link_retain_rejected_missing_match_id_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedMissingMatchIdCount
+        << ",\"component_cache_link_retain_rejected_component_changed_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedComponentChangedCount
+        << ",\"component_cache_link_retain_rejected_interval_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedIntervalCount
+        << ",\"component_cache_link_retain_interval_bypassed_lifetime_count\":"
+        << lifecycle.componentCacheLinkRetainIntervalBypassedLifetimeCount
+        << ",\"component_cache_link_retain_rejected_hero_changed_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedHeroChangedCount
+        << ",\"component_cache_link_retain_rejected_hero_unknown_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedHeroUnknownCount
+        << ",\"component_cache_link_retain_rejected_decrypt_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRejectedDecryptFailCount
+        << ",\"component_cache_link_retain_cached_hero_validate_count\":"
+        << lifecycle.componentCacheLinkRetainCachedHeroValidateCount
+        << ",\"component_cache_link_retain_refresh_decrypt_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshDecryptAttemptCount
+        << ",\"component_cache_link_retain_refresh_decrypt_success_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshDecryptSuccessCount
+        << ",\"component_cache_link_retain_refresh_decrypt_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshDecryptFailCount
+        << ",\"component_cache_link_retain_refresh_link_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshLinkAttemptCount
+        << ",\"component_cache_link_retain_refresh_link_success_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshLinkSuccessCount
+        << ",\"component_cache_link_retain_refresh_link_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshLinkFailCount
+        << ",\"component_cache_link_retain_refresh_hero_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshHeroAttemptCount
+        << ",\"component_cache_link_retain_refresh_hero_success_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshHeroSuccessCount
+        << ",\"component_cache_link_retain_refresh_hero_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshHeroFailCount
+        << ",\"component_cache_link_retain_refresh_visibility_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshVisibilityAttemptCount
+        << ",\"component_cache_link_retain_refresh_visibility_success_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshVisibilitySuccessCount
+        << ",\"component_cache_link_retain_refresh_visibility_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshVisibilityFailCount
+        << ",\"component_cache_link_retain_refresh_angle_attempt_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAngleAttemptCount
+        << ",\"component_cache_link_retain_refresh_angle_success_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAngleSuccessCount
+        << ",\"component_cache_link_retain_refresh_angle_fail_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAngleFailCount
+        << ",\"component_cache_link_retain_refresh_angle_skipped_no_prior_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAngleSkippedNoPriorCount
+        << ",\"component_cache_link_retain_refresh_angle_prior_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAnglePriorCount
+        << ",\"component_cache_link_retain_refresh_angle_prior_fail_rejected_count\":"
+        << lifecycle.componentCacheLinkRetainRefreshAnglePriorFailRejectedCount
+        << ",\"dynamic_cache_created_count\":"
+        << lifecycle.dynamicCacheCreatedCount
+        << ",\"dynamic_cache_reused_count\":"
+        << lifecycle.dynamicCacheReusedCount
+        << ",\"dynamic_cache_replaced_count\":"
+        << lifecycle.dynamicCacheReplacedCount
+        << ",\"dynamic_cache_expired_count\":"
+        << lifecycle.dynamicCacheExpiredCount
+        << ",\"record_store_enabled\":"
+        << (lifecycle.recordStoreEnabled ? "true" : "false")
+        << ",\"record_store_size\":"
+        << lifecycle.recordStoreSize
+        << ",\"record_store_fresh_count\":"
+        << lifecycle.recordStoreFreshCount
+        << ",\"record_store_missing_count\":"
+        << lifecycle.recordStoreMissingCount
+        << ",\"record_store_dead_count\":"
+        << lifecycle.recordStoreDeadCount
+        << ",\"record_store_expired_count\":"
+        << lifecycle.recordStoreExpiredCount
+        << ",\"record_store_bases_valid_count\":"
+        << lifecycle.recordStoreBasesValidCount
+        << ",\"record_store_dynamic_valid_count\":"
+        << lifecycle.recordStoreDynamicValidCount
+        << ",\"record_store_published_valid_count\":"
+        << lifecycle.recordStorePublishedValidCount
+        << "}}";
+}
+
+template <typename T>
+bool TryReadValue(uint64_t address, T& value);
+
+uint32_t ReadU32OrZero(uint64_t address)
+{
+    uint32_t value = 0;
+    TryReadValue(address, value);
+    return value;
+}
+
+void AppendTeamDebugJson(std::ostringstream& out, uint64_t teamBase)
+{
+    out << "{\"base\":";
+    AppendHexOrNull(out, teamBase);
+    const uint32_t flags58 = teamBase ? ReadU32OrZero(teamBase + OW::offset::Team_FlagsOffset) : 0;
+    out << ",\"flags_58\":";
+    AppendHexString(out, flags58);
+    out << ",\"mask_58\":";
+    AppendHexString(out, static_cast<uint64_t>(flags58 & OW::offset::Team_LegacyMask));
+    out << ",\"comparison_key\":";
+    AppendHexString(out, static_cast<uint64_t>(OW::offset::TeamComparisonKeyFromFlags(flags58)));
+    out << ",\"raw_comparison_key\":";
+    AppendHexString(out, static_cast<uint64_t>(OW::offset::TeamRawComparisonKeyFromFlags(flags58)));
+    out << ",\"relation_code\":";
+    AppendHexString(out, static_cast<uint64_t>(OW::offset::TeamRelationCodeFromFlags(flags58)));
+    out << ",\"dwords\":[";
+    for (uint64_t offset = 0x40; offset <= 0x80; offset += 4) {
+        if (offset != 0x40)
+            out << ',';
+        out << "{\"offset\":";
+        AppendHexString(out, offset);
+        out << ",\"value\":";
+        AppendHexString(out, teamBase ? ReadU32OrZero(teamBase + offset) : 0);
+        out << '}';
+    }
+    out << "]}";
+}
+
+template <typename T>
+bool TryReadValue(uint64_t address, T& value)
+{
+    value = {};
+    return OW::SDK &&
+        OW::SDK->IsInitialized() &&
+        address != 0 &&
+        OW::SDK->read_range(address, &value, sizeof(T));
+}
+
+struct ProjectionRawSample {
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    float clipW = 0.0f;
+    float ndcX = 0.0f;
+    float ndcY = 0.0f;
+    float screenX = 0.0f;
+    float screenY = 0.0f;
+    bool finite = false;
+    bool wPositive = false;
+    bool inBounds = false;
+    bool ok = false;
+};
+
+ProjectionRawSample ProjectRaw(const OW::Matrix& matrix, const OW::Vector3& world, const OW::Vector2& window)
+{
+    ProjectionRawSample sample{};
+    sample.clipX = matrix.m11 * world.X + matrix.m21 * world.Y + matrix.m31 * world.Z + matrix.m41;
+    sample.clipY = matrix.m12 * world.X + matrix.m22 * world.Y + matrix.m32 * world.Z + matrix.m42;
+    sample.clipW = matrix.m14 * world.X + matrix.m24 * world.Y + matrix.m34 * world.Z + matrix.m44;
+    sample.wPositive = sample.clipW >= 0.001f;
+    if (std::fabs(sample.clipW) >= 0.001f) {
+        sample.ndcX = sample.clipX / sample.clipW;
+        sample.ndcY = sample.clipY / sample.clipW;
+        sample.screenX = (sample.ndcX + 1.0f) * 0.5f * window.X;
+        sample.screenY = (1.0f - sample.ndcY) * 0.5f * window.Y;
+    }
+    sample.finite =
+        std::isfinite(sample.clipX) &&
+        std::isfinite(sample.clipY) &&
+        std::isfinite(sample.clipW) &&
+        std::isfinite(sample.ndcX) &&
+        std::isfinite(sample.ndcY) &&
+        std::isfinite(sample.screenX) &&
+        std::isfinite(sample.screenY);
+    sample.inBounds =
+        sample.finite &&
+        sample.screenX >= 0.0f &&
+        sample.screenY >= 0.0f &&
+        sample.screenX < window.X &&
+        sample.screenY < window.Y;
+    sample.ok = sample.wPositive && sample.inBounds;
+    return sample;
+}
+
+ProjectionRawSample ProjectRawRowMajor(const OW::Matrix& matrix, const OW::Vector3& world, const OW::Vector2& window)
+{
+    ProjectionRawSample sample{};
+    sample.clipX = matrix.m11 * world.X + matrix.m12 * world.Y + matrix.m13 * world.Z + matrix.m14;
+    sample.clipY = matrix.m21 * world.X + matrix.m22 * world.Y + matrix.m23 * world.Z + matrix.m24;
+    sample.clipW = matrix.m41 * world.X + matrix.m42 * world.Y + matrix.m43 * world.Z + matrix.m44;
+    sample.wPositive = sample.clipW >= 0.001f;
+    if (std::fabs(sample.clipW) >= 0.001f) {
+        sample.ndcX = sample.clipX / sample.clipW;
+        sample.ndcY = sample.clipY / sample.clipW;
+        sample.screenX = (sample.ndcX + 1.0f) * 0.5f * window.X;
+        sample.screenY = (1.0f - sample.ndcY) * 0.5f * window.Y;
+    }
+    sample.finite =
+        std::isfinite(sample.clipX) &&
+        std::isfinite(sample.clipY) &&
+        std::isfinite(sample.clipW) &&
+        std::isfinite(sample.ndcX) &&
+        std::isfinite(sample.ndcY) &&
+        std::isfinite(sample.screenX) &&
+        std::isfinite(sample.screenY);
+    sample.inBounds =
+        sample.finite &&
+        sample.screenX >= 0.0f &&
+        sample.screenY >= 0.0f &&
+        sample.screenX < window.X &&
+        sample.screenY < window.Y;
+    sample.ok = sample.wPositive && sample.inBounds;
+    return sample;
+}
+
+void AppendProjectionRawSampleJson(std::ostringstream& out, const ProjectionRawSample& sample)
+{
+    out << "{\"ok\":" << (sample.ok ? "true" : "false")
+        << ",\"finite\":" << (sample.finite ? "true" : "false")
+        << ",\"w_positive\":" << (sample.wPositive ? "true" : "false")
+        << ",\"in_bounds\":" << (sample.inBounds ? "true" : "false")
+        << ",\"clip\":{\"x\":";
+    AppendNumberOrNull(out, sample.clipX);
+    out << ",\"y\":";
+    AppendNumberOrNull(out, sample.clipY);
+    out << ",\"w\":";
+    AppendNumberOrNull(out, sample.clipW);
+    out << "},\"ndc\":{\"x\":";
+    AppendNumberOrNull(out, sample.ndcX);
+    out << ",\"y\":";
+    AppendNumberOrNull(out, sample.ndcY);
+    out << "},\"screen\":{\"x\":";
+    AppendNumberOrNull(out, sample.screenX);
+    out << ",\"y\":";
+    AppendNumberOrNull(out, sample.screenY);
+    out << "}}";
+}
+
+void AppendMatrixProjectionJson(
+    std::ostringstream& out,
+    const char* name,
+    bool matrixRead,
+    bool matrixValid,
+    const OW::Matrix& matrix,
+    const OW::Vector3& world,
+    const OW::Vector2& window)
+{
+    out << "{\"name\":";
+    AppendJsonString(out, name ? name : "");
+    out << ",\"matrix_read\":" << (matrixRead ? "true" : "false")
+        << ",\"matrix_valid\":" << (matrixValid ? "true" : "false")
+        << ",\"projection\":";
+    if (matrixRead)
+        AppendProjectionRawSampleJson(out, ProjectRaw(matrix, world, window));
+    else
+        out << "null";
+    out << '}';
+}
+
+void AppendMatrixProjectionRowMajorJson(
+    std::ostringstream& out,
+    const char* name,
+    bool matrixRead,
+    bool matrixValid,
+    const OW::Matrix& matrix,
+    const OW::Vector3& world,
+    const OW::Vector2& window)
+{
+    out << "{\"name\":";
+    AppendJsonString(out, name ? name : "");
+    out << ",\"matrix_read\":" << (matrixRead ? "true" : "false")
+        << ",\"matrix_valid\":" << (matrixValid ? "true" : "false")
+        << ",\"projection\":";
+    if (matrixRead)
+        AppendProjectionRawSampleJson(out, ProjectRawRowMajor(matrix, world, window));
+    else
+        out << "null";
+    out << '}';
+}
+
+void AppendProjectionSetJson(
+    std::ostringstream& out,
+    const OW::Vector3& world,
+    const OW::Vector2& window,
+    const OW::Matrix& published,
+    bool publishedValid,
+    const OW::Matrix& directRender,
+    bool directRead,
+    bool directValid,
+    const OW::Matrix& cameraProjection,
+    bool cameraProjectionRead,
+    bool cameraProjectionValid,
+    const OW::Matrix& projectionCamera,
+    bool projectionCameraRead,
+    bool projectionCameraValid)
+{
+    out << '[';
+    AppendMatrixProjectionJson(out, "published", true, publishedValid, published, world, window);
+    out << ',';
+    AppendMatrixProjectionRowMajorJson(out, "published_row_major", true, publishedValid, published, world, window);
+    out << ',';
+    AppendMatrixProjectionJson(out, "direct_render_vp", directRead, directValid, directRender, world, window);
+    out << ',';
+    AppendMatrixProjectionRowMajorJson(out, "direct_render_vp_row_major", directRead, directValid, directRender, world, window);
+    out << ',';
+    AppendMatrixProjectionJson(out, "camera_times_projection", cameraProjectionRead, cameraProjectionValid, cameraProjection, world, window);
+    out << ',';
+    AppendMatrixProjectionJson(out, "projection_times_camera", projectionCameraRead, projectionCameraValid, projectionCamera, world, window);
+    out << ']';
+}
+
+float Dot(const OW::Vector3& lhs, const OW::Vector3& rhs)
+{
+    return lhs.X * rhs.X + lhs.Y * rhs.Y + lhs.Z * rhs.Z;
+}
+
+bool MatrixNonIdentity(const OW::Matrix& matrix)
+{
+    const float values[] = {
+        matrix.m11, matrix.m12, matrix.m13, matrix.m14,
+        matrix.m21, matrix.m22, matrix.m23, matrix.m24,
+        matrix.m31, matrix.m32, matrix.m33, matrix.m34,
+        matrix.m41, matrix.m42, matrix.m43, matrix.m44
+    };
+    const float identity[] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    bool differsFromIdentity = false;
+    bool hasNonZeroValue = false;
+    for (size_t index = 0; index < 16; ++index) {
+        if (!std::isfinite(values[index]))
+            return false;
+        if (std::fabs(values[index]) > 0.0001f)
+            hasNonZeroValue = true;
+        if (std::fabs(values[index] - identity[index]) > 0.001f)
+            differsFromIdentity = true;
+    }
+    return hasNonZeroValue && differsFromIdentity;
+}
+
+bool CameraViewMatrixPlausible(const OW::Matrix& matrix)
+{
+    if (!MatrixNonIdentity(matrix))
+        return false;
+    const DirectX::XMFLOAT3 camera = matrix.get_location();
+    const DirectX::XMFLOAT3 forward = matrix.get_rotation();
+    const float cameraLengthSq = camera.x * camera.x + camera.y * camera.y + camera.z * camera.z;
+    const float forwardLengthSq = forward.x * forward.x + forward.y * forward.y + forward.z * forward.z;
+    return std::isfinite(camera.x) && std::isfinite(camera.y) && std::isfinite(camera.z) &&
+        std::isfinite(forward.x) && std::isfinite(forward.y) && std::isfinite(forward.z) &&
+        cameraLengthSq > 0.000001f && cameraLengthSq < 1000000000000.0f &&
+        forwardLengthSq > 0.0625f && forwardLengthSq < 4.0f;
+}
+
+OW::Matrix MultiplyMatricesLocal(const OW::Matrix& a, const OW::Matrix& b)
+{
+    OW::Matrix result{};
+    result.m11 = a.m11 * b.m11 + a.m12 * b.m21 + a.m13 * b.m31 + a.m14 * b.m41;
+    result.m12 = a.m11 * b.m12 + a.m12 * b.m22 + a.m13 * b.m32 + a.m14 * b.m42;
+    result.m13 = a.m11 * b.m13 + a.m12 * b.m23 + a.m13 * b.m33 + a.m14 * b.m43;
+    result.m14 = a.m11 * b.m14 + a.m12 * b.m24 + a.m13 * b.m34 + a.m14 * b.m44;
+    result.m21 = a.m21 * b.m11 + a.m22 * b.m21 + a.m23 * b.m31 + a.m24 * b.m41;
+    result.m22 = a.m21 * b.m12 + a.m22 * b.m22 + a.m23 * b.m32 + a.m24 * b.m42;
+    result.m23 = a.m21 * b.m13 + a.m22 * b.m23 + a.m23 * b.m33 + a.m24 * b.m43;
+    result.m24 = a.m21 * b.m14 + a.m22 * b.m24 + a.m23 * b.m34 + a.m24 * b.m44;
+    result.m31 = a.m31 * b.m11 + a.m32 * b.m21 + a.m33 * b.m31 + a.m34 * b.m41;
+    result.m32 = a.m31 * b.m12 + a.m32 * b.m22 + a.m33 * b.m32 + a.m34 * b.m42;
+    result.m33 = a.m31 * b.m13 + a.m32 * b.m23 + a.m33 * b.m33 + a.m34 * b.m43;
+    result.m34 = a.m31 * b.m14 + a.m32 * b.m24 + a.m33 * b.m34 + a.m34 * b.m44;
+    result.m41 = a.m41 * b.m11 + a.m42 * b.m21 + a.m43 * b.m31 + a.m44 * b.m41;
+    result.m42 = a.m41 * b.m12 + a.m42 * b.m22 + a.m43 * b.m32 + a.m44 * b.m42;
+    result.m43 = a.m41 * b.m13 + a.m42 * b.m23 + a.m43 * b.m33 + a.m44 * b.m43;
+    result.m44 = a.m41 * b.m14 + a.m42 * b.m24 + a.m43 * b.m34 + a.m44 * b.m44;
+    return result;
+}
+
+OW::Matrix ProbeMultiplyMatrices(const OW::Matrix& a, const OW::Matrix& b)
+{
+    OW::Matrix result{};
+    result.m11 = a.m11 * b.m11 + a.m12 * b.m21 + a.m13 * b.m31 + a.m14 * b.m41;
+    result.m12 = a.m11 * b.m12 + a.m12 * b.m22 + a.m13 * b.m32 + a.m14 * b.m42;
+    result.m13 = a.m11 * b.m13 + a.m12 * b.m23 + a.m13 * b.m33 + a.m14 * b.m43;
+    result.m14 = a.m11 * b.m14 + a.m12 * b.m24 + a.m13 * b.m34 + a.m14 * b.m44;
+    result.m21 = a.m21 * b.m11 + a.m22 * b.m21 + a.m23 * b.m31 + a.m24 * b.m41;
+    result.m22 = a.m21 * b.m12 + a.m22 * b.m22 + a.m23 * b.m32 + a.m24 * b.m42;
+    result.m23 = a.m21 * b.m13 + a.m22 * b.m23 + a.m23 * b.m33 + a.m24 * b.m43;
+    result.m24 = a.m21 * b.m14 + a.m22 * b.m24 + a.m23 * b.m34 + a.m24 * b.m44;
+    result.m31 = a.m31 * b.m11 + a.m32 * b.m21 + a.m33 * b.m31 + a.m34 * b.m41;
+    result.m32 = a.m31 * b.m12 + a.m32 * b.m22 + a.m33 * b.m32 + a.m34 * b.m42;
+    result.m33 = a.m31 * b.m13 + a.m32 * b.m23 + a.m33 * b.m33 + a.m34 * b.m43;
+    result.m34 = a.m31 * b.m14 + a.m32 * b.m24 + a.m33 * b.m34 + a.m34 * b.m44;
+    result.m41 = a.m41 * b.m11 + a.m42 * b.m21 + a.m43 * b.m31 + a.m44 * b.m41;
+    result.m42 = a.m41 * b.m12 + a.m42 * b.m22 + a.m43 * b.m32 + a.m44 * b.m42;
+    result.m43 = a.m41 * b.m13 + a.m42 * b.m23 + a.m43 * b.m33 + a.m44 * b.m43;
+    result.m44 = a.m41 * b.m14 + a.m42 * b.m24 + a.m43 * b.m34 + a.m44 * b.m44;
+    return result;
+}
+
+float ProjectionScaleToFovDeg(float scale)
+{
+    constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+    const float absScale = std::fabs(scale);
+    if (!std::isfinite(absScale) || absScale <= 0.000001f)
+        return (std::numeric_limits<float>::quiet_NaN)();
+    return kRadToDeg * 2.0f * std::atan(1.0f / absScale);
+}
+
+void AppendProjectionFovJson(std::ostringstream& out,
+                             const OW::Matrix& projection,
+                             bool projectionRead,
+                             const OW::Vector2& window)
+{
+    const float aspect = window.Y > 0.0f ? window.X / window.Y : 0.0f;
+    out << "{\"projection_read\":" << (projectionRead ? "true" : "false")
+        << ",\"aspect\":";
+    AppendNumberOrNull(out, aspect);
+    out << ",\"m11\":";
+    AppendNumberOrNull(out, projection.m11);
+    out << ",\"m22\":";
+    AppendNumberOrNull(out, projection.m22);
+    out << ",\"m14\":";
+    AppendNumberOrNull(out, projection.m14);
+    out << ",\"m24\":";
+    AppendNumberOrNull(out, projection.m24);
+    out << ",\"m34\":";
+    AppendNumberOrNull(out, projection.m34);
+    out << ",\"m43\":";
+    AppendNumberOrNull(out, projection.m43);
+    out << ",\"m44\":";
+    AppendNumberOrNull(out, projection.m44);
+    out << ",\"composition_m14_zeroed\":"
+        << (projectionRead && OW::ProjectionMatrixNeedsCompositionM14Zero(projection) ? "true" : "false");
+    out << ",\"horizontal_deg_from_m11\":";
+    AppendNumberOrNull(out, projectionRead ? ProjectionScaleToFovDeg(projection.m11) : (std::numeric_limits<float>::quiet_NaN)());
+    out << ",\"vertical_deg_from_m22\":";
+    AppendNumberOrNull(out, projectionRead ? ProjectionScaleToFovDeg(projection.m22) : (std::numeric_limits<float>::quiet_NaN)());
+    out << ",\"horizontal_deg_from_m22_aspect\":";
+    AppendNumberOrNull(out,
+        projectionRead && aspect > 0.0f && std::fabs(projection.m22) > 0.000001f
+            ? ProjectionScaleToFovDeg(projection.m22 / aspect)
+            : (std::numeric_limits<float>::quiet_NaN)());
+    out << ",\"vertical_deg_from_m11_aspect\":";
+    AppendNumberOrNull(out,
+        projectionRead && aspect > 0.0f && std::fabs(projection.m11) > 0.000001f
+            ? ProjectionScaleToFovDeg(projection.m11 * aspect)
+            : (std::numeric_limits<float>::quiet_NaN)());
+    out << ",\"default_horizontal_deg\":";
+    AppendNumberOrNull(out, OW::offset::Default_FOV_Horizontal_Deg);
+    out << ",\"configured_aim_fov_deg\":";
+    AppendNumberOrNull(out, OW::Config::View_Fov());
+    out << ",\"runtime_draw_fov_deg\":";
+    AppendNumberOrNull(out, OW::Config::RuntimeDrawFovOrDefault(OW::Config::View_Fov()));
+    out << '}';
+}
+
+struct TargetFloatHit {
+    uint64_t offset = 0;
+    uint64_t address = 0;
+    float value = 0.0f;
+};
+
+std::vector<TargetFloatHit> CollectFloatTargetHits(
+    uint64_t address,
+    size_t scanBytes,
+    float target,
+    float tolerance,
+    size_t maxHits)
+{
+    constexpr size_t kChunkSize = 0x1000;
+    std::vector<TargetFloatHit> hits;
+    if (!address || !OW::SDK || maxHits == 0)
+        return hits;
+
+    std::vector<uint8_t> buffer(kChunkSize);
+    for (size_t chunkOffset = 0; chunkOffset < scanBytes; chunkOffset += kChunkSize) {
+        const size_t remaining = scanBytes - chunkOffset;
+        const size_t chunkSize = remaining < kChunkSize ? remaining : kChunkSize;
+        if (!OW::SDK->read_range(address + chunkOffset, buffer.data(), chunkSize))
+            continue;
+
+        for (size_t offset = 0; offset + sizeof(float) <= chunkSize; offset += sizeof(float)) {
+            float value = 0.0f;
+            std::memcpy(&value, buffer.data() + offset, sizeof(value));
+            if (!std::isfinite(value) || std::fabs(value - target) > tolerance)
+                continue;
+
+            TargetFloatHit hit{};
+            hit.offset = static_cast<uint64_t>(chunkOffset + offset);
+            hit.address = address + hit.offset;
+            hit.value = value;
+            hits.push_back(hit);
+            if (hits.size() >= maxHits)
+                return hits;
+        }
+    }
+
+    return hits;
+}
+
+constexpr uint64_t kBzInputOptionsVtableRva = 0x2ED8D60;
+constexpr uint64_t kBzModuleProbeSize = 0x5000000;
+constexpr float kBzInputOptionsAngleScale = 0.011519159190356731f;
+
+void AppendCandidateSlotSelectedBooleanJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::CandidateSlotSelectedBoolean& selected)
+{
+    out << "{\"evidence\":\"20260615_candidate_slot_family_fail_closed\","
+        << "\"supported_hero\":" << (selected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (selected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (selected.available)
+        out << (selected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"result\":";
+    AppendJsonString(out, selected.result ? selected.result : "");
+    out << ",\"family\":";
+    if (selected.family && selected.family[0] != '\0')
+        AppendJsonString(out, selected.family);
+    else
+        out << "null";
+    out << ",\"confidence\":";
+    AppendJsonString(out, selected.confidence ? selected.confidence : "none");
+    out << ",\"side\":";
+    if (selected.side && selected.side[0] != '\0')
+        AppendJsonString(out, selected.side);
+    else
+        out << "null";
+    out << ",\"matched_offsets\":[";
+    for (size_t index = 0; index < selected.matchedOffsetCount; ++index) {
+        if (index != 0)
+            out << ',';
+        AppendHexString(out, selected.matchedOffsets[index]);
+    }
+    out << "],\"used_signals\":{"
+        << "\"candidate_slots\":true,"
+        << "\"e78\":false,"
+        << "\"ultimate_charge\":false,"
+        << "\"legacy_keys\":false"
+        << "}}";
+}
+
+void AppendRawSelectedBooleanJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::RawSelectedBoolean& selected)
+{
+    out << "{\"evidence\":\"20260615_raw_per_hero_fail_closed\","
+        << "\"supported_hero\":" << (selected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (selected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (selected.available)
+        out << (selected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"rule\":";
+    if (selected.rule && selected.rule[0] != '\0')
+        AppendJsonString(out, selected.rule);
+    else
+        out << "null";
+    out << ",\"used_signals\":{"
+        << "\"skill_16c2\":true,"
+        << "\"symmetra_02e8\":true,"
+        << "\"zarya_component55_270\":true,"
+        << "\"e78\":false,"
+        << "\"ultimate_charge\":false,"
+        << "\"legacy_keys\":false"
+        << "}}";
+}
+
+void AppendAnaHeadshotSelectedBooleanJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::AnaHeadshotSelectedBoolean& selected)
+{
+    out << "{\"evidence\":\"20260616_ana_e44_not_no_pri_component21_02e8_headshot_major_right\","
+        << "\"supported_hero\":" << (selected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (selected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (selected.available)
+        out << (selected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"result\":";
+    AppendJsonString(out, selected.result ? selected.result : "");
+    out << ",\"primary_gate_e44_read\":" << (selected.primaryGateRead ? "true" : "false")
+        << ",\"primary_gate_e44_u32\":";
+    AppendHexString(out, selected.primaryGateE44);
+    out << ",\"primary_gate_active\":" << (selected.primaryGateActive ? "true" : "false")
+        << ",\"major_selected_known\":" << (selected.majorSelectedKnown ? "true" : "false")
+        << ",\"major_selected\":" << (selected.majorSelected ? "true" : "false")
+        << ",\"skill_02e8_read\":" << (selected.skill02E8Read ? "true" : "false")
+        << ",\"skill_02e8_u64\":";
+    AppendHexString(out, selected.skill02E8);
+    out << ",\"skill_02e8_high32\":";
+    AppendHexString(out, selected.skill02E8High32);
+    out << ",\"skill_02e8_low32\":";
+    AppendHexString(out, selected.skill02E8Low32);
+    out << ",\"skill_02e8_gate_known\":"
+        << (selected.skill02E8GateKnown ? "true" : "false")
+        << ",\"skill_02e8_gate_active\":"
+        << (selected.skill02E8GateActive ? "true" : "false")
+        << ",\"skill_0348_target_read\":"
+        << (selected.skill0348TargetRead ? "true" : "false")
+        << ",\"skill_0348_target\":";
+    AppendHexOrNull(out, selected.skill0348Target);
+    out << ",\"skill_0348_target_plausible\":"
+        << (selected.skill0348TargetPlausible ? "true" : "false")
+        << ",\"skill_0348_target_01d4_read\":"
+        << (selected.skill0348Target1D4Read ? "true" : "false")
+        << ",\"skill_0348_target_01d4_u32\":";
+    AppendHexString(out, selected.skill0348Target1D4);
+    out << ",\"skill_0348_target_01d4_qword_read\":"
+        << (selected.skill0348Target1D4QwordRead ? "true" : "false")
+        << ",\"skill_0348_target_01d4_u64\":";
+    AppendHexString(out, selected.skill0348Target1D4Qword);
+    out << ",\"component21_base\":";
+    AppendHexOrNull(out, selected.component21Base);
+    out << ",\"component21_021c_read\":"
+        << (selected.component21_021CRead ? "true" : "false")
+        << ",\"component21_021c_u32\":";
+    AppendHexString(out, selected.component21_021C);
+    out << ",\"component21_0228_read\":"
+        << (selected.component21_0228Read ? "true" : "false")
+        << ",\"component21_0228_u32\":";
+    AppendHexString(out, selected.component21_0228);
+    out << ",\"component21_0228_qword_read\":"
+        << (selected.component21_0228QwordRead ? "true" : "false")
+        << ",\"component21_0228_u64\":";
+    AppendHexString(out, selected.component21_0228Qword);
+    out << ",\"component21_02e0_read\":"
+        << (selected.component21_02E0Read ? "true" : "false")
+        << ",\"component21_02e0_u32\":";
+    AppendHexString(out, selected.component21_02E0);
+    out << ",\"component21_02e8_read\":"
+        << (selected.component21_02E8Read ? "true" : "false")
+        << ",\"component21_02e8_u32\":";
+    AppendHexString(out, selected.component21_02E8);
+    out << ",\"component21_02e8_qword_read\":"
+        << (selected.component21_02E8QwordRead ? "true" : "false")
+        << ",\"component21_02e8_u64\":";
+    AppendHexString(out, selected.component21_02E8Qword);
+    out << ",\"component7f_base\":";
+    AppendHexOrNull(out, selected.component7fBase);
+    out << ",\"component7f_d4_read\":" << (selected.component7fD4Read ? "true" : "false")
+        << ",\"component7f_d4_u64\":";
+    AppendHexString(out, selected.component7fD4);
+    out << ",\"component7f_d8_read\":" << (selected.component7fD8Read ? "true" : "false")
+        << ",\"component7f_d8_u32\":";
+    AppendHexString(out, selected.component7fD8);
+    out << ",\"component7f_d8_qword_read\":"
+        << (selected.component7fD8QwordRead ? "true" : "false")
+        << ",\"component7f_d8_u64\":";
+    AppendHexString(out, selected.component7fD8Qword);
+    out << ",\"component7f_scan\":{\"range_begin\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fScanBegin);
+    out << ",\"range_end_exclusive\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fScanEnd);
+    out << ",\"stride\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fScanStride);
+    out << ",\"hash\":";
+    AppendHexString(out, selected.component7fScanHash);
+    out << ",\"read_count\":" << selected.component7fScanReadCount
+        << ",\"nonzero_count\":" << selected.component7fScanNonzeroCount
+        << ",\"nonzero_qwords\":[";
+    bool firstScanValue = true;
+    for (size_t index = 0; index < OW::HeroPerks::kAnaComponent7fScanQwordCount; ++index) {
+        if (!selected.component7fScanRead[index] || selected.component7fScanQword[index] == 0)
+            continue;
+        if (!firstScanValue)
+            out << ',';
+        firstScanValue = false;
+        out << "{\"offset\":";
+        AppendHexString(
+            out,
+            OW::HeroPerks::kAnaComponent7fScanBegin +
+                static_cast<uint64_t>(index) * OW::HeroPerks::kAnaComponent7fScanStride);
+        out << ",\"u64\":";
+        AppendHexString(out, selected.component7fScanQword[index]);
+        out << '}';
+    }
+    out << "]}";
+    out << ",\"component7f_raw_slot\":{";
+    out << "\"bitset_read\":" << (selected.component7fRawSlotBitsetRead ? "true" : "false")
+        << ",\"present\":" << (selected.component7fRawSlotPresent ? "true" : "false")
+        << ",\"index_read\":" << (selected.component7fRawSlotIndexRead ? "true" : "false")
+        << ",\"table_read\":" << (selected.component7fRawSlotTableRead ? "true" : "false")
+        << ",\"table_plausible\":" << (selected.component7fRawSlotTablePlausible ? "true" : "false")
+        << ",\"slot_read\":" << (selected.component7fRawSlotRead ? "true" : "false")
+        << ",\"slot_plausible\":" << (selected.component7fRawSlotPlausible ? "true" : "false")
+        << ",\"bitset\":";
+    AppendHexString(out, selected.component7fRawSlotBitset);
+    out << ",\"index_base\":";
+    AppendHexString(out, selected.component7fRawSlotIndexBase);
+    out << ",\"component_index\":";
+    AppendHexString(out, selected.component7fRawSlotComponentIndex);
+    out << ",\"table\":";
+    AppendHexOrNull(out, selected.component7fRawSlotTable);
+    out << ",\"base\":";
+    AppendHexOrNull(out, selected.component7fRawSlotBase);
+    out << ",\"d8_read\":" << (selected.component7fRawSlotD8Read ? "true" : "false")
+        << ",\"d8_u32\":";
+    AppendHexString(out, selected.component7fRawSlotD8);
+    out << ",\"d8_qword_read\":"
+        << (selected.component7fRawSlotD8QwordRead ? "true" : "false")
+        << ",\"d8_u64\":";
+    AppendHexString(out, selected.component7fRawSlotD8Qword);
+    out << ",\"scan\":{\"range_begin\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fRawSlotScanBegin);
+    out << ",\"range_end_exclusive\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fRawSlotScanEnd);
+    out << ",\"stride\":";
+    AppendHexString(out, OW::HeroPerks::kAnaComponent7fRawSlotScanStride);
+    out << ",\"hash\":";
+    AppendHexString(out, selected.component7fRawSlotScanHash);
+    out << ",\"read_count\":" << selected.component7fRawSlotScanReadCount
+        << ",\"nonzero_count\":" << selected.component7fRawSlotScanNonzeroCount
+        << ",\"nonzero_qwords\":[";
+    bool firstRawSlotScanValue = true;
+    for (size_t index = 0; index < OW::HeroPerks::kAnaComponent7fRawSlotScanQwordCount; ++index) {
+        if (!selected.component7fRawSlotScanRead[index] ||
+            selected.component7fRawSlotScanQword[index] == 0)
+            continue;
+        if (!firstRawSlotScanValue)
+            out << ',';
+        firstRawSlotScanValue = false;
+        out << "{\"offset\":";
+        AppendHexString(
+            out,
+            OW::HeroPerks::kAnaComponent7fRawSlotScanBegin +
+                static_cast<uint64_t>(index) * OW::HeroPerks::kAnaComponent7fRawSlotScanStride);
+        out << ",\"u64\":";
+        AppendHexString(out, selected.component7fRawSlotScanQword[index]);
+        out << '}';
+    }
+    out << "]}}";
+    out << ",\"candidate_diagnostics\":{";
+    out << "\"skill_09a_read\":" << (selected.skill09ARead ? "true" : "false")
+        << ",\"skill_09a_u16\":";
+    AppendHexString(out, selected.skill09A);
+    out << ",\"skill_592_read\":" << (selected.skill592Read ? "true" : "false")
+        << ",\"skill_592_u16\":";
+    AppendHexString(out, selected.skill592);
+    out << ",\"skill_0bd0_read\":" << (selected.skill0BD0Read ? "true" : "false")
+        << ",\"skill_0bd0_u64\":";
+    AppendHexString(out, selected.skill0BD0);
+    out << ",\"component22_base\":";
+    AppendHexOrNull(out, selected.component22Base);
+    out << ",\"component22_0140_read\":" << (selected.component22_0140Read ? "true" : "false")
+        << ",\"component22_0140_u16\":";
+    AppendHexString(out, selected.component22_0140);
+    out << ",\"component22_01f2_read\":" << (selected.component22_01F2Read ? "true" : "false")
+        << ",\"component22_01f2_u16\":";
+    AppendHexString(out, selected.component22_01F2);
+    out << ",\"component22_0200_read\":" << (selected.component22_0200Read ? "true" : "false")
+        << ",\"component22_0200_u32\":";
+    AppendHexString(out, selected.component22_0200);
+    out << ",\"component22_0202_read\":" << (selected.component22_0202Read ? "true" : "false")
+        << ",\"component22_0202_u16\":";
+    AppendHexString(out, selected.component22_0202);
+    out << ",\"component22_0203_read\":" << (selected.component22_0203Read ? "true" : "false")
+        << ",\"component22_0203_u8\":";
+    AppendHexString(out, selected.component22_0203);
+    out << ",\"component22_0350_read\":" << (selected.component22_0350Read ? "true" : "false")
+        << ",\"component22_0350_u16\":";
+    AppendHexString(out, selected.component22_0350);
+    out << '}';
+    out << ",\"used_signals\":{"
+        << "\"statescript_major_selected\":false,"
+        << "\"component21_02e8\":true,"
+        << "\"component21_0228\":false,"
+        << "\"e44_primary_gate\":true,"
+        << "\"skill_0348_target_01d4\":false,"
+        << "\"skill_02e8_gate\":false,"
+        << "\"component7f_d4_d8\":false,"
+        << "\"component7f_scan\":false,"
+        << "\"component7f_raw_slot\":false,"
+        << "\"ana_candidate_diagnostics\":false,"
+        << "\"e78\":false,"
+        << "\"ultimate_charge\":false,"
+        << "\"legacy_keys\":false"
+        << "}}";
+}
+
+void AppendMergedSelectedBooleanJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::MergedSelectedBoolean& selected)
+{
+    out << "{\"evidence\":\"20260615_merged_fail_closed\","
+        << "\"supported_hero\":" << (selected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (selected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (selected.available)
+        out << (selected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"result\":";
+    AppendJsonString(out, selected.result ? selected.result : "");
+    out << ",\"source\":";
+    if (selected.source && selected.source[0] != '\0')
+        AppendJsonString(out, selected.source);
+    else
+        out << "null";
+    out << ",\"rule\":";
+    if (selected.rule && selected.rule[0] != '\0')
+        AppendJsonString(out, selected.rule);
+    else
+        out << "null";
+    out << ",\"used_signals\":{"
+        << "\"raw\":true,"
+        << "\"candidate_slots\":true,"
+        << "\"e78\":false,"
+        << "\"ultimate_charge\":false,"
+        << "\"legacy_keys\":false"
+        << "}}";
+}
+
+void AppendStateScriptEa0cRecordSignalJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::StateScriptEa0cRecordSignal& signal)
+{
+    out << "{\"found\":" << (signal.found ? "true" : "false")
+        << ",\"qword_0050_read\":" << (signal.qword50Read ? "true" : "false")
+        << ",\"qword_0050\":";
+    AppendHexString(out, signal.qword50);
+    out << ",\"qword_0058_read\":" << (signal.qword58Read ? "true" : "false")
+        << ",\"qword_0058\":";
+    AppendHexString(out, signal.qword58);
+    out << '}';
+}
+
+void AppendStateScriptEa0cSelectedBooleanJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::StateScriptEa0cSelectedBoolean& selected)
+{
+    out << "{\"evidence\":\"20260615_ea0c_10127_unique_candidate_fail_closed\","
+        << "\"supported_hero\":" << (selected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (selected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (selected.selectedKnown)
+        out << (selected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"result\":";
+    AppendJsonString(out, selected.result ? selected.result : "");
+    out << ",\"resolution\":";
+    AppendJsonString(out, selected.resolution ? selected.resolution : "");
+    out << ",\"source_name\":\"skill_qword_c0_storage\""
+        << ",\"hero_map_known\":" << (selected.heroMapKnown ? "true" : "false")
+        << ",\"mapped_source_offset\":";
+    if (selected.heroMapKnown)
+        AppendHexString(out, selected.mappedSourceOffset);
+    else
+        out << "null";
+    out << ",\"map_consistent\":" << (selected.mapConsistent ? "true" : "false")
+        << ",\"known_candidate_count\":" << selected.knownCandidateCount
+        << ",\"source_found\":" << (selected.sourceFound ? "true" : "false")
+        << ",\"matched_source_offset\":";
+    if (selected.sourceFound)
+        AppendHexString(out, selected.matchedSourceOffset);
+    else
+        out << "null";
+    out << ",\"used_signals\":{"
+        << "\"statescript_record_qwords\":true,"
+        << "\"e78\":false,"
+        << "\"ultimate_charge\":false,"
+        << "\"legacy_keys\":false"
+        << "},\"records\":{\"0x0000EA0C\":";
+    AppendStateScriptEa0cRecordSignalJson(out, selected.recordEa0c);
+    out << ",\"0x00010127\":";
+    AppendStateScriptEa0cRecordSignalJson(out, selected.record10127);
+    out << "}}";
+}
+
+void AppendCandidateSlotRawJson(
+    std::ostringstream& out,
+    const OW::HeroPerks::CandidateSlot& slot)
+{
+    const OW::HeroPerks::CompletionArraySignature& completion = slot.targetCompletion;
+    out << "{\"offset\":";
+    AppendHexString(out, slot.offset);
+    out << ",\"qword_read\":" << (slot.qwordRead ? "true" : "false")
+        << ",\"qword\":";
+    AppendHexString(out, slot.qword);
+    out << ",\"pointer_plausible\":" << (slot.pointerPlausible ? "true" : "false")
+        << ",\"target_semantic_signature\":";
+    AppendHexString(out, slot.targetSemanticSignature);
+    out << ",\"target_completion\":{"
+        << "\"count_u32_read\":" << (completion.countU32Read ? "true" : "false")
+        << ",\"count_u32\":";
+    AppendHexString(out, completion.countU32);
+    out << ",\"count_plausible\":" << (completion.countPlausible ? "true" : "false")
+        << ",\"values_read\":" << completion.valuesRead
+        << ",\"values_u32_hex\":[";
+    for (size_t index = 0; index < completion.valuesRead; ++index) {
+        if (index != 0)
+            out << ',';
+        AppendHexString(out, completion.values[index]);
+    }
+    out << "]}}";
+}
+
+void AppendCandidateSlotsJson(std::ostringstream& out, const OW::HeroPerks::State& perk)
+{
+    out << '[';
+    for (size_t index = 0; index < perk.candidateSlots.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        AppendCandidateSlotRawJson(out, perk.candidateSlots[index]);
+    }
+    out << ']';
+}
+
+std::string RosterStateName(OW::EntityRosterState state)
+{
+    switch (state) {
+    case OW::EntityRosterState::Fresh: return "fresh";
+    case OW::EntityRosterState::Missing: return "missing";
+    case OW::EntityRosterState::Dead: return "dead";
+    default: return "unknown";
+    }
+}
+
+uint64_t EntityKey(const OW::c_entity& entity)
+{
+    if (entity.roster_key != 0)
+        return entity.roster_key;
+    if (entity.address != 0)
+        return entity.address;
+    if (entity.LinkBase != 0)
+        return entity.LinkBase;
+    return 0;
+}
+
+bool EntityFreshAndAlive(const OW::c_entity& entity)
+{
+    return entity.roster_state == OW::EntityRosterState::Fresh && entity.Alive;
+}
+
+const char* MotionKindName(OW::EntityMotionState::Kind kind)
+{
+    switch (kind) {
+    case OW::EntityMotionState::Kind::Grounded: return "grounded";
+    case OW::EntityMotionState::Kind::AirborneRising: return "airborne_rising";
+    case OW::EntityMotionState::Kind::AirborneApex: return "airborne_apex";
+    case OW::EntityMotionState::Kind::AirborneFalling: return "airborne_falling";
+    case OW::EntityMotionState::Kind::Strafing: return "strafing";
+    case OW::EntityMotionState::Kind::SuddenStop: return "sudden_stop";
+    case OW::EntityMotionState::Kind::TeleportOrInvalid: return "teleport_or_invalid";
+    case OW::EntityMotionState::Kind::Unknown:
+    default: return "unknown";
+    }
+}
+
+float DiagnosticGroundedBaselineY(uint64_t key, const OW::c_entity& entity, const OW::EntityMotionState& motion)
+{
+    static std::mutex baselineMutex;
+    static std::unordered_map<uint64_t, float> baselines;
+
+    if (key == 0 || !IsFiniteVector(entity.pos))
+        return (std::numeric_limits<float>::quiet_NaN)();
+
+    std::lock_guard<std::mutex> lock(baselineMutex);
+    float& baseline = baselines[key];
+    if (baseline == 0.0f ||
+        (motion.kind == OW::EntityMotionState::Kind::Grounded &&
+         std::fabs(motion.verticalVelocity) < 0.35f)) {
+        baseline = entity.pos.Y;
+    }
+    return baseline;
+}
+
+std::string HeroName(uint64_t heroId, uint64_t linkBase = 0)
+{
+    if (heroId == 0)
+        return {};
+
+    std::string name = OW::GetHeroEngNames(heroId, linkBase);
+    if (!name.empty() && name != "Unknown")
+        return name;
+
+    return "Unknown";
+}
+
+template <typename Candidate>
+void AppendHeroDiagnosticSummaryJson(std::ostringstream& out, const std::vector<Candidate>& candidates)
+{
+    struct HeroSummary {
+        uint64_t heroId = 0;
+        std::string heroName;
+        bool knownRealHero = false;
+        bool trainingBot = false;
+        int count = 0;
+        int rotationZeroCount = 0;
+        int maxSkeletonValidCount = 0;
+    };
+
+    std::vector<HeroSummary> summaries;
+    for (const Candidate& candidate : candidates) {
+        const OW::c_entity& entity = candidate.entity;
+        auto summaryIt = std::find_if(
+            summaries.begin(),
+            summaries.end(),
+            [&](const HeroSummary& summary) {
+                return summary.heroId == entity.HeroID;
+            });
+        if (summaryIt == summaries.end()) {
+            HeroSummary summary{};
+            summary.heroId = entity.HeroID;
+            summary.heroName = HeroName(entity.HeroID, entity.LinkBase);
+            summary.knownRealHero = IsKnownRealHeroEntity(entity);
+            summary.trainingBot = IsTrainingBotEntity(entity);
+            summaries.push_back(summary);
+            summaryIt = summaries.end() - 1;
+        }
+
+        ++summaryIt->count;
+        if (IsZeroRotation(entity.Rot))
+            ++summaryIt->rotationZeroCount;
+        summaryIt->maxSkeletonValidCount =
+            (std::max)(summaryIt->maxSkeletonValidCount, SkeletonValidCount(entity));
+    }
+
+    out << '[';
+    for (size_t index = 0; index < summaries.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        const HeroSummary& summary = summaries[index];
+        out << "{\"hero_id\":";
+        AppendHexString(out, summary.heroId);
+        out << ",\"hero_name\":";
+        AppendJsonString(out, summary.heroName.empty() ? "Unknown" : summary.heroName);
+        out << ",\"known_real_hero\":" << (summary.knownRealHero ? "true" : "false")
+            << ",\"training_bot\":" << (summary.trainingBot ? "true" : "false")
+            << ",\"count\":" << summary.count
+            << ",\"rotation_zero_count\":" << summary.rotationZeroCount
+            << ",\"all_rotation_zero\":"
+            << (summary.count > 0 && summary.rotationZeroCount == summary.count ? "true" : "false")
+            << ",\"max_skeleton_valid_count\":" << summary.maxSkeletonValidCount
+            << '}';
+    }
+    out << ']';
+}
+
+void AppendCommonStart(std::ostringstream& out, const std::vector<std::string>& warnings = {})
+{
+    out << "{\"ok\":true,\"schema_version\":" << kSchemaVersion
+        << ",\"timestamp_ms\":" << TimestampMs();
+    if (!warnings.empty()) {
+        out << ",\"warnings\":";
+        AppendStringArray(out, warnings);
+    }
+}
+
+void AppendErrorBody(std::ostringstream& out, int statusCode, const std::string& message)
+{
+    out << "{\"ok\":false,\"schema_version\":" << kSchemaVersion
+        << ",\"timestamp_ms\":" << TimestampMs()
+        << ",\"error\":{\"status\":" << statusCode << ",\"message\":";
+    AppendJsonString(out, message);
+    out << "}}";
+}
+
+std::string UrlDecode(const std::string& value)
+{
+    std::string decoded;
+    decoded.reserve(value.size());
+    for (size_t index = 0; index < value.size(); ++index) {
+        const char ch = value[index];
+        if (ch == '+') {
+            decoded.push_back(' ');
+        } else if (ch == '%' && index + 2 < value.size() &&
+                   std::isxdigit(static_cast<unsigned char>(value[index + 1])) &&
+                   std::isxdigit(static_cast<unsigned char>(value[index + 2]))) {
+            const char hex[] = { value[index + 1], value[index + 2], '\0' };
+            decoded.push_back(static_cast<char>(std::strtoul(hex, nullptr, 16)));
+            index += 2;
+        } else {
+            decoded.push_back(ch);
+        }
+    }
+    return decoded;
+}
+
+std::unordered_map<std::string, std::string> ParseQuery(std::string query)
+{
+    std::unordered_map<std::string, std::string> parsed;
+    while (!query.empty()) {
+        const size_t amp = query.find('&');
+        const std::string part = query.substr(0, amp);
+        query = amp == std::string::npos ? std::string{} : query.substr(amp + 1);
+
+        if (part.empty())
+            continue;
+
+        const size_t eq = part.find('=');
+        const std::string key = UrlDecode(part.substr(0, eq));
+        const std::string value = eq == std::string::npos ? std::string{} : UrlDecode(part.substr(eq + 1));
+        if (!key.empty())
+            parsed[key] = value;
+    }
+    return parsed;
+}
+
+std::optional<RequestTarget> ParseRequestTarget(const std::string& request)
+{
+    const size_t lineEnd = request.find("\r\n");
+    const std::string requestLine = request.substr(0, lineEnd);
+    const size_t methodEnd = requestLine.find(' ');
+    if (methodEnd == std::string::npos)
+        return std::nullopt;
+
+    const std::string method = requestLine.substr(0, methodEnd);
+    if (method != "GET")
+        return RequestTarget{ "__method_not_allowed__", {} };
+
+    const size_t targetStart = methodEnd + 1;
+    const size_t targetEnd = requestLine.find(' ', targetStart);
+    if (targetEnd == std::string::npos || targetEnd <= targetStart)
+        return std::nullopt;
+
+    std::string target = requestLine.substr(targetStart, targetEnd - targetStart);
+    const size_t queryStart = target.find('?');
+    RequestTarget parsed{};
+    parsed.path = queryStart == std::string::npos ? target : target.substr(0, queryStart);
+    if (queryStart != std::string::npos)
+        parsed.query = ParseQuery(target.substr(queryStart + 1));
+    return parsed;
+}
+
+bool ParseBool(const std::string& value, bool fallback)
+{
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (const unsigned char ch : value)
+        normalized.push_back(static_cast<char>(std::tolower(ch)));
+
+    if (normalized == "1" || normalized == "true" || normalized == "yes")
+        return true;
+    if (normalized == "0" || normalized == "false" || normalized == "no")
+        return false;
+    return fallback;
+}
+
+float ParseFloatQuery(
+    const std::unordered_map<std::string, std::string>& query,
+    const char* key,
+    float fallback,
+    std::vector<std::string>& warnings)
+{
+    const auto it = query.find(key);
+    if (it == query.end())
+        return fallback;
+
+    char* end = nullptr;
+    const float value = std::strtof(it->second.c_str(), &end);
+    if (end == it->second.c_str() || *end != '\0' || !std::isfinite(value)) {
+        warnings.emplace_back(std::string("invalid query parameter: ") + key);
+        return fallback;
+    }
+    return value;
+}
+
+int ParseIntQuery(
+    const std::unordered_map<std::string, std::string>& query,
+    const char* key,
+    int fallback,
+    std::vector<std::string>& warnings)
+{
+    const auto it = query.find(key);
+    if (it == query.end())
+        return fallback;
+
+    char* end = nullptr;
+    const long value = std::strtol(it->second.c_str(), &end, 10);
+    if (end == it->second.c_str() || *end != '\0') {
+        warnings.emplace_back(std::string("invalid query parameter: ") + key);
+        return fallback;
+    }
+    return static_cast<int>(value);
+}
+
+EntityQuery ParseEntityQuery(const std::unordered_map<std::string, std::string>& query)
+{
+    EntityQuery parsed{};
+    parsed.maxDistanceM = ParseFloatQuery(query, "max_distance_m", parsed.maxDistanceM, parsed.warnings);
+    parsed.maxDistanceM = std::clamp(parsed.maxDistanceM, 0.0f, 10000.0f);
+    parsed.limit = std::clamp(ParseIntQuery(query, "limit", parsed.limit, parsed.warnings), 0, 256);
+
+    if (const auto it = query.find("team"); it != query.end()) {
+        parsed.team = it->second;
+        std::string normalized;
+        normalized.reserve(parsed.team.size());
+        for (const unsigned char ch : parsed.team)
+            normalized.push_back(static_cast<char>(std::tolower(ch)));
+        if (normalized != "enemy" && normalized != "ally" && normalized != "all") {
+            parsed.warnings.emplace_back("invalid team query parameter; using enemy");
+            normalized = "enemy";
+        }
+        parsed.team = normalized;
+    }
+
+    if (const auto it = query.find("include_dead"); it != query.end())
+        parsed.includeDead = ParseBool(it->second, parsed.includeDead);
+
+    if (const auto it = query.find("team_debug"); it != query.end())
+        parsed.teamDebug = ParseBool(it->second, parsed.teamDebug);
+
+    return parsed;
+}
+
+bool TeamMatches(const OW::c_entity& entity, const std::string& requestedTeam)
+{
+    if (requestedTeam == "all")
+        return true;
+    if (!entity.team_known)
+        return false;
+    if (requestedTeam == "ally")
+        return !entity.Team;
+    return entity.Team;
+}
+
+std::string BuildHealthJson()
+{
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out);
+    out << ",\"process\":{\"connected\":" << (OW::ProcessConnection::IsConnected() ? "true" : "false")
+        << ",\"connecting\":" << (OW::ProcessConnection::IsConnecting() ? "true" : "false")
+        << ",\"pid\":" << OW::ProcessConnection::ConnectedPid()
+        << ",\"base_address\":";
+    AppendHexOrNull(out, OW::ProcessConnection::ConnectedBaseAddress());
+    out << ",\"status_text\":";
+    AppendJsonString(out, OW::ProcessConnection::StatusText());
+    out << "},\"test_server\":{\"read_only\":true,\"write_armed\":false,\"bind\":";
+    AppendJsonString(out, kBindAddress);
+    out << ",\"port\":" << g_port.load(std::memory_order_acquire) << ",\"cors_mode\":";
+    AppendJsonString(out, g_allowWildcardCors.load(std::memory_order_acquire) ? "wildcard" : "disabled");
+    out << "}}";
+    return out.str();
+}
+
+std::string BuildDiagnosticsJson()
+{
+    const Diagnostics::StatusSnapshot snapshot = Diagnostics::Snapshot();
+    const OW::CriticalMatrixReadPlan criticalMatrixPlan =
+        OW::SnapshotCriticalMatrixReadPlan();
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out);
+    out << ",\"diagnostics\":{"
+        << "\"dma_ready\":" << (snapshot.dmaReady ? "true" : "false")
+        << ",\"process_attached\":" << (snapshot.processAttached ? "true" : "false")
+        << ",\"entity_scan_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanHz));
+    out << ",\"entity_process_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityProcessHz));
+    out << ",\"entity_count\":" << snapshot.entityCount
+        << ",\"last_scan_entity_count\":" << snapshot.lastScanEntityCount
+        << ",\"entity_scan_cycles\":" << snapshot.entityScanCycles
+        << ",\"entity_process_cycles\":" << snapshot.entityProcessCycles
+        << ",\"render_fps\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.fps));
+    out << ",\"viewmatrix_publish_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixPublish.hz));
+    out << ",\"runtime_profile\":";
+    AppendJsonString(out, OW::offset::ActiveProfileName());
+    out << ",\"entity_pipeline_v2_enabled\":"
+        << (OW::EntityPipelineV2Enabled() ? "true" : "false")
+        << ",\"scan_latest_wins_enabled\":"
+        << (OW::ScanLatestWinsEnabled() ? "true" : "false")
+        << ",\"cold_topology_scan_enabled\":"
+        << (OW::ColdTopologyScanEnabled() ? "true" : "false")
+        << ",\"viewmatrix_poll_sleep_ms\":" << ViewMatrixPollSleepMs()
+        << ",\"viewmatrix_effective_poll_sleep_ms\":";
+    AppendNumberOrNull(out, OW::CriticalBatchFusionActive()
+        ? static_cast<float>(CriticalMatrixPollPeriodUs()) / 1000.0f
+        : static_cast<float>(ViewMatrixPollSleepMs()));
+    out << ",\"viewmatrix_effective_poll_period_us\":"
+        << (OW::CriticalBatchFusionActive()
+            ? CriticalMatrixPollPeriodUs()
+            : static_cast<uint64_t>(ViewMatrixPollSleepMs()) * 1000ULL)
+        << ",\"steady_entity_scheduler_enabled\":"
+        << (OW::SteadyEntitySchedulerEnabled() ? "true" : "false")
+        << ",\"critical_batch_fusion_enabled\":"
+        << (OW::CriticalBatchFusionEnabled() ? "true" : "false")
+        << ",\"critical_batch_fusion_active\":"
+        << (OW::CriticalBatchFusionActive() ? "true" : "false")
+        << ",\"critical_matrix_plan_valid\":"
+        << (criticalMatrixPlan.valid ? "true" : "false")
+        << ",\"critical_matrix_plan_generation\":"
+        << criticalMatrixPlan.generation
+        << ",\"connection_epoch\":"
+        << OW::ProcessConnection::ConnectionEpoch()
+        << ",\"critical_matrix_plan_connection_epoch\":"
+        << criticalMatrixPlan.connectionEpoch
+        << ",\"viewmatrix_scan_backoff_ms\":" << ViewMatrixScanBackoffMs()
+        << ",\"viewmatrix_scan_due_guard_ms\":" << ViewMatrixScanDueGuardMs()
+        << ",\"viewmatrix_scan_backoff_count\":" << OW::ViewMatrixScanBackoffCount()
+        << ",\"viewmatrix_scan_due_guard_count\":" << OW::ViewMatrixScanDueGuardCount()
+        << ",\"viewmatrix_publish_age_ms\":" << snapshot.viewMatrixPublish.ageMs
+        << ",\"viewmatrix_publish_cycles\":" << snapshot.viewMatrixPublish.cycles
+        << ",\"viewmatrix_publish_last_interval_ms\":" << snapshot.viewMatrixPublish.lastIntervalMs
+        << ",\"viewmatrix_publish_max_interval_ms\":" << snapshot.viewMatrixPublish.maxIntervalMs
+        << ",\"viewmatrix_publish_last_interval_us\":" << snapshot.viewMatrixPublish.lastIntervalUs
+        << ",\"viewmatrix_publish_max_interval_us\":" << snapshot.viewMatrixPublish.maxIntervalUs
+        << ",\"viewmatrix_timing_requested_period_us\":" << snapshot.viewMatrixTiming.requestedPeriodUs
+        << ",\"viewmatrix_timing_spin_tail_us\":" << snapshot.viewMatrixTiming.configuredSpinTailUs
+        << ",\"process_timer_resolution_requested\":"
+        << (snapshot.viewMatrixTiming.processTimerResolutionRequested ? "true" : "false")
+        << ",\"process_timer_resolution_enabled\":"
+        << (snapshot.viewMatrixTiming.processTimerResolutionEnabled ? "true" : "false")
+        << ",\"process_timer_resolution_result\":"
+        << snapshot.viewMatrixTiming.processTimerResolutionResult
+        << ",\"viewmatrix_above_normal_requested\":"
+        << (snapshot.viewMatrixTiming.aboveNormalRequested ? "true" : "false")
+        << ",\"viewmatrix_above_normal_applied\":"
+        << (snapshot.viewMatrixTiming.aboveNormalApplied ? "true" : "false")
+        << ",\"viewmatrix_timing_samples\":" << snapshot.viewMatrixTiming.samples
+        << ",\"viewmatrix_missed_periods\":" << snapshot.viewMatrixTiming.missedPeriods
+        << ",\"viewmatrix_actual_wait_us_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixTiming.actualWaitAvgUs));
+    out << ",\"viewmatrix_actual_wait_us_last\":" << snapshot.viewMatrixTiming.actualWaitLastUs
+        << ",\"viewmatrix_actual_wait_us_max\":" << snapshot.viewMatrixTiming.actualWaitMaxUs
+        << ",\"viewmatrix_scheduler_lateness_us_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixTiming.schedulerLatenessAvgUs));
+    out << ",\"viewmatrix_scheduler_lateness_us_last\":"
+        << snapshot.viewMatrixTiming.schedulerLatenessLastUs
+        << ",\"viewmatrix_scheduler_lateness_us_max\":"
+        << snapshot.viewMatrixTiming.schedulerLatenessMaxUs
+        << ",\"viewmatrix_dma_execute_us_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixTiming.dmaExecuteAvgUs));
+    out << ",\"viewmatrix_dma_execute_us_last\":" << snapshot.viewMatrixTiming.dmaExecuteLastUs
+        << ",\"viewmatrix_dma_execute_us_max\":" << snapshot.viewMatrixTiming.dmaExecuteMaxUs
+        << ",\"viewmatrix_cycle_interval_us_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixTiming.cycleIntervalAvgUs));
+    out << ",\"viewmatrix_cycle_interval_us_last\":" << snapshot.viewMatrixTiming.cycleIntervalLastUs
+        << ",\"viewmatrix_cycle_interval_us_max\":" << snapshot.viewMatrixTiming.cycleIntervalMaxUs
+        << ",\"viewmatrix_sample_execute_us_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixTiming.sampleExecuteAvgUs));
+    out << ",\"viewmatrix_sample_execute_us_last\":" << snapshot.viewMatrixTiming.sampleExecuteLastUs
+        << ",\"viewmatrix_sample_execute_us_max\":" << snapshot.viewMatrixTiming.sampleExecuteMaxUs
+        << ",\"render_viewmatrix_age_ms\":" << snapshot.renderViewMatrixUse.lastAgeMs
+        << ",\"render_viewmatrix_max_age_ms\":" << snapshot.renderViewMatrixUse.maxAgeMs
+        << ",\"render_viewmatrix_uses\":" << snapshot.renderViewMatrixUse.uses
+        << ",\"render_viewmatrix_missing_publish_uses\":"
+        << snapshot.renderViewMatrixUse.missingPublishUses
+        << ",\"render_viewmatrix_over_16ms\":" << snapshot.renderViewMatrixUse.over16Ms
+        << ",\"render_viewmatrix_over_33ms\":" << snapshot.renderViewMatrixUse.over33Ms
+        << ",\"render_viewmatrix_over_50ms\":" << snapshot.renderViewMatrixUse.over50Ms
+        << ",\"entity_publish_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPublish.hz));
+    out << ",\"entity_raw_publish_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPublish.hz));
+    out << ",\"entity_present_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPresent.hz));
+    out << ",\"entity_present_source_counts\":{\"raw\":" << snapshot.entityPresentSources.raw
+        << ",\"interp\":" << snapshot.entityPresentSources.interp
+        << ",\"extrap\":" << snapshot.entityPresentSources.extrap
+        << ",\"hold\":" << snapshot.entityPresentSources.hold
+        << "},\"entity_present_prediction_ms_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPresentPrediction.avgMs));
+    out << ",\"entity_present_prediction_ms_max\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPresentPrediction.maxMs));
+    out << ",\"entity_present_delay_ms\":" << OW::PresentEntityDelayMs()
+        << ",\"entity_render_present_hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityRenderPresent.hz));
+    out << ",\"entity_render_present_source_counts\":{\"raw\":" << snapshot.entityRenderPresentSources.raw
+        << ",\"interp\":" << snapshot.entityRenderPresentSources.interp
+        << ",\"extrap\":" << snapshot.entityRenderPresentSources.extrap
+        << ",\"hold\":" << snapshot.entityRenderPresentSources.hold
+        << "},\"entity_render_present_prediction_ms_avg\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityRenderPresentPrediction.avgMs));
+    out << ",\"entity_render_present_prediction_ms_max\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityRenderPresentPrediction.maxMs));
+    out << ",\"entity_render_present_delay_ms\":" << OW::PresentRenderEntityDelayMs()
+        << ",\"render_present_micro_extrap_ms\":" << OW::PresentRenderMicroExtrapolationMs()
+        << ",\"present_interp_enabled\":" << (OW::PresentInterpolationEnabled() ? "true" : "false")
+        << ",\"present_for_aim_enabled\":false"
+        << ",\"present_for_render_enabled\":" << (OW::PresentUseForRenderEnabled() ? "true" : "false")
+        << ",\"entity_publish_age_ms\":" << snapshot.entityPublish.ageMs
+        << ",\"entity_publish_cycles\":" << snapshot.entityPublish.cycles
+        << ",\"entity_publish_count\":" << snapshot.entityPublish.lastCount
+        << ",\"entity_publish_last_interval_ms\":" << snapshot.entityPublish.lastIntervalMs
+        << ",\"entity_publish_max_interval_ms\":" << snapshot.entityPublish.maxIntervalMs
+        << ",\"snapshot_entities_copy_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entitySnapshotCopy.lastMs));
+    out << ",\"snapshot_entities_copy_max_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entitySnapshotCopy.maxMs));
+    out << ",\"snapshot_entities_copy_count\":" << snapshot.entitySnapshotCopy.copies
+        << ",\"snapshot_entities_copy_last_count\":" << snapshot.entitySnapshotCopy.lastCount
+        << ",\"snapshot_dynamic_copy_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.dynamicSnapshotCopy.lastMs));
+    out << ",\"snapshot_dynamic_copy_max_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.dynamicSnapshotCopy.maxMs));
+    out << ",\"snapshot_dynamic_copy_count\":" << snapshot.dynamicSnapshotCopy.copies
+        << ",\"snapshot_dynamic_copy_last_count\":" << snapshot.dynamicSnapshotCopy.lastCount
+        << ",\"view_matrix_ok\":" << (snapshot.viewMatrixResolved && snapshot.viewMatrixValid ? "true" : "false")
+        << ",\"view_matrix_resolved\":" << (snapshot.viewMatrixResolved ? "true" : "false")
+        << ",\"view_matrix_valid\":" << (snapshot.viewMatrixValid ? "true" : "false")
+        << ",\"publish\":{\"viewmatrix\":{\"hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.viewMatrixPublish.hz));
+    out << ",\"age_ms\":" << snapshot.viewMatrixPublish.ageMs
+        << ",\"cycles\":" << snapshot.viewMatrixPublish.cycles
+        << ",\"last_interval_ms\":" << snapshot.viewMatrixPublish.lastIntervalMs
+        << ",\"max_interval_ms\":" << snapshot.viewMatrixPublish.maxIntervalMs
+        << "},\"entity\":{\"hz\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityPublish.hz));
+    out << ",\"age_ms\":" << snapshot.entityPublish.ageMs
+        << ",\"cycles\":" << snapshot.entityPublish.cycles
+        << ",\"count\":" << snapshot.entityPublish.lastCount
+        << ",\"last_interval_ms\":" << snapshot.entityPublish.lastIntervalMs
+        << ",\"max_interval_ms\":" << snapshot.entityPublish.maxIntervalMs
+        << "}},\"consume\":{\"viewmatrix\":{\"uses\":"
+        << snapshot.renderViewMatrixUse.uses
+        << ",\"age_ms\":" << snapshot.renderViewMatrixUse.lastAgeMs
+        << ",\"max_age_ms\":" << snapshot.renderViewMatrixUse.maxAgeMs
+        << ",\"missing_publish_uses\":"
+        << snapshot.renderViewMatrixUse.missingPublishUses
+        << ",\"over_16ms\":" << snapshot.renderViewMatrixUse.over16Ms
+        << ",\"over_33ms\":" << snapshot.renderViewMatrixUse.over33Ms
+        << ",\"over_50ms\":" << snapshot.renderViewMatrixUse.over50Ms
+        << "}},\"snapshot_copy\":{\"entities\":{\"copies\":" << snapshot.entitySnapshotCopy.copies
+        << ",\"last_count\":" << snapshot.entitySnapshotCopy.lastCount
+        << ",\"last_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entitySnapshotCopy.lastMs));
+    out << ",\"max_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entitySnapshotCopy.maxMs));
+    out << "},\"dynamic_entities\":{\"copies\":" << snapshot.dynamicSnapshotCopy.copies
+        << ",\"last_count\":" << snapshot.dynamicSnapshotCopy.lastCount
+        << ",\"last_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.dynamicSnapshotCopy.lastMs));
+    out << ",\"max_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.dynamicSnapshotCopy.maxMs));
+    out << "}}"
+        << ",\"view_matrix_stability\":{\"rejected\":" << snapshot.viewMatrixStability.rejected
+        << ",\"transient_rejected\":" << snapshot.viewMatrixStability.transientRejected
+        << ",\"accepted_large_jump\":" << snapshot.viewMatrixStability.acceptedLargeJump
+        << ",\"last_reject_age_ms\":" << snapshot.viewMatrixStability.lastRejectAgeMs
+        << ",\"last_reject_delta_milli\":" << snapshot.viewMatrixStability.lastRejectDeltaMilli
+        << ",\"max_reject_delta_milli\":" << snapshot.viewMatrixStability.maxRejectDeltaMilli
+        << ",\"last_accepted_jump_delta_milli\":" << snapshot.viewMatrixStability.lastAcceptedJumpDeltaMilli
+        << "}"
+        << ",\"projection_stability\":{\"global_jump_frames\":" << snapshot.projectionStability.globalJumpFrames
+        << ",\"last_global_jump_age_ms\":" << snapshot.projectionStability.lastGlobalJumpAgeMs
+        << ",\"last_global_jump_matched\":" << snapshot.projectionStability.lastGlobalJumpMatched
+        << ",\"last_global_jump_median_dx_px\":" << snapshot.projectionStability.lastGlobalJumpMedianDxPx
+        << ",\"last_global_jump_median_dy_px\":" << snapshot.projectionStability.lastGlobalJumpMedianDyPx
+        << ",\"last_global_jump_delta_px\":" << snapshot.projectionStability.lastGlobalJumpDeltaPx
+        << ",\"max_global_jump_delta_px\":" << snapshot.projectionStability.maxGlobalJumpDeltaPx
+        << "}"
+        << ",\"screen\":{\"manual_width\":" << OW::Config::manualScreenWidth
+        << ",\"manual_height\":" << OW::Config::manualScreenHeight
+        << ",\"detected_width\":" << OW::detectedScreenWidth
+        << ",\"detected_height\":" << OW::detectedScreenHeight
+        << ",\"resolved_wx\":";
+    AppendNumberOrNull(out, OW::WX);
+    out << ",\"resolved_wy\":";
+    AppendNumberOrNull(out, OW::WY);
+    out << "}"
+        << ",\"overlay_canvas\":{\"x\":" << snapshot.overlayCanvas.x
+        << ",\"y\":" << snapshot.overlayCanvas.y
+        << ",\"window_width\":" << snapshot.overlayCanvas.windowWidth
+        << ",\"window_height\":" << snapshot.overlayCanvas.windowHeight
+        << ",\"client_width\":" << snapshot.overlayCanvas.clientWidth
+        << ",\"client_height\":" << snapshot.overlayCanvas.clientHeight
+        << ",\"swapchain_width\":" << snapshot.overlayCanvas.swapchainWidth
+        << ",\"swapchain_height\":" << snapshot.overlayCanvas.swapchainHeight
+        << ",\"display_width\":" << snapshot.overlayCanvas.displayWidth
+        << ",\"display_height\":" << snapshot.overlayCanvas.displayHeight
+        << ",\"visible\":" << (snapshot.overlayCanvas.visible ? "true" : "false")
+        << ",\"bounds_changes\":" << snapshot.overlayCanvas.boundsChanges
+        << ",\"swapchain_resizes\":" << snapshot.overlayCanvas.swapchainResizes
+        << ",\"last_bounds_change_age_ms\":" << snapshot.overlayCanvas.lastBoundsChangeAgeMs
+        << ",\"last_swapchain_resize_age_ms\":" << snapshot.overlayCanvas.lastSwapchainResizeAgeMs
+        << "}"
+        << ",\"key_status\":";
+    AppendJsonString(out, Diagnostics::ToString(snapshot.keyStatus));
+    out << ",\"fps\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.fps));
+    out << ",\"dma_reads\":{\"total\":" << snapshot.dmaReads.total
+        << ",\"succeeded\":" << snapshot.dmaReads.succeeded
+        << ",\"failed\":" << snapshot.dmaReads.failed
+        << ",\"avg_latency_us\":" << snapshot.dmaReads.avgLatencyUs
+        << ",\"max_latency_us\":" << snapshot.dmaReads.maxLatencyUs;
+    AppendDmaWindowFields(out, snapshot.dmaWindow);
+    AppendDmaSlowReadSamples(
+        out,
+        snapshot.dmaWindow.windowMs,
+        snapshot.dmaWindow.slowThresholdUs,
+        16);
+    out << "},\"roster\":{\"fresh\":" << snapshot.roster.fresh
+        << ",\"dead\":" << snapshot.roster.dead
+        << ",\"missing\":" << snapshot.roster.missing
+        << ",\"expired\":" << snapshot.roster.expired
+        << ",\"hero_changed\":" << snapshot.roster.heroChanged
+        << "},\"sdk\":{\"component_key_cache_hit_count\":"
+        << snapshot.sdkCache.componentKeyCacheHitCount
+        << ",\"component_key_cache_miss_count\":"
+        << snapshot.sdkCache.componentKeyCacheMissCount
+        << ",\"begin_frame_scan_count\":"
+        << snapshot.sdkCache.beginFrameScanCount
+        << ",\"begin_frame_process_count\":"
+        << snapshot.sdkCache.beginFrameProcessCount
+        << ",\"begin_frame_unknown_count\":"
+        << snapshot.sdkCache.beginFrameUnknownCount
+        << "},\"entity_scan_detail\":{\"entity_list\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.entityList);
+    OW::EntityRegistry::State registry;
+    {std::lock_guard<std::mutex> lock(OW::entityRegistryMonitor.mutex);registry=OW::entityRegistryMonitor.state;}
+    out << ",\"registry\":{\"capacity\":" << registry.snapshot.capacity
+        << ",\"bytes\":" << registry.snapshot.Bytes()
+        << ",\"generation\":" << registry.snapshot.generation
+        << ",\"sampled_ms\":" << registry.snapshot.sampledMs
+        << ",\"poll_interval_ms\":" << registry.lastIntervalMs
+        << ",\"read_us\":" << registry.readUs
+        << ",\"changes\":" << registry.changes
+        << ",\"failures\":" << registry.failures
+        << ",\"available\":" << (registry.available?"true":"false")
+        << ",\"rescan_pending\":" << (registry.rescanPending?"true":"false")
+        << ",\"error\":" << unsigned(registry.error)
+        << "},\"planned_bytes\":" << snapshot.entityScanDetail.plannedBytes
+        << ",\"scan_registry_generation\":" << snapshot.entityScanDetail.registryGeneration
+        << ",\"scan_status\":" << unsigned(snapshot.entityScanDetail.registryScanStatus);
+    out << ",\"scanner_subphases\":{\"scan_root_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanRootMs));
+    out << ",\"scan_list_read_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanListReadMs));
+    out << ",\"scan_slot_walk_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanSlotWalkMs));
+    out << ",\"scan_record_build_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanRecordBuildMs));
+    out << ",\"scan_match_link_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanMatchLinkMs));
+    out << ",\"scan_cn_ne_target_map_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanCnTargetMapMs));
+    out << ",\"scan_cn_ne_self_validation_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanCnSelfValidationMs));
+    out << ",\"scan_component_only_validation_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanComponentOnlyValidationMs));
+    out << ",\"scan_dynamic_pair_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanDynamicPairMs));
+    out << ",\"scan_finalize_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.entityScanDetail.scanFinalizeMs));
+    out << ",\"scan_dma_reads_delta\":" << snapshot.entityScanDetail.scanDmaReadsDelta
+        << ",\"scan_dma_fail_delta\":" << snapshot.entityScanDetail.scanDmaFailDelta
+        << ",\"scan_dma_range_diag_enabled\":"
+        << (snapshot.entityScanDetail.scanDmaRangeDiagEnabled ? "true" : "false")
+        << ",\"scan_dma_range_reads\":" << snapshot.entityScanDetail.scanDmaRangeReads
+        << ",\"scan_dma_range_failed\":" << snapshot.entityScanDetail.scanDmaRangeFailed
+        << ",\"scan_dma_range_max_latency_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeMaxLatencyUs
+        << ",\"scan_dma_range_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            snapshot.entityScanDetail.scanDmaRangeMaxCallsite)));
+    out << ",\"scan_dma_range_scanner_reads\":"
+        << snapshot.entityScanDetail.scanDmaRangeScannerReads
+        << ",\"scan_dma_range_scanner_max_latency_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeScannerMaxLatencyUs
+        << ",\"scan_dma_range_scanner_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            snapshot.entityScanDetail.scanDmaRangeScannerMaxCallsite)));
+    out << ",\"scan_dma_range_foreign_reads\":"
+        << snapshot.entityScanDetail.scanDmaRangeForeignReads
+        << ",\"scan_dma_range_foreign_max_latency_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeForeignMaxLatencyUs
+        << ",\"scan_dma_range_foreign_max_callsite\":";
+    AppendJsonString(out, Diagnostics::ToString(
+        static_cast<Diagnostics::DmaCallsite>(
+            snapshot.entityScanDetail.scanDmaRangeForeignMaxCallsite)));
+    out << ",\"scan_dma_range_root_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeRootMaxUs
+        << ",\"scan_dma_range_list_read_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeListReadMaxUs
+        << ",\"scan_dma_range_record_header_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeRecordHeaderMaxUs
+        << ",\"scan_dma_range_record_pool_id_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeRecordPoolIdMaxUs
+        << ",\"scan_dma_range_target_map_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeTargetMapMaxUs
+        << ",\"scan_dma_range_component_validation_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeComponentValidationMaxUs
+        << ",\"scan_dma_range_viewmatrix_max_us\":"
+        << snapshot.entityScanDetail.scanDmaRangeViewMatrixMaxUs
+        << "},\"scanner_counters\":{\"list_read_count\":" << snapshot.entityScanDetail.listReadCount
+        << ",\"list_read_fail_count\":" << snapshot.entityScanDetail.listReadFailCount
+        << ",\"list_fallback_read_count\":" << snapshot.entityScanDetail.listFallbackReadCount
+        << ",\"list_read_skipped_count\":" << snapshot.entityScanDetail.listReadSkippedCount
+        << ",\"cn_ne_entity_list_chunk_size\":"
+        << snapshot.entityScanDetail.cnEntityListChunkSize
+        << ",\"record_add_attempt_count\":" << snapshot.entityScanDetail.recordAddAttemptCount
+        << ",\"record_duplicate_count\":" << snapshot.entityScanDetail.recordDuplicateCount
+        << ",\"record_header_read_count\":" << snapshot.entityScanDetail.recordHeaderReadCount
+        << ",\"record_header_fail_count\":" << snapshot.entityScanDetail.recordHeaderFailCount
+        << ",\"record_remote_fallback_read_count\":" << snapshot.entityScanDetail.recordRemoteFallbackReadCount
+        << ",\"record_match_id_direct_read_count\":" << snapshot.entityScanDetail.recordMatchIdDirectReadCount
+        << ",\"record_match_id_direct_zero_count\":" << snapshot.entityScanDetail.recordMatchIdDirectZeroCount
+        << ",\"record_match_id_header_hit_count\":" << snapshot.entityScanDetail.recordMatchIdHeaderHitCount
+        << ",\"record_match_id_header_miss_count\":" << snapshot.entityScanDetail.recordMatchIdHeaderMissCount
+        << ",\"record_match_id_header_match_count\":" << snapshot.entityScanDetail.recordMatchIdHeaderMatchCount
+        << ",\"record_match_id_header_mismatch_count\":" << snapshot.entityScanDetail.recordMatchIdHeaderMismatchCount
+        << ",\"record_match_id_header_use_count\":" << snapshot.entityScanDetail.recordMatchIdHeaderUseCount
+        << ",\"cn_ne_record_match_id_from_header_enabled\":"
+        << (snapshot.entityScanDetail.cnRecordMatchIdFromHeaderEnabled ? "true" : "false")
+        << ",\"cn_ne_entity_list_root_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnEntityListRootCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_entity_list_root_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheTtlMs
+        << ",\"cn_ne_entity_list_root_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheHitCount
+        << ",\"cn_ne_entity_list_root_cache_read_count\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheReadCount
+        << ",\"cn_ne_entity_list_root_cache_store_count\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheStoreCount
+        << ",\"cn_ne_entity_list_root_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheExpiredCount
+        << ",\"cn_ne_entity_list_root_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListRootCacheStaleHitCount
+        << ",\"cn_ne_entity_list_read_negative_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnEntityListReadNegativeCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_entity_list_read_negative_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheTtlMs
+        << ",\"cn_ne_entity_list_read_negative_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheLookupCount
+        << ",\"cn_ne_entity_list_read_negative_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheHitCount
+        << ",\"cn_ne_entity_list_read_negative_cache_store_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheStoreCount
+        << ",\"cn_ne_entity_list_read_negative_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheExpiredCount
+        << ",\"cn_ne_entity_list_read_negative_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadNegativeCacheStaleHitCount
+        << ",\"cn_ne_entity_list_read_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnEntityListReadCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_entity_list_read_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheTtlMs
+        << ",\"cn_ne_entity_list_read_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheLookupCount
+        << ",\"cn_ne_entity_list_read_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheHitCount
+        << ",\"cn_ne_entity_list_read_cache_store_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheStoreCount
+        << ",\"cn_ne_entity_list_read_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheExpiredCount
+        << ",\"cn_ne_entity_list_read_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnEntityListReadCacheStaleHitCount
+        << ",\"cn_ne_scanner_stale_metadata_ms\":"
+        << snapshot.entityScanDetail.cnScannerStaleMetadataMs
+        << ",\"cn_ne_scanner_stale_metadata_only_enabled\":"
+        << (snapshot.entityScanDetail.cnScannerStaleMetadataOnlyEnabled ? "true" : "false")
+        << ",\"cn_ne_record_snapshot_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnRecordSnapshotCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_record_snapshot_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheTtlMs
+        << ",\"cn_ne_record_snapshot_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheLookupCount
+        << ",\"cn_ne_record_snapshot_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheHitCount
+        << ",\"cn_ne_record_snapshot_cache_store_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheStoreCount
+        << ",\"cn_ne_record_snapshot_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheExpiredCount
+        << ",\"cn_ne_record_snapshot_cache_refresh_budget\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheRefreshBudget
+        << ",\"cn_ne_record_snapshot_cache_refresh_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheRefreshCount
+        << ",\"cn_ne_record_snapshot_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnRecordSnapshotCacheStaleHitCount
+        << ",\"pool_id_read_count\":" << snapshot.entityScanDetail.poolIdReadCount
+        << ",\"match_lookup_count\":" << snapshot.entityScanDetail.matchLookupCount
+        << ",\"match_lookup_hit_count\":" << snapshot.entityScanDetail.matchLookupHitCount
+        << ",\"add_pair_attempt_count\":" << snapshot.entityScanDetail.addPairAttemptCount
+        << ",\"add_pair_duplicate_count\":" << snapshot.entityScanDetail.addPairDuplicateCount
+        << ",\"link_decrypt_attempt_count\":" << snapshot.entityScanDetail.linkDecryptAttemptCount
+        << ",\"link_decrypt_success_count\":" << snapshot.entityScanDetail.linkDecryptSuccessCount
+        << ",\"cn_ne_link_decrypt_negative_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnLinkDecryptNegativeCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_link_decrypt_negative_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheTtlMs
+        << ",\"cn_ne_link_decrypt_negative_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheLookupCount
+        << ",\"cn_ne_link_decrypt_negative_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheHitCount
+        << ",\"cn_ne_link_decrypt_negative_cache_store_count\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheStoreCount
+        << ",\"cn_ne_link_decrypt_negative_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheExpiredCount
+        << ",\"cn_ne_link_decrypt_negative_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnLinkDecryptNegativeCacheStaleHitCount
+        << ",\"playable_validation_attempt_count\":" << snapshot.entityScanDetail.playableValidationAttemptCount
+        << ",\"playable_validation_success_count\":" << snapshot.entityScanDetail.playableValidationSuccessCount
+        << ",\"cn_ne_map_candidate_count\":" << snapshot.entityScanDetail.cnMapCandidateCount
+        << ",\"cn_ne_target_map_attempt_count\":" << snapshot.entityScanDetail.cnTargetMapAttemptCount
+        << ",\"cn_ne_target_map_success_count\":" << snapshot.entityScanDetail.cnTargetMapSuccessCount
+        << ",\"cn_ne_bucket_entry_scan_count\":" << snapshot.entityScanDetail.cnBucketEntryScanCount
+        << ",\"cn_ne_map_candidate_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnMapCandidateCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_map_candidate_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateCacheLookupCount
+        << ",\"cn_ne_map_candidate_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateCacheHitCount
+        << ",\"cn_ne_map_candidate_cache_miss_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateCacheMissCount
+        << ",\"cn_ne_map_candidate_persistent_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnMapCandidatePersistentCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_map_candidate_persistent_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheTtlMs
+        << ",\"cn_ne_map_candidate_persistent_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheLookupCount
+        << ",\"cn_ne_map_candidate_persistent_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheHitCount
+        << ",\"cn_ne_map_candidate_persistent_cache_miss_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheMissCount
+        << ",\"cn_ne_map_candidate_persistent_cache_store_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheStoreCount
+        << ",\"cn_ne_map_candidate_persistent_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheExpiredCount
+        << ",\"cn_ne_map_candidate_persistent_cache_refresh_budget\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheRefreshBudget
+        << ",\"cn_ne_map_candidate_persistent_cache_refresh_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheRefreshCount
+        << ",\"cn_ne_map_candidate_persistent_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePersistentCacheStaleHitCount
+        << ",\"cn_ne_component_negative_cache_enabled\":"
+        << (snapshot.entityScanDetail.cnComponentNegativeCacheEnabled ? "true" : "false")
+        << ",\"cn_ne_component_negative_cache_ttl_ms\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheTtlMs
+        << ",\"cn_ne_component_negative_cache_lookup_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheLookupCount
+        << ",\"cn_ne_component_negative_cache_hit_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheHitCount
+        << ",\"cn_ne_component_negative_cache_store_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheStoreCount
+        << ",\"cn_ne_component_negative_cache_expired_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheExpiredCount
+        << ",\"cn_ne_component_negative_cache_refresh_budget\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheRefreshBudget
+        << ",\"cn_ne_component_negative_cache_refresh_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheRefreshCount
+        << ",\"cn_ne_component_negative_cache_stale_hit_count\":"
+        << snapshot.entityScanDetail.cnComponentNegativeCacheStaleHitCount
+        << ",\"cn_ne_map_diag_enabled\":"
+        << (snapshot.entityScanDetail.cnMapDiagEnabled ? "true" : "false")
+        << ",\"cn_ne_map_candidate_parent_lookup_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateParentLookupCount
+        << ",\"cn_ne_map_candidate_unique_parent_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateUniqueParentCount
+        << ",\"cn_ne_map_candidate_duplicate_parent_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateDuplicateParentCount
+        << ",\"cn_ne_map_candidate_direct_source_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateDirectSourceCount
+        << ",\"cn_ne_map_candidate_plus8_source_count\":"
+        << snapshot.entityScanDetail.cnMapCandidatePlus8SourceCount
+        << ",\"cn_ne_map_candidate_wrapper_source_count\":"
+        << snapshot.entityScanDetail.cnMapCandidateWrapperSourceCount
+        << ",\"component_only_validation_attempt_count\":"
+        << snapshot.entityScanDetail.componentOnlyValidationAttemptCount
+        << ",\"component_only_validation_success_count\":"
+        << snapshot.entityScanDetail.componentOnlyValidationSuccessCount
+        << "},\"readable_bytes\":" << snapshot.entityScanDetail.readableBytes
+        << ",\"readable_chunks\":" << snapshot.entityScanDetail.readableChunks
+        << ",\"slots_scanned\":" << snapshot.entityScanDetail.slotsScanned
+        << ",\"nonzero_slots\":" << snapshot.entityScanDetail.nonZeroSlots
+        << ",\"plausible_slots\":" << snapshot.entityScanDetail.plausibleSlots
+        << ",\"records\":" << snapshot.entityScanDetail.records
+        << ",\"match_ids\":" << snapshot.entityScanDetail.matchIds
+        << ",\"link_present\":" << snapshot.entityScanDetail.linkPresent
+        << ",\"link_uid_nonzero\":" << snapshot.entityScanDetail.linkUidNonZero
+        << ",\"link_matched\":" << snapshot.entityScanDetail.linkMatched
+        << ",\"link_pairs\":" << snapshot.entityScanDetail.linkPairs
+        << ",\"self_health_base\":" << snapshot.entityScanDetail.selfHealthBase
+        << ",\"self_health_read\":" << snapshot.entityScanDetail.selfHealthRead
+        << ",\"self_health_plausible\":" << snapshot.entityScanDetail.selfHealthPlausible
+        << ",\"self_hero_base\":" << snapshot.entityScanDetail.selfHeroBase
+        << ",\"self_hero_read\":" << snapshot.entityScanDetail.selfHeroRead
+        << ",\"self_hero_known\":" << snapshot.entityScanDetail.selfHeroKnown
+        << ",\"self_velocity_base\":" << snapshot.entityScanDetail.selfVelocityBase
+        << ",\"self_bone_base\":" << snapshot.entityScanDetail.selfBoneBase
+        << ",\"self_playable\":" << snapshot.entityScanDetail.selfPlayable
+        << ",\"dynamic_pairs\":" << snapshot.entityScanDetail.dynamicPairs
+        << ",\"total_pairs\":" << snapshot.entityScanDetail.totalPairs
+        << ",\"light_scan_requested\":"
+        << (snapshot.entityScanDetail.lightScanRequested ? "true" : "false")
+        << ",\"light_scan_enabled\":"
+        << (snapshot.entityScanDetail.lightScanEnabled ? "true" : "false")
+        << ",\"light_scan_pair_cap\":" << snapshot.entityScanDetail.lightScanPairCap
+        << ",\"light_scan_cap_hits\":" << snapshot.entityScanDetail.lightScanCapHits
+        << ",\"light_scan_unvalidated_pairs\":"
+        << snapshot.entityScanDetail.lightScanUnvalidatedPairs
+        << ",\"sample_reject\":{\"reason\":" << snapshot.entityScanDetail.sampleRejectReason
+        << ",\"parent\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectParent);
+    out << ",\"match_id\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectMatchId);
+    out << ",\"health_base\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectHealthBase);
+    out << ",\"hero_base\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectHeroBase);
+    out << ",\"hero_id\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectHeroId);
+    out << ",\"velocity_base\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectVelocityBase);
+    out << ",\"bone_base\":";
+    AppendHexOrNull(out, snapshot.entityScanDetail.sampleRejectBoneBase);
+    out << ",\"health_cm\":" << snapshot.entityScanDetail.sampleRejectHealthCm
+        << ",\"health_max_cm\":" << snapshot.entityScanDetail.sampleRejectHealthMaxCm
+        << "}},\"entity_pipeline\":";
+    AppendEntityPipelineJson(out, snapshot);
+    OW::ViewMatrixSampleState cameraSample{};
+    {std::lock_guard<std::mutex> lock(OW::g_viewMatrixMutex);cameraSample=OW::viewMatrixSampleState;}
+    out << ",\"camera_observation\":{\"connection_epoch\":" << cameraSample.connectionEpoch
+        << ",\"read_started_ms\":" << cameraSample.readStartedMs << ",\"read_completed_ms\":" << cameraSample.readCompletedMs
+        << ",\"publish_sequence\":" << cameraSample.publishSequence << "}";
+    out << ",\"runtime_trace\":{\"enabled\":" << (RuntimeTrace::enabled.load()?"true":"false")
+        << ",\"dropped\":" << RuntimeTrace::dropped.load() << ",\"io_errors\":" << RuntimeTrace::ioErrors.load() << ",\"events\":[";
+    for(unsigned i=0;i<RuntimeTrace::Count;++i){if(i)out<<',';out<<RuntimeTrace::counts[i].load();}
+    out << "]}";
+    out << ",\"render\":{\"mode\":";
+    AppendJsonString(out, snapshot.renderWorkload.boxPerfMode ? "box_perf" : "normal");
+    out << ",\"box_perf_mode\":" << (snapshot.renderWorkload.boxPerfMode ? "true" : "false")
+        << ",\"draw_radar_called\":" << (snapshot.renderDrawRadarCalled ? "true" : "false")
+        << ",\"player_info_called\":" << (snapshot.renderPlayerInfoCalled ? "true" : "false")
+        << ",\"skill_info_called\":" << (snapshot.renderSkillInfoCalled ? "true" : "false")
+        << ",\"entity_list_empty\":" << (snapshot.renderEntityListEmpty ? "true" : "false")
+        << ",\"frame_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.renderWorkload.totalMs));
+    out << ",\"render_callback_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.renderWorkload.renderCallbackMs));
+    out << ",\"present_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.renderWorkload.presentMs));
+    out << ",\"line_primitives\":" << snapshot.renderWorkload.linePrimitives
+        << ",\"rect_primitives\":" << snapshot.renderWorkload.rectPrimitives
+        << ",\"filled_rect_primitives\":" << snapshot.renderWorkload.filledRectPrimitives
+        << ",\"text_calls\":" << snapshot.renderWorkload.textCalls
+        << ",\"icon_calls\":" << snapshot.renderWorkload.iconCalls
+        << ",\"corner_boxes\":" << snapshot.renderWorkload.cornerBoxes
+        << ",\"fast_boxes\":" << snapshot.renderWorkload.fastBoxes
+        << "},\"player_info\":{\"box_perf_mode\":" << (snapshot.playerInfo.boxPerfMode ? "true" : "false")
+        << ",\"fast_box_path\":" << (snapshot.playerInfo.fastBoxPath ? "true" : "false")
+        << ",\"elapsed_ms\":";
+    AppendNumberOrNull(out, static_cast<float>(snapshot.playerInfo.elapsedMs));
+    out << ",\"input\":" << snapshot.playerInfo.input
+        << ",\"projected\":" << snapshot.playerInfo.projected
+        << ",\"drawn\":" << snapshot.playerInfo.drawn
+        << ",\"skipped_dead\":" << snapshot.playerInfo.skippedDead
+        << ",\"skipped_local_health\":" << snapshot.playerInfo.skippedLocalHealth
+        << ",\"skipped_local_entity\":" << snapshot.playerInfo.skippedLocalEntity
+        << ",\"skipped_distance\":" << snapshot.playerInfo.skippedDistance
+        << ",\"skipped_opacity\":" << snapshot.playerInfo.skippedOpacity
+        << ",\"skipped_world_to_screen\":" << snapshot.playerInfo.skippedWorldToScreen
+        << ",\"skipped_world_to_screen_low\":" << snapshot.playerInfo.skippedWorldToScreenLow
+        << ",\"skipped_world_to_screen_high\":" << snapshot.playerInfo.skippedWorldToScreenHigh
+        << ",\"skipped_box\":" << snapshot.playerInfo.skippedBox
+        << ",\"skipped_window\":" << snapshot.playerInfo.skippedWindow
+        << ",\"sample_projected\":{\"available\":" << (snapshot.playerInfo.sampleProjected ? "true" : "false")
+        << ",\"address\":";
+    AppendHexOrNull(out, snapshot.playerInfo.sampleProjectedAddress);
+    out << ",\"hero_id\":";
+    AppendHexOrNull(out, snapshot.playerInfo.sampleProjectedHeroId);
+    out << ",\"left\":" << snapshot.playerInfo.sampleProjectedLeft
+        << ",\"top\":" << snapshot.playerInfo.sampleProjectedTop
+        << ",\"width\":" << snapshot.playerInfo.sampleProjectedWidth
+        << ",\"height\":" << snapshot.playerInfo.sampleProjectedHeight
+        << ",\"center_x\":" << snapshot.playerInfo.sampleProjectedCenterX
+        << ",\"bottom\":" << snapshot.playerInfo.sampleProjectedBottom
+        << ",\"distance_m\":" << snapshot.playerInfo.sampleProjectedDistanceM
+        << "},\"sample_drawn\":{\"available\":" << (snapshot.playerInfo.sampleDrawn ? "true" : "false")
+        << ",\"address\":";
+    AppendHexOrNull(out, snapshot.playerInfo.sampleDrawnAddress);
+    out << ",\"hero_id\":";
+    AppendHexOrNull(out, snapshot.playerInfo.sampleDrawnHeroId);
+    out << ",\"left\":" << snapshot.playerInfo.sampleDrawnLeft
+        << ",\"top\":" << snapshot.playerInfo.sampleDrawnTop
+        << ",\"width\":" << snapshot.playerInfo.sampleDrawnWidth
+        << ",\"height\":" << snapshot.playerInfo.sampleDrawnHeight
+        << ",\"center_x\":" << snapshot.playerInfo.sampleDrawnCenterX
+        << ",\"bottom\":" << snapshot.playerInfo.sampleDrawnBottom
+        << ",\"distance_m\":" << snapshot.playerInfo.sampleDrawnDistanceM
+        << "},\"render_prediction\":{\"candidates\":"
+        << snapshot.playerInfo.renderPredictionCandidates
+        << ",\"applied\":" << snapshot.playerInfo.renderPredictionApplied
+        << ",\"world_delta_fallback\":" << snapshot.playerInfo.renderPredictionWorldDeltaFallback
+        << ",\"max_lead_ms\":" << snapshot.playerInfo.renderPredictionMaxLeadMs
+        << ",\"max_offset_cm\":" << snapshot.playerInfo.renderPredictionMaxOffsetCm
+        << "},\"training_bot_prediction\":{\"candidates\":"
+        << snapshot.playerInfo.trainingBotPredictionCandidates
+        << ",\"applied\":" << snapshot.playerInfo.trainingBotPredictionApplied
+        << ",\"lead_drops\":" << snapshot.playerInfo.trainingBotPredictionLeadDrops
+        << ",\"max_lead_ms\":" << snapshot.playerInfo.trainingBotPredictionMaxLeadMs
+        << ",\"max_offset_cm\":" << snapshot.playerInfo.trainingBotPredictionMaxOffsetCm
+        << ",\"last_drop\":{\"address\":";
+    AppendHexOrNull(out, snapshot.playerInfo.trainingBotPredictionLastDropAddress);
+    out << ",\"from_ms\":" << snapshot.playerInfo.trainingBotPredictionLastDropFromMs
+        << ",\"to_ms\":" << snapshot.playerInfo.trainingBotPredictionLastDropToMs
+        << ",\"offset_cm\":" << snapshot.playerInfo.trainingBotPredictionLastDropOffsetCm
+        << "}}},\"entity_process\":{\"raw\":" << snapshot.entityProcess.raw
+        << ",\"validated\":" << snapshot.entityProcess.validated
+        << ",\"dynamic\":" << snapshot.entityProcess.dynamic
+        << ",\"null_pair\":" << snapshot.entityProcess.nullPair
+        << ",\"duplicate\":" << snapshot.entityProcess.duplicate
+        << ",\"health_base_fail\":" << snapshot.entityProcess.healthBaseFail
+        << ",\"health_base_missing\":" << snapshot.entityProcess.healthBaseMissing
+        << ",\"health_read_fail\":" << snapshot.entityProcess.healthReadFail
+        << ",\"link_base_fail\":" << snapshot.entityProcess.linkBaseFail
+        << ",\"hero_base_missing\":" << snapshot.entityProcess.heroBaseMissing
+        << ",\"hero_fallback_fail\":" << snapshot.entityProcess.heroFallbackFail
+        << ",\"name_unknown\":" << snapshot.entityProcess.nameUnknown
+        << ",\"bone_candidates\":" << snapshot.entityProcess.boneCandidates
+        << ",\"bone_base_nonzero\":" << snapshot.entityProcess.boneBaseNonZero
+        << ",\"velocity_bone_data_nonzero\":" << snapshot.entityProcess.velocityBoneDataNonZero
+        << ",\"bone_data_ptr_nonzero\":" << snapshot.entityProcess.boneDataPtrNonZero
+        << ",\"bones_base_nonzero\":" << snapshot.entityProcess.bonesBaseNonZero
+        << ",\"velocity_bone_id_table_nonzero\":" << snapshot.entityProcess.velocityBoneIdTableNonZero
+        << ",\"velocity_bone_count_valid\":" << snapshot.entityProcess.velocityBoneCountValid
+        << ",\"velocity_bone_id_table_readable\":" << snapshot.entityProcess.velocityBoneIdTableReadable
+        << ",\"velocity_bone_head_id_found\":" << snapshot.entityProcess.velocityBoneHeadIdFound
+        << ",\"skeleton_any_valid\":" << snapshot.entityProcess.skeletonAnyValid
+        << ",\"skeleton_head_valid\":" << snapshot.entityProcess.skeletonHeadValid
+        << ",\"head_probe_candidates\":" << snapshot.entityProcess.headProbeCandidates
+        << ",\"head_probe_resolved\":" << snapshot.entityProcess.headProbeResolved
+        << ",\"head_probe_id_found\":" << snapshot.entityProcess.headProbeIdFound
+        << ",\"head_probe_local_finite\":" << snapshot.entityProcess.headProbeLocalFinite
+        << ",\"head_probe_local_nonzero\":" << snapshot.entityProcess.headProbeLocalNonZero
+        << ",\"head_probe_world_nonzero\":" << snapshot.entityProcess.headProbeWorldNonZero
+        << ",\"head_probe_exceptions\":" << snapshot.entityProcess.headProbeExceptions
+        << ",\"head_probe_near_candidates\":" << snapshot.entityProcess.headProbeNearCandidates
+        << ",\"head_probe_near_world_nonzero\":" << snapshot.entityProcess.headProbeNearWorldNonZero
+        << ",\"head_probe_far_candidates\":" << snapshot.entityProcess.headProbeFarCandidates
+        << ",\"head_probe_far_world_nonzero\":" << snapshot.entityProcess.headProbeFarWorldNonZero
+        << ",\"sample_bone_address\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleBoneAddress);
+    out << ",\"sample_health_fail_component_parent\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailComponentParent);
+    out << ",\"sample_health_fail_link_parent\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailLinkParent);
+    out << ",\"sample_health_fail_health_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailHealthBase);
+    out << ",\"sample_health_fail_link_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailLinkBase);
+    out << ",\"sample_health_fail_velocity_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailVelocityBase);
+    out << ",\"sample_health_fail_hero_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailHeroBase);
+    out << ",\"sample_health_fail_team_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailTeamBase);
+    out << ",\"sample_health_fail_bone_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleHealthFailBoneBase);
+    out << ",\"sample_health_fail_read_ok\":" << snapshot.entityProcess.sampleHealthFailReadOk
+        << ",\"sample_name_unknown_component_parent\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownComponentParent);
+    out << ",\"sample_name_unknown_link_parent\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownLinkParent);
+    out << ",\"sample_name_unknown_component_match_id\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownComponentMatchId);
+    out << ",\"sample_name_unknown_link_match_id\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownLinkMatchId);
+    out << ",\"sample_name_unknown_hero_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownHeroBase);
+    out << ",\"sample_name_unknown_hero_id\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownHeroId);
+    out << ",\"sample_name_unknown_hero_id_candidate\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownHeroIdCandidate);
+    out << ",\"sample_name_unknown_hero_id_candidate_offset\":" << snapshot.entityProcess.sampleNameUnknownHeroIdCandidateOffset;
+    out << ",\"sample_name_unknown_component_hero_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownComponentHeroBase);
+    out << ",\"sample_name_unknown_component_hero_id\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownComponentHeroId);
+    out << ",\"sample_name_unknown_component_hero_id_candidate\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownComponentHeroIdCandidate);
+    out << ",\"sample_name_unknown_component_hero_id_candidate_offset\":" << snapshot.entityProcess.sampleNameUnknownComponentHeroIdCandidateOffset;
+    out << ",\"sample_name_unknown_link_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownLinkBase);
+    out << ",\"sample_name_unknown_skill_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownSkillBase);
+    out << ",\"sample_name_unknown_team_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownTeamBase);
+    out << ",\"sample_name_unknown_bone_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleNameUnknownBoneBase);
+    out << ",\"sample_name_unknown_kind\":" << snapshot.entityProcess.sampleNameUnknownKind
+        << ",\"sample_velocity_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleVelocityBase);
+    out << ",\"sample_bone_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleBoneBase);
+    out << ",\"sample_velocity_bone_data\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleVelocityBoneData);
+    out << ",\"sample_bone_data_ptr\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleBoneDataPtr);
+    out << ",\"sample_bones_base\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleBonesBase);
+    out << ",\"sample_bone_id_table\":";
+    AppendHexOrNull(out, snapshot.entityProcess.sampleBoneIdTable);
+    out << ",\"sample_bone_count\":" << snapshot.entityProcess.sampleBoneCount
+        << ",\"sample_bone_id_table_readable\":" << snapshot.entityProcess.sampleBoneIdTableReadable
+        << ",\"sample_bone_head_index\":" << snapshot.entityProcess.sampleBoneHeadIndex
+        << "},\"local_entity\":{\"selected\":" << snapshot.localEntity.selected
+        << ",\"selected_health\":" << snapshot.localEntity.selectedHealth
+        << ",\"best_distance_cm\":" << snapshot.localEntity.bestDistanceCm
+        << "}}}";
+    return out.str();
+}
+
+void AppendHeroPerkJson(std::ostringstream& out, const OW::HeroPerks::State& perk)
+{
+    const OW::HeroPerks::Classification& classification = perk.classification;
+    const OW::HeroPerks::ResearchSelectedBoolean& researchSelected = perk.researchSelected;
+    out << "{\"available\":" << (perk.available ? "true" : "false")
+        << ",\"lookup_ready\":" << (perk.lookupReady ? "true" : "false")
+        << ",\"policy\":";
+    AppendJsonString(out, OW::HeroPerkLookupSeed::kPolicyName);
+    out << ",\"seed_generated_at_utc\":";
+    AppendJsonString(out, OW::HeroPerkLookupSeed::kGeneratedAtUtc);
+    out << ",\"seed_trusted_rows\":" << OW::HeroPerkLookupSeed::kTrustedRows
+        << ",\"seed_trusted_samples\":" << OW::HeroPerkLookupSeed::kTrustedSamples
+        << ",\"seed_source_holdout_known\":" << OW::HeroPerkLookupSeed::kSourceHoldoutKnownSamples
+        << ",\"seed_source_holdout_samples\":" << OW::HeroPerkLookupSeed::kSourceHoldoutSamples
+        << ",\"seed_source_holdout_false_known\":" << OW::HeroPerkLookupSeed::kSourceHoldoutFalseKnown
+        << ",\"skill_base\":";
+    AppendHexOrNull(out, perk.skillBase);
+    out << ",\"e44_read\":" << (perk.e44Read ? "true" : "false")
+        << ",\"e44_u32\":";
+    AppendHexString(out, perk.e44U32);
+    out << ",\"e44_u64\":";
+    AppendHexString(out, perk.e44U64);
+    out << ",\"e78_read\":" << (perk.e78Read ? "true" : "false")
+        << ",\"e78_u32\":";
+    AppendHexString(out, perk.e78U32);
+    out << ",\"e78_u64\":";
+    AppendHexString(out, perk.e78U64);
+    out << ",\"research_selected_boolean\":{"
+        << "\"evidence\":\"20260615_live_validation_fail_closed\","
+        << "\"supported_hero\":" << (researchSelected.supportedHero ? "true" : "false")
+        << ",\"available\":" << (researchSelected.available ? "true" : "false")
+        << ",\"selected\":";
+    if (researchSelected.available)
+        out << (researchSelected.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"rule\":";
+    if (researchSelected.rule && researchSelected.rule[0] != '\0')
+        AppendJsonString(out, researchSelected.rule);
+    else
+        out << "null";
+    out << ",\"raw\":{"
+        << "\"skill_16c2_read\":" << (researchSelected.skill16C2Read ? "true" : "false")
+        << ",\"skill_16c2_u16\":";
+    AppendHexString(out, researchSelected.skill16C2);
+    out << ",\"symmetra_02e8_read\":" << (researchSelected.symmetra02E8Read ? "true" : "false")
+        << ",\"symmetra_02e8_u64\":";
+    AppendHexString(out, researchSelected.symmetra02E8);
+    out << ",\"component55_base\":";
+    AppendHexOrNull(out, researchSelected.component55Base);
+    out << ",\"component55_270_read\":" << (researchSelected.component55_270Read ? "true" : "false")
+        << ",\"component55_270_u32\":";
+    AppendHexString(out, researchSelected.component55_270);
+    out << "}}";
+    out << ",\"selected_boolean\":";
+    AppendMergedSelectedBooleanJson(out, perk.mergedSelected);
+    out << ",\"statescript_ea0c_selected_boolean\":";
+    AppendStateScriptEa0cSelectedBooleanJson(out, perk.stateScriptEa0cSelected);
+    out << ",\"ana_headshot_selected_boolean\":";
+    AppendAnaHeadshotSelectedBooleanJson(out, perk.anaHeadshotSelected);
+    out << ",\"raw_selected_boolean\":";
+    AppendRawSelectedBooleanJson(out, perk.rawSelected);
+    out << ",\"candidate_slot_selected_boolean\":";
+    AppendCandidateSlotSelectedBooleanJson(out, perk.candidateSlotSelected);
+    out << ",\"candidate_slots\":";
+    AppendCandidateSlotsJson(out, perk);
+    out << ",\"result\":";
+    AppendJsonString(out, OW::HeroPerks::ResultName(classification.result));
+    out << ",\"selected\":";
+    if (OW::HeroPerks::IsKnown(classification.result))
+        out << (classification.selected ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"tier\":";
+    if (classification.tier && classification.tier[0] != '\0')
+        AppendJsonString(out, classification.tier);
+    else
+        out << "null";
+    out << ",\"key\":";
+    AppendHexOrNull(out, classification.key);
+    out << ",\"signatures\":{"
+        << "\"ordered\":";
+    AppendHexString(out, perk.orderedSignature);
+    out << ",\"cluster\":";
+    AppendHexString(out, perk.clusterSignature);
+    out << ",\"unique_no338\":";
+    AppendHexString(out, perk.uniqueNo338Signature);
+    out << ",\"multiset\":";
+    AppendHexString(out, perk.multisetSignature);
+    out << "},\"keys\":{"
+        << "\"ordered\":";
+    AppendHexString(out, perk.orderedKey);
+    out << ",\"cluster\":";
+    AppendHexString(out, perk.clusterKey);
+    out << ",\"unique_no338\":";
+    AppendHexString(out, perk.uniqueNo338Key);
+    out << ",\"multiset\":";
+    AppendHexString(out, perk.multisetKey);
+    out << ",\"state_code\":";
+    AppendHexString(out, perk.stateCodeKey);
+    out << "},\"research_candidate_signatures\":{";
+    for (size_t index = 0; index < perk.researchCandidateKeyCount; ++index) {
+        if (index != 0)
+            out << ',';
+        const OW::HeroPerks::ResearchCandidateKey& candidate = perk.researchCandidateKeys[index];
+        AppendJsonString(out, candidate.name ? candidate.name : "");
+        out << ':';
+        AppendHexString(out, candidate.signature);
+    }
+    out << "},\"research_candidate_keys\":{";
+    for (size_t index = 0; index < perk.researchCandidateKeyCount; ++index) {
+        if (index != 0)
+            out << ',';
+        const OW::HeroPerks::ResearchCandidateKey& candidate = perk.researchCandidateKeys[index];
+        AppendJsonString(out, candidate.name ? candidate.name : "");
+        out << ':';
+        AppendHexString(out, candidate.key);
+    }
+    out << "},\"checked\":[";
+    for (size_t index = 0; index < classification.checkedCount; ++index) {
+        if (index != 0)
+            out << ',';
+        const OW::HeroPerks::CheckedTier& checked = classification.checked[index];
+        out << "{\"tier\":";
+        AppendJsonString(out, checked.tier ? checked.tier : "");
+        out << ",\"key\":";
+        AppendHexString(out, checked.key);
+        out << ",\"hit\":" << (checked.hit ? "true" : "false")
+            << ",\"collision\":" << (checked.collision ? "true" : "false")
+            << '}';
+    }
+    out << "]}";
+}
+
+std::string BuildLocalJson()
+{
+    std::vector<std::string> warnings;
+    const OW::c_entity local = OW::TargetingDetail::SnapshotLocalEntity();
+    const OW::TargetingDetail::FovRuntimeContext fov = OW::TargetingDetail::SnapshotFovRuntimeContext();
+    const OW::HeroPerks::State perk{};
+    const bool hasLocal = local.address != 0 || local.HeroID != 0 || local.LinkBase != 0;
+    if (!hasLocal)
+        warnings.emplace_back("local entity snapshot is unavailable");
+    if (!fov.valid)
+        warnings.emplace_back("camera/view direction is unavailable");
+
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out, warnings);
+    out << ",\"local\":{";
+    out << "\"hero_id\":";
+    if (local.HeroID != 0)
+        AppendHexString(out, local.HeroID);
+    else
+        out << "null";
+    out << ",\"hero_name\":";
+    const std::string heroName = HeroName(local.HeroID, local.LinkBase);
+    if (!heroName.empty())
+        AppendJsonString(out, heroName);
+    else
+        out << "null";
+    out << ",\"health\":";
+    if (hasLocal)
+        AppendNumberOrNull(out, local.PlayerHealth);
+    else
+        out << "null";
+    out << ",\"health_max\":";
+    if (hasLocal)
+        AppendNumberOrNull(out, local.PlayerHealthMax);
+    else
+        out << "null";
+    out << ",\"alive\":";
+    if (hasLocal)
+        out << (local.Alive ? "true" : "false");
+    else
+        out << "null";
+    out << ",\"position\":";
+    if (hasLocal)
+        AppendVectorOrNull(out, local.pos);
+    else
+        out << "null";
+    out << ",\"camera_position\":";
+    if (fov.valid)
+        AppendVectorOrNull(out, fov.camera);
+    else
+        out << "null";
+    out << ",\"view_direction\":";
+    if (fov.valid)
+        AppendVectorOrNull(out, fov.forward);
+    else
+        out << "null";
+    out << ",\"link_base\":";
+    AppendHexOrNull(out, local.LinkBase);
+    out << ",\"skill_base\":";
+    AppendHexOrNull(out, local.SkillBase);
+    out << ",\"player_controller\":";
+    AppendHexOrNull(out, OW::SDK ? OW::SDK->g_player_controller.load() : 0);
+    out << ",\"ultimate_perk\":";
+    AppendHeroPerkJson(out, perk);
+    out << "}}";
+    return out.str();
+}
+
+std::string BuildEntitiesJson(const std::unordered_map<std::string, std::string>& rawQuery)
+{
+    EntityQuery query = ParseEntityQuery(rawQuery);
+    const OW::c_entity local = OW::TargetingDetail::SnapshotLocalEntity();
+    std::vector<OW::c_entity> entities = OW::TargetingDetail::SnapshotEntities();
+
+    struct Candidate {
+        OW::c_entity entity{};
+        float distanceM = 0.0f;
+        uint64_t key = 0;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(entities.size());
+    for (const OW::c_entity& entity : entities) {
+        const bool alive = EntityFreshAndAlive(entity);
+        if (!query.includeDead && !alive)
+            continue;
+        if (!TeamMatches(entity, query.team))
+            continue;
+
+        const float distance = IsFiniteVector(entity.pos) && IsFiniteVector(local.pos)
+            ? entity.pos.DistTo(local.pos)
+            : (std::numeric_limits<float>::max)();
+        if (distance > query.maxDistanceM)
+            continue;
+
+        candidates.push_back(Candidate{ entity, distance, EntityKey(entity) });
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+        [](const Candidate& lhs, const Candidate& rhs) {
+            const bool lhsAlive = EntityFreshAndAlive(lhs.entity);
+            const bool rhsAlive = EntityFreshAndAlive(rhs.entity);
+            if (lhsAlive != rhsAlive)
+                return lhsAlive && !rhsAlive;
+            if (lhs.distanceM != rhs.distanceM)
+                return lhs.distanceM < rhs.distanceM;
+            return lhs.key < rhs.key;
+        });
+
+    if (static_cast<int>(candidates.size()) > query.limit)
+        candidates.resize(static_cast<size_t>(query.limit));
+
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out, query.warnings);
+    out << ",\"query\":{\"max_distance_m\":";
+    AppendNumberOrNull(out, query.maxDistanceM);
+    out << ",\"team\":";
+    AppendJsonString(out, query.team);
+    out << ",\"include_dead\":" << (query.includeDead ? "true" : "false")
+        << ",\"limit\":" << query.limit
+        << "},\"hero_summary\":";
+    AppendHeroDiagnosticSummaryJson(out, candidates);
+    out << ",\"entities\":[";
+
+    for (size_t index = 0; index < candidates.size(); ++index) {
+        if (index != 0)
+            out << ',';
+
+        const OW::c_entity& entity = candidates[index].entity;
+        const std::string heroName = HeroName(entity.HeroID, entity.LinkBase);
+        const bool syntheticCnTrainingBot =
+            OW::offset::IsCnProfile() &&
+            !entity.HeroBase &&
+            OW::GameData::IsTrainingBotHeroId(entity.HeroID);
+        const bool trainingBot = IsTrainingBotEntity(entity);
+        const bool knownRealHero = IsKnownRealHeroEntity(entity);
+        const bool rotationZero = IsZeroRotation(entity.Rot);
+        const int skeletonValidCount = SkeletonValidCount(entity);
+        out << "{\"key\":";
+        AppendHexString(out, candidates[index].key);
+        out << ",\"roster_key\":";
+        AppendHexOrNull(out, entity.roster_key);
+        out << ",\"participant_key\":";
+        AppendHexOrNull(out, entity.participant_key);
+        out << ",\"match_id\":" << entity.match_id
+            << ",\"actor_generation\":" << entity.actor_generation
+            << ",\"connection_epoch\":" << entity.connection_epoch
+            << ",\"scene_generation\":" << entity.scene_generation
+            << ",\"last_discovered_tick_ms\":" << entity.last_discovered_tick_ms
+            << ",\"body_valid\":" << (entity.HasUsableBody(GetTickCount(),OW::EntitySceneGeneration()) ? "true" : "false")
+            << ",\"publish_sequence\":" << entity.publish_sequence
+            << ",\"actual_scan_generation\":" << entity.actual_scan_generation
+            << ",\"actual_scan_source\":" << unsigned(entity.actual_scan_source)
+            << ",\"anchor_sample_tick_ms\":" << entity.anchor_sample_tick_ms
+            << ",\"read_started_tick_ms\":" << entity.read_started_tick_ms
+            << ",\"read_completed_tick_ms\":" << entity.read_completed_tick_ms
+            << ",\"skeleton_sample_tick_ms\":" << entity.skeleton_sample_tick_ms;
+        out << ",\"address\":";
+        AppendHexString(out, entity.address);
+        out << ",\"component_parent\":";
+        AppendHexOrNull(out, entity.address);
+        out << ",\"link_parent\":";
+        AppendHexOrNull(out, entity.LinkParent);
+        out << ",\"health_base\":";
+        AppendHexOrNull(out, entity.HealthBase);
+        out << ",\"link_base\":";
+        AppendHexOrNull(out, entity.LinkBase);
+        out << ",\"team_base\":";
+        AppendHexOrNull(out, entity.TeamBase);
+        out << ",\"velocity_base\":";
+        AppendHexOrNull(out, entity.VelocityBase);
+        out << ",\"hero_base\":";
+        AppendHexOrNull(out, entity.HeroBase);
+        out << ",\"bone_base\":";
+        AppendHexOrNull(out, entity.BoneBase);
+        out << ",\"skill_base\":";
+        AppendHexOrNull(out, entity.SkillBase);
+        out << ",\"visibility_base\":";
+        AppendHexOrNull(out, entity.VisBase);
+        out << ",\"player_controller_base\":";
+        AppendHexOrNull(out, entity.AngleBase);
+        out << ",\"enemy_angle_base\":";
+        AppendHexOrNull(out, entity.EnemyAngleBase);
+        out << ",\"enemy_angle_probe\":";
+        AppendEnemyAngleProbeJson(out, entity.EnemyAngleBase);
+        out << ",\"hero_id\":";
+        AppendHexString(out, entity.HeroID);
+        out << ",\"hero_source\":";
+        AppendJsonString(out, entity.HeroBase ? "component" : (syntheticCnTrainingBot ? "health_fallback" : "missing"));
+        out << ",\"hero_name\":";
+        AppendJsonString(out, heroName.empty() ? "Unknown" : heroName);
+        out << ",\"known_real_hero\":" << (knownRealHero ? "true" : "false")
+            << ",\"training_bot\":" << (trainingBot ? "true" : "false")
+            << ",\"rotation_zero\":" << (rotationZero ? "true" : "false")
+            << ",\"skeleton_valid_count\":" << skeletonValidCount;
+        out << ",\"team\":";
+        AppendJsonString(out, !entity.team_known ? "unknown" : (entity.Team ? "enemy" : "ally"));
+        out << ",\"team_known\":" << (entity.team_known ? "true" : "false");
+        if (query.teamDebug) {
+            out << ",\"team_debug\":";
+            AppendTeamDebugJson(out, entity.TeamBase);
+        }
+        out << ",\"alive\":" << (entity.Alive ? "true" : "false")
+            << ",\"visible\":" << (entity.Vis ? "true" : "false")
+            << ",\"visibility_source\":";
+        AppendJsonString(out, entity.VisBase ? "component" : (syntheticCnTrainingBot ? "synthetic_training_bot" : "missing"));
+        out << ",\"health\":";
+        AppendNumberOrNull(out, entity.PlayerHealth);
+        out << ",\"health_max\":";
+        AppendNumberOrNull(out, entity.PlayerHealthMax);
+        out << ",\"distance_m\":";
+        AppendNumberOrNull(out, candidates[index].distanceM);
+        out << ",\"position\":";
+        AppendVectorOrNull(out, entity.pos);
+        out << ",\"head_position\":";
+        AppendVectorOrNull(out, entity.head_pos);
+        out << ",\"chest_position\":";
+        AppendVectorOrNull(out, entity.chest_pos);
+        out << ",\"rotation_base\":";
+        AppendHexOrNull(out, entity.RotationBase);
+        out << ",\"rotation\":";
+        AppendVectorOrNull(out, entity.Rot);
+        out << ",\"yaw_forward\":";
+        AppendVectorOrNull(out, YawForwardFromRotation(entity.Rot));
+        out << ",\"skeleton\":";
+        AppendSkeletonDiagnosticJson(out, entity, false);
+        const OW::EntityMotionState motion = OW::TargetingDetail::EstimateMotionState(entity, OW::Vector2{});
+        const float groundedBaselineY = DiagnosticGroundedBaselineY(candidates[index].key, entity, motion);
+        out << ",\"velocity\":";
+        AppendVectorOrNull(out, motion.worldVelocity);
+        out << ",\"motion_state\":";
+        AppendJsonString(out, MotionKindName(motion.kind));
+        out << ",\"motion_confidence\":";
+        AppendNumberOrNull(out, motion.confidence);
+        out << ",\"grounded_y_baseline\":";
+        AppendNumberOrNull(out, groundedBaselineY);
+        out << ",\"height_above_ground\":";
+        AppendNumberOrNull(out,
+            IsFiniteVector(entity.pos) && std::isfinite(groundedBaselineY)
+                ? entity.pos.Y - groundedBaselineY
+                : (std::numeric_limits<float>::quiet_NaN)());
+        out << ",\"vertical_velocity_y\":";
+        AppendNumberOrNull(out, motion.verticalVelocity);
+        out << ",\"roster_state\":";
+        AppendJsonString(out, RosterStateName(entity.roster_state));
+        out << ",\"last_scan_seen_tick_ms\":" << entity.last_scan_seen_tick_ms
+            << ",\"last_hot_read_tick_ms\":" << entity.last_hot_read_tick_ms
+            << ",\"scan_seen_gap_ms\":" << entity.scan_seen_gap_ms
+            << ",\"hot_read_gap_ms\":" << entity.hot_read_gap_ms
+            << ",\"consecutive_scan_miss_count\":"
+            << entity.consecutive_scan_miss_count;
+        out << '}';
+    }
+
+    out << "]}";
+    return out.str();
+}
+
+std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::string>& rawQuery)
+{
+    EntityQuery query = ParseEntityQuery(rawQuery);
+    query.includeDead = true;
+
+    const OW::c_entity local = OW::TargetingDetail::SnapshotLocalEntity();
+    std::vector<OW::c_entity> entities = OW::TargetingDetail::SnapshotEntities();
+    const float fallbackWidth = OW::Config::manualScreenWidth > 0
+        ? static_cast<float>(OW::Config::manualScreenWidth)
+        : static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
+    const float fallbackHeight = OW::Config::manualScreenHeight > 0
+        ? static_cast<float>(OW::Config::manualScreenHeight)
+        : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
+    const OW::Vector2 window(OW::WX > 0.0f ? OW::WX : fallbackWidth,
+        OW::WY > 0.0f ? OW::WY : fallbackHeight);
+
+    OW::Matrix published{}, publishedCamera{};
+    OW::SnapshotViewMatrices(published, publishedCamera);
+    const bool publishedValid = MatrixNonIdentity(published);
+    const bool publishedCameraValid = CameraViewMatrixPlausible(publishedCamera);
+    const DirectX::XMFLOAT3 cameraPosRaw = publishedCamera.get_location();
+    const DirectX::XMFLOAT3 cameraForwardRaw = publishedCamera.get_rotation();
+    const OW::Vector3 cameraPos(cameraPosRaw.x, cameraPosRaw.y, cameraPosRaw.z);
+    const OW::Vector3 cameraForward(cameraForwardRaw.x, cameraForwardRaw.y, cameraForwardRaw.z);
+
+    const uint64_t moduleBase = OW::SDK && OW::SDK->IsInitialized() ? OW::SDK->dwGameBase.load() : 0;
+    const auto& activeOffsets = OW::offset::Active();
+    const bool selectedShortChain = activeOffsets.viewMatrixChain ==
+        OW::offset::ViewMatrixChainMode::CameraProjectionShort;
+    const auto viewMatrixMode = activeOffsets.viewMatrixMode;
+    const bool directRoot = viewMatrixMode == OW::offset::ViewMatrixMode::DirectChain;
+    const bool subXorSubRoot = viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedChainSubXorSub;
+    const bool xorAddRoot = viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedChainXorAdd;
+
+    uint64_t root = 0;
+    uint64_t decoded = 0;
+    uint64_t p1 = 0;
+    uint64_t p2 = 0;
+    uint64_t p3 = 0;
+    uint64_t p4 = 0;
+    uint64_t directRenderPtr = 0;
+    uint64_t cameraPtr = 0;
+    uint64_t projectionPtr = 0;
+    OW::Matrix directRender{};
+    OW::Matrix cameraView{};
+    OW::Matrix projection{};
+    bool directRead = false;
+    bool cameraRead = false;
+    bool projectionRead = false;
+
+    if (moduleBase != 0 && activeOffsets.Address_viewmatrix_base != 0 &&
+        TryReadValue(moduleBase + activeOffsets.Address_viewmatrix_base, root) && root != 0) {
+        decoded = directRoot
+            ? root
+            : (xorAddRoot
+                ? (root ^ activeOffsets.offset_viewmatrix_xor_key) +
+                    activeOffsets.offset_viewmatrix_xor_key2
+                : subXorSubRoot
+                ? ((root - activeOffsets.offset_viewmatrix_xor_key)
+                    ^ activeOffsets.offset_viewmatrix_xor_key2) -
+                    activeOffsets.offset_viewmatrix_xor_key3
+                : ((root + activeOffsets.offset_viewmatrix_xor_key)
+                    ^ activeOffsets.offset_viewmatrix_xor_key2));
+
+        if (decoded != 0) {
+            if (viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedDirectMatrix) {
+                directRenderPtr = decoded + activeOffsets.VM_DirectMatrix;
+                cameraPtr = activeOffsets.VM_ViewMatrix ? decoded + activeOffsets.VM_ViewMatrix : 0;
+            } else {
+                TryReadValue(decoded + activeOffsets.VM_P1, p1);
+                if (p1 != 0)
+                    TryReadValue(p1 + activeOffsets.VM_P2, p2);
+                if (p2 != 0) {
+                    TryReadValue(p2 + activeOffsets.VM_ViewProjectionParent, p3);
+                    if (p3 != 0)
+                        TryReadValue(p3 + activeOffsets.VM_ViewProjectionPtr, p4);
+                    if (p4 != 0)
+                        directRenderPtr = p4 + activeOffsets.VM_ViewProjectionMatrix;
+                    cameraPtr = p2 + activeOffsets.VM_ViewMatrix;
+                    projectionPtr = activeOffsets.projectionFromRender
+                        ? (p4 ? p4 + activeOffsets.VM_ProjMatrix : 0)
+                        : p2 + activeOffsets.VM_ProjMatrix;
+                }
+            }
+        }
+    }
+
+    if (directRenderPtr != 0)
+        directRead = TryReadValue(directRenderPtr, directRender);
+    if (cameraPtr != 0)
+        cameraRead = TryReadValue(cameraPtr, cameraView);
+    if (projectionPtr != 0)
+        projectionRead = TryReadValue(projectionPtr, projection);
+
+    const bool directValid = directRead && MatrixNonIdentity(directRender);
+    const bool cameraValid = cameraRead && CameraViewMatrixPlausible(cameraView);
+    const bool projectionValid = projectionRead && MatrixNonIdentity(projection);
+    const bool composedRead = cameraRead && projectionRead;
+    const OW::Matrix cameraProjection = composedRead ? OW::ComposeCameraProjection(cameraView, projection) : OW::Matrix{};
+    const OW::Matrix projectionCamera = composedRead ? MultiplyMatricesLocal(projection, cameraView) : OW::Matrix{};
+    const bool cameraProjectionValid = composedRead && MatrixNonIdentity(cameraProjection);
+    const bool projectionCameraValid = composedRead && MatrixNonIdentity(projectionCamera);
+
+    struct Candidate {
+        OW::c_entity entity{};
+        float distanceM = 0.0f;
+        uint64_t key = 0;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(entities.size());
+    for (const OW::c_entity& entity : entities) {
+        if (!TeamMatches(entity, query.team))
+            continue;
+        const float distance = IsFiniteVector(entity.pos) && IsFiniteVector(local.pos)
+            ? entity.pos.DistTo(local.pos)
+            : (std::numeric_limits<float>::max)();
+        if (distance > query.maxDistanceM)
+            continue;
+        candidates.push_back(Candidate{ entity, distance, EntityKey(entity) });
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+        [](const Candidate& lhs, const Candidate& rhs) {
+            if (lhs.distanceM != rhs.distanceM)
+                return lhs.distanceM < rhs.distanceM;
+            return lhs.key < rhs.key;
+        });
+    if (static_cast<int>(candidates.size()) > query.limit)
+        candidates.resize(static_cast<size_t>(query.limit));
+
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out, query.warnings);
+    out << ",\"query\":{\"max_distance_m\":";
+    AppendNumberOrNull(out, query.maxDistanceM);
+    out << ",\"team\":";
+    AppendJsonString(out, query.team);
+    out << ",\"limit\":" << query.limit
+        << "},\"hero_summary\":";
+    AppendHeroDiagnosticSummaryJson(out, candidates);
+    out << ",\"screen\":{\"width\":";
+    AppendNumberOrNull(out, window.X);
+    out << ",\"height\":";
+    AppendNumberOrNull(out, window.Y);
+    out << "},\"matrix_chain\":{\"profile\":";
+    AppendJsonString(out, activeOffsets.name);
+    out << ",\"mode\":" << static_cast<int>(viewMatrixMode)
+        << ",\"selected_chain\":";
+    AppendJsonString(out, selectedShortChain ? "camera-projection-short" : "legacy-long");
+    out << ",\"chain_selection\":\"profile-static\""
+        << ",\"published_source\":";
+    AppendJsonString(out, (selectedShortChain || OW::offset::IsCnProfile()) ? "camera_times_projection" : "render_vp");
+    out
+        << ",\"module_base\":";
+    AppendHexOrNull(out, moduleBase);
+    out << ",\"root_rva\":";
+    AppendHexString(out, activeOffsets.Address_viewmatrix_base);
+    out << ",\"root\":";
+    AppendHexOrNull(out, root);
+    out << ",\"decoded\":";
+    AppendHexOrNull(out, decoded);
+    out << ",\"p1\":";
+    AppendHexOrNull(out, p1);
+    out << ",\"p2\":";
+    AppendHexOrNull(out, p2);
+    out << ",\"p3\":";
+    AppendHexOrNull(out, p3);
+    out << ",\"p4\":";
+    AppendHexOrNull(out, p4);
+    out << ",\"direct_render_ptr\":";
+    AppendHexOrNull(out, directRenderPtr);
+    out << ",\"camera_ptr\":";
+    AppendHexOrNull(out, cameraPtr);
+    out << ",\"projection_ptr\":";
+    AppendHexOrNull(out, projectionPtr);
+    out << ",\"published_ptr\":";
+    AppendHexOrNull(out, OW::offset::IsCnProfile() ? 0 : directRenderPtr);
+    out << ",\"published_camera_ptr\":";
+    AppendHexOrNull(out, cameraPtr);
+    out << ",\"direct_read\":" << (directRead ? "true" : "false")
+        << ",\"direct_valid\":" << (directValid ? "true" : "false")
+        << ",\"camera_read\":" << (cameraRead ? "true" : "false")
+        << ",\"camera_valid\":" << (cameraValid ? "true" : "false")
+        << ",\"projection_read\":" << (projectionRead ? "true" : "false")
+        << ",\"projection_valid\":" << (projectionValid ? "true" : "false")
+        << ",\"camera_times_projection_valid\":" << (cameraProjectionValid ? "true" : "false")
+        << ",\"projection_times_camera_valid\":" << (projectionCameraValid ? "true" : "false")
+        << ",\"published_valid\":" << (publishedValid ? "true" : "false")
+        << ",\"published_camera_valid\":" << (publishedCameraValid ? "true" : "false")
+        << ",\"camera_position\":";
+    AppendVectorOrNull(out, cameraPos);
+    out << ",\"camera_forward\":";
+    AppendVectorOrNull(out, cameraForward);
+    out << ",\"projection_fov\":";
+    AppendProjectionFovJson(out, projection, projectionRead, window);
+    out << "},\"entities\":[";
+
+    for (size_t index = 0; index < candidates.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        const OW::c_entity& entity = candidates[index].entity;
+        const std::string heroName = HeroName(entity.HeroID, entity.LinkBase);
+        const bool trainingBot = IsTrainingBotEntity(entity);
+        const bool knownRealHero = IsKnownRealHeroEntity(entity);
+        const bool rotationZero = IsZeroRotation(entity.Rot);
+        const int skeletonValidCount = SkeletonValidCount(entity);
+        const OW::Vector3 rootPos = entity.pos;
+        const OW::Vector3 headPos = entity.head_pos;
+        const OW::Vector3 chestPos = entity.chest_pos;
+        const float forwardDotRoot = IsFiniteVector(rootPos) && IsFiniteVector(cameraPos) && IsFiniteVector(cameraForward)
+            ? Dot(rootPos - cameraPos, cameraForward)
+            : std::numeric_limits<float>::quiet_NaN();
+        const float forwardDotChest = IsFiniteVector(chestPos) && IsFiniteVector(cameraPos) && IsFiniteVector(cameraForward)
+            ? Dot(chestPos - cameraPos, cameraForward)
+            : std::numeric_limits<float>::quiet_NaN();
+
+        out << "{\"key\":";
+        AppendHexString(out, candidates[index].key);
+        out << ",\"address\":";
+        AppendHexString(out, entity.address);
+        out << ",\"hero_id\":";
+        AppendHexString(out, entity.HeroID);
+        out << ",\"hero_name\":";
+        AppendJsonString(out, heroName.empty() ? "Unknown" : heroName);
+        out << ",\"known_real_hero\":" << (knownRealHero ? "true" : "false")
+            << ",\"training_bot\":" << (trainingBot ? "true" : "false")
+            << ",\"rotation_zero\":" << (rotationZero ? "true" : "false")
+            << ",\"skeleton_valid_count\":" << skeletonValidCount;
+        out << ",\"team\":";
+        AppendJsonString(out, !entity.team_known ? "unknown" : (entity.Team ? "enemy" : "ally"));
+        out << ",\"team_known\":" << (entity.team_known ? "true" : "false");
+        out << ",\"alive\":" << (entity.Alive ? "true" : "false")
+            << ",\"visible\":" << (entity.Vis ? "true" : "false")
+            << ",\"health\":";
+        AppendNumberOrNull(out, entity.PlayerHealth);
+        out << ",\"health_max\":";
+        AppendNumberOrNull(out, entity.PlayerHealthMax);
+        out << ",\"distance_m\":";
+        AppendNumberOrNull(out, candidates[index].distanceM);
+        out << ",\"forward_dot_root\":";
+        AppendNumberOrNull(out, forwardDotRoot);
+        out << ",\"forward_dot_chest\":";
+        AppendNumberOrNull(out, forwardDotChest);
+        out << ",\"rotation_base\":";
+        AppendHexOrNull(out, entity.RotationBase);
+        out << ",\"rotation\":";
+        AppendVectorOrNull(out, entity.Rot);
+        out << ",\"yaw_forward\":";
+        AppendVectorOrNull(out, YawForwardFromRotation(entity.Rot));
+        out << ",\"enemy_angle_base\":";
+        AppendHexOrNull(out, entity.EnemyAngleBase);
+        out << ",\"enemy_angle_probe\":";
+        AppendEnemyAngleProbeJson(out, entity.EnemyAngleBase);
+        out << ",\"skeleton\":";
+        AppendSkeletonDiagnosticJson(out, entity, true);
+        out << ",\"positions\":{\"root\":";
+        AppendVectorOrNull(out, rootPos);
+        out << ",\"head\":";
+        AppendVectorOrNull(out, headPos);
+        out << ",\"chest\":";
+        AppendVectorOrNull(out, chestPos);
+        out << "},\"projection\":{\"root\":";
+        AppendProjectionSetJson(out,
+            rootPos,
+            window,
+            published,
+            publishedValid,
+            directRender,
+            directRead,
+            directValid,
+            cameraProjection,
+            composedRead,
+            cameraProjectionValid,
+            projectionCamera,
+            composedRead,
+            projectionCameraValid);
+        out << ",\"head\":";
+        AppendProjectionSetJson(out,
+            headPos,
+            window,
+            published,
+            publishedValid,
+            directRender,
+            directRead,
+            directValid,
+            cameraProjection,
+            composedRead,
+            cameraProjectionValid,
+            projectionCamera,
+            composedRead,
+            projectionCameraValid);
+        out << ",\"chest\":";
+        AppendProjectionSetJson(out,
+            chestPos,
+            window,
+            published,
+            publishedValid,
+            directRender,
+            directRead,
+            directValid,
+            cameraProjection,
+            composedRead,
+            cameraProjectionValid,
+            projectionCamera,
+            composedRead,
+            projectionCameraValid);
+        out << "}}";
+    }
+
+    out << "]}";
+    return out.str();
+}
+
+struct MatrixSweepProjection {
+    bool ok = false;
+    ProjectionRawSample head{};
+    ProjectionRawSample root{};
+    ProjectionRawSample chest{};
+};
+
+MatrixSweepProjection ProjectEntityForSweep(
+    const OW::Matrix& matrix,
+    const OW::c_entity& entity,
+    const OW::Vector2& window,
+    bool rowMajor)
+{
+    MatrixSweepProjection projection{};
+    projection.head = rowMajor
+        ? ProjectRawRowMajor(matrix, entity.head_pos, window)
+        : ProjectRaw(matrix, entity.head_pos, window);
+    projection.root = rowMajor
+        ? ProjectRawRowMajor(matrix, entity.pos, window)
+        : ProjectRaw(matrix, entity.pos, window);
+    projection.chest = rowMajor
+        ? ProjectRawRowMajor(matrix, entity.chest_pos, window)
+        : ProjectRaw(matrix, entity.chest_pos, window);
+    projection.ok = projection.head.ok && projection.root.ok && projection.chest.finite;
+    return projection;
+}
+
+std::optional<std::pair<size_t, OW::c_entity>> FindTargetEntity(
+    const std::vector<OW::c_entity>& entities,
+    const OW::TargetingDetail::TargetLockRuntime& lock)
+{
+    if (lock.active && lock.entityKey != 0) {
+        for (size_t index = 0; index < entities.size(); ++index) {
+            if (EntityKey(entities[index]) == lock.entityKey)
+                return std::make_pair(index, entities[index]);
+        }
+    }
+
+    if (OW::Config::Targetenemyi >= 0 &&
+        static_cast<size_t>(OW::Config::Targetenemyi) < entities.size()) {
+        return std::make_pair(static_cast<size_t>(OW::Config::Targetenemyi),
+            entities[static_cast<size_t>(OW::Config::Targetenemyi)]);
+    }
+
+    if (lock.entityIndex >= 0 && static_cast<size_t>(lock.entityIndex) < entities.size())
+        return std::make_pair(static_cast<size_t>(lock.entityIndex),
+            entities[static_cast<size_t>(lock.entityIndex)]);
+
+    return std::nullopt;
+}
+
+void AppendTargetObjectJson(std::ostringstream& out, std::vector<std::string>* warnings)
+{
+    std::vector<OW::c_entity> entities = OW::TargetingDetail::SnapshotEntities();
+    const OW::c_entity local = OW::TargetingDetail::SnapshotLocalEntity();
+    const OW::TargetingDetail::TargetLockRuntime lock =
+        OW::TargetingDetail::SnapshotTargetLockRuntime();
+    const OW::TargetingDetail::FovRuntimeContext fov = OW::TargetingDetail::SnapshotFovRuntimeContext();
+    const OW::TargetCandidate candidate = OW::TargetingDetail::SnapshotLastTargetCandidate();
+    const auto target = FindTargetEntity(entities, lock);
+    if (warnings) {
+        if (!target && candidate.valid)
+            warnings->emplace_back("selected target uses last candidate snapshot because target lock is inactive");
+        else if (!target)
+            warnings->emplace_back("selected target snapshot is unavailable");
+        if (!fov.valid)
+            warnings->emplace_back("target angular error is unavailable");
+    }
+
+    out << "{\"selected_index\":";
+    if (target)
+        out << target->first;
+    else if (lock.entityIndex >= 0)
+        out << lock.entityIndex;
+    else if (candidate.valid && candidate.entityIndex >= 0)
+        out << candidate.entityIndex;
+    else
+        out << "null";
+    out << ",\"selected_key\":";
+    uint64_t selectedKey = target ? EntityKey(target->second) : lock.entityKey;
+    if (selectedKey == 0 && candidate.valid)
+        selectedKey = candidate.entityKey;
+    AppendHexOrNull(out, selectedKey);
+    out << ",\"lock_active\":" << (lock.active ? "true" : "false");
+
+    if (target || candidate.valid) {
+        const OW::c_entity& entity = target ? target->second : candidate.entitySnapshot;
+        const bool candidateMatches =
+            candidate.valid &&
+            candidate.entityKey != 0 &&
+            candidate.entityKey == selectedKey;
+        OW::Vector3 aimPoint = entity.head_pos;
+        if (!IsFiniteVector(aimPoint) || aimPoint == OW::Vector3(0, 0, 0))
+            aimPoint = entity.chest_pos;
+        if (!IsFiniteVector(aimPoint) || aimPoint == OW::Vector3(0, 0, 0))
+            aimPoint = entity.pos;
+
+        out << ",\"health\":";
+        AppendNumberOrNull(out, entity.PlayerHealth);
+        out << ",\"distance_m\":";
+        const float distance = IsFiniteVector(entity.pos) && IsFiniteVector(local.pos)
+            ? entity.pos.DistTo(local.pos)
+            : (std::numeric_limits<float>::quiet_NaN)();
+        AppendNumberOrNull(out, distance);
+        out << ",\"aim_point\":";
+        AppendVectorOrNull(out, aimPoint);
+        out << ",\"angular_error_deg\":";
+        if (fov.valid && IsFiniteVector(aimPoint))
+            AppendNumberOrNull(out, OW::TargetingDetail::FovScoreDeg(fov, aimPoint));
+        else
+            out << "null";
+        out << ",\"effective_fov_deg\":";
+        if (candidateMatches)
+            AppendNumberOrNull(out, candidate.effectiveFovDeg);
+        else
+            out << "null";
+        out << ",\"dynamic_fov\":" << (candidateMatches && candidate.dynamicFov ? "true" : "false");
+        out << ",\"dynamic_fov_preset_id\":";
+        if (candidateMatches && candidate.dynamicFovPresetId >= 0)
+            out << candidate.dynamicFovPresetId;
+        else
+            out << "null";
+        out << ",\"candidate_fov_score_deg\":";
+        if (candidateMatches)
+            AppendNumberOrNull(out, candidate.fovScore);
+        else
+            out << "null";
+        out << ",\"raw_aim_point\":";
+        if (candidateMatches)
+            AppendVectorOrNull(out, candidate.rawAimPoint);
+        else
+            out << "null";
+        out << ",\"predicted_aim_point\":";
+        if (candidateMatches)
+            AppendVectorOrNull(out, candidate.predictedAimPoint);
+        else
+            out << "null";
+        out << ",\"final_aim_point\":";
+        if (candidateMatches)
+            AppendVectorOrNull(out, candidate.aimPoint);
+        else
+            out << "null";
+
+        const OW::WeaponSpec* weaponSpec = candidateMatches ? candidate.weaponSpec : nullptr;
+        const OW::ProjectileRuntimeSpec projectile =
+            OW::TargetingDetail::ResolveProjectileRuntimeSpec(weaponSpec, local, false);
+        const bool predictionEnabled = candidateMatches &&
+            OW::ResolvePredictionEnabled(
+                OW::ClampPredictionOverride(OW::Config::View_aimbotPredictionMode()),
+                weaponSpec,
+                OW::Config::View_Prediction());
+        const OW::Motion::EntityMotionEstimate motion =
+            candidateMatches
+                ? OW::Motion::EstimateEntityMotion(candidate.entitySnapshot)
+                : OW::Motion::EntityMotionEstimate{};
+        const OW::Vector3 targetVelocity =
+            candidateMatches
+                ? OW::TargetingDetail::AccelerationAwareVelocity(
+                    candidate.entitySnapshot,
+                    candidate.distance,
+                    projectile.projectileSpeed)
+                : OW::Vector3{};
+        const OW::LeadTimingEstimate timing =
+            candidateMatches
+                ? OW::TargetingDetail::EstimateLeadTimingForAimPoint(candidate.rawAimPoint, false)
+                : OW::LeadTimingEstimate{};
+
+        out << ",\"prediction_enabled\":";
+        if (candidateMatches)
+            out << (predictionEnabled ? "true" : "false");
+        else
+            out << "null";
+        out << ",\"projectile_speed\":";
+        if (candidateMatches)
+            AppendNumberOrNull(out, projectile.projectileSpeed);
+        else
+            out << "null";
+        out << ",\"gravity\":";
+        if (candidateMatches)
+            out << (projectile.gravity ? "true" : "false");
+        else
+            out << "null";
+        out << ",\"motion_source\":";
+        if (candidateMatches)
+            AppendJsonString(out, OW::TargetingDetail::MotionVelocitySourceName(motion.velocitySource));
+        else
+            out << "null";
+        out << ",\"motion_confidence\":";
+        if (candidateMatches)
+            AppendNumberOrNull(out, motion.confidence);
+        else
+            out << "null";
+        out << ",\"target_velocity\":";
+        if (candidateMatches)
+            AppendVectorOrNull(out, targetVelocity);
+        else
+            out << "null";
+        out << ",\"lead_timing_ms\":";
+        if (candidateMatches) {
+            out << "{\"settle\":";
+            AppendNumberOrNull(out, timing.estimatedSettleMs);
+            out << ",\"input\":" << timing.inputDelayMs
+                << ",\"prefire\":";
+            AppendNumberOrNull(out, timing.preFireDelayMs);
+            out << '}';
+        } else {
+            out << "null";
+        }
+    } else {
+        out << ",\"health\":null,\"distance_m\":null,\"aim_point\":null,\"angular_error_deg\":null"
+            << ",\"raw_aim_point\":null,\"predicted_aim_point\":null,\"final_aim_point\":null"
+            << ",\"prediction_enabled\":null,\"projectile_speed\":null,\"gravity\":null"
+            << ",\"motion_source\":null,\"motion_confidence\":null,\"target_velocity\":null"
+            << ",\"lead_timing_ms\":null";
+    }
+
+    out << '}';
+}
+
+std::string BuildTargetJson()
+{
+    std::vector<std::string> warnings;
+    std::ostringstream targetOut;
+    targetOut.imbue(std::locale::classic());
+    AppendTargetObjectJson(targetOut, &warnings);
+
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out, warnings);
+    out << ",\"target\":" << targetOut.str() << '}';
+    return out.str();
+}
+
+void AppendOutputMotionJson(std::ostringstream& out, uint64_t capturedAtMs)
+{
+    constexpr uint64_t kOutputMotionWindowMs = 120;
+    const auto samples = OW::OutputMotionTelemetry::SnapshotSince(capturedAtMs, kOutputMotionWindowMs);
+
+    out << "{\"available\":" << (!samples.empty() ? "true" : "false")
+        << ",\"window_ms\":" << kOutputMotionWindowMs
+        << ",\"sample_count\":" << samples.size();
+
+    if (samples.empty()) {
+        out << ",\"latest_sequence\":null"
+            << ",\"latest_at_ms\":null"
+            << ",\"latest_age_ms\":null"
+            << ",\"delta_x\":null"
+            << ",\"delta_y\":null"
+            << ",\"delta_pitch_rad\":null"
+            << ",\"delta_yaw_rad\":null"
+            << ",\"pixel_x\":null"
+            << ",\"pixel_y\":null"
+            << ",\"automove_runtime_ms\":null"
+            << ",\"status\":null"
+            << ",\"split\":null"
+            << ",\"steps\":null"
+            << ",\"speed_deg_s\":null"
+            << ",\"accel_deg_s2\":null"
+            << ",\"jerk_deg_s3\":null"
+            << ",\"max_speed_deg_s\":null"
+            << ",\"max_accel_deg_s2\":null"
+            << ",\"max_jerk_deg_s3\":null"
+            << ",\"total_abs_delta_deg\":0"
+            << ",\"speed_limit_deg_s\":null"
+            << ",\"accel_limit_deg_s2\":null"
+            << ",\"jerk_limit_deg_s3\":null"
+            << ",\"violations\":[]"
+            << '}';
+        return;
+    }
+
+    constexpr float kRadToDeg = 57.29577951308232f;
+    const auto& latest = samples.back();
+    float maxSpeed = 0.0f;
+    float maxAccel = 0.0f;
+    float maxJerk = 0.0f;
+    float totalAbsDeltaDeg = 0.0f;
+    for (const auto& sample : samples) {
+        maxSpeed = (std::max)(maxSpeed, std::fabs(sample.speedDegS));
+        maxAccel = (std::max)(maxAccel, std::fabs(sample.accelDegS2));
+        maxJerk = (std::max)(maxJerk, std::fabs(sample.jerkDegS3));
+        totalAbsDeltaDeg += std::sqrt(
+            sample.deltaPitchRad * sample.deltaPitchRad +
+            sample.deltaYawRad * sample.deltaYawRad) * kRadToDeg;
+    }
+
+    out << ",\"latest_sequence\":" << latest.sequence
+        << ",\"latest_at_ms\":" << latest.capturedAtMs
+        << ",\"latest_age_ms\":" << (capturedAtMs >= latest.capturedAtMs ? capturedAtMs - latest.capturedAtMs : 0)
+        << ",\"delta_x\":";
+    AppendNumberOrNull(out, latest.deltaYawRad);
+    out << ",\"delta_y\":";
+    AppendNumberOrNull(out, latest.deltaPitchRad);
+    out << ",\"delta_pitch_rad\":";
+    AppendNumberOrNull(out, latest.deltaPitchRad);
+    out << ",\"delta_yaw_rad\":";
+    AppendNumberOrNull(out, latest.deltaYawRad);
+    out << ",\"pixel_x\":" << latest.pixelX
+        << ",\"pixel_y\":" << latest.pixelY
+        << ",\"automove_runtime_ms\":" << latest.automoveRuntimeMs
+        << ",\"status\":" << latest.status
+        << ",\"split\":" << (latest.split ? "true" : "false")
+        << ",\"steps\":" << latest.steps
+        << ",\"speed_deg_s\":";
+    AppendNumberOrNull(out, latest.speedDegS);
+    out << ",\"accel_deg_s2\":";
+    AppendNumberOrNull(out, latest.accelDegS2);
+    out << ",\"jerk_deg_s3\":";
+    AppendNumberOrNull(out, latest.jerkDegS3);
+    out << ",\"max_speed_deg_s\":";
+    AppendNumberOrNull(out, maxSpeed);
+    out << ",\"max_accel_deg_s2\":";
+    AppendNumberOrNull(out, maxAccel);
+    out << ",\"max_jerk_deg_s3\":";
+    AppendNumberOrNull(out, maxJerk);
+    out << ",\"total_abs_delta_deg\":";
+    AppendNumberOrNull(out, totalAbsDeltaDeg);
+    out << ",\"speed_limit_deg_s\":null"
+        << ",\"accel_limit_deg_s2\":null"
+        << ",\"jerk_limit_deg_s3\":null"
+        << ",\"violations\":[]"
+        << '}';
+}
+
+void PushTargetHistorySample()
+{
+    std::ostringstream targetOut;
+    targetOut.imbue(std::locale::classic());
+    AppendTargetObjectJson(targetOut, nullptr);
+
+    std::lock_guard<std::mutex> lock(g_targetHistoryMutex);
+    TargetHistorySample sample{};
+    sample.sequence = ++g_targetHistorySequence;
+    sample.capturedAtMs = TimestampMs();
+    sample.targetJson = targetOut.str();
+    g_targetHistory.push_back(std::move(sample));
+    if (g_targetHistory.size() > kTargetHistoryCapacity)
+        g_targetHistory.erase(g_targetHistory.begin(),
+            g_targetHistory.begin() + static_cast<std::ptrdiff_t>(g_targetHistory.size() - kTargetHistoryCapacity));
+}
+
+void TargetHistoryLoop(std::shared_ptr<std::atomic<bool>> runFlag)
+{
+    Diagnostics::Info("UNDMA CN target history sampler started at ~%d Hz.",
+        1000 / kTargetHistoryPeriodMs);
+    while (runFlag && runFlag->load(std::memory_order_acquire)) {
+        const auto started = std::chrono::steady_clock::now();
+        PushTargetHistorySample();
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        const auto period = std::chrono::milliseconds(kTargetHistoryPeriodMs);
+        if (elapsed < period)
+            std::this_thread::sleep_for(period - elapsed);
+    }
+    Diagnostics::Info("UNDMA CN target history sampler stopped.");
+}
+
+std::string BuildTargetHistoryJson(const std::unordered_map<std::string, std::string>& rawQuery)
+{
+    std::vector<std::string> warnings;
+    const int limit = std::clamp(ParseIntQuery(rawQuery, "limit", 256, warnings), 0, 1024);
+    const int maxAgeMs = std::clamp(ParseIntQuery(rawQuery, "max_age_ms", 1500, warnings), 1, 60000);
+    const uint64_t nowMs = TimestampMs();
+
+    std::vector<TargetHistorySample> samples;
+    {
+        std::lock_guard<std::mutex> lock(g_targetHistoryMutex);
+        samples.reserve(g_targetHistory.size());
+        for (const TargetHistorySample& sample : g_targetHistory) {
+            if (nowMs >= sample.capturedAtMs && nowMs - sample.capturedAtMs <= static_cast<uint64_t>(maxAgeMs))
+                samples.push_back(sample);
+        }
+    }
+    if (limit >= 0 && static_cast<int>(samples.size()) > limit) {
+        samples.erase(samples.begin(),
+            samples.begin() + static_cast<std::ptrdiff_t>(samples.size() - static_cast<size_t>(limit)));
+    }
+
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    AppendCommonStart(out, warnings);
+    out << ",\"server_time_ms\":" << nowMs
+        << ",\"sample_hz\":";
+    AppendNumberOrNull(out, 1000.0f / static_cast<float>(kTargetHistoryPeriodMs));
+    out << ",\"capacity\":" << kTargetHistoryCapacity
+        << ",\"query\":{\"limit\":" << limit
+        << ",\"max_age_ms\":" << maxAgeMs
+        << "},\"samples\":[";
+    for (size_t index = 0; index < samples.size(); ++index) {
+        if (index != 0)
+            out << ',';
+        const TargetHistorySample& sample = samples[index];
+        out << "{\"sequence\":" << sample.sequence
+            << ",\"captured_at_ms\":" << sample.capturedAtMs
+            << ",\"target\":" << sample.targetJson
+            << ",\"output_motion\":";
+        AppendOutputMotionJson(out, sample.capturedAtMs);
+        out << '}';
+    }
+    out << "]}";
+    return out.str();
+}
+
+std::string BuildJsonForTarget(const RequestTarget& target, int& statusCode)
+{
+    statusCode = 200;
+    if (target.path == "__method_not_allowed__") {
+        statusCode = 405;
+        std::ostringstream out;
+        AppendErrorBody(out, statusCode, "Only GET is supported");
+        return out.str();
+    }
+    if (target.path == "/api/health")
+        return BuildHealthJson();
+    if (target.path == "/api/diagnostics")
+        return BuildDiagnosticsJson();
+    if (target.path == "/api/local")
+        return BuildLocalJson();
+    if (target.path == "/api/entities")
+        return BuildEntitiesJson(target.query);
+    if (target.path == "/api/projection-debug")
+        return BuildProjectionDebugJson(target.query);
+    if (target.path == "/api/target")
+        return BuildTargetJson();
+    if (target.path == "/api/target/history")
+        return BuildTargetHistoryJson(target.query);
+
+    statusCode = 404;
+    std::ostringstream out;
+    AppendErrorBody(out, statusCode, "Unknown endpoint");
+    return out.str();
+}
+
+const char* StatusText(int statusCode)
+{
+    switch (statusCode) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    default: return "Internal Server Error";
+    }
+}
+
+bool SendAll(SOCKET socketHandle, const std::string& data)
+{
+    const char* cursor = data.data();
+    int remaining = static_cast<int>(data.size());
+    while (remaining > 0) {
+        const int sent = send(socketHandle, cursor, remaining, 0);
+        if (sent <= 0)
+            return false;
+        cursor += sent;
+        remaining -= sent;
+    }
+    return true;
+}
+
+void SendHttpResponse(SOCKET clientSocket, int statusCode, const std::string& body)
+{
+    std::ostringstream response;
+    response.imbue(std::locale::classic());
+    response << "HTTP/1.1 " << statusCode << ' ' << StatusText(statusCode) << "\r\n"
+        << "Content-Type: application/json; charset=utf-8\r\n"
+        << "Content-Length: " << body.size() << "\r\n"
+        << "Connection: close\r\n"
+        << "Cache-Control: no-store\r\n";
+    if (statusCode == 405)
+        response << "Allow: GET\r\n";
+    if (g_allowWildcardCors.load(std::memory_order_acquire))
+        response << "Access-Control-Allow-Origin: *\r\n";
+    response << "\r\n" << body;
+    SendAll(clientSocket, response.str());
+}
+
+void HandleClient(SOCKET clientSocket, const std::shared_ptr<std::atomic<bool>>& runFlag)
+{
+    DWORD timeoutMs = 1000;
+    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+    setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
+        reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+
+    std::string request;
+    request.reserve(2048);
+    char buffer[1024] = {};
+    while (runFlag->load(std::memory_order_acquire) && request.size() < kMaxRequestBytes) {
+        const int received = recv(clientSocket, buffer, sizeof(buffer), 0);
+        if (received <= 0)
+            break;
+        request.append(buffer, static_cast<size_t>(received));
+        if (request.find("\r\n\r\n") != std::string::npos)
+            break;
+    }
+
+    if (!runFlag->load(std::memory_order_acquire))
+        return;
+
+    int statusCode = 200;
+    std::string body;
+    const std::optional<RequestTarget> target = ParseRequestTarget(request);
+    if (!target) {
+        statusCode = 400;
+        std::ostringstream out;
+        AppendErrorBody(out, statusCode, "Malformed HTTP request");
+        body = out.str();
+    } else {
+        body = BuildJsonForTarget(*target, statusCode);
+    }
+
+    SendHttpResponse(clientSocket, statusCode, body);
+}
+
+void HandleClientAndClose(SOCKET clientSocket, std::shared_ptr<std::atomic<bool>> runFlag,
+    std::shared_ptr<std::atomic<bool>> done)
+{
+    try {
+        HandleClient(clientSocket, runFlag);
+    } catch (const std::exception& error) {
+        Diagnostics::Warn("Test server request failed: %s", error.what());
+    }
+    std::lock_guard<std::mutex> lock(g_clientsMutex);
+    closesocket(clientSocket);
+    done->store(true, std::memory_order_release);
+}
+
+void ServerLoop(SOCKET listenSocket, std::shared_ptr<std::atomic<bool>> runFlag, uint16_t port)
+{
+    Diagnostics::Info("UNDMA CN test server listening on %s:%u.", kBindAddress, port);
+    while (runFlag && runFlag->load(std::memory_order_acquire)) {
+        sockaddr_in clientAddress{};
+        int clientAddressLen = sizeof(clientAddress);
+        const SOCKET clientSocket = accept(
+            listenSocket,
+            reinterpret_cast<sockaddr*>(&clientAddress),
+            &clientAddressLen);
+        if (clientSocket == INVALID_SOCKET) {
+            if (runFlag && runFlag->load(std::memory_order_acquire)) {
+                Diagnostics::Warn("UNDMA CN test server accept failed: %d.", WSAGetLastError());
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            continue;
+        }
+
+        std::lock_guard<std::mutex> lock(g_clientsMutex);
+        for (auto it = g_clients.begin(); it != g_clients.end();) {
+            if (it->done->load(std::memory_order_acquire)) {
+                it->thread.join();
+                it = g_clients.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!runFlag->load(std::memory_order_acquire)) {
+            closesocket(clientSocket);
+            break;
+        }
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        g_clients.push_back({clientSocket, done,
+            std::thread(HandleClientAndClose, clientSocket, runFlag, done)});
+    }
+    Diagnostics::Info("UNDMA CN test server stopped.");
+}
+
+} // namespace
+
+bool IsCompiledIn()
+{
+    return true;
+}
+
+bool Start(const Options& options)
+{
+    std::lock_guard<std::mutex> lock(g_lifecycleMutex);
+    if (g_running.load(std::memory_order_acquire)) {
+        const uint16_t currentPort = g_port.load(std::memory_order_acquire);
+        const bool currentCors = g_allowWildcardCors.load(std::memory_order_acquire);
+        if (options.port != currentPort || options.allowWildcardCors != currentCors) {
+            Diagnostics::Warn("UNDMA CN test server already running on %s:%u; refused restart with different options.",
+                kBindAddress,
+                currentPort);
+            return false;
+        }
+        return true;
+    }
+
+    if (options.port == 0) {
+        Diagnostics::Error("UNDMA CN test server port 0 is not supported.");
+        return false;
+    }
+
+    WSADATA wsaData{};
+    const int startupResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (startupResult != 0) {
+        Diagnostics::Error("UNDMA CN test server WSAStartup failed: %d.", startupResult);
+        return false;
+    }
+
+    SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSocket == INVALID_SOCKET) {
+        Diagnostics::Error("UNDMA CN test server socket failed: %d.", WSAGetLastError());
+        WSACleanup();
+        return false;
+    }
+
+    BOOL reuseAddress = TRUE;
+    setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR,
+        reinterpret_cast<const char*>(&reuseAddress), sizeof(reuseAddress));
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(options.port);
+    inet_pton(AF_INET, kBindAddress, &address.sin_addr);
+
+    if (bind(listenSocket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+        Diagnostics::Error("UNDMA CN test server bind failed on %s:%u: %d.",
+            kBindAddress,
+            options.port,
+            WSAGetLastError());
+        closesocket(listenSocket);
+        WSACleanup();
+        return false;
+    }
+
+    if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR) {
+        Diagnostics::Error("UNDMA CN test server listen failed: %d.", WSAGetLastError());
+        closesocket(listenSocket);
+        WSACleanup();
+        return false;
+    }
+
+    g_port.store(options.port, std::memory_order_release);
+    g_allowWildcardCors.store(options.allowWildcardCors, std::memory_order_release);
+    g_listenSocket = listenSocket;
+    g_runFlag = std::make_shared<std::atomic<bool>>(true);
+    {
+        std::lock_guard<std::mutex> historyLock(g_targetHistoryMutex);
+        g_targetHistory.clear();
+        g_targetHistorySequence = 0;
+    }
+    g_running.store(true, std::memory_order_release);
+    g_targetHistoryThread = std::thread(TargetHistoryLoop, g_runFlag);
+    g_serverThread = std::thread(ServerLoop, listenSocket, g_runFlag, options.port);
+    return true;
+}
+
+void Stop()
+{
+    // Serialize restart with the entire drain, including the client workers.
+    std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
+    std::thread threadToJoin;
+    std::thread historyThreadToJoin;
+    {
+        if (!g_running.exchange(false, std::memory_order_acq_rel))
+            return;
+
+        if (g_runFlag)
+            g_runFlag->store(false, std::memory_order_release);
+
+        if (g_listenSocket != INVALID_SOCKET) {
+            shutdown(g_listenSocket, SD_BOTH);
+            closesocket(g_listenSocket);
+            g_listenSocket = INVALID_SOCKET;
+        }
+
+        if (g_serverThread.joinable())
+            threadToJoin = std::move(g_serverThread);
+        if (g_targetHistoryThread.joinable())
+            historyThreadToJoin = std::move(g_targetHistoryThread);
+        g_runFlag.reset();
+        g_allowWildcardCors.store(false, std::memory_order_release);
+    }
+
+    if (threadToJoin.joinable())
+        threadToJoin.join();
+    if (historyThreadToJoin.joinable())
+        historyThreadToJoin.join();
+    std::vector<ClientWorker> clients;
+    {
+        std::lock_guard<std::mutex> lock(g_clientsMutex);
+        for (const auto& client : g_clients)
+            if (!client.done->load(std::memory_order_acquire))
+                shutdown(client.socket, SD_BOTH);
+        clients = std::move(g_clients);
+    }
+    for (auto& client : clients)
+        if (client.thread.joinable())
+            client.thread.join();
+    WSACleanup();
+}
+
+bool IsRunning()
+{
+    return g_running.load(std::memory_order_acquire);
+}
+
+#ifdef UNLEASHED_SELF_TESTS
+int RunLifecycleSelfTest()
+{
+    // This test only uses local sockets and empty snapshots; it never starts DMA.
+    for (const char* path : { "/api/bz-offset-probe", "/api/bz-matrix-sweep" }) {
+        int statusCode = 0;
+        (void)BuildJsonForTarget(RequestTarget{path, {}}, statusCode);
+        if (statusCode != 404)
+            return 1;
+    }
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
+        return 1;
+    SOCKET probe = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    inet_pton(AF_INET, kBindAddress, &address.sin_addr);
+    int addressSize = sizeof(address);
+    const bool portReady = probe != INVALID_SOCKET &&
+        bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 &&
+        getsockname(probe, reinterpret_cast<sockaddr*>(&address), &addressSize) == 0;
+    if (probe != INVALID_SOCKET)
+        closesocket(probe);
+    bool ok = portReady;
+    Options options{};
+    options.port = ntohs(address.sin_port);
+    for (int cycle = 0; ok && cycle < 3; ++cycle) {
+        ok = Start(options);
+        SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        const bool connected = ok && client != INVALID_SOCKET &&
+            connect(client, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+        ok = connected;
+        if (connected) {
+            const std::string partial = "GET /api/health HTTP/1.1\r\n";
+            ok = SendAll(client, partial);
+            bool accepted = false;
+            for (int attempt = 0; attempt < 100 && !accepted; ++attempt) {
+                {
+                    std::lock_guard<std::mutex> lock(g_clientsMutex);
+                    accepted = !g_clients.empty();
+                }
+                if (!accepted)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ok = ok && accepted;
+        }
+        Stop();
+        if (client != INVALID_SOCKET)
+            closesocket(client);
+        {
+            std::lock_guard<std::mutex> lock(g_clientsMutex);
+            ok = ok && g_clients.empty() && !g_serverThread.joinable() &&
+                !g_targetHistoryThread.joinable() && !IsRunning();
+        }
+    }
+    // A complete request after repeated stops proves the restarted server works.
+    if (ok) {
+        ok = Start(options);
+        SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        const bool connected = ok && client != INVALID_SOCKET &&
+            connect(client, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+        ok = connected;
+        if (connected) {
+            DWORD timeout = 2000;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+            ok = SendAll(client, "GET /api/health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            char response[256]{};
+            const int received = recv(client, response, sizeof(response), 0);
+            ok = ok && received > 0 &&
+                std::string(response, static_cast<size_t>(std::max(received, 0))).find("HTTP/1.1 200 OK") == 0;
+        }
+        if (client != INVALID_SOCKET)
+            closesocket(client);
+    }
+    Stop();
+    WSACleanup();
+    std::printf("Test server lifecycle selftest: %s\n", ok ? "passed" : "failed");
+    return ok ? 0 : 1;
+}
+#endif
+
+} // namespace TestServer
+
+#else
+
+#include "Utils/Diagnostics.hpp"
+
+namespace TestServer {
+
+bool IsCompiledIn()
+{
+    return false;
+}
+
+bool Start(const Options&)
+{
+    Diagnostics::Error("UNDMA CN test server was not compiled in. Reconfigure with UNLEASHED_TEST_SERVER=ON.");
+    return false;
+}
+
+void Stop()
+{
+}
+
+bool IsRunning()
+{
+    return false;
+}
+
+#ifdef UNLEASHED_SELF_TESTS
+int RunLifecycleSelfTest()
+{
+    return 1;
+}
+#endif
+
+} // namespace TestServer
+
+#endif
