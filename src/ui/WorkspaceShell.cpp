@@ -6,7 +6,8 @@
 namespace UI::Workspace {
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
-            const std::function<void(ImDrawList*, ImVec2, float)>& footer) {
+            const std::function<void(ImDrawList*, ImVec2, float)>& footer,
+            const std::function<void()>& header) {
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
@@ -19,9 +20,14 @@ void Render(Model& model, const std::function<void()>& save,
         const int requested=V2::Profiles::requestedProfile.load();
         if(width > ImGui::CalcTextSize("UNDMA  /  V2  KR candidate").x) ImGui::SameLine();
         ImGui::TextDisabled("%s",requested==1?"KR candidate":requested==2?"BZ candidate":"CN");
+        if (header) {
+            ImGui::Spacing();
+            header();
+        }
         const float saveWidth=(std::max)(122.0f,ImGui::CalcTextSize(model.saveLabel).x+20.0f);
-        if (ImGui::GetContentRegionAvail().x > saveWidth + 180.0f)
-            ImGui::SameLine((std::max)(180.0f, width - saveWidth));
+        const float saveX = ImGui::GetWindowContentRegionMax().x - saveWidth;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x <= ImGui::GetWindowPos().x + saveX)
+            ImGui::SameLine(saveX);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.53f,.10f,.18f,1));
         if (ImGui::Button(model.saveLabel, ImVec2(saveWidth, (std::max)(30.0f,ImGui::GetFontSize()+8)))) save();
         ImGui::PopStyleColor();

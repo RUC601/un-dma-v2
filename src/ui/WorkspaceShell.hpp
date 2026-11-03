@@ -16,5 +16,6 @@ struct Model {
 };
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
-            const std::function<void(ImDrawList*, ImVec2, float)>& footer);
+            const std::function<void(ImDrawList*, ImVec2, float)>& footer,
+            const std::function<void()>& header = {});
 }

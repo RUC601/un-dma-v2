@@ -2933,15 +2933,7 @@ static void DrawHeroStrip() {
     ImGui::SetItemTooltip("%s",L("Browse all heroes"));
 }
 
-static void DrawEditingContext() {
-    const bool heroPage = UI::state.activeTab == UI::TAB_AIMING ||
-        (UI::state.activeTab == UI::TAB_THEME && UI::state.themeSubTab == 1);
-    if (!heroPage) {
-        ImGui::TextDisabled("%s", L("Shared settings"));
-        ImGui::Spacing();
-        return;
-    }
-    DrawHeroStrip();
+static void DrawHeroContextToolbar() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", L("Editing"));
     ImGui::SameLine();
@@ -2959,6 +2951,18 @@ static void DrawEditingContext() {
     const float detectedWidth = ImGui::CalcTextSize(L("Current")).x + ImGui::CalcTextSize(L(detectedName.c_str())).x + 24.0f;
     if (ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - ImGui::GetItemRectMax().x > detectedWidth) ImGui::SameLine();
     ImGui::TextDisabled("%s: %s", L("Current"), L(detectedName.c_str()));
+}
+
+static void DrawEditingContext() {
+    const bool heroPage = UI::state.activeTab == UI::TAB_AIMING ||
+        (UI::state.activeTab == UI::TAB_THEME && UI::state.themeSubTab == 1);
+    if (!heroPage) {
+        ImGui::TextDisabled("%s", L("Shared settings"));
+        ImGui::Spacing();
+        return;
+    }
+    DrawHeroStrip();
+    TypePickerPanel();
     const HeroOption& hero = CurrentHeroOption();
     const bool ringPage = UI::state.activeTab == UI::TAB_THEME;
     const bool slotPage = UI::state.activeTab == UI::TAB_AIMING && UI::state.aimingSubTab < 2;
@@ -3034,6 +3038,6 @@ void UI::Render() {
         case 12: DrawMiscGeneralPage(); break; case 13: DrawMiscDiagnosticsPage(); break;
         }
         CloseGroupBox();
-    }, DrawRuntimeStatusStrip);
+    }, DrawRuntimeStatusStrip, DrawHeroContextToolbar);
     page=model.selected;
 }
