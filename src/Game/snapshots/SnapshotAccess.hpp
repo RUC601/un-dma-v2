@@ -108,7 +108,7 @@ namespace OW {
     }
 
     inline bool TryCommitLocalEntity(const c_entity& entity,uint32_t now) {
-        if(!entity.address || !entity.AngleBase || !entity.actor_generation || !entity.body_authority_revision ||
+        if(!entity.address || !entity.AngleBase || !entity.actor_generation || !entity.body_authority_revision || !entity.HasFreshLifeState(now) ||
             !GameData::IsKnownHeroId(entity.HeroID) || !c_entity::IsPlausibleSpatialAnchor(entity.pos) ||
             !EntityRosterPolicy::BodyUsable(entity.body_valid,entity.Alive,
                 entity.roster_state==EntityRosterState::Fresh,entity.anchor_sample_tick_ms,now,

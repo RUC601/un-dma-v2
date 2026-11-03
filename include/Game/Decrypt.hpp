@@ -1713,7 +1713,7 @@ namespace OW {
                     trace(5,component);continue;
                 }
                 HealthPayloadSummary health{};
-                if(!TryParseHealthPayload(hp,health) || (!discoveries && health.total<=0)){trace(6,component);continue;}
+                if(!TryParseHealthPayload(hp,health) || (!discoveries && (health.total<=0 || health.isDead))){trace(6,component);continue;}
                 if(!std::isfinite(location.x)||!std::isfinite(location.y)||!std::isfinite(location.z)||
                     std::fabs(location.x)>100000 || std::fabs(location.y)>100000 || std::fabs(location.z)>100000){trace(7,component);continue;}
             }
@@ -2752,7 +2752,7 @@ namespace OW {
             const bool validHealth = TryParseHealthPayload(health_compo, parsedHealth);
             const float totalHealth = parsedHealth.total;
             const float totalHealthMax = parsedHealth.total_max;
-            if (!validHealth || totalHealth <= 0.0f) {
+            if (!validHealth || parsedHealth.isDead || totalHealth <= 0.0f) {
                 rememberReject(3, health, 0, 0, 0, 0, totalHealth, totalHealthMax);
                 finishValidation();
                 return false;
@@ -2964,7 +2964,7 @@ namespace OW {
             const bool validHealth = TryParseHealthPayload(health_compo, parsedHealth);
             const float totalHealth = parsedHealth.total;
             const float totalHealthMax = parsedHealth.total_max;
-            const bool plausibleHealthLayout = validHealth && totalHealth > 0.0f;
+            const bool plausibleHealthLayout = validHealth && !parsedHealth.isDead && totalHealth > 0.0f;
             if (!plausibleHealthLayout) {
                 rememberReject(13, health, 0, 0, totalHealth, totalHealthMax);
                 return failValidation();
@@ -3052,7 +3052,7 @@ namespace OW {
                 return false;
 
             HealthPayloadSummary parsedHealth{};
-            return TryParseHealthPayload(health_compo, parsedHealth) && parsedHealth.total > 0.0f;
+            return TryParseHealthPayload(health_compo, parsedHealth) && !parsedHealth.isDead && parsedHealth.total > 0.0f;
         };
 
         auto hasCnKnownHero = [&](uint64_t link_parent) {

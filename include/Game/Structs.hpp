@@ -143,13 +143,15 @@ namespace OW {
         TYPE_P_HEROID         = 0x54,
         TYPE_OUTLINE          = 0x5A,
         TYPE_REPLICATED_POS   = 0x60,
-        TYPE_STAT             = TYPE_TRANSFORM_ALT,
+        TYPE_STAT             = 0x24,
     };
 
     // =========================================================================
     // Component structs
     // =========================================================================
 
+    // Shared across profiles by the current product contract; non-CN live validation is pending.
+    inline constexpr uint64_t kHealthDeathOffset = 0x5C0;
     struct health_compo_t {
         union {
             OFF_MEMB(float,  health,          0xE0);
@@ -168,6 +170,7 @@ namespace OW {
             OFF_MEMB(float, cn154461_barrier, 0x3E0);
             OFF_MEMB(bool, cn154461_isImmortal, 0x569);
             OFF_MEMB(bool, cn154461_isBarrierProjected, 0x568);
+            OFF_MEMB(uint8_t, death, kHealthDeathOffset);
         };
     };
 
@@ -193,6 +196,7 @@ namespace OW {
         Vector2 health_ext{};
         bool isImmortal = false, isBarrierProjected = false;
         float total = 0, total_max = 0;
+        bool isDead = false;
     };
 
     // Call only after a complete read. Invalid totals remain available for
@@ -205,7 +209,8 @@ namespace OW {
             health.isImmortal, health.isBarrierProjected,
             health.health + health.armor + health.barrier + health.health_ext.Y,
             health.health_max + health.armor_max + health.barrier_max + health.health_ext.X };
-        return std::isfinite(result.total) && std::isfinite(result.total_max) &&
+        result.isDead = health.death == 1;
+        return health.death <= 1 && std::isfinite(result.total) && std::isfinite(result.total_max) &&
             result.total_max > 0.0f && result.total_max <= 10000.0f &&
             result.total >= 0.0f && result.total <= result.total_max + 2000.0f;
     }
@@ -219,6 +224,7 @@ namespace OW {
         std::array<uint8_t, 32> vital{};
         Vector2 armor{}, barrier{}; // maximum, current
         std::array<uint8_t, 2> flags{};
+        uint8_t death = 0;
     };
 
     inline bool TryParseHealthPayload(const health_fields_t& raw, HealthPayloadSummary& result) {
@@ -232,7 +238,8 @@ namespace OW {
         result.isBarrierProjected = raw.flags[0] != 0; result.isImmortal = raw.flags[1] != 0;
         result.total = result.health + result.armor + result.barrier + result.health_ext.Y;
         result.total_max = result.health_max + result.armor_max + result.barrier_max + result.health_ext.X;
-        return std::isfinite(result.total) && std::isfinite(result.total_max) &&
+        result.isDead = raw.death == 1;
+        return raw.death <= 1 && std::isfinite(result.total) && std::isfinite(result.total_max) &&
             result.total_max > 0 && result.total_max <= 10000 &&
             result.total >= 0 && result.total <= result.total_max + 2000;
     }

@@ -152,7 +152,6 @@ inline uint64_t ParticipantRosterKey(std::string_view participantId) noexcept
 enum class SameParticipantObservationAction : uint8_t {
     ReplaceExisting,
     KeepExisting,
-    UseActorKey,
 };
 
 inline bool CanReturnRetiredActor(bool sameSignature,bool absenceObserved,bool actualMember) noexcept {
@@ -203,18 +202,19 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     bool incomingFresh,
     bool membershipKnown = false,
     bool existingMember = true,
-    bool incomingMember = true) noexcept
+    bool incomingMember = true,
+    bool sameController = false,
+    bool incomingPaired = false) noexcept
 {
+    (void)existingSeenThisCycle;
+    if(sameActor)return SameParticipantObservationAction::ReplaceExisting;
+    if(!incomingFresh)return SameParticipantObservationAction::KeepExisting;
+    if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
-        return SameParticipantObservationAction::ReplaceExisting;
-    if (!existingSeenThisCycle || sameActor)
         return SameParticipantObservationAction::ReplaceExisting;
     if (incomingFresh && !existingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
-    if (!incomingFresh && existingFresh)
-        return SameParticipantObservationAction::KeepExisting;
-    if (incomingFresh)
-        return SameParticipantObservationAction::UseActorKey;
+    // Ambiguous simultaneous bodies cannot create another seat for a confirmed player.
     return SameParticipantObservationAction::KeepExisting;
 }
 

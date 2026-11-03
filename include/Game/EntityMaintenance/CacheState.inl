@@ -20,10 +20,6 @@
         uint64_t angle = 0;
         uint64_t enemyAngle = 0;
         uint64_t stat = 0;
-        uint64_t participantKey = 0;
-        DWORD participantIdentityUpdateTick = 0;
-        bool participantIdentityValid = false;
-        std::string participantLabel{};
         uint32_t matchId = 0;
         DWORD baseUpdateTick = 0;
         bool matchIdValid = false;
@@ -38,6 +34,9 @@
         float minBarrierHealth = 0.0f;
         float maxBarrierHealth = 0.0f;
         bool alive = false;
+        bool deathKnown = false;
+        bool dead = false;
+        DWORD deathUpdateTick = 0;
         bool imort = false;
         bool barrprot = false;
         bool heroValid = false;
@@ -99,6 +98,12 @@
         }
     };
     struct RosterEntry : ComponentBaseCache {
+        uint64_t participantKey = 0;
+        DWORD participantIdentityUpdateTick = 0;
+        bool participantIdentityValid = false;
+        std::string participantLabel{};
+        uint64_t participantController = 0;
+        uint32_t participantControllerUid = 0;
         OW::c_entity entity{};
         OW::c_entity lastRawObservation{};
         bool seenThisCycle = false;

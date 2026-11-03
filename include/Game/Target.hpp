@@ -671,7 +671,7 @@ namespace OW {
                     activeEntityBodies.clear();
                     for(auto& value:nextEntities) {
                         if(value.body_valid && value.roster_state==EntityRosterState::Fresh &&
-                            value.Alive && value.scene_generation==EntitySceneGeneration() &&
+                            value.Alive && value.HasFreshLifeState(tick()) && value.scene_generation==EntitySceneGeneration() &&
                             PresentationTiming::Fresh(value.anchor_sample_tick_ms,tick())) {
                             value.body_valid=TryActivateEntityBodyLocked({value.address,value.LinkParent,value.HeroID,value.match_id,
                                 value.last_discovered_tick_ms},value.actor_generation,value.scene_generation,tick(),value.body_absence_revision,
@@ -1098,6 +1098,14 @@ namespace OW {
         inline void ResetTargetLockRuntime() {
             std::lock_guard<std::mutex> lock(target_lock_mutex);
             target_lock_runtime = TargetLockRuntime{};
+        }
+
+        inline void InvalidateTargetBody(uint64_t address,uint64_t rosterKey,uint64_t generation) {
+            std::lock_guard<std::mutex> lock(target_lock_mutex);
+            if(target_lock_runtime.active && target_lock_runtime.actorGeneration==generation &&
+               (target_lock_runtime.entityKey==address || target_lock_runtime.entityKey==rosterKey ||
+                target_lock_runtime.entityKey==PresentationTiming::ActorControlKey(address,generation)))
+                target_lock_runtime=TargetLockRuntime{};
         }
 
         inline bool TargetLockExpired(const TargetLockRuntime& state,

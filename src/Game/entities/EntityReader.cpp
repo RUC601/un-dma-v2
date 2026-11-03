@@ -1,4 +1,5 @@
 #include "Game/EntityMaintenance/HotFieldReads.hpp"
+#include "Game/ParticipantIdentity.hpp"
 #include "Game/camera/CameraWorker.hpp"
 #include "../../runtime/Acquisition.hpp"
 #include "EntityWorkers.hpp"
@@ -970,6 +971,7 @@ void entity_thread() {
         }
 
 #include "Game/EntityMaintenance/PreviousSample.inl"
+#include "Game/EntityMaintenance/ObservedDeath.inl"
 
         auto publishHotActors=[&]() {
         size_t hotUpdated=0;
@@ -978,7 +980,6 @@ void entity_thread() {
                 RuntimeTrace::Emit(RuntimeTrace::EntityReject,item.componentParent,item.readStartedTick,item.readCompletedTick,reason);
             };
             if(!item.prepared || !item.reads.scatterOk){rejectHot(3);continue;}
-            if(!item.reads.VelocityRead()){rejectHot(4);continue;}
             if(!OW::PresentationTiming::ObservationWindowFresh32(item.readStartedTick,item.readCompletedTick,GetTickCount())) {
                 RuntimeTrace::Emit(RuntimeTrace::EntityReject,item.componentParent,item.readStartedTick,item.readCompletedTick,1);continue;
             }
@@ -1007,7 +1008,13 @@ void entity_thread() {
                     std::make_pair(next.address,next.LinkParent))==cycleMemberPairs.end())) {
                 entry.entity.body_valid=false;rejectHot(14);continue;
             }
+            if(item.reads.DeathRead() && item.reads.health.death==1) {
+                item.applied=commitObservedDeath(entry,next,*discovery,item.bodyObservation,item.readStartedTick);
+                if(item.applied)++hotUpdated;
+                continue;
+            }
 #include "Game/EntityMaintenance/HotHealthApply.inl"
+            if(!item.reads.VelocityRead()){rejectHot(4);continue;}
             // Hero changes and respawns go through full identity reconciliation below.
             if((next.Alive && !entry.entity.Alive) || (item.reads.HeroRead() &&
                 item.reads.hero.heroid!=0 && item.reads.hero.heroid!=next.HeroID)){rejectHot(11);continue;}
@@ -1425,33 +1432,31 @@ void entity_thread() {
                 cacheIt->second->matchId = entity.match_id;
                 cacheIt->second->matchIdValid = true;
             }
-            ComponentBaseCache& identityCache = *cacheIt->second;
+            RosterEntry& identityCache = *cacheIt->second;
+            uint32_t controllerUid=0;
+            const bool controllerRead=linkSnapshot ? linkSnapshot->ReadParentOffset(offset::Entity_MatchId,controllerUid) :
+                SDK->read_range(LinkParent+offset::Entity_MatchId,&controllerUid,sizeof(controllerUid));
+            if(!controllerRead || !controllerUid)continue;
+            if(identityCache.participantController!=LinkParent || identityCache.participantControllerUid!=controllerUid) {
+                if(identityCache.participantController && identityCache.entity.address) {
+                    OW::RevokeEntityBodyObservation(identityCache.entity.address,identityCache.entity.actor_generation,
+                        identityCache.entity.body_authority_revision);
+                    identityCache.entity.body_valid=false;identityCache.healthValid=false;
+                }
+                identityCache.participantKey=0;identityCache.participantLabel.clear();
+                identityCache.participantIdentityValid=false;identityCache.participantIdentityUpdateTick=0;
+                identityCache.participantController=LinkParent;identityCache.participantControllerUid=controllerUid;
+            }
             if (!identityCache.participantIdentityValid && identityCache.stat &&
                 (identityCache.participantIdentityUpdateTick == 0 ||
                  processLoopTick - identityCache.participantIdentityUpdateTick >= 1000)) {
                 identityCache.participantIdentityUpdateTick = processLoopTick;
-                const uintptr_t participantText =
-                    SDK->RPM<uintptr_t>(identityCache.stat + 0xE0);
-                if (participantText != 0) {
-                    char participantBuffer[64] = {};
-                    const bool participantRead=SDK->read_range(participantText,participantBuffer,sizeof(participantBuffer));
-                    size_t participantLength = 0;
-                    while (participantLength < sizeof(participantBuffer) &&
-                           participantBuffer[participantLength] != '\0') {
-                        ++participantLength;
-                    }
-                    if (participantRead && participantLength < sizeof(participantBuffer)) {
-                        const std::string_view participantId(
-                            participantBuffer,
-                            participantLength);
-                        identityCache.participantKey =
-                            OW::EntityRosterPolicy::ReliableParticipantId(participantId)
-                                ? OW::EntityRosterPolicy::ParticipantRosterKey(participantId) : 0;
-                        if (identityCache.participantKey != 0) {
-                            identityCache.participantLabel.assign(participantId);
-                            identityCache.participantIdentityValid = true;
-                        }
-                    }
+                std::string participantId;
+                if(OW::ReadParticipantLabel(identityCache.stat,
+                    [&](uint64_t at,void* out,size_t size){return SDK->read_range(at,out,size);},participantId)) {
+                    identityCache.participantKey=OW::EntityRosterPolicy::ParticipantRosterKey(participantId);
+                    identityCache.participantLabel=std::move(participantId);
+                    identityCache.participantIdentityValid=true;
                 }
             }
             entity.statcombase = identityCache.stat;
@@ -1493,7 +1498,8 @@ void entity_thread() {
 
             ComponentBaseCache& componentCache = *cacheIt->second;
             const auto hotAppliedItem=hotFieldBatchIndex.find(ComponentParent);
-            const bool hotAlreadyApplied=componentCacheHit && hotAppliedItem!=hotFieldBatchIndex.end() && hotFieldBatchItems[hotAppliedItem->second].applied;
+            const bool hotAlreadyApplied=componentCacheHit && hotAppliedItem!=hotFieldBatchIndex.end() && hotFieldBatchItems[hotAppliedItem->second].applied &&
+                entity.roster_key==cacheIt->second->entity.roster_key && entity.participant_key==cacheIt->second->entity.participant_key;
             if(hotAlreadyApplied)entity=cacheIt->second->entity;
             bool refreshHealth = false;
             bool refreshHero = false;
@@ -2103,7 +2109,7 @@ void entity_thread() {
             }
             }
 
-            ComponentBaseCache& slowCache = *cacheIt->second;
+            RosterEntry& slowCache = *cacheIt->second;
             const auto teamNamePhaseStartedAt = std::chrono::steady_clock::now();
             constexpr double kTeamNameSlowCallThresholdMs = 50.0;
             auto recordTeamNameCall = [&](double elapsedMs, uint32_t op, bool success) {

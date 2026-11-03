@@ -106,7 +106,7 @@ inline bool EntityBodyEvidenceCurrentLocked(const EntityRosterPolicy::Discovery&
 // Only the verified observation/identity reconciliation path calls this, never publication.
 inline uint64_t AdmitEntityBodyObservation(const EntityRosterPolicy::Discovery& identity,uint64_t generation,
     uint64_t scene,const EntityRegistry::Snapshot& registry,EntityBodyObservation observation,
-    bool alive,bool healthObserved,uint32_t now) {
+    bool alive,bool lifeStateObserved,uint32_t now) {
     std::lock_guard<std::mutex> registryLock(entityRegistryMonitor.mutex);
     std::lock_guard<std::mutex> lock(entityBodyValidityMutex);
     if(!generation || !runtimeWorkersRunning.load(std::memory_order_acquire) || !ProcessConnection::IsConnected() ||
@@ -120,8 +120,8 @@ inline uint64_t AdmitEntityBodyObservation(const EntityRosterPolicy::Discovery& 
         found->second.identity.link!=identity.link || found->second.identity.hero!=identity.hero ||
         found->second.identity.match!=identity.match || found->second.alive!=alive;
     if(changed) {
-        // Cached health/discovery cannot establish a new lifetime or a trusted death.
-        if(!healthObserved)return 0;
+        // Death needs a current death byte; admission/revival also needs complete current health.
+        if(!lifeStateObserved)return 0;
         const auto revision=++entityBodyAuthoritySequence;
         entityBodyAuthorities[identity.address]={identity,generation,registry.epoch,scene,registry.generation,
             observation.absence,revision,alive,true};

@@ -23,6 +23,10 @@
                 request(velocityBase + 0x200, &reads.velocity.location, 12, reads.velocityBytes[1]);
                 request(velocityBase + 0x8B0, &reads.velocity.bonedata, 8, reads.velocityBytes[2]);
             }
+            if (healthBase) {
+                reads.deathRequested = true;
+                request(healthBase + OW::kHealthDeathOffset, &reads.health.death, 1, reads.deathBytes);
+            }
             if (readHealth && healthBase) {
                 reads.healthRequested = true;
                 const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504;
@@ -39,11 +43,11 @@
                 reads.visibilityRequested = true;
                 request(visibilityAddress, &reads.visibilityRaw, 8, reads.visibilityBytes);
             }
-            return reads.velocityRequested || reads.healthRequested || reads.heroRequested || reads.visibilityRequested;
+            return reads.velocityRequested || reads.deathRequested || reads.healthRequested || reads.heroRequested || reads.visibilityRequested;
         };
         auto countHotFieldRequests = [](const EntityHotFieldReads& reads) {
             return size_t(reads.velocityRequested) * 3 + size_t(reads.healthRequested) * 4 +
-                size_t(reads.heroRequested) + size_t(reads.visibilityRequested);
+                size_t(reads.deathRequested) + size_t(reads.heroRequested) + size_t(reads.visibilityRequested);
         };
         auto recordHotScatterReadResults = [&](const EntityHotFieldReads& reads) {
             auto field = [&](DWORD actual, DWORD expected) {
@@ -52,6 +56,7 @@
             };
             if (reads.velocityRequested) { field(reads.velocityBytes[0],12); field(reads.velocityBytes[1],12); field(reads.velocityBytes[2],8); }
             if (reads.healthRequested) { field(reads.healthBytes[0],32); field(reads.healthBytes[1],8); field(reads.healthBytes[2],8); field(reads.healthBytes[3],2); }
+            if (reads.deathRequested) field(reads.deathBytes,1);
             if (reads.heroRequested) field(reads.heroBytes,8);
             if (reads.visibilityRequested) field(reads.visibilityBytes,8);
         };
@@ -76,5 +81,6 @@
             return SDK->read_range(base+0xDC,health.vital.data(),32) &&
                 SDK->read_range(base+(cn?0x25C:0x21C),&health.armor,8) &&
                 SDK->read_range(base+(cn?0x3DC:0x35C),&health.barrier,8) &&
-                SDK->read_range(base+(cn?0x568:0x4A8),health.flags.data(),2);
+                SDK->read_range(base+(cn?0x568:0x4A8),health.flags.data(),2) &&
+                SDK->read_range(base+OW::kHealthDeathOffset,&health.death,1) && health.death<=1;
         };

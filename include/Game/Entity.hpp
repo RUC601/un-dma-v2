@@ -86,6 +86,9 @@ namespace OW {
         // --- State ---
         float ULT    = 0.f;
         bool  Alive  = true;
+        bool death_known = false;
+        bool is_dead = false;
+        uint32_t death_sample_tick_ms = 0;
         bool  Vis    = false;
         bool  Team   = false;
         bool  team_known = false;
@@ -169,8 +172,12 @@ namespace OW {
         PresentationTiming::ActorIdentity PresentationIdentity() const {
             return {address,LinkParent,actor_generation,HeroID,match_id,Alive,roster_state==EntityRosterState::Fresh};
         }
+        bool HasFreshLifeState(uint32_t now) const {
+            return death_known && !is_dead && death_sample_tick_ms!=0 && uint32_t(now-death_sample_tick_ms)<=100;
+        }
         bool HasUsableBody(uint32_t now, uint64_t scene) const {
-            return EntityRosterPolicy::BodyUsable(body_valid, Alive,
+            return HasFreshLifeState(now) &&
+                EntityRosterPolicy::BodyUsable(body_valid, Alive,
                 roster_state == EntityRosterState::Fresh, anchor_sample_tick_ms, now, scene_generation, scene) &&
                 EntityBodyCurrent({address,LinkParent,HeroID,match_id,last_discovered_tick_ms},actor_generation,
                     body_authority_revision,connection_epoch,scene_generation,body_absence_revision);

@@ -25,7 +25,10 @@
                         entityRoster.end(),
                         [&](const auto& rosterPair) {
                             return rosterPair.first != entity.roster_key &&
-                                rosterPair.second->entity.address == ComponentParent;
+                                (rosterPair.second->entity.address == ComponentParent ||
+                                 (!rosterPair.second->entity.participant_key &&
+                                  rosterPair.second->entity.LinkParent==LinkParent &&
+                                  rosterPair.second->participantControllerUid==cacheIt->second->participantControllerUid));
                         });
                     if (legacyActorIt != entityRoster.end()) {
                         if (entityRoster.find(entity.roster_key) == entityRoster.end()) {
@@ -35,6 +38,8 @@
                                 entity.roster_key,
                                 std::move(promotedEntry));
                         } else {
+                            if(legacyActorIt->second->entity.address!=entity.address)
+                                retireObservedBody(legacyActorIt->second->entity);
                             entityRoster.erase(legacyActorIt);
                         }
                     }
@@ -50,6 +55,17 @@
                     const bool incomingFresh =
                         entity.roster_state == OW::EntityRosterState::Fresh &&
                         entity.Alive;
+                    if(existingRosterIt->second->entity.participant_key &&
+                       existingRosterIt->second->participantLabel!=cacheIt->second->participantLabel) {
+                        entity.participant_key=0;
+                        entity.roster_key=makeRosterKey(entity.match_id,LinkParent,ComponentParent);
+                        existingRosterIt=entityRoster.find(entity.roster_key);
+                    } else {
+                    const bool sameController=existingRosterIt->second->entity.LinkParent==LinkParent &&
+                        existingRosterIt->second->participantControllerUid==cacheIt->second->participantControllerUid;
+                    uint32_t pairedUid=0;
+                    const bool incomingPaired=sameController && entity.LinkBase &&
+                        SDK->read_range(entity.LinkBase+offset::Link_UniqueId,&pairedUid,sizeof(pairedUid)) && pairedUid==entity.match_id;
                     switch (OW::EntityRosterPolicy::ResolveSameParticipantObservation(
                         existingRosterIt->second->seenThisCycle || existingFresh,
                         false,
@@ -57,19 +73,13 @@
                         incomingFresh,
                         completeActorMembershipKnown,
                         latestCompleteActorMembers.contains(existingRosterIt->second->entity.address),
-                        latestCompleteActorMembers.contains(entity.address))) {
+                        latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired)) {
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::KeepExisting:
                         continue;
-                    case OW::EntityRosterPolicy::SameParticipantObservationAction::UseActorKey:
-                        entity.roster_key = makeRosterKey(
-                            entity.match_id,
-                            LinkParent,
-                            ComponentParent);
-                        existingRosterIt = entityRoster.find(entity.roster_key);
-                        break;
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::ReplaceExisting:
                     default:
                         break;
+                    }
                     }
                 }
                 const auto retiredIt=retiredActors.find(entity.address);
@@ -95,23 +105,28 @@
                     entity.Alive,(refreshHealth || hotReads.HealthRead()) && componentCache.healthValid &&
                         componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow());
                 if(!entity.body_authority_revision)continue;
+                if(!entity.Alive)OW::TargetingDetail::InvalidateTargetBody(entity.address,entity.roster_key,entity.actor_generation);
                 if(old && !sameLifetime) {
                     const auto oldAddress=old->address,oldGeneration=old->actor_generation;
                     if(oldAddress!=entity.address) {
-                        OW::InvalidateEntityBody(oldAddress,oldGeneration,old->body_authority_revision);
-                        OW::BlockEntityBody(oldAddress,processLoopTick);
-                        {std::lock_guard<std::mutex> lock(OW::entityBodyValidityMutex);OW::entityBodyAuthorities.erase(oldAddress);}
-                        retiredActors[oldAddress]={old->match_id,old->LinkParent,false,OW::EntityBodyAbsenceRevision(oldAddress)};
-                        componentBaseCache.erase(oldAddress);dynamicEntityCache.erase(oldAddress);
+                        retireObservedBody(*old);
                     }
                     cacheIt->second->cachedSkeletonValid=false;cacheIt->second->skeletonCache={};
                     entity.has_previous_render_sample=false;
                     RuntimeTrace::Emit(RuntimeTrace::ActorReplace,oldAddress,entity.address,oldGeneration,entity.actor_generation);
                 }
                 // A match-key change must not leave an obsolete seat for the same body in this frame.
-                std::erase_if(entityRoster,[&](const auto& item) {
-                    return item.first!=entity.roster_key && item.second->entity.address==entity.address;
-                });
+                for(auto it=entityRoster.begin();it!=entityRoster.end();) {
+                    const auto stale=it->second->entity;
+                    const bool sameLegacyController=entity.participant_key && !stale.participant_key &&
+                        stale.LinkParent==LinkParent && it->second->participantControllerUid==cacheIt->second->participantControllerUid;
+                    if(it->first!=entity.roster_key && (stale.address==entity.address || sameLegacyController)) {
+                        if(stale.address!=entity.address) {
+                            retireObservedBody(stale);
+                        }
+                        it=entityRoster.erase(it);
+                    } else ++it;
+                }
                 if (entity.participant_key != 0) {
                     ScopedPipelinePhaseTimer recordTimer(
                         pipelineStats.phase.entityCacheRecordUpdateMs);
