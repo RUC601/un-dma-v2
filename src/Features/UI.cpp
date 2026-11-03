@@ -1,4 +1,4 @@
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <shellapi.h>
 
 #include "Features/UI.hpp"
@@ -677,7 +677,7 @@ using namespace UI::EditorCommands;
 const char* T(UiText id) { return UI::Text::Get(id,OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified); }
 const char* L(const char* value) { return UI::Text::Label(value,OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified); }
 static const char* HeroScopeName(const HeroOption& hero) {
-    return hero.heroId == 0 ? L("Current settings") : hero.label;
+    return hero.heroId == 0 ? L("Current settings") : L(hero.label);
 }
 
 static void DrawProbeState(const char* label, bool available, bool down) {
@@ -1272,103 +1272,162 @@ static void DrawDetectedTypeReadout() {
                        "%s", displayName.c_str());
 }
 
-static bool TypePickerPanel() {
-    const ImVec2 viewport = ImGui::GetMainViewport()->Size;
-    ImGui::SetNextWindowSize(ImVec2((std::min)(520.0f, viewport.x - 16.0f),
-                                  (std::min)(430.0f, viewport.y - 24.0f)), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopup("TypePickerPopup"))
-        return false;
+// Shared avatar browser for the editing hero and target-hero sets.
+static bool HeroBrowserTile(const HeroOption& hero, const ImVec2& size,
+                            bool selected, const char* assignedTo = nullptr) {
+    ImGui::BeginDisabled(assignedTo != nullptr);
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(HeroScopeName(hero), size, ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(pos.x + size.x, pos.y + size.y);
+    draw->AddRectFilled(pos, end, ImGui::GetColorU32(selected ? kColAccentDark : hovered ? kColControlHover : kColControl), kControlRounding);
+    draw->AddRect(pos, end, ImGui::GetColorU32(selected ? kColAccent : kColStroke), kControlRounding, 0, selected ? 2.0f : 1.0f);
+    const float iconSize = 42.0f;
+    const ImVec2 iconMin(pos.x + (size.x - iconSize) * .5f, pos.y + 7.0f);
+    if (auto* avatar = HeroAvatarForOption(hero))
+        draw->AddImage(reinterpret_cast<ImTextureID>(avatar), iconMin,
+            ImVec2(iconMin.x + iconSize, iconMin.y + iconSize), ImVec2(0,0), ImVec2(1,1), ImGui::GetColorU32(ImGuiCol_Text));
+    else
+        draw->AddText(ImVec2(iconMin.x + 12, iconMin.y + 10), ImGui::GetColorU32(kColText), hero.heroId ? "?" : L("All"));
+    const auto textSize = ImGui::CalcTextSize(HeroScopeName(hero), nullptr, false, size.x - 8.0f);
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+        ImVec2(pos.x + (std::max)(4.0f, (size.x - textSize.x) * .5f), pos.y + 55.0f),
+        ImGui::GetColorU32(kColText), HeroScopeName(hero), nullptr, size.x - 8.0f);
+    if (selected)
+        ImGui::RenderCheckMark(draw, ImVec2(end.x - 17, pos.y + 5), ImGui::GetColorU32(kColText), 11.0f);
+    ImGui::RenderNavCursor(ImRect(pos, end), ImGui::GetItemID());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused()) {
+        if (assignedTo) ImGui::SetTooltip("%s\n%s: %s", HeroScopeName(hero), L("Assigned to"), assignedTo);
+        else ImGui::SetTooltip("%s", HeroScopeName(hero));
+    }
+    ImGui::EndDisabled();
+    return pressed;
+}
 
+static bool HeroBrowserGrid(const char* search, bool includeCurrent, float footerHeight,
+                            const std::function<bool(const HeroOption&)>& selected,
+                            const std::function<const char*(const HeroOption&)>& assigned,
+                            const std::function<void(int)>& activate) {
     bool changed = false;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, kColPanelSoft);
-
-    const char* categories[] = { "Global", "Tank", "Damage", "Support" };
-    const float itemW = (std::max)(76.0f, ImGui::GetFontSize() * 5.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
+    const float itemW = (std::max)(82.0f, ImGui::GetFontSize() * 5.5f);
     float nameHeight = ImGui::GetTextLineHeight();
-    for(const auto& hero : kHeroOptions)
-        nameHeight = (std::max)(nameHeight, ImGui::CalcTextSize(HeroScopeName(hero), nullptr, false, itemW - 8.0f).y);
-    const float itemH = 58.0f + nameHeight + 8.0f;
-    constexpr float iconSize = 42.0f;
-
-    if (ImGui::BeginChild("##typePickerScroll", ImVec2(0.0f, 0.0f), true)) {
-        const float availW = ImGui::GetContentRegionAvail().x;
-        const int columns = ImClamp(static_cast<int>(availW / (itemW + 8.0f)), 1, 8);
-
-        for (const char* category : categories) {
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L(category));
-
+    for (const auto& hero : kHeroOptions)
+        nameHeight = (std::max)(nameHeight, ImGui::CalcTextSize(HeroScopeName(hero), nullptr, false, itemW - 8).y);
+    const float itemH = 63 + nameHeight;
+    if (ImGui::BeginChild("##heroBrowserGrid", ImVec2(0, -footerHeight), true)) {
+        const int columns = (std::max)(1, int((ImGui::GetContentRegionAvail().x + 8) / (itemW + 8)));
+        bool any = false;
+        for (const char* category : {"Global", "Tank", "Damage", "Support"}) {
+            bool heading = false;
             int column = 0;
             for (int i = 0; i < IM_ARRAYSIZE(kHeroOptions); ++i) {
-                const HeroOption& hero = kHeroOptions[i];
-                if (std::strcmp(hero.category, category) != 0)
-                    continue;
-
-                if (column > 0)
-                    ImGui::SameLine();
-
+                const auto& hero = kHeroOptions[i];
+                if ((!includeCurrent && !hero.heroId) || std::strcmp(hero.category, category)) continue;
+                if (*search && !ImStristr(hero.label, nullptr, search, nullptr) &&
+                    !ImStristr(UI::Text::Label(hero.label, true), nullptr, search, nullptr) &&
+                    !ImStristr(HeroScopeName(hero), nullptr, search, nullptr)) continue;
+                if (!heading) { ImGui::TextDisabled("%s", L(category)); heading = true; }
+                if (column) ImGui::SameLine();
                 ImGui::PushID(i);
-                const ImVec2 pos = ImGui::GetCursorScreenPos();
-                const bool selected = UI::state.selectedTypeIndex == i;
-                const bool pressed = ImGui::InvisibleButton(HeroScopeName(hero), ImVec2(itemW, itemH), ImGuiButtonFlags_EnableNav);
-                const bool hovered = ImGui::IsItemHovered();
-                if (pressed) {
-                    UI::state.followDetectedHero = false;
-                    changed |= SelectTypeIndex(i);
-                    ImGui::CloseCurrentPopup();
+                if (HeroBrowserTile(hero, ImVec2(itemW, itemH), selected(hero), assigned(hero))) {
+                    activate(i);
+                    changed = true;
                 }
-
-                ImDrawList* drawList = ImGui::GetWindowDrawList();
-                const ImU32 fill = selected
-                    ? IM_COL32(0x25, 0x18, 0x20, 0xFF)
-                    : (hovered ? kColControlHover : kColControl);
-                const ImU32 border = selected ? kColAccent : (hovered ? kColStroke : kColStrokeDark);
-                drawList->AddRectFilled(pos, ImVec2(pos.x + itemW, pos.y + itemH), fill, 0.0f);
-                drawList->AddRect(pos, ImVec2(pos.x + itemW, pos.y + itemH), border, 0.0f, 0, selected ? 2.0f : 1.0f);
-
-                const ImVec2 iconMin(pos.x + (itemW - iconSize) * 0.5f, pos.y + 7.0f);
-                const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
-                if (ID3D11ShaderResourceView* avatar = HeroAvatarForOption(hero)) {
-                    drawList->AddImage(reinterpret_cast<ImTextureID>(avatar), iconMin, iconMax);
-                } else {
-                    drawList->AddRectFilled(iconMin, iconMax, kColPanelSoft, 0.0f);
-                    drawList->AddRect(iconMin, iconMax, kColStroke, 0.0f);
-                    const char* fallback = hero.heroId == 0 ? "All" : "?";
-                    const ImVec2 fallbackSize = ImGui::CalcTextSize(fallback);
-                    drawList->AddText(ImVec2(iconMin.x + (iconSize - fallbackSize.x) * 0.5f,
-                                             iconMin.y + (iconSize - fallbackSize.y) * 0.5f),
-                                      kColTextMuted, fallback);
-                }
-
-                const ImVec2 textSize = ImGui::CalcTextSize(HeroScopeName(hero), nullptr, false, itemW - 8.0f);
-                const float textX = pos.x + (itemW - textSize.x) * 0.5f;
-                drawList->PushClipRect(ImVec2(pos.x + 4.0f, pos.y + 54.0f),
-                                       ImVec2(pos.x + itemW - 4.0f, pos.y + itemH - 4.0f),
-                                       true);
-                drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
-                                  ImVec2(MaxFloat(pos.x + 4.0f, textX), pos.y + 55.0f),
-                                  selected ? kColText : kColTextMuted,
-                                  HeroScopeName(hero), nullptr, itemW - 8.0f);
-                drawList->PopClipRect();
-                ImGui::SetItemTooltip("%s", HeroScopeName(hero));
-                ImGui::RenderNavCursor(ImRect(pos, ImVec2(pos.x + itemW, pos.y + itemH)), ImGui::GetItemID());
                 ImGui::PopID();
-
-                ++column;
-                if (column >= columns) {
-                    column = 0;
-                }
+                column = (column + 1) % columns;
+                any = true;
             }
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            if (heading) ImGui::Spacing();
         }
+        if (!any) ImGui::TextWrapped("%s", L("No matching heroes. Clear the search to see all heroes."));
     }
     ImGui::EndChild();
-
-    ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+    return changed;
+}
+
+static void HeroBrowserSize() {
+    const auto size = ImGui::GetMainViewport()->Size;
+    const float scale = (std::max)(1.0f, ImGui::GetFontSize() / 16.0f);
+    ImGui::SetNextWindowSize(ImVec2((std::min)(590.0f * scale, size.x - 24),
+                                   (std::min)(520.0f * scale, size.y - 24)), ImGuiCond_Always);
+}
+
+static void HeroBrowserSearch(char (&search)[128]) {
+    if (ImGui::IsWindowAppearing()) { search[0] = 0; ImGui::SetKeyboardFocusHere(); }
+    ImGui::TextUnformatted(L("Search heroes"));
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##heroSearch", search, sizeof(search));
+}
+
+static bool TypePickerPanel() {
+    HeroBrowserSize();
+    if (!ImGui::BeginPopup("TypePickerPopup")) return false;
+    static char search[128]{};
+    ImGui::TextUnformatted(L("Browse all heroes"));
+    HeroBrowserSearch(search);
+    const bool changed = HeroBrowserGrid(search, true, ControlHeight() + 8,
+        [](const HeroOption& hero) { return CurrentHeroOption().heroId == hero.heroId; },
+        [](const HeroOption&) -> const char* { return nullptr; },
+        [](int i) { UI::state.followDetectedHero = false; SelectTypeIndex(i); ImGui::CloseCurrentPopup(); });
+    if (ImGui::Button(L("Done"))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
+    return changed;
+}
+
+bool UIHeroMultiSelect(const char* id, std::vector<uint64_t>& heroes,
+                       const OW::AimPlan::Plan* plan, uint64_t ownGroup) {
+    std::string summary;
+    for (const auto& hero : kHeroOptions) if (OW::AimPlan::Contains(heroes, hero.heroId)) {
+        if (!summary.empty()) summary += ", ";
+        summary += L(hero.label);
+    }
+    char count[96]{};
+    std::snprintf(count, sizeof(count), L("Selected heroes: %d"), int(heroes.size()));
+    const std::string preview = heroes.empty() ? L("Choose target heroes") : std::string(count) + "  " + summary;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 size(ImGui::GetContentRegionAvail().x, ControlHeight());
+    const bool open = ImGui::Button(id, size);
+    const ImGuiID itemId = ImGui::GetItemID();
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), ImVec2(pos.x+8,pos.y+5),
+        ImVec2(pos.x+size.x-26,pos.y+size.y), pos.x+size.x-26, preview.c_str(), nullptr, nullptr);
+    ImGui::RenderArrow(ImGui::GetWindowDrawList(), ImVec2(pos.x+size.x-20,pos.y+6), ImGui::GetColorU32(ImGuiCol_Text), ImGuiDir_Down, .8f);
+    if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) ImGui::SetTooltip("%s\n%s", L("Browse all heroes"), summary.c_str());
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    IMGUI_TEST_ENGINE_ITEM_INFO(itemId,id,g.LastItemData.StatusFlags);
+    ImGui::PushID(id);
+    if (open) ImGui::OpenPopup("##targetHeroBrowser");
+    HeroBrowserSize();
+    bool changed = false;
+    if (ImGui::BeginPopup("##targetHeroBrowser")) {
+        static char search[128]{};
+        ImGui::TextUnformatted(L("Browse all heroes"));
+        HeroBrowserSearch(search);
+        if (plan) ImGui::TextWrapped("%s", L("Unavailable heroes already belong to another exception."));
+        changed = HeroBrowserGrid(search, false, ControlHeight() + 8,
+            [&](const HeroOption& hero) { return OW::AimPlan::Contains(heroes, hero.heroId); },
+            [&](const HeroOption& hero) -> const char* {
+                if (plan) for (const auto& group : plan->groups)
+                    if (group.id != ownGroup && OW::AimPlan::Contains(group.heroes, hero.heroId)) return group.name.c_str();
+                return nullptr;
+            },
+            [&](int i) {
+                const auto hero = kHeroOptions[i].heroId;
+                if (OW::AimPlan::Contains(heroes, hero)) std::erase(heroes, hero);
+                else heroes.push_back(hero);
+            });
+        if (ImGui::Button(L("Done"))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(heroes.empty());
+        if (ImGui::Button(L("Clear selection"))) { heroes.clear(); changed = true; }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Text(L("Selected heroes: %d"), int(heroes.size()));
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
     return changed;
 }
 
@@ -1909,6 +1968,8 @@ bool UISelect(const char* label, int* current, const char* const items[], int it
     window->DrawList->AddLine(ImVec2(caretCenter.x, caretCenter.y + 2.5f),
                               ImVec2(caretCenter.x + 4.0f, caretCenter.y - 2.0f),
                               caretCol, 1.35f);
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    IMGUI_TEST_ENGINE_ITEM_INFO(window->GetID(label), label, g.LastItemData.StatusFlags);
     return changed;
 }
 
@@ -2824,28 +2885,52 @@ static void DrawRuntimeStatusStrip(ImDrawList* dl, const ImVec2& pos, float widt
 }
 
 static void DrawHeroStrip() {
-    static int lastSelection=-1;
-    ImGui::BeginChild("HeroStrip",ImVec2(0,82),false,ImGuiWindowFlags_HorizontalScrollbar);
-    for(int i=0;i<IM_ARRAYSIZE(kHeroOptions);++i) {
-        if(i)ImGui::SameLine(0,8);
-        const auto& hero=kHeroOptions[i];
+    static int lastSelection = -1;
+    const float browseSize = ControlHeight() + 6;
+    const float stripWidth = (std::max)(1.0f, ImGui::GetContentRegionAvail().x - browseSize - 8);
+    ImGui::BeginChild("HeroStrip", ImVec2(stripWidth, 82), false,
+        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImGuiID wheelOwner = ImGui::GetID("##heroWheel");
+    if (ImGui::IsWindowHovered()) {
+        // Reserve both wheel axes for this strip so the settings page stays still.
+        ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, wheelOwner);
+        ImGui::SetKeyOwner(ImGuiKey_MouseWheelX, wheelOwner);
+        const auto& io = ImGui::GetIO();
+        if (!io.KeyCtrl && (io.MouseWheel != 0 || io.MouseWheelH != 0))
+            ImGui::SetScrollX(ImGui::GetScrollX() - (io.MouseWheel + io.MouseWheelH) * 120.0f);
+    }
+    for (int i = 0; i < IM_ARRAYSIZE(kHeroOptions); ++i) {
+        if (i) ImGui::SameLine(0, 8);
+        const auto& hero = kHeroOptions[i];
         ImGui::PushID(i);
-        const bool selected=UI::state.selectedTypeIndex==i;
-        const auto pos=ImGui::GetCursorScreenPos();
-        if(selected)ImGui::PushStyleColor(ImGuiCol_Button,ImGui::ColorConvertU32ToFloat4(kColAccentDark));
-        if(ImGui::Button("##hero",ImVec2(52,58))) { UI::state.followDetectedHero=false; SelectTypeIndex(i); }
-        if(selected)ImGui::PopStyleColor();
-        auto* draw=ImGui::GetWindowDrawList();
-        if(auto* avatar=HeroAvatarForOption(hero))
-            draw->AddImage(reinterpret_cast<ImTextureID>(avatar),ImVec2(pos.x+4,pos.y+4),ImVec2(pos.x+48,pos.y+48));
-        else draw->AddText(ImVec2(pos.x+6,pos.y+18),kColText,hero.heroId?"?":"当前");
-        if(selected)draw->AddRectFilled(ImVec2(pos.x+4,pos.y+53),ImVec2(pos.x+48,pos.y+56),kColAccent);
-        if(selected && lastSelection!=i)ImGui::SetScrollHereX(0.5f);
-        ImGui::SetItemTooltip("%s",HeroScopeName(hero));
+        const bool selected = UI::state.selectedTypeIndex == i;
+        const auto pos = ImGui::GetCursorScreenPos();
+        if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kColAccentDark));
+        if (ImGui::Button("##hero", ImVec2(52,58))) { UI::state.followDetectedHero = false; SelectTypeIndex(i); }
+        if (selected) ImGui::PopStyleColor();
+        auto* draw = ImGui::GetWindowDrawList();
+        if (auto* avatar = HeroAvatarForOption(hero))
+            draw->AddImage(reinterpret_cast<ImTextureID>(avatar), ImVec2(pos.x+4,pos.y+4), ImVec2(pos.x+48,pos.y+48));
+        else draw->AddText(ImVec2(pos.x+6,pos.y+18), kColText, hero.heroId ? "?" : L("All"));
+        if (selected) draw->AddRectFilled(ImVec2(pos.x+4,pos.y+53), ImVec2(pos.x+48,pos.y+56), kColAccent);
+        if (selected && lastSelection != i) ImGui::SetScrollHereX(.5f);
+        ImGui::SetItemTooltip("%s\n%s", HeroScopeName(hero), L("Scroll the mouse wheel to browse heroes."));
         ImGui::PopID();
     }
-    lastSelection=UI::state.selectedTypeIndex;
+    lastSelection = UI::state.selectedTypeIndex;
     ImGui::EndChild();
+    ImGui::SameLine(0, 8);
+    const auto pos = ImGui::GetCursorScreenPos();
+    if (ImGui::Button("##browseHeroes", ImVec2(browseSize,browseSize))) ImGui::OpenPopup("TypePickerPopup");
+    auto* draw = ImGui::GetWindowDrawList();
+    const float origin = (browseSize - 16) * .5f;
+    for (int y=0;y<2;++y) for (int x=0;x<2;++x) {
+        const ImVec2 p(pos.x+origin+x*9, pos.y+origin+y*9);
+        draw->AddRect(p,ImVec2(p.x+6,p.y+6),kColTextMuted,1);
+    }
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    IMGUI_TEST_ENGINE_ITEM_INFO(ImGui::GetItemID(),"Browse all heroes",g.LastItemData.StatusFlags);
+    ImGui::SetItemTooltip("%s",L("Browse all heroes"));
 }
 
 static void DrawEditingContext() {

@@ -67,3 +67,7 @@ Behavior 决定动作语义；Method 决定如何运动。两者不合并，也�
 公共接口在 `include/output`，实现在 `src/output`：`OutputRuntime` 管代次、切换与分发；`OutputTypes` 管通用命令和完成状态；`SerialTransport` 管唯一串口读入口、队列和生命周期。`KmBoxNetProtocol` 只定义 KMBox 网络报文；`KmBoxSerialProtocol`、`MakcuProtocol`、`FerrumProtocol` 区分串口协议。`CatBoxProtocol` 管加密和报文、`CatBoxBackend` 管网络工作线程。`MockBackend` 和 `TimerResolution` 使用中性名称。
 
 旧 `src/Kmbox` 与 `include/Kmbox` 已删除，不保留转发头文件。旧配置字段仅在配置兼容边界保留名称；KMBox 品牌仅用于其专属实现和协议。
+
+## Slot 目标方案与 Shuwu（2026-11-03）
+
+使用说明见 [V2_AIM_PLANS.zh-CN.md](V2_AIM_PLANS.zh-CN.md)。配置与纯解析／评分在 `include/Game/AimPlan.hpp`，JSON 在 `src/config/AimPlanJson.hpp`；`Config.hpp/.cpp` 接入已有快照、持久化和变更检测。`Target.hpp` 在候选阶段解析英雄例外并应用硬约束，选定后发布 worker 本地的有效运动设置；`BehaviorController.cpp` 用限时作用域保持后续预测设置一致，`Smoothing.cpp` 按选中目标推进一个控制器。Shuwu 的公式对照在 `ShuwuCore.hpp`，角度适配与采样／命令反馈契约在 `AimShuwu.hpp`。原生编辑器在 `src/ui/AimPlanEditor.hpp`；测试与交互预览继续位于 Scenario。

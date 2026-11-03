@@ -47,6 +47,7 @@ using namespace UI::ValueFormat;
 #include <vector>
 
 #include "ui/EditorSupport.hpp"
+#include "ui/AimPlanEditor.hpp"
 using namespace UI::Theme;
 
 void UI::AimbotPage() {
@@ -93,6 +94,93 @@ void UI::AimbotPage() {
     slotEnabledChanged |= UIActionSlotEnabledCheckbox(slotKind, *selectedHero, "##aimSlotEnabled", kAimbotHeroLabelWidth);
     ImGui::Spacing();
     UITwoColumns([&]() {
+        UIGroupBox("Range & Target");
+            // FOV
+            static const char* kFovModeLabels[] = { "Fixed", "Dynamic Preset" };
+            activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
+            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset &&
+                !OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
+                activePreset.fovMode = OW::Config::kFovModeFixed;
+                activePreset.dynamicFovPresetId = -1;
+            }
+
+            SettingRow("FOV Mode", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            if (UISelect("##aimFovMode", &activePreset.fovMode, kFovModeLabels, IM_ARRAYSIZE(kFovModeLabels))) {
+                activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
+                if (activePreset.fovMode == OW::Config::kFovModeFixed) {
+                    activePreset.dynamicFovPresetId = -1;
+                } else if (!OW::Config::View_dynamicFovPresets().empty()) {
+                    activePreset.dynamicFovPresetId = OW::Config::View_dynamicFovPresets().front().id;
+                }
+                presetChanged = true;
+            }
+            ImGui::PopItemWidth();
+
+            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset) {
+                SettingRow("FOV Preset", kAimbotLeftLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISelectDynamicFovPreset("##aimDynamicFovPreset",
+                                                          &activePreset.dynamicFovPresetId,
+                                                          false);
+                ImGui::PopItemWidth();
+                if (!OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.64f, 0.25f, 1.0f),
+                                       "Create a Dynamic FOV preset in Misc first.");
+                }
+
+                SettingRow("Fallback FOV", kAimbotLeftLabelWidth);
+            } else {
+                SettingRow("FOV (deg)", kAimbotLeftLabelWidth);
+            }
+            PushControlWidth();
+            presetChanged |= UISlider("##aimFov", &activePreset.fov,
+                                      OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
+            ImGui::PopItemWidth();
+
+            // Target Priority
+            SettingRow("Target Priority", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
+            ImGui::PopItemWidth();
+
+            // Target Team
+            SettingRow("Target Team", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimTeam", &activePreset.targetTeam, kTeam, IM_ARRAYSIZE(kTeam));
+            ImGui::PopItemWidth();
+            // Hitbox Scale
+            SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##aimHitbox", &activePreset.hitbox,
+                                      OW::Config::kMinHitboxScalePercent,
+                                      OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
+            ImGui::PopItemWidth();
+
+            // Ignore Invisible Targets
+            SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
+            presetChanged |= UICheckbox("##aimIgnoreInvis", &activePreset.ignoreInvisible);
+
+            // Trace Condition
+            SettingRow("Trace Condition", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimTrace", &activePreset.traceCondition, kTrace, IM_ARRAYSIZE(kTrace));
+            ImGui::PopItemWidth();
+
+            // Max Distance
+            SettingRow("Max Distance", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##aimMaxDist", &activePreset.maxDistance, 0.0f, 500.0f, Number(0, " m"));
+            ImGui::PopItemWidth();
+
+            // Min Distance
+            SettingRow("Min Distance", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##aimMinDist", &activePreset.minDistance, 0.0f, 500.0f, Number(0, " m"));
+            ImGui::PopItemWidth();
+        presetChanged |= UI::AimPlanEditor::Policy(activePreset);
+        CloseGroupBox();
+    }, [&]() {
         UIGroupBox("Behavior & Input");
             // Aim Behavior
             SettingRow("Aim Behavior", kAimbotLeftLabelWidth);
@@ -212,93 +300,9 @@ void UI::AimbotPage() {
             }
 
         CloseGroupBox();
-    }, [&]() {
-        UIGroupBox("Range & Target");
-            // FOV
-            static const char* kFovModeLabels[] = { "Fixed", "Dynamic Preset" };
-            activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
-            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset &&
-                !OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
-                activePreset.fovMode = OW::Config::kFovModeFixed;
-                activePreset.dynamicFovPresetId = -1;
-            }
-
-            SettingRow("FOV Mode", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelect("##aimFovMode", &activePreset.fovMode, kFovModeLabels, IM_ARRAYSIZE(kFovModeLabels))) {
-                activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
-                if (activePreset.fovMode == OW::Config::kFovModeFixed) {
-                    activePreset.dynamicFovPresetId = -1;
-                } else if (!OW::Config::View_dynamicFovPresets().empty()) {
-                    activePreset.dynamicFovPresetId = OW::Config::View_dynamicFovPresets().front().id;
-                }
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
-
-            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset) {
-                SettingRow("FOV Preset", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISelectDynamicFovPreset("##aimDynamicFovPreset",
-                                                          &activePreset.dynamicFovPresetId,
-                                                          false);
-                ImGui::PopItemWidth();
-                if (!OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.64f, 0.25f, 1.0f),
-                                       "Create a Dynamic FOV preset in Misc first.");
-                }
-
-                SettingRow("Fallback FOV", kAimbotLeftLabelWidth);
-            } else {
-                SettingRow("FOV (deg)", kAimbotLeftLabelWidth);
-            }
-            PushControlWidth();
-            presetChanged |= UISlider("##aimFov", &activePreset.fov,
-                                      OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
-            ImGui::PopItemWidth();
-
-            // Target Priority
-            SettingRow("Target Priority", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
-            ImGui::PopItemWidth();
-
-            // Target Team
-            SettingRow("Target Team", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimTeam", &activePreset.targetTeam, kTeam, IM_ARRAYSIZE(kTeam));
-            ImGui::PopItemWidth();
-            // Hitbox Scale
-            SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimHitbox", &activePreset.hitbox,
-                                      OW::Config::kMinHitboxScalePercent,
-                                      OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
-            ImGui::PopItemWidth();
-
-            // Ignore Invisible Targets
-            SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox("##aimIgnoreInvis", &activePreset.ignoreInvisible);
-
-            // Trace Condition
-            SettingRow("Trace Condition", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimTrace", &activePreset.traceCondition, kTrace, IM_ARRAYSIZE(kTrace));
-            ImGui::PopItemWidth();
-
-            // Max Distance
-            SettingRow("Max Distance", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimMaxDist", &activePreset.maxDistance, 0.0f, 500.0f, Number(0, " m"));
-            ImGui::PopItemWidth();
-
-            // Min Distance
-            SettingRow("Min Distance", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimMinDist", &activePreset.minDistance, 0.0f, 500.0f, Number(0, " m"));
-            ImGui::PopItemWidth();
-        CloseGroupBox();
     });
+
+    presetChanged |= UI::AimPlanEditor::Editor(activePreset);
 
     ImGui::SetNextItemOpen(state.aimAdvanced, ImGuiCond_Always);
     state.aimAdvanced = ImGui::CollapsingHeader(L("Advanced parameters"));

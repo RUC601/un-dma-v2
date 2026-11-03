@@ -47,6 +47,7 @@ using namespace UI::ValueFormat;
 #include <vector>
 
 #include "ui/EditorSupport.hpp"
+#include "ui/AimPlanEditor.hpp"
 using namespace UI::Theme;
 
 void UI::TriggerPage() {
@@ -153,6 +154,10 @@ void UI::TriggerPage() {
         }
         CloseGroupBox();
     });
+
+    UIGroupBox("Target preference");
+    presetChanged |= UI::AimPlanEditor::Policy(activePreset, false);
+    CloseGroupBox();
 
     ImGui::SetNextItemOpen(state.triggerAdvanced, ImGuiCond_Always);
     state.triggerAdvanced = ImGui::CollapsingHeader(L("Advanced parameters"));

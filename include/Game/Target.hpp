@@ -791,6 +791,11 @@ namespace OW {
             if (!PresentationTiming::Fresh(entity.anchor_sample_tick_ms, GetTickCount())) return false;
             if (!entity.address || !entity.Alive) return false;
             if (requireVisible && !entity.Vis) return false;
+            if(Config::targetAimPlanEnabled) {
+                const auto& plan=Config::View_aimPlan();
+                if(!AimPlan::Eligible(plan.selection,AimPlan::Resolve(plan,entity.HeroID),
+                    entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) return false;
+            }
             return true;
         }
 
@@ -1623,16 +1628,86 @@ namespace OW {
     // Main target selection (GetVector3)
     // =========================================================================
 
+    // Candidate evaluation changes only a bounded set of worker-local scalar views.
+    // No controller state, global config, or per-candidate configuration copy is involved.
+    struct AimCandidateConfig {
+        AimPlan::Effective value{};
+        bool active = Config::targetAimPlanEnabled;
+        float fov=Config::View_Fov(), lo=Config::View_aimbotMinDist(), hi=Config::View_aimbotMaxDist();
+        int mode=Config::View_aimbotFovMode(), prediction=Config::View_aimbotPredictionMode();
+        bool legacyPrediction=Config::View_Prediction();
+        SkeletonBoneMask mask=Config::View_aimbotBoneMask();
+        explicit AimCandidateConfig(uint64_t hero) {
+            if(!active) return;
+            value=AimPlan::Resolve(Config::View_aimPlan(),hero);
+            if(value.overrideLimits) {
+                Config::View_Fov()=value.limits.fov; Config::View_aimbotFovMode()=0;
+                Config::View_aimbotMinDist()=value.limits.minDistance; Config::View_aimbotMaxDist()=value.limits.maxDistance;
+            }
+            if(value.overrideAimPoint) {
+                Config::View_aimbotBoneMask()=value.point.boneMask; Config::View_aimbotPredictionMode()=value.point.predictionMode;
+                const auto local=TargetingDetail::SnapshotLocalEntity();
+                Config::View_Prediction()=ResolvePredictionEnabled(ClampPredictionOverride(value.point.predictionMode),
+                    ResolveWeaponSpec(local.HeroID,Config::View_aimbotAttack()),legacyPrediction);
+            }
+        }
+        ~AimCandidateConfig() {
+            if(!active) return;
+            Config::View_Fov()=fov; Config::View_aimbotMinDist()=lo; Config::View_aimbotMaxDist()=hi;
+            Config::View_aimbotFovMode()=mode; Config::View_aimbotPredictionMode()=prediction; Config::View_aimbotBoneMask()=mask; Config::View_Prediction()=legacyPrediction;
+        }
+        bool Passes(const c_entity& e) const {
+            if(!active) return true;
+            const auto& p=Config::View_aimPlan().selection;
+            return AimPlan::Eligible(p,value,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,e.Vis);
+        }
+        bool Preferred(const c_entity& e) const {
+            const auto& p=Config::View_aimPlan().selection;
+            return active && p.mode==1 && AimPlan::PredicateMatches(p,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,e.Vis);
+        }
+    };
+    inline void PublishSelectedAimPlan(const TargetCandidate& candidate) {
+        Config::selectedAimPlan=Config::targetAimPlanEnabled && candidate.valid ? candidate.plan : AimPlan::Effective{};
+        Config::selectedAimPlanTarget=candidate.valid?candidate.entityKey:0;
+        Config::selectedAimHero=candidate.valid?candidate.entitySnapshot.HeroID:0;
+        Config::selectedAimActor=candidate.valid?candidate.entitySnapshot.actor_generation:0;
+        Config::selectedAimEpoch=candidate.valid?candidate.entitySnapshot.connection_epoch:0;
+        Config::selectedAimScene=candidate.valid?candidate.entitySnapshot.scene_generation:0;
+        Config::selectedAimSample=candidate.valid?(candidate.entitySnapshot.sample_time_us?candidate.entitySnapshot.sample_time_us:uint64_t(candidate.entitySnapshot.anchor_sample_tick_ms)*1000):0;
+        static_cast<AimPlan::Motion&>(Config::selectedAimMethod)=Config::selectedAimPlan.motion;
+    }
+
+    inline float AimRankingFovScale() {
+        float upper = Config::View_Fov();
+        if (Config::IsDynamicAimFovActive()) {
+            const auto* dynamic = Config::FindDynamicFovPreset(Config::View_aimbotDynamicFovPresetId());
+            for (int i = 0; i < dynamic->pointCount; ++i)
+                upper = (std::max)(upper, dynamic->points[static_cast<size_t>(i)].fovDeg);
+        }
+        if (Config::targetAimPlanEnabled)
+            for (const auto& group : Config::View_aimPlan().groups)
+                if (group.overrideLimits) upper = (std::max)(upper, group.limits.fov);
+        return upper;
+    }
+
     inline TargetCandidate AcquireTarget(
         const ConsumptionFrame& frame,
         bool predit = false,
         bool ignoreInvisible = Config::View_aimbotIgnoreInvisible(),
         DWORD trackingContinuityGraceMs = 0) {
         TargetCandidate best{};
+        Config::ScopedConfigRead configRead;
         int TarGetIndex = -1;
+        TargetCandidate lockedCandidate{};
+        float lockedScore=0;
+        const float commonFov=TrackingContinuityPolicy::EffectiveFovDeg(AimRankingFovScale(),trackingContinuityGraceMs!=0);
+        float commonDistance=Config::View_aimbotMaxDist();
+        if(commonDistance<=0) commonDistance=500;
+        if(Config::targetAimPlanEnabled) for(const auto& g:Config::View_aimPlan().groups) if(g.overrideLimits) {
+            commonDistance=(std::max)(commonDistance,g.limits.maxDistance>0?g.limits.maxDistance:500.0f);
+        }
         Vector2 CrossHair = TargetingDetail::CrosshairCenter();
         const Matrix& aimViewMatrix = frame.view;
-        Config::ScopedConfigRead configRead;
         const TargetingDetail::FovRuntimeContext fovContext = TargetingDetail::SnapshotFovRuntimeContext();
         const auto& entities = frame.entities;
         const auto& hp_dy_entities = frame.dynamic;
@@ -1682,6 +1757,9 @@ namespace OW {
             TargetingDetail::ResolveProjectileRuntimeSpec(weaponSpec, local_entity, false);
         if (entities.size() > 0) {
             for (size_t i = 0; i < entities.size(); i++) {
+                AimCandidateConfig candidateConfig(entities[i].HeroID);
+                if(!candidateConfig.Passes(entities[i])) continue;
+                const bool preferred=candidateConfig.Preferred(entities[i]);
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
                     entities[i], Config::View_aimbotTeam(), local_entity);
                 if (TargetingDetail::IsRuntimeTargetValid(entities[i], false) && teamPass) {
@@ -1696,8 +1774,6 @@ namespace OW {
                         !TargetingDetail::CandidateCanBypassTrace(lockPolicy, activeLock, candidateKey)) {
                         continue;
                     }
-                    if (TargetingDetail::CandidateBlockedByMinLock(lockPolicy, activeLock, candidateKey, now))
-                        continue;
                     ++selectableCandidates;
                     const float initialDistance = TargetingDetail::CameraPosition().DistTo(entities[i].chest_pos);
                     if (!TargetingDetail::DistancePassesAimFilter(
@@ -1726,7 +1802,7 @@ namespace OW {
                         entities[i],
                         rootPosition,
                         projectileSpec,
-                        resolvedPrediction,
+                        ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),weaponSpec,predit),
                         false);
                     const float fovEntryHorizonMs =
                         Config::ClampFovEntryPredictionMs(Config::View_aimbotFovEntryPredictionMs());
@@ -1766,53 +1842,53 @@ namespace OW {
 
                         Vector2 Vec2 = CrossHair;
                         aimViewMatrix.WorldToScreen(fovEvaluation.acceptedAimPoint, &Vec2, Vector2(OW::WX, OW::WY));
-                        float score;
-                        if (Config::View_aimbotPriority() == 0) {
-                            score = fovScoreDeg;
-                        } else if (Config::View_aimbotPriority() == 1) {
-                            score = entities[i].PlayerHealth;
-                        } else {
-                            score = distance;
-                        }
+                        float score=AimPlan::Score(Config::View_aimbotPriority(),Config::View_aimPlan().selection,
+                            fovScoreDeg,distance,entities[i].PlayerHealth,entities[i].PlayerHealthMax,commonFov,commonDistance);
                         score = TargetingDetail::ApplyRetargetHysteresis(score, lockPolicy, activeLock, candidateKey);
+                        if (!std::isfinite(score))
+                            continue;
                         const bool preferCurrentInside = best.valid &&
                             best.predictedFovEntry &&
                             !fovEvaluation.acceptedByPrediction;
                         const bool predictedEntryLosesToCurrentInside = best.valid &&
                             !best.predictedFovEntry &&
                             fovEvaluation.acceptedByPrediction;
-                        if (!predictedEntryLosesToCurrentInside &&
-                            (preferCurrentInside || score < origin)) {
-                            origin = score;
-                            selectedFovScoreDeg = fovScoreDeg;
-                            TarGetIndex = i;
-                            best.valid = true;
-                            best.entityIndex = static_cast<int>(i);
-                            best.entityKey = candidateKey;
-                            best.entitySnapshot = entities[i];
-                            best.boneId = candidateBoneId;
-                            best.rawAimPoint = rootPosition;
-                            best.predictedAimPoint = lead.finalAimPoint;
-                            best.aimPoint = fovEvaluation.acceptedAimPoint;
-                            best.screenPoint = Vec2;
-                            best.distance = distance;
-                            best.fovScore = fovScoreDeg;
-                            best.effectiveFovDeg = effectiveFovDeg;
-                            best.dynamicFov = Config::IsDynamicAimFovActive();
-                            best.dynamicFovPresetId = best.dynamicFov ? Config::View_aimbotDynamicFovPresetId() : -1;
-                            best.predictedFovEntry = fovEvaluation.acceptedByPrediction;
-                            best.fovEntryHorizonMs = fovEvaluation.acceptedByPrediction ? fovEntryHorizonMs : 0.0f;
-                            best.currentFovScore = fovEvaluation.currentScoreDeg;
-                            best.projectedFovScore = fovEvaluation.projectedScoreDeg;
-                            best.motion = TargetingDetail::EstimateMotionState(entities[i], Vec2);
-                            best.lockPolicy = lockPolicy;
-                            best.weaponSpec = weaponSpec;
-                            best.effectiveHitWindow = ResolveEffectiveHitWindow(
+                        const bool samePreference = !best.valid || preferred==best.planPreferred;
+                        const bool rankWins = !best.valid || AimPlan::Better(preferred,score,candidateKey,best.planPreferred,origin,best.entityKey);
+                        const bool select = !best.valid || (!samePreference ? preferred :
+                            !predictedEntryLosesToCurrentInside && (preferCurrentInside || rankWins));
+                        if (select || currentLockedCandidate) {
+                            TargetCandidate next{};
+                            next.valid = true;
+                            next.plan=candidateConfig.value; next.planPreferred=preferred;
+                            next.entityIndex = static_cast<int>(i);
+                            next.entityKey = candidateKey;
+                            next.entitySnapshot = entities[i];
+                            next.boneId = candidateBoneId;
+                            next.rawAimPoint = rootPosition;
+                            next.predictedAimPoint = lead.finalAimPoint;
+                            next.aimPoint = fovEvaluation.acceptedAimPoint;
+                            next.screenPoint = Vec2;
+                            next.distance = distance;
+                            next.fovScore = fovScoreDeg;
+                            next.effectiveFovDeg = effectiveFovDeg;
+                            next.dynamicFov = Config::IsDynamicAimFovActive();
+                            next.dynamicFovPresetId = next.dynamicFov ? Config::View_aimbotDynamicFovPresetId() : -1;
+                            next.predictedFovEntry = fovEvaluation.acceptedByPrediction;
+                            next.fovEntryHorizonMs = fovEvaluation.acceptedByPrediction ? fovEntryHorizonMs : 0.0f;
+                            next.currentFovScore = fovEvaluation.currentScoreDeg;
+                            next.projectedFovScore = fovEvaluation.projectedScoreDeg;
+                            next.motion = TargetingDetail::EstimateMotionState(entities[i], Vec2);
+                            next.lockPolicy = lockPolicy;
+                            next.weaponSpec = weaponSpec;
+                            next.effectiveHitWindow = ResolveEffectiveHitWindow(
                                 entities[i].HeroID,
-                                best.boneId,
+                                next.boneId,
                                 weaponSpec,
                                 Config::View_hitbox(),
                                 Config::kLegacyDefaultHitboxRadius);
+                            if(currentLockedCandidate) { lockedCandidate=next; lockedScore=score; }
+                            if(select) { best=std::move(next); origin=score; TarGetIndex=int(i); selectedFovScoreDeg=fovScoreDeg; }
                         }
                     }
                 }
@@ -1820,7 +1896,11 @@ namespace OW {
         }
 
         // Ashe B.O.B targeting
-        if (local_entity.HeroID == eHero::HERO_ASHE) {
+        const auto& planSelection=Config::View_aimPlan().selection;
+        // The dynamic B.O.B record has no trusted hero/health/visibility payload.
+        const bool allowLegacyBob=!Config::targetAimPlanEnabled || (planSelection.mode==0 &&
+            planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimbotPriority()!=3);
+        if (local_entity.HeroID == eHero::HERO_ASHE && allowLegacyBob) {
             for (hpanddy hppack : hp_dy_entities) {
                 if (hppack.entityid == 0x400000000002533) {
                     const bool currentLockedBob = activeLock.active &&
@@ -1880,7 +1960,13 @@ namespace OW {
                 }
             }
         }
+        // Explicit lock duration wins over Prefer while the old target remains admissible.
+        // A hard filter cannot trap us on an ineligible current target.
+        if(lockedCandidate.valid && best.valid && TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now)) {
+            best=lockedCandidate; origin=lockedScore; TarGetIndex=best.entityIndex;
+        }
         const bool holdAlternateDuringDropout = trackingContinuityEnabled &&
+            (!Config::targetAimPlanEnabled || (planSelection.mode!=2 && planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimPlan().groups.empty())) &&
             activeLock.active &&
             activeLock.entityKey != 0 &&
             !activeLockCandidateSelectable &&
@@ -1902,6 +1988,7 @@ namespace OW {
             Config::health = entities[static_cast<size_t>(best.entityIndex)].PlayerHealth;
         }
         if (best.valid) {
+            AimCandidateConfig selectedConfig(best.entitySnapshot.HeroID);
             best.effectiveFovDeg = Config::ResolveDynamicAimFovForDistance(Config::View_Fov(), best.distance);
             best.dynamicFov = Config::IsDynamicAimFovActive();
             best.dynamicFovPresetId = best.dynamicFov ? Config::View_aimbotDynamicFovPresetId() : -1;
@@ -1956,6 +2043,11 @@ namespace OW {
                 selected.Vis ? 1 : 0,
                 selected.Team ? 1 : 0);
         }
+        PublishSelectedAimPlan(best);
+        Diagnostics::Aim("target.plan rule=%llu motionOverride=%d method=%d preferred=%d mode=%d priority=%d score=%.6f",
+            static_cast<unsigned long long>(best.plan.ruleId), best.plan.overrideMotion ? 1 : 0,
+            best.plan.overrideMotion ? best.plan.motion.method : Config::AimBehaviorMethod(Config::View_aimBehavior()),
+            best.planPreferred ? 1 : 0, Config::View_aimPlan().selection.mode, Config::View_aimbotPriority(), origin);
         TargetingDetail::StoreLastTargetCandidate(best);
         return best;
     }
@@ -1985,6 +2077,8 @@ namespace OW {
         if (fovContext.valid) {
             for (std::size_t entityIndex = 0; entityIndex < entities.size(); ++entityIndex) {
                 const c_entity& entity = entities[entityIndex];
+                AimCandidateConfig candidateConfig(entity.HeroID);
+                if(!candidateConfig.Passes(entity)) continue;
                 if (!TargetingDetail::IsSelectableCandidate(entity, Config::View_aimbotTeam(), localEntity))
                     continue;
                 if (ignoreInvisible && !entity.Vis)
@@ -2051,11 +2145,13 @@ namespace OW {
 
                     const float normalizedScore = angularScoreDeg /
                         (std::max)(angularWindowDeg, 0.0001f);
-                    if (best.valid && normalizedScore >= bestNormalizedScore)
+                    const bool preferred=candidateConfig.Preferred(entity);
+                    if (best.valid && !AimPlan::Better(preferred,normalizedScore,entity.address?entity.address:entity.LinkBase,best.planPreferred,bestNormalizedScore,best.entityKey))
                         continue;
 
                     bestNormalizedScore = normalizedScore;
                     best.valid = true;
+                    best.plan=candidateConfig.value; best.planPreferred=preferred;
                     best.entityIndex = static_cast<int>(entityIndex);
                     best.entityKey = entity.address ? entity.address : entity.LinkBase;
                     best.entitySnapshot = entity;
@@ -2136,6 +2232,8 @@ namespace OW {
         if (entities.size() > 0) {
             Vector3 PreditPos, RootPos;
             for (size_t i = 0; i < entities.size(); i++) {
+            AimCandidateConfig candidateConfig(entities[i].HeroID);
+            if(!candidateConfig.Passes(entities[i])) continue;
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
                     entities[i], Config::View_aimbotTeam(), local_entity);
                 if (TargetingDetail::IsRuntimeTargetValid(entities[i], false) && teamPass) {
@@ -2208,6 +2306,7 @@ namespace OW {
     // =========================================================================
 
     inline Vector3 GetVector3forgenji(bool predit = false) {
+        PublishSelectedAimPlan({});
         int TarGetIndex = -1;
         Vector3 target{};
         Vector2 CrossHair = TargetingDetail::CrosshairCenter();

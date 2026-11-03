@@ -222,6 +222,10 @@ namespace AimbotDetail {
             return false;
 
         for (OW::c_entity entity : entities) {
+            const auto effective=OW::AimPlan::Resolve(preset.aimPlan,entity.HeroID);
+            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) continue;
+            auto inRange=[&](float d) { return effective.overrideLimits ? std::isfinite(d) && d>=effective.limits.minDistance &&
+                (effective.limits.maxDistance<=0 || d<=effective.limits.maxDistance) : DistancePassesAimPresetRange(d,preset); };
             if (!OW::TargetingDetail::IsRuntimeTargetValid(entity, false))
                 continue;
             if (!OW::TargetingDetail::TargetTeamMatches(entity, preset.targetTeam, local))
@@ -230,21 +234,22 @@ namespace AimbotDetail {
                 continue;
 
             const float chestDistance = camera.DistTo(entity.chest_pos);
-            if (!DistancePassesAimPresetRange(chestDistance, preset))
+            if (!inRange(chestDistance))
                 continue;
 
-            const int aimBone = ResolvePresetAimBoneForDistance(preset, chestDistance);
+            const int aimBone = effective.overrideAimPoint ? (effective.point.boneMask&1 ? OW::Config::kAimBoneHead :
+                effective.point.boneMask&2 ? OW::Config::kAimBoneNeck : OW::Config::kAimBoneChest) : ResolvePresetAimBoneForDistance(preset, chestDistance);
             const Vector3 aimPoint = OW::TargetingDetail::ConfiguredBonePosition(entity, aimBone);
             if (!OW::TargetingDetail::IsFiniteVector(aimPoint) ||
                 OW::TargetingDetail::IsZeroVector(aimPoint))
                 continue;
 
             const float aimDistance = camera.DistTo(aimPoint);
-            if (!DistancePassesAimPresetRange(aimDistance, preset))
+            if (!inRange(aimDistance))
                 continue;
 
             const float effectiveFovDeg =
-                OW::Config::ResolveRuntimeHeroPresetFovForDistance(preset, aimDistance);
+                effective.overrideLimits?effective.limits.fov:OW::Config::ResolveRuntimeHeroPresetFovForDistance(preset, aimDistance);
             if (OW::TargetingDetail::IsWithinFovDeg(fovContext, aimPoint, effectiveFovDeg))
                 return true;
         }
@@ -263,11 +268,13 @@ namespace AimbotDetail {
             return false;
 
         for (const OW::c_entity& entity : entities) {
+            const auto effective=OW::AimPlan::Resolve(preset.aimPlan,entity.HeroID);
+            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) continue;
             if (!OW::TargetingDetail::IsRuntimeTargetValid(entity, false))
                 continue;
 
             const float chestDistance = camera.DistTo(entity.chest_pos);
-            if (DistancePassesAimPresetRange(chestDistance, preset))
+            if (effective.overrideLimits ? chestDistance>=effective.limits.minDistance && (effective.limits.maxDistance<=0 || chestDistance<=effective.limits.maxDistance) : DistancePassesAimPresetRange(chestDistance,preset))
                 return true;
         }
 
@@ -595,13 +602,17 @@ namespace AimbotDetail {
     }
 
     struct ScopedHeroPresetOverride {
+        bool previousPlanEnabled=OW::Config::targetAimPlanEnabled;
+        struct PlanGuard { bool previous; ~PlanGuard() { OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
         OW::Config::ScopedLocalConfigOverride configOverride;
         OW::Config::RuntimeDrawFovState originalDraw = OW::Config::SnapshotRuntimeDrawFov();
         ScopedHeroPresetOverride() {
+            OW::Config::targetAimPlanEnabled=false; OW::Config::selectedAimPlan={}; OW::Config::selectedAimHero=0;
             const auto local = LocalEntity();
             RuntimePresetSelection selection{};
-            if (!local.HeroID || !TrySelectRuntimeAimPreset(local.HeroID, selection)) return;
+            if (!local.HeroID || !TrySelectRuntimeAimPreset(local.HeroID, selection)) { OW::Config::targetAimPlanEnabled=true; return; }
             OW::Config::ApplyLocalHeroAimPreset(selection.preset);
+            OW::Config::targetAimPlanEnabled=true;
             if (selection.activationKeyOverride >= 0) OW::Config::View_aim_key() = selection.activationKeyOverride;
             OW::Config::SetRuntimeDrawFov(OW::Config::ResolveRuntimeHeroPresetFovForDistance(selection.preset, 0.0f),
                 static_cast<int>(OW::Config::FovRingSlotKind::Aim), selection.slotIndex);
@@ -612,12 +623,19 @@ namespace AimbotDetail {
         }
     };
     struct ScopedHeroTriggerPresetOverride {
+        bool previousPlanEnabled=OW::Config::targetAimPlanEnabled;
+        struct PlanGuard { bool previous; ~PlanGuard() { OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
         OW::Config::ScopedLocalConfigOverride configOverride;
         ScopedHeroTriggerPresetOverride() {
+            OW::Config::targetAimPlanEnabled=false; OW::Config::selectedAimPlan={}; OW::Config::selectedAimHero=0;
+            // Trigger owns preference/HP filtering, never Aim-only hero exceptions.
+            OW::Config::View_aimPlan().groups.clear();
+            OW::Config::View_aimPlan().overrideMotion=false;
             const auto local = LocalEntity();
             RuntimePresetSelection selection{};
-            if (!local.HeroID || !TrySelectRuntimeTriggerPreset(local.HeroID, selection)) return;
+            if (!local.HeroID || !TrySelectRuntimeTriggerPreset(local.HeroID, selection)) { OW::Config::targetAimPlanEnabled=true; return; }
             OW::Config::ApplyLocalHeroTriggerPreset(selection.preset);
+            OW::Config::targetAimPlanEnabled=true;
             LogRuntimePresetSelection("trigger", local.HeroID, selection);
         }
 
@@ -820,7 +838,11 @@ namespace AimbotDetail {
             delta.Z,
             delta.Size(),
             effective_move_time_ms);
-        OW::SendMouseMove(delta, effective_move_time_ms);
+        OW::MouseMoveQuantizationOptions options{};
+        const auto sent=OW::SendMouseMove(delta,effective_move_time_ms,options);
+        const float yaw=OW::Config::OutputYawCountsPerRadian(), pitch=OW::Config::OutputPitchCountsPerRadian();
+        const bool accepted=sent.dispatched && sent.status==0 && yaw>0 && pitch>0;
+        OW::CommitAimMotionCommand(accepted ? Vector3(sent.pixelY/pitch,-sent.pixelX/yaw,0) : Vector3{});
     }
 
     inline OW::MouseMoveQuantizationResult MoveMagneticTriggerAimDelta(
@@ -851,7 +873,11 @@ namespace AimbotDetail {
         quantization.state = &state.magneticMoveQuantization;
         quantization.fallbackDirectionDelta = rawDelta;
         quantization.forceNonZero = true;
-        return OW::SendMouseMove(delta, effectiveMoveTimeMs, quantization);
+        const auto sent=OW::SendMouseMove(delta,effectiveMoveTimeMs,quantization);
+        const float yaw=OW::Config::OutputYawCountsPerRadian(), pitch=OW::Config::OutputPitchCountsPerRadian();
+        const bool accepted=sent.dispatched && sent.status==0 && yaw>0 && pitch>0;
+        OW::CommitAimMotionCommand(accepted ? Vector3(sent.pixelY/pitch,-sent.pixelX/yaw,0) : Vector3{});
+        return sent;
     }
 
     inline constexpr const char* kGlobalAimClickOwnerKey =
@@ -2626,6 +2652,7 @@ namespace AimbotDetail {
             if (now - lastDryRunLog >= (DWORD)OW::Config::aimDryRunLogIntervalMs) {
                 lastDryRunLog = now;
                 const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings1(OW::Config::selectedAimHero);
                 if (!IsZeroVector(vec)) {
                     AimData aim = BuildAimData(
                         vec,
@@ -2742,6 +2769,7 @@ namespace AimbotDetail {
                     OW::Config::View_Prediction(),
                     OW::Config::View_aimbotIgnoreInvisible(),
                     OW::TrackingContinuityPolicy::kTargetDropoutGraceMs);
+            OW::AimCandidateConfig selectedSettings(candidate.valid?candidate.entitySnapshot.HeroID:0);
             const c_entity target = candidate.entitySnapshot;
             const Vector3 vec = candidate.valid
                 ? TrackingSampleAgeCompensatedAimPoint(candidate, GetTickCount())
@@ -3150,6 +3178,7 @@ namespace AimbotDetail {
             }
 
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings2(OW::Config::selectedAimHero);
             if (IsZeroVector(vec)) {
                 Diagnostics::Aim("hanzo.custom no_move reason=no_target_vector targetIndex=%d entities=%zu",
                     OW::Config::Targetenemyi,
@@ -3325,6 +3354,7 @@ namespace AimbotDetail {
             if (now - lastDryRunLog >= static_cast<DWORD>(OW::Config::aimDryRunLogIntervalMs)) {
                 lastDryRunLog = now;
                 const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings3(OW::Config::selectedAimHero);
                 if (!IsZeroVector(vec)) {
                     float deadzoneDistance = 0.0f;
                     const float deadzoneDampingScale = TrackingDeadzoneDampingScale(vec, &deadzoneDistance);
@@ -3406,6 +3436,7 @@ namespace AimbotDetail {
             }
 
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings4(OW::Config::selectedAimHero);
             if (IsZeroVector(vec)) {
                 ResetMagneticTriggerQuantization(state, "no_target");
                 Diagnostics::Aim("magnetic_trigger no_move reason=no_target_vector targetIndex=%d entities=%zu",
@@ -3757,6 +3788,7 @@ namespace AimbotDetail {
             if (now - lastDryRunLog >= (DWORD)OW::Config::aimDryRunLogIntervalMs) {
                 lastDryRunLog = now;
                 const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings5(OW::Config::selectedAimHero);
                 if (!IsZeroVector(vec)) {
                     AimData aim = BuildAimData(
                         vec,
@@ -3812,6 +3844,7 @@ namespace AimbotDetail {
             }
 
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
+            OW::AimCandidateConfig selectedSettings6(OW::Config::selectedAimHero);
             if (IsZeroVector(vec)) {
                 Diagnostics::Aim("flick break reason=no_target_vector targetIndex=%d entities=%zu",
                     OW::Config::Targetenemyi,
@@ -4068,6 +4101,7 @@ namespace AimbotDetail {
         if (!OW::Config::AutoMelee) return;
 
         const Vector3 vec = OW::GetVector3(false);
+            OW::AimCandidateConfig selectedSettings7(OW::Config::selectedAimHero);
         c_entity target{};
         if (!IsZeroVector(vec) && CurrentTarget(target) && target.Team) {
             const float dist = CameraPosition().DistTo(vec);
@@ -4086,6 +4120,7 @@ namespace AimbotDetail {
         if (!OW::Config::AutoRMB || OW::Config::View_aimbotRequireActionHeld()) return;
 
         const Vector3 vec = OW::GetVector3(false);
+            OW::AimCandidateConfig selectedSettings8(OW::Config::selectedAimHero);
         c_entity target{};
         if (!IsZeroVector(vec) && CurrentTarget(target) && target.Team) {
             const float dist = CameraPosition().DistTo(vec);
@@ -4110,6 +4145,7 @@ namespace AimbotDetail {
         if (!OW::Config::AutoShiftGenji) return;
 
         const Vector3 vec = OW::GetVector3(false);
+            OW::AimCandidateConfig selectedSettings9(OW::Config::selectedAimHero);
         c_entity target{};
         if (IsZeroVector(vec) || !CurrentTarget(target)) return;
         if (target.imort || target.barrprot) return;

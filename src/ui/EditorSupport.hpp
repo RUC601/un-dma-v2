@@ -84,13 +84,13 @@ inline const char* kHeroSkillTargetBones[] = {
     "Chest", "Head", "Neck", "Closest"
 };
 inline const char* kAimBehavior[]  = { "Tracking", "Flick", "Flick2nd", "Reacquire", "MagneticTrigger" };
-inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID" };
+inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID", "Shuwu" };
 inline const char* kAimSmoothType[] = { "Constant Speed", "Linear", "Bezier" };
 inline const char* kPredictionMode[] = { "Auto", "Force On", "Force Off" };
 inline const char* kFirePolicy[] = {
     "Manual", "Hold Tracking", "Tap Hit Window", "Release Delay", "Timed Burst", "Charge Release"
 };
-inline const char* kPriority[]     = { "Lowest FOV", "Lowest HP", "Distance" };
+inline const char* kPriority[]     = { "Lowest FOV", "Lowest HP", "Distance", "Smart" };
 inline const char* kTeam[]         = { "Enemies", "Allies", "All" };
 inline const char* kTrace[]        = { "Strict", "Relaxed", "Off" };
 inline const char* kUnlock[]       = { "Anytime", "On Release", "Never" };
@@ -203,6 +203,8 @@ bool UISlider(const char* label, float* value, float v_min, float v_max,
 bool UISlider(const char* label, int* value, float v_min, float v_max,
                      const Spec& format);
 bool UISelect(const char* label, int* current, const char* const items[], int itemCount, bool translateItems = true);
+bool UIHeroMultiSelect(const char* id, std::vector<uint64_t>& heroes,
+                       const OW::AimPlan::Plan* plan = nullptr, uint64_t ownGroup = 0);
 template <std::size_t Count>
 bool UISelectMapped(const char* label,
                            int* currentValue,

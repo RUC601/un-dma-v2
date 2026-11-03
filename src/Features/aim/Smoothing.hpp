@@ -6,6 +6,7 @@ namespace OW {
 void ResetAimSmoothingState();
 void HoldAimSmoothingState();
 void PrimeAimSmoothingClock();
+void CommitAimMotionCommand(const Vector3& acceptedAngularCommand);
 void CommitAimSmoothingOutput(const Vector3& outputDelta);
 Vector3 SmoothDispatchWithMethod(Vector3 local, Vector3 target, float speed, float accel,
     int methodOverride, float bezierSpeedOverride = -1.0f, bool commitOvershootStep = true);

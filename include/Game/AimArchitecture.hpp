@@ -8,6 +8,7 @@
 #include <Windows.h>
 
 #include "Game/Entity.hpp"
+#include "Game/AimPlan.hpp"
 #include "Utils/Types.hpp"
 
 namespace OW {
@@ -195,6 +196,8 @@ struct EntityMotionState {
 };
 
 struct TargetCandidate {
+    AimPlan::Effective plan{};
+    bool planPreferred = false;
     bool valid = false;
     int entityIndex = -1;
     uint64_t entityKey = 0;

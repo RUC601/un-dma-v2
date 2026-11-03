@@ -48,6 +48,7 @@ using namespace UI::ValueFormat;
 #include <vector>
 
 #include "ui/EditorSupport.hpp"
+#include "ui/AimPlanEditor.hpp"
 using namespace UI::Theme;
 
 void DrawMiscGeneralPage();
@@ -839,6 +840,16 @@ void DrawMiscMethodPage() {
                      0.0f, OW::Config::kAimConstantAngularSpeedMaxDeg, Number(0, " deg/s"));
             ImGui::PopItemWidth();
             break;
+        case 7: {
+            drawAngularSpeed("##methodShuwuAngularSpeed");
+            koi::ShuwuConfig defaults{};
+            if (!selectedPreset)
+                ImGui::TextWrapped("%s", L("Save a new method preset to edit Shuwu parameters."));
+            ImGui::BeginDisabled(!selectedPreset);
+            UI::AimPlanEditor::Shuwu(selectedPreset ? selectedPreset->shuwu : defaults);
+            ImGui::EndDisabled();
+            break;
+        }
         default:
             break;
         }

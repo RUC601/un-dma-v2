@@ -2,6 +2,7 @@
 #include "Utils/Config.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Game/AimSmoothingTiming.hpp"
+#include "Game/AimShuwu.hpp"
 #include <algorithm>
 #include <cmath>
 namespace OW {
@@ -61,6 +62,8 @@ namespace OW {
     }
 
     namespace AimSmoothingDetail {
+        AimShuwu::State& ShuwuState() { thread_local AimShuwu::State state; return state; }
+        bool& ShuwuDispatched() { thread_local bool dispatched = false; return dispatched; }
         AimHybrid::State& GetHybridState() {
             thread_local AimHybrid::State state;
             return state;
@@ -294,7 +297,9 @@ namespace OW {
         AimSmoothingDetail::ResetBezierState();
         AimSmoothingDetail::ResetOvershootState();
         AimSmoothingDetail::ResetHybridState();
+        AimSmoothingDetail::ShuwuState() = {};
         AimSmoothingDetail::ResetDeltaTime();
+        AimSmoothingDetail::ShuwuDispatched() = false;
     }
 
     void HoldAimSmoothingState() {
@@ -302,8 +307,10 @@ namespace OW {
         AimSmoothingDetail::ResetBezierState();
         AimSmoothingDetail::ResetOvershootState();
         AimSmoothingDetail::ResetHybridState();
+        AimSmoothingDetail::ShuwuState() = {};
         AimSmoothingDetail::LastSmoothingTick() =
             std::chrono::steady_clock::now();
+        AimSmoothingDetail::ShuwuDispatched() = false;
     }
 
     void PrimeAimSmoothingClock() {
@@ -468,8 +475,18 @@ namespace OW {
                                             int methodOverride,
                                             float bezierSpeedOverride,
                                             bool commitOvershootStep) {
+        thread_local uint64_t previousPlanTarget=0, previousActor=0, previousEpoch=0, previousScene=0;
+        thread_local AimPlan::Effective previousPlan{};
+        const bool usePlan=Config::targetAimPlanEnabled;
+        const auto selectedPlan=usePlan?Config::selectedAimPlan:AimPlan::Effective{};
+        const uint64_t planTarget=usePlan?Config::selectedAimPlanTarget:0;
+        if(previousPlanTarget!=planTarget || previousPlan!=selectedPlan || previousActor!=Config::selectedAimActor || previousEpoch!=Config::selectedAimEpoch || previousScene!=Config::selectedAimScene) {
+            ResetAimSmoothingState(); previousPlanTarget=planTarget; previousPlan=selectedPlan;
+            previousActor=Config::selectedAimActor; previousEpoch=Config::selectedAimEpoch; previousScene=Config::selectedAimScene;
+        }
         const float deltaTime = AimSmoothingDetail::ComputeDeltaTime();
         const int method = std::clamp(methodOverride, 0, Config::kAimMethodCount - 1);
+        AimSmoothingDetail::ShuwuDispatched() = method == 7;
         thread_local int previousMethod = -1;
 
         if (method != previousMethod) {
@@ -477,11 +494,12 @@ namespace OW {
             AimSmoothingDetail::ResetBezierState();
             AimSmoothingDetail::ResetOvershootState();
             AimSmoothingDetail::ResetHybridState();
+            AimSmoothingDetail::ShuwuState() = {};
             previousMethod = method;
         }
 
         // Hybrid PID owns its braking curve and must converge on the real target.
-        const Vector3 adjustedTarget = method == 6
+        const Vector3 adjustedTarget = (method == 6 || method == 7)
             ? target
             : AimSmoothingDetail::ApplyOvershootCurveTarget(local, target);
         const Vector3 error = adjustedTarget - local;
@@ -624,13 +642,20 @@ namespace OW {
             result = hybrid.value;
             break;
         }
+        case 7: {
+            const koi::ShuwuConfig tuning=methodPreset?methodPreset->shuwu:koi::ShuwuConfig{};
+            const auto move=AimShuwu::Advance(AimSmoothingDetail::ShuwuState(),error.X,error.Y,
+                deltaTime,slotSpeedScale*methodSpeedScale,Config::selectedAimSample,tuning);
+            result=local+Vector3(float(move.pitch),float(move.yaw),0);
+            break;
+        }
         default:
             result = SmoothLinear(local, adjustedTarget, effectiveStepFactor);
             break;
         }
 
         const Vector3 outputDelta = result - local;
-        if (commitOvershootStep && method != 6)
+        if (commitOvershootStep && method != 6 && method != 7)
             AimSmoothingDetail::CommitOvershootStep(outputDelta);
         Diagnostics::Aim("smooth.result method=%d result=(%.9f,%.9f,%.9f) output_delta=(%.9f,%.9f,%.9f) output_len=%.9f",
             method,
@@ -642,6 +667,12 @@ namespace OW {
             outputDelta.Z,
             outputDelta.Size());
         return result;
+    }
+
+    void CommitAimMotionCommand(const Vector3& acceptedAngularCommand) {
+        // Flick2nd and secondary aim may dispatch a different method than the Slot default.
+        if(AimSmoothingDetail::ShuwuDispatched())
+            AimShuwu::CommitCommand(AimSmoothingDetail::ShuwuState(),acceptedAngularCommand.X,acceptedAngularCommand.Y);
     }
 
     void CommitAimSmoothingOutput(const Vector3& outputDelta) {

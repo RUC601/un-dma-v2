@@ -4,6 +4,7 @@
 
 #include "Utils/Config.hpp"
 #include "config/FileTransaction.hpp"
+#include "config/AimPlanJson.hpp"
 #include "config/SlotStorageInternal.hpp"
 
 #include "Game/HeroSkills.hpp"
@@ -436,6 +437,7 @@ namespace OW { namespace Config {
 
         AimMethodPreset ValidateAimMethodPresetValue(AimMethodPreset preset, int fallbackIndex = -1)
         {
+            AimPlan::NormalizeMotion(preset);
             preset.name = NormalizeAimPresetName(preset.name, "Method Preset", fallbackIndex);
             preset.method = ClampAimMethodIndex(preset.method);
             preset.angularSpeedScale = ClampAimMethodAngularSpeedScalePercent(preset.angularSpeedScale);
@@ -913,6 +915,7 @@ namespace OW { namespace Config {
                    setting == "accelLimitedAngularSpeedScale" ||
                    setting == "constantAngularSpeedScale" ||
                    setting == "hybridPidAngularSpeedScale" ||
+                   setting == "shuwuAngularSpeedScale" ||
                    setting == "aim_key" ||
                    setting == "aim_key2" ||
                    setting == "catBoxPort" ||
@@ -1895,7 +1898,11 @@ namespace OW { namespace Config {
             preset.maxHeadDistance = std::clamp(preset.maxHeadDistance, 0.0f, 500.0f);
             preset.stickiness = std::clamp(preset.stickiness, 0.0f, 100.0f);
             preset.pitchScale = std::clamp(preset.pitchScale, 0.1f, 3.0f);
-            preset.priority = std::clamp(preset.priority, 0, 2);
+            preset.priority = std::clamp(preset.priority, 0, 3);
+            AimPlan::Normalize(preset.aimPlan);
+            auto known=[](uint64_t h) { return !GameData::IsKnownHeroId(h); };
+            std::erase_if(preset.aimPlan.selection.heroes,known);
+            for(auto& group:preset.aimPlan.groups) std::erase_if(group.heroes,known);
             preset.targetTeam = std::clamp(preset.targetTeam, 0, 2);
             preset.maxAimTime = std::clamp(preset.maxAimTime, 0.0f, 100.0f);
             preset.minCharge = std::clamp(preset.minCharge, 0.0f, 100.0f);
@@ -2183,7 +2190,7 @@ namespace OW { namespace Config {
         bool SameHeroPresetForDefaultMigration(const HeroPreset& lhs,
                                                const HeroPreset& rhs)
         {
-            return SameFloatForDefaultMigration(lhs.fov, rhs.fov) &&
+            return lhs.aimPlan == rhs.aimPlan && SameFloatForDefaultMigration(lhs.fov, rhs.fov) &&
                 lhs.fovMode == rhs.fovMode &&
                 lhs.dynamicFovPresetId == rhs.dynamicFovPresetId &&
                 SameFloatForDefaultMigration(lhs.smooth, rhs.smooth) &&
@@ -2730,6 +2737,7 @@ namespace OW { namespace Config {
             aimbotAttack = 0;
             aimbotTeam = 0;
             aimbotPriority = 0;
+            aimPlan = {};
             aimbotTrackingDeadzone = 0.0f;
             aimbotFlickShotClampMs = 0.0f;
             aimbotFlickPostFireDelayMs = 0.0f;
@@ -2790,7 +2798,7 @@ namespace OW { namespace Config {
             aimBehaviorMoveSplitEnabled = { true, false, false, true, true };
             aimBehaviorMoveSplitMaxPixels = { 4, 50, 50, 4, 4 };
             aimBehaviorMoveSplitDelayUs = { 800, 0, 0, 800, 800 };
-            aimMethodAngularSpeedScale = { 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f };
+            aimMethodAngularSpeedScale = { 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f };
             secondaryAimMethodOverride = { -1, -1 };
             aimPidP = 0.5f;
             aimPidI = 0.01f;
@@ -2962,6 +2970,7 @@ namespace OW { namespace Config {
             preset.stickiness = aimbotStickiness;
             preset.pitchScale = aimbotPitchScale;
             preset.priority = aimbotPriority;
+            preset.aimPlan = aimPlan;
             preset.targetTeam = aimbotTeam;
             preset.maxAimTime = aimbotMaxAim;
             preset.minCharge = aimbotMinCharge;
@@ -3010,7 +3019,10 @@ namespace OW { namespace Config {
 
         HeroPreset MakeHeroTriggerPresetFromCurrentUnlocked()
         {
-            return MakeHeroPresetFromCurrentUnlocked();
+            auto preset = MakeHeroPresetFromCurrentUnlocked();
+            preset.aimPlan.groups.clear();
+            preset.aimPlan.overrideMotion = false;
+            return preset;
         }
 
         void ApplyHeroAimPresetUnlocked(const HeroPreset& rawPreset)
@@ -3035,6 +3047,7 @@ namespace OW { namespace Config {
             aimbotFovEntryPredictionMs = preset.fovEntryPredictionMs;
             aimbotFovEntryMaxOutsideDeg = preset.fovEntryMaxOutsideDeg;
             aimbotPriority = preset.priority;
+            aimPlan = preset.aimPlan;
             aimbotTeam = preset.targetTeam;
             aimbotAttack = preset.trigger.action;
             aimBehavior = preset.aimBehavior;
@@ -3086,6 +3099,7 @@ namespace OW { namespace Config {
         void ApplyHeroTriggerPresetUnlocked(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            aimPlan = preset.aimPlan;
             triggerbot = preset.trigger.enabled;
             aimbotAttack = preset.trigger.action;
             triggerbotMode = preset.trigger.mode;
@@ -3514,6 +3528,7 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "stickiness", preset.stickiness, allocator);
             AddJsonFloat(value, "pitchScale", preset.pitchScale, allocator);
             AddJsonInt(value, "priority", preset.priority, allocator);
+            value.AddMember("aimPlan", AimPlan::Json::PlanJson(preset.aimPlan,allocator),allocator);
             AddJsonInt(value, "targetTeam", preset.targetTeam, allocator);
             AddJsonFloat(value, "maxAimTime", preset.maxAimTime, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
@@ -4573,6 +4588,8 @@ namespace OW { namespace Config {
             defaults.stickiness = ReadJsonFloat(value, "stickiness", defaults.stickiness);
             defaults.pitchScale = ReadJsonFloat(value, "pitchScale", defaults.pitchScale);
             defaults.priority = ReadJsonInt(value, "priority", defaults.priority);
+            if(value.HasMember("aimPlan")) defaults.aimPlan = AimPlan::Json::ReadPlan(value["aimPlan"]);
+            else defaults.aimPlan = {};
             defaults.targetTeam = ReadJsonInt(value, "targetTeam", defaults.targetTeam);
             defaults.maxAimTime = ReadJsonFloat(value, "maxAimTime", defaults.maxAimTime);
             defaults.minCharge = ReadJsonFloat(value, "minCharge", defaults.minCharge);
@@ -5226,6 +5243,7 @@ namespace OW { namespace Config {
             aimbotAttack = ReadInt(ini, section, "aimbotAttack", aimbotAttack);
             aimbotTeam = ReadInt(ini, section, "aimbotTeam", aimbotTeam);
             aimbotPriority = ReadInt(ini, section, "aimbotPriority", aimbotPriority);
+            aimPlan = AimPlan::Json::Decode(ReadString(ini,section,"aimPlanJson","{}"));
             aimbotTrackingDeadzone = ReadFixedFloat(ini, section, "aimbotTrackingDeadzone", aimbotTrackingDeadzone);
             aimbotBoneMask = static_cast<SkeletonBoneMask>(
                 ReadInt(ini, section, "aimbotBoneMask", static_cast<int>(aimbotBoneMask)));
@@ -5339,6 +5357,8 @@ namespace OW { namespace Config {
             preset.hybridTargetMotionGain = ReadFixedFloat(ini, section, "hybridTargetMotionGain", preset.hybridTargetMotionGain);
             preset.hybridSuddenMotionBoost = ReadFixedFloat(ini, section, "hybridSuddenMotionBoost", preset.hybridSuddenMotionBoost);
             preset.hybridDeadzoneDeg = ReadFixedFloat(ini, section, "hybridDeadzoneDeg", preset.hybridDeadzoneDeg);
+            const auto extra=AimPlan::Json::Decode(ReadString(ini,section,"motionJson","{}"));
+            if(preset.method==7) preset.shuwu=extra.motion.shuwu;
             return ValidateAimMethodPresetValue(preset, fallbackIndex);
         }
 
@@ -5539,15 +5559,17 @@ namespace OW { namespace Config {
             constexpr std::array<const char*, kAimBehaviorCount> legacySplitDelayUsKeys = {
                 nullptr, nullptr, nullptr, nullptr, "assistFlickMoveSplitDelayUs"
             };
-            constexpr std::array<const char*, kAimMethodCount> angularSpeedKeys = {
+            constexpr std::array angularSpeedKeys = {
                 "linearAngularSpeedScale",
                 "pidAngularSpeedScale",
                 "bezierAngularSpeedScale",
                 "piecewiseAngularSpeedScale",
                 "accelLimitedAngularSpeedScale",
                 "constantAngularSpeedScale",
-                "hybridPidAngularSpeedScale"
+                "hybridPidAngularSpeedScale",
+                "shuwuAngularSpeedScale"
             };
+            static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
             aimMethod = ReadInt(ini, section, "aimMethod", aimMethod);
             aimPidP = ReadFixedFloat(ini, section, "aimPidP", aimPidP);
@@ -5680,6 +5702,7 @@ namespace OW { namespace Config {
             WriteIntValue(path, section, "aimbotAttack", aimbotAttack);
             WriteIntValue(path, section, "aimbotTeam", aimbotTeam);
             WriteIntValue(path, section, "aimbotPriority", aimbotPriority);
+            WriteStringValue(path,section,"aimPlanJson",AimPlan::Json::Encode(aimPlan).c_str());
             WriteFixedFloatValue(path, section, "aimbotTrackingDeadzone", aimbotTrackingDeadzone);
             WriteIntValue(path, section, "aimbotBoneMask", static_cast<int>(aimbotBoneMask));
             WriteIntValue(path, section, "aimbotBoneMask2", static_cast<int>(aimbotBoneMask2));
@@ -5737,6 +5760,8 @@ namespace OW { namespace Config {
                                          int fallbackIndex)
         {
             const AimMethodPreset preset = ValidateAimMethodPresetValue(rawPreset, fallbackIndex);
+            AimPlan::Plan motionPlan; motionPlan.motion=preset;
+            WriteStringValue(path,section,"motionJson",AimPlan::Json::Encode(motionPlan).c_str());
             WriteIntValue(path, section, "id", preset.id);
             WriteStringValue(path, section, "name", preset.name.c_str());
             WriteIntValue(path, section, "method", preset.method);
@@ -5922,15 +5947,17 @@ namespace OW { namespace Config {
                 "reacquireMoveSplitDelayUs",
                 "magneticTriggerMoveSplitDelayUs"
             };
-            constexpr std::array<const char*, kAimMethodCount> angularSpeedKeys = {
+            constexpr std::array angularSpeedKeys = {
                 "linearAngularSpeedScale",
                 "pidAngularSpeedScale",
                 "bezierAngularSpeedScale",
                 "piecewiseAngularSpeedScale",
                 "accelLimitedAngularSpeedScale",
                 "constantAngularSpeedScale",
-                "hybridPidAngularSpeedScale"
+                "hybridPidAngularSpeedScale",
+                "shuwuAngularSpeedScale"
             };
+            static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
             WriteIntValue(path, section, "aimMethod", aimMethod);
             WriteFixedFloatValue(path, section, "aimPidP", aimPidP);
@@ -6403,7 +6430,8 @@ namespace OW { namespace Config {
             ClampSetting("aimbotUnlock", aimbotUnlock, 0, 2, 0);
             ClampSetting("aimbotAttack", aimbotAttack, 0, 7, 0);
             ClampSetting("aimbotTeam", aimbotTeam, 0, 2, 0);
-            ClampSetting("aimbotPriority", aimbotPriority, 0, 2, 0);
+            ClampSetting("aimbotPriority", aimbotPriority, 0, 3, 0);
+            AimPlan::Normalize(aimPlan);
             ClampSetting("uiLanguage", uiLanguage, 0, kUiLanguageCount - 1, kUiLanguageEnglish);
             ClampSetting("catBoxPort",catBoxPort,0,65535,0);
             ClampSetting("catBoxMonitorPort",catBoxMonitorPort,0,65535,0);
@@ -7332,6 +7360,7 @@ namespace OW { namespace Config {
             View_aimbotFovEntryPredictionMs() = preset.fovEntryPredictionMs;
             View_aimbotFovEntryMaxOutsideDeg() = preset.fovEntryMaxOutsideDeg;
             View_aimbotPriority() = preset.priority;
+            View_aimPlan() = preset.aimPlan;
             View_aimbotTeam() = preset.targetTeam;
             View_aimbotAttack() = preset.trigger.action;
             View_aimBehavior() = preset.aimBehavior;
@@ -7383,6 +7412,8 @@ namespace OW { namespace Config {
         void ApplyLocalHeroTriggerPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            View_aimPlan() = {};
+            View_aimPlan().selection = preset.aimPlan.selection;
             View_triggerbot() = preset.trigger.enabled;
             View_aimbotAttack() = preset.trigger.action;
             View_triggerbotMode() = preset.trigger.mode;
