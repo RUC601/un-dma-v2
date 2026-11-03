@@ -23,21 +23,21 @@ using namespace Detail;
     bool TryGetHeroPreset(uint64_t heroId, HeroPreset& outPreset)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return TryGetHeroPresetFromStore(HeroPresetSlotKind::Aim, heroId, outPreset);
     }
 
     bool TryGetHeroAimPreset(uint64_t heroId, HeroPreset& outPreset)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return TryGetHeroPresetFromStore(HeroPresetSlotKind::Aim, heroId, outPreset);
     }
 
     bool TryGetHeroTriggerPreset(uint64_t heroId, HeroPreset& outPreset)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return TryGetHeroPresetFromStore(HeroPresetSlotKind::Trigger, heroId, outPreset);
     }
 
@@ -51,7 +51,7 @@ using namespace Detail;
     bool HasHeroPreset(uint64_t heroId)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return HasHeroPresetInStore(HeroPresetSlotKind::Aim, heroId) ||
             HasHeroPresetInStore(HeroPresetSlotKind::Trigger, heroId);
     }
@@ -59,14 +59,14 @@ using namespace Detail;
     bool HasHeroAimPreset(uint64_t heroId)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return HasHeroPresetInStore(HeroPresetSlotKind::Aim, heroId);
     }
 
     bool HasHeroTriggerPreset(uint64_t heroId)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return HasHeroPresetInStore(HeroPresetSlotKind::Trigger, heroId);
     }
 
@@ -91,21 +91,21 @@ using namespace Detail;
     HeroPreset GetHeroPresetOrDefault(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroPresetOrDefaultFromStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     HeroPreset GetHeroAimPresetOrDefault(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroPresetOrDefaultFromStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     HeroPreset GetHeroTriggerPresetOrDefault(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroPresetOrDefaultFromStore(HeroPresetSlotKind::Trigger, heroId, slotIndex);
     }
 
@@ -239,21 +239,21 @@ using namespace Detail;
     std::string GetHeroSlotName(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroSlotNameFromStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     std::string GetHeroAimSlotName(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroSlotNameFromStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     std::string GetHeroTriggerSlotName(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroSlotNameFromStore(HeroPresetSlotKind::Trigger, heroId, slotIndex);
     }
 
@@ -268,7 +268,7 @@ using namespace Detail;
         }
 
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return TryGetHeroSlotFromStore(HeroPresetSlotKind::Aim, heroId, slotIndex, outSlot);
     }
 
@@ -283,7 +283,7 @@ using namespace Detail;
         }
 
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return TryGetHeroSlotFromStore(HeroPresetSlotKind::Trigger, heroId, slotIndex, outSlot);
     }
 
@@ -302,21 +302,21 @@ using namespace Detail;
     bool IsHeroSlotEnabled(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return IsHeroSlotEnabledInStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     bool IsHeroAimSlotEnabled(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return IsHeroSlotEnabledInStore(HeroPresetSlotKind::Aim, heroId, slotIndex);
     }
 
     bool IsHeroTriggerSlotEnabled(uint64_t heroId, int slotIndex)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return IsHeroSlotEnabledInStore(HeroPresetSlotKind::Trigger, heroId, slotIndex);
     }
 
@@ -370,14 +370,14 @@ using namespace Detail;
     int GetHeroAimSlotCount(uint64_t heroId)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroSlotCountInStore(HeroPresetSlotKind::Aim, heroId);
     }
 
     int GetHeroTriggerSlotCount(uint64_t heroId)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return GetHeroSlotCountInStore(HeroPresetSlotKind::Trigger, heroId);
     }
 

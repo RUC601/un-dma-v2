@@ -169,9 +169,8 @@ void DrawMiscGeneralPage() {
             ImGui::SameLine();
             if (ImGui::Button(T(UiText::Create), ImVec2(createButtonWidth, ControlHeight()))) {
                 const std::string normalizedProfile = NormalizeProfileFileName(newProfileName);
-                if (CreateConfigProfileFromCurrent(normalizedProfile)) {
-                    SelectConfigProfile(normalizedProfile.c_str(), profileName, false);
-                    OW::Config::lastConfigProfile = normalizedProfile;
+                if (CreateConfigProfileFromCurrent(normalizedProfile) &&
+                    SelectConfigProfile(normalizedProfile.c_str(), profileName, false)) {
                     const bool remembered = PersistLastConfigProfile();
                     newProfileName[0] = '\0';
                     SetPersistenceStatus(remembered, T(UiText::CreatedConfigProfile));

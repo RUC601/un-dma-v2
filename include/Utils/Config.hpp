@@ -1686,7 +1686,9 @@ namespace OW { namespace Config {
     enum class AutoSaveResult { Idle, Saved, Failed };
     AutoSaveResult PollAutoSave(const std::string& path, uint64_t nowMs, bool flush = false);
     bool CreateConfigProfileFromCurrent(const std::string& path);
-    void LoadConfig(const std::string& path);
+    // Failed leaves live values untouched; MigrationSaveFailed has loaded the new profile.
+    enum class ConfigLoadResult { Failed, Loaded, MigrationSaveFailed };
+    ConfigLoadResult LoadConfig(const std::string& path);
 
 
     // Authority is written only under Config::mutex. Published versions own all data.
@@ -2030,20 +2032,20 @@ namespace OW { namespace Config {
         }
         ~ScopedConfigEdit() {
             std::lock_guard<std::mutex> lock(mutex);
-            CommitConfigEditUnlocked(before, value);
-            PublishConfigValuesUnlocked();
+            if (CommitConfigEditUnlocked(before, value)) PublishConfigValuesUnlocked();
             configEditBase = nullptr; configView = previous;
         }
     };
-    // Used inside existing writer locks, including load/save/normalization APIs.
+    // Used under Config::mutex. Read-only getters skip publication unless they commit a pending UI edit.
     struct ScopedConfigAuthority {
         bool previous = configAuthority;
-        ScopedConfigAuthority() {
-            if (configEditBase) CommitConfigEditUnlocked(*configEditBase, *configView);
+        bool publish;
+        explicit ScopedConfigAuthority(bool writable = true) : publish(writable) {
+            if (configEditBase) publish |= CommitConfigEditUnlocked(*configEditBase, *configView);
             configAuthority = true;
         }
         ~ScopedConfigAuthority() {
-            PublishConfigValuesUnlocked();
+            if (publish) PublishConfigValuesUnlocked();
             if (configEditBase) { *configView = *publishedConfigValues.load(); *configEditBase = *configView; }
             configAuthority = previous;
         }
@@ -2066,126 +2068,136 @@ namespace OW { namespace Config {
         if (a.size()!=b.size()) return false;
         for (size_t i=0;i<a.size();++i) if (!ConfigEqual(a[i],b[i])) return false; return true;
     }
-    template<class T> inline void MergeConfigPresets(const std::vector<T>& before, const std::vector<T>& after, std::vector<T>& current) {
+    template<class T> inline bool MergeConfigPresets(const std::vector<T>& before, const std::vector<T>& after, std::vector<T>& current) {
+        bool changed = false;
         auto find = [](auto& values, int id) { return std::find_if(values.begin(), values.end(), [id](const auto& p) { return p.id == id; }); };
         for (const auto& old : before) if (find(after, old.id) == after.end())
-            current.erase(std::remove_if(current.begin(), current.end(), [&](const auto& p) { return p.id == old.id; }), current.end());
+            changed |= std::erase_if(current, [&](const auto& p) { return p.id == old.id; }) != 0;
         for (const auto& value : after) {
             auto old = find(before, value.id);
             if (old != before.end() && ConfigEqual(*old, value)) continue;
             auto item = find(current, value.id);
-            if (item == current.end()) current.push_back(value); else *item = value;
+            if (item == current.end()) { current.push_back(value); changed = true; }
+            else if (!ConfigEqual(*item, value)) { *item = value; changed = true; }
         }
+        return changed;
     }
     inline bool CommitConfigEditUnlocked(const ConfigValues& before, const ConfigValues& after) {
+        bool changed = false;
+        const auto assign = [&](const auto& old, const auto& value, auto& current) {
+            if (!ConfigEqual(old, value) && !ConfigEqual(current, value)) {
+                current = value;
+                changed = true;
+            }
+        };
         // Only edited fields commit. Concurrent edits to the same field: last explicit commit wins.
-        if (!ConfigEqual(before.Bone, after.Bone)) Bone = after.Bone;
-        if (!ConfigEqual(before.BoneName, after.BoneName)) BoneName = after.BoneName;
-        if (!ConfigEqual(before.Flick, after.Flick)) Flick = after.Flick;
-        if (!ConfigEqual(before.Flick_smooth, after.Flick_smooth)) Flick_smooth = after.Flick_smooth;
-        if (!ConfigEqual(before.Fov, after.Fov)) Fov = after.Fov;
-        if (!ConfigEqual(before.Fov2, after.Fov2)) Fov2 = after.Fov2;
-        if (!ConfigEqual(before.Prediction, after.Prediction)) Prediction = after.Prediction;
-        if (!ConfigEqual(before.Smooth, after.Smooth)) Smooth = after.Smooth;
-        if (!ConfigEqual(before.TargetBone, after.TargetBone)) TargetBone = after.TargetBone;
-        if (!ConfigEqual(before.Tracking, after.Tracking)) Tracking = after.Tracking;
-        if (!ConfigEqual(before.Tracking_smooth, after.Tracking_smooth)) Tracking_smooth = after.Tracking_smooth;
-        if (!ConfigEqual(before.aimBehavior, after.aimBehavior)) aimBehavior = after.aimBehavior;
-        if (!ConfigEqual(before.aimBehaviorMethod, after.aimBehaviorMethod)) aimBehaviorMethod = after.aimBehaviorMethod;
-        if (!ConfigEqual(before.aimBehaviorMethodPreset, after.aimBehaviorMethodPreset)) aimBehaviorMethodPreset = after.aimBehaviorMethodPreset;
-        if (!ConfigEqual(before.aimBehaviorPresetId, after.aimBehaviorPresetId)) aimBehaviorPresetId = after.aimBehaviorPresetId;
-        MergeConfigPresets(before.aimBehaviorPresets, after.aimBehaviorPresets, aimBehaviorPresets);
-        if (!ConfigEqual(before.aimBezierControlPoints, after.aimBezierControlPoints)) aimBezierControlPoints = after.aimBezierControlPoints;
-        if (!ConfigEqual(before.aimBezierCurvature, after.aimBezierCurvature)) aimBezierCurvature = after.aimBezierCurvature;
-        if (!ConfigEqual(before.aimBezierSpeed, after.aimBezierSpeed)) aimBezierSpeed = after.aimBezierSpeed;
-        if (!ConfigEqual(before.aimMethod, after.aimMethod)) aimMethod = after.aimMethod;
-        MergeConfigPresets(before.aimMethodPresets, after.aimMethodPresets, aimMethodPresets);
-        if (!ConfigEqual(before.aimPidD, after.aimPidD)) aimPidD = after.aimPidD;
-        if (!ConfigEqual(before.aimPidDeadzone, after.aimPidDeadzone)) aimPidDeadzone = after.aimPidDeadzone;
-        if (!ConfigEqual(before.aimPidI, after.aimPidI)) aimPidI = after.aimPidI;
-        if (!ConfigEqual(before.aimPidMaxIntegral, after.aimPidMaxIntegral)) aimPidMaxIntegral = after.aimPidMaxIntegral;
-        if (!ConfigEqual(before.aimPidP, after.aimPidP)) aimPidP = after.aimPidP;
-        if (!ConfigEqual(before.aim_key, after.aim_key)) aim_key = after.aim_key;
-        if (!ConfigEqual(before.aimbotAttack, after.aimbotAttack)) aimbotAttack = after.aimbotAttack;
-        if (!ConfigEqual(before.aimbotAutoshot, after.aimbotAutoshot)) aimbotAutoshot = after.aimbotAutoshot;
-        if (!ConfigEqual(before.aimbotBoneMask, after.aimbotBoneMask)) aimbotBoneMask = after.aimbotBoneMask;
-        if (!ConfigEqual(before.aimbotDynamicFovPresetId, after.aimbotDynamicFovPresetId)) aimbotDynamicFovPresetId = after.aimbotDynamicFovPresetId;
-        if (!ConfigEqual(before.aimbotFirePolicy, after.aimbotFirePolicy)) aimbotFirePolicy = after.aimbotFirePolicy;
-        if (!ConfigEqual(before.aimbotFlick2ndBoxPadding, after.aimbotFlick2ndBoxPadding)) aimbotFlick2ndBoxPadding = after.aimbotFlick2ndBoxPadding;
-        if (!ConfigEqual(before.aimbotFlick2ndInnerMethod, after.aimbotFlick2ndInnerMethod)) aimbotFlick2ndInnerMethod = after.aimbotFlick2ndInnerMethod;
-        if (!ConfigEqual(before.aimbotFlick2ndInnerRadius, after.aimbotFlick2ndInnerRadius)) aimbotFlick2ndInnerRadius = after.aimbotFlick2ndInnerRadius;
-        if (!ConfigEqual(before.aimbotFlick2ndInnerSmoothScale, after.aimbotFlick2ndInnerSmoothScale)) aimbotFlick2ndInnerSmoothScale = after.aimbotFlick2ndInnerSmoothScale;
-        if (!ConfigEqual(before.aimbotFlick2ndTriggerGate, after.aimbotFlick2ndTriggerGate)) aimbotFlick2ndTriggerGate = after.aimbotFlick2ndTriggerGate;
-        if (!ConfigEqual(before.aimbotFlickPostFireDelayMs, after.aimbotFlickPostFireDelayMs)) aimbotFlickPostFireDelayMs = after.aimbotFlickPostFireDelayMs;
-        if (!ConfigEqual(before.aimbotFlickShotClampMs, after.aimbotFlickShotClampMs)) aimbotFlickShotClampMs = after.aimbotFlickShotClampMs;
-        if (!ConfigEqual(before.aimbotFlickTrajectoryApexWindowMs, after.aimbotFlickTrajectoryApexWindowMs)) aimbotFlickTrajectoryApexWindowMs = after.aimbotFlickTrajectoryApexWindowMs;
-        if (!ConfigEqual(before.aimbotFlickTrajectoryWait, after.aimbotFlickTrajectoryWait)) aimbotFlickTrajectoryWait = after.aimbotFlickTrajectoryWait;
-        if (!ConfigEqual(before.aimbotFlickTrajectoryWaitMs, after.aimbotFlickTrajectoryWaitMs)) aimbotFlickTrajectoryWaitMs = after.aimbotFlickTrajectoryWaitMs;
-        if (!ConfigEqual(before.aimbotFovEntryMaxOutsideDeg, after.aimbotFovEntryMaxOutsideDeg)) aimbotFovEntryMaxOutsideDeg = after.aimbotFovEntryMaxOutsideDeg;
-        if (!ConfigEqual(before.aimbotFovEntryPredictionMs, after.aimbotFovEntryPredictionMs)) aimbotFovEntryPredictionMs = after.aimbotFovEntryPredictionMs;
-        if (!ConfigEqual(before.aimbotFovMode, after.aimbotFovMode)) aimbotFovMode = after.aimbotFovMode;
-        if (!ConfigEqual(before.aimbotIgnoreInvisible, after.aimbotIgnoreInvisible)) aimbotIgnoreInvisible = after.aimbotIgnoreInvisible;
-        if (!ConfigEqual(before.aimbotKeepFiring, after.aimbotKeepFiring)) aimbotKeepFiring = after.aimbotKeepFiring;
-        if (!ConfigEqual(before.aimbotLockTime, after.aimbotLockTime)) aimbotLockTime = after.aimbotLockTime;
-        if (!ConfigEqual(before.aimbotMagneticPostFirePauseMs, after.aimbotMagneticPostFirePauseMs)) aimbotMagneticPostFirePauseMs = after.aimbotMagneticPostFirePauseMs;
-        if (!ConfigEqual(before.aimbotMagneticPostFirePitchScale, after.aimbotMagneticPostFirePitchScale)) aimbotMagneticPostFirePitchScale = after.aimbotMagneticPostFirePitchScale;
-        if (!ConfigEqual(before.aimbotMagneticPostFireYawScale, after.aimbotMagneticPostFireYawScale)) aimbotMagneticPostFireYawScale = after.aimbotMagneticPostFireYawScale;
-        if (!ConfigEqual(before.aimbotMagneticPreFireBoostScale, after.aimbotMagneticPreFireBoostScale)) aimbotMagneticPreFireBoostScale = after.aimbotMagneticPreFireBoostScale;
-        if (!ConfigEqual(before.aimbotMagneticPreFireBoostWindowMs, after.aimbotMagneticPreFireBoostWindowMs)) aimbotMagneticPreFireBoostWindowMs = after.aimbotMagneticPreFireBoostWindowMs;
-        if (!ConfigEqual(before.aimbotMagneticRecoveryMs, after.aimbotMagneticRecoveryMs)) aimbotMagneticRecoveryMs = after.aimbotMagneticRecoveryMs;
-        if (!ConfigEqual(before.aimbotMagneticShotIntervalMs, after.aimbotMagneticShotIntervalMs)) aimbotMagneticShotIntervalMs = after.aimbotMagneticShotIntervalMs;
-        if (!ConfigEqual(before.aimbotMaxAim, after.aimbotMaxAim)) aimbotMaxAim = after.aimbotMaxAim;
-        if (!ConfigEqual(before.aimbotMaxCharge, after.aimbotMaxCharge)) aimbotMaxCharge = after.aimbotMaxCharge;
-        if (!ConfigEqual(before.aimbotMaxDist, after.aimbotMaxDist)) aimbotMaxDist = after.aimbotMaxDist;
-        if (!ConfigEqual(before.aimbotMaxHead, after.aimbotMaxHead)) aimbotMaxHead = after.aimbotMaxHead;
-        if (!ConfigEqual(before.aimbotMinCharge, after.aimbotMinCharge)) aimbotMinCharge = after.aimbotMinCharge;
-        if (!ConfigEqual(before.aimbotMinDist, after.aimbotMinDist)) aimbotMinDist = after.aimbotMinDist;
-        if (!ConfigEqual(before.aimbotPitchScale, after.aimbotPitchScale)) aimbotPitchScale = after.aimbotPitchScale;
-        if (!ConfigEqual(before.aimbotPredictFovEntry, after.aimbotPredictFovEntry)) aimbotPredictFovEntry = after.aimbotPredictFovEntry;
-        if (!ConfigEqual(before.aimbotPredictionMode, after.aimbotPredictionMode)) aimbotPredictionMode = after.aimbotPredictionMode;
-        if (!ConfigEqual(before.aimbotPriority, after.aimbotPriority)) aimbotPriority = after.aimbotPriority;
-        if (!ConfigEqual(before.aimbotRequireActionHeld, after.aimbotRequireActionHeld)) aimbotRequireActionHeld = after.aimbotRequireActionHeld;
-        if (!ConfigEqual(before.aimbotSmoothType, after.aimbotSmoothType)) aimbotSmoothType = after.aimbotSmoothType;
-        if (!ConfigEqual(before.aimbotStickiness, after.aimbotStickiness)) aimbotStickiness = after.aimbotStickiness;
-        if (!ConfigEqual(before.aimbotTeam, after.aimbotTeam)) aimbotTeam = after.aimbotTeam;
-        if (!ConfigEqual(before.aimbotTrace, after.aimbotTrace)) aimbotTrace = after.aimbotTrace;
-        if (!ConfigEqual(before.aimbotTrackingDeadzone, after.aimbotTrackingDeadzone)) aimbotTrackingDeadzone = after.aimbotTrackingDeadzone;
-        if (!ConfigEqual(before.aimbotTwoStage, after.aimbotTwoStage)) aimbotTwoStage = after.aimbotTwoStage;
-        if (!ConfigEqual(before.aimbotTwoStageBoxPadding, after.aimbotTwoStageBoxPadding)) aimbotTwoStageBoxPadding = after.aimbotTwoStageBoxPadding;
-        if (!ConfigEqual(before.aimbotTwoStageInnerRadius, after.aimbotTwoStageInnerRadius)) aimbotTwoStageInnerRadius = after.aimbotTwoStageInnerRadius;
-        if (!ConfigEqual(before.aimbotTwoStageInnerSmoothScale, after.aimbotTwoStageInnerSmoothScale)) aimbotTwoStageInnerSmoothScale = after.aimbotTwoStageInnerSmoothScale;
-        if (!ConfigEqual(before.aimbotTwoStageTriggerGate, after.aimbotTwoStageTriggerGate)) aimbotTwoStageTriggerGate = after.aimbotTwoStageTriggerGate;
-        if (!ConfigEqual(before.aimbotUnlock, after.aimbotUnlock)) aimbotUnlock = after.aimbotUnlock;
-        if (!ConfigEqual(before.autobone, after.autobone)) autobone = after.autobone;
-        if (!ConfigEqual(before.autoscalefov, after.autoscalefov)) autoscalefov = after.autoscalefov;
-        MergeConfigPresets(before.dynamicFovPresets, after.dynamicFovPresets, dynamicFovPresets);
-        if (!ConfigEqual(before.hitbox, after.hitbox)) hitbox = after.hitbox;
-        if (!ConfigEqual(before.minFov1, after.minFov1)) minFov1 = after.minFov1;
-        if (!ConfigEqual(before.minFov2, after.minFov2)) minFov2 = after.minFov2;
-        if (!ConfigEqual(before.triggerbot, after.triggerbot)) triggerbot = after.triggerbot;
-        if (!ConfigEqual(before.triggerbot2, after.triggerbot2)) triggerbot2 = after.triggerbot2;
-        if (!ConfigEqual(before.triggerbotBoneMask, after.triggerbotBoneMask)) triggerbotBoneMask = after.triggerbotBoneMask;
-        if (!ConfigEqual(before.triggerbotChargeAware, after.triggerbotChargeAware)) triggerbotChargeAware = after.triggerbotChargeAware;
-        if (!ConfigEqual(before.triggerbotDisableWhileReloading, after.triggerbotDisableWhileReloading)) triggerbotDisableWhileReloading = after.triggerbotDisableWhileReloading;
-        if (!ConfigEqual(before.triggerbotIgnoreInvisible, after.triggerbotIgnoreInvisible)) triggerbotIgnoreInvisible = after.triggerbotIgnoreInvisible;
-        if (!ConfigEqual(before.triggerbotKey, after.triggerbotKey)) triggerbotKey = after.triggerbotKey;
-        if (!ConfigEqual(before.triggerbotMinCharge, after.triggerbotMinCharge)) triggerbotMinCharge = after.triggerbotMinCharge;
-        if (!ConfigEqual(before.triggerbotMode, after.triggerbotMode)) triggerbotMode = after.triggerbotMode;
-        if (!ConfigEqual(before.triggerbotShotInterval, after.triggerbotShotInterval)) triggerbotShotInterval = after.triggerbotShotInterval;
+        assign(before.Bone, after.Bone, Bone);
+        assign(before.BoneName, after.BoneName, BoneName);
+        assign(before.Flick, after.Flick, Flick);
+        assign(before.Flick_smooth, after.Flick_smooth, Flick_smooth);
+        assign(before.Fov, after.Fov, Fov);
+        assign(before.Fov2, after.Fov2, Fov2);
+        assign(before.Prediction, after.Prediction, Prediction);
+        assign(before.Smooth, after.Smooth, Smooth);
+        assign(before.TargetBone, after.TargetBone, TargetBone);
+        assign(before.Tracking, after.Tracking, Tracking);
+        assign(before.Tracking_smooth, after.Tracking_smooth, Tracking_smooth);
+        assign(before.aimBehavior, after.aimBehavior, aimBehavior);
+        assign(before.aimBehaviorMethod, after.aimBehaviorMethod, aimBehaviorMethod);
+        assign(before.aimBehaviorMethodPreset, after.aimBehaviorMethodPreset, aimBehaviorMethodPreset);
+        assign(before.aimBehaviorPresetId, after.aimBehaviorPresetId, aimBehaviorPresetId);
+        changed |= MergeConfigPresets(before.aimBehaviorPresets, after.aimBehaviorPresets, aimBehaviorPresets);
+        assign(before.aimBezierControlPoints, after.aimBezierControlPoints, aimBezierControlPoints);
+        assign(before.aimBezierCurvature, after.aimBezierCurvature, aimBezierCurvature);
+        assign(before.aimBezierSpeed, after.aimBezierSpeed, aimBezierSpeed);
+        assign(before.aimMethod, after.aimMethod, aimMethod);
+        changed |= MergeConfigPresets(before.aimMethodPresets, after.aimMethodPresets, aimMethodPresets);
+        assign(before.aimPidD, after.aimPidD, aimPidD);
+        assign(before.aimPidDeadzone, after.aimPidDeadzone, aimPidDeadzone);
+        assign(before.aimPidI, after.aimPidI, aimPidI);
+        assign(before.aimPidMaxIntegral, after.aimPidMaxIntegral, aimPidMaxIntegral);
+        assign(before.aimPidP, after.aimPidP, aimPidP);
+        assign(before.aim_key, after.aim_key, aim_key);
+        assign(before.aimbotAttack, after.aimbotAttack, aimbotAttack);
+        assign(before.aimbotAutoshot, after.aimbotAutoshot, aimbotAutoshot);
+        assign(before.aimbotBoneMask, after.aimbotBoneMask, aimbotBoneMask);
+        assign(before.aimbotDynamicFovPresetId, after.aimbotDynamicFovPresetId, aimbotDynamicFovPresetId);
+        assign(before.aimbotFirePolicy, after.aimbotFirePolicy, aimbotFirePolicy);
+        assign(before.aimbotFlick2ndBoxPadding, after.aimbotFlick2ndBoxPadding, aimbotFlick2ndBoxPadding);
+        assign(before.aimbotFlick2ndInnerMethod, after.aimbotFlick2ndInnerMethod, aimbotFlick2ndInnerMethod);
+        assign(before.aimbotFlick2ndInnerRadius, after.aimbotFlick2ndInnerRadius, aimbotFlick2ndInnerRadius);
+        assign(before.aimbotFlick2ndInnerSmoothScale, after.aimbotFlick2ndInnerSmoothScale, aimbotFlick2ndInnerSmoothScale);
+        assign(before.aimbotFlick2ndTriggerGate, after.aimbotFlick2ndTriggerGate, aimbotFlick2ndTriggerGate);
+        assign(before.aimbotFlickPostFireDelayMs, after.aimbotFlickPostFireDelayMs, aimbotFlickPostFireDelayMs);
+        assign(before.aimbotFlickShotClampMs, after.aimbotFlickShotClampMs, aimbotFlickShotClampMs);
+        assign(before.aimbotFlickTrajectoryApexWindowMs, after.aimbotFlickTrajectoryApexWindowMs, aimbotFlickTrajectoryApexWindowMs);
+        assign(before.aimbotFlickTrajectoryWait, after.aimbotFlickTrajectoryWait, aimbotFlickTrajectoryWait);
+        assign(before.aimbotFlickTrajectoryWaitMs, after.aimbotFlickTrajectoryWaitMs, aimbotFlickTrajectoryWaitMs);
+        assign(before.aimbotFovEntryMaxOutsideDeg, after.aimbotFovEntryMaxOutsideDeg, aimbotFovEntryMaxOutsideDeg);
+        assign(before.aimbotFovEntryPredictionMs, after.aimbotFovEntryPredictionMs, aimbotFovEntryPredictionMs);
+        assign(before.aimbotFovMode, after.aimbotFovMode, aimbotFovMode);
+        assign(before.aimbotIgnoreInvisible, after.aimbotIgnoreInvisible, aimbotIgnoreInvisible);
+        assign(before.aimbotKeepFiring, after.aimbotKeepFiring, aimbotKeepFiring);
+        assign(before.aimbotLockTime, after.aimbotLockTime, aimbotLockTime);
+        assign(before.aimbotMagneticPostFirePauseMs, after.aimbotMagneticPostFirePauseMs, aimbotMagneticPostFirePauseMs);
+        assign(before.aimbotMagneticPostFirePitchScale, after.aimbotMagneticPostFirePitchScale, aimbotMagneticPostFirePitchScale);
+        assign(before.aimbotMagneticPostFireYawScale, after.aimbotMagneticPostFireYawScale, aimbotMagneticPostFireYawScale);
+        assign(before.aimbotMagneticPreFireBoostScale, after.aimbotMagneticPreFireBoostScale, aimbotMagneticPreFireBoostScale);
+        assign(before.aimbotMagneticPreFireBoostWindowMs, after.aimbotMagneticPreFireBoostWindowMs, aimbotMagneticPreFireBoostWindowMs);
+        assign(before.aimbotMagneticRecoveryMs, after.aimbotMagneticRecoveryMs, aimbotMagneticRecoveryMs);
+        assign(before.aimbotMagneticShotIntervalMs, after.aimbotMagneticShotIntervalMs, aimbotMagneticShotIntervalMs);
+        assign(before.aimbotMaxAim, after.aimbotMaxAim, aimbotMaxAim);
+        assign(before.aimbotMaxCharge, after.aimbotMaxCharge, aimbotMaxCharge);
+        assign(before.aimbotMaxDist, after.aimbotMaxDist, aimbotMaxDist);
+        assign(before.aimbotMaxHead, after.aimbotMaxHead, aimbotMaxHead);
+        assign(before.aimbotMinCharge, after.aimbotMinCharge, aimbotMinCharge);
+        assign(before.aimbotMinDist, after.aimbotMinDist, aimbotMinDist);
+        assign(before.aimbotPitchScale, after.aimbotPitchScale, aimbotPitchScale);
+        assign(before.aimbotPredictFovEntry, after.aimbotPredictFovEntry, aimbotPredictFovEntry);
+        assign(before.aimbotPredictionMode, after.aimbotPredictionMode, aimbotPredictionMode);
+        assign(before.aimbotPriority, after.aimbotPriority, aimbotPriority);
+        assign(before.aimbotRequireActionHeld, after.aimbotRequireActionHeld, aimbotRequireActionHeld);
+        assign(before.aimbotSmoothType, after.aimbotSmoothType, aimbotSmoothType);
+        assign(before.aimbotStickiness, after.aimbotStickiness, aimbotStickiness);
+        assign(before.aimbotTeam, after.aimbotTeam, aimbotTeam);
+        assign(before.aimbotTrace, after.aimbotTrace, aimbotTrace);
+        assign(before.aimbotTrackingDeadzone, after.aimbotTrackingDeadzone, aimbotTrackingDeadzone);
+        assign(before.aimbotTwoStage, after.aimbotTwoStage, aimbotTwoStage);
+        assign(before.aimbotTwoStageBoxPadding, after.aimbotTwoStageBoxPadding, aimbotTwoStageBoxPadding);
+        assign(before.aimbotTwoStageInnerRadius, after.aimbotTwoStageInnerRadius, aimbotTwoStageInnerRadius);
+        assign(before.aimbotTwoStageInnerSmoothScale, after.aimbotTwoStageInnerSmoothScale, aimbotTwoStageInnerSmoothScale);
+        assign(before.aimbotTwoStageTriggerGate, after.aimbotTwoStageTriggerGate, aimbotTwoStageTriggerGate);
+        assign(before.aimbotUnlock, after.aimbotUnlock, aimbotUnlock);
+        assign(before.autobone, after.autobone, autobone);
+        assign(before.autoscalefov, after.autoscalefov, autoscalefov);
+        changed |= MergeConfigPresets(before.dynamicFovPresets, after.dynamicFovPresets, dynamicFovPresets);
+        assign(before.hitbox, after.hitbox, hitbox);
+        assign(before.minFov1, after.minFov1, minFov1);
+        assign(before.minFov2, after.minFov2, minFov2);
+        assign(before.triggerbot, after.triggerbot, triggerbot);
+        assign(before.triggerbot2, after.triggerbot2, triggerbot2);
+        assign(before.triggerbotBoneMask, after.triggerbotBoneMask, triggerbotBoneMask);
+        assign(before.triggerbotChargeAware, after.triggerbotChargeAware, triggerbotChargeAware);
+        assign(before.triggerbotDisableWhileReloading, after.triggerbotDisableWhileReloading, triggerbotDisableWhileReloading);
+        assign(before.triggerbotIgnoreInvisible, after.triggerbotIgnoreInvisible, triggerbotIgnoreInvisible);
+        assign(before.triggerbotKey, after.triggerbotKey, triggerbotKey);
+        assign(before.triggerbotMinCharge, after.triggerbotMinCharge, triggerbotMinCharge);
+        assign(before.triggerbotMode, after.triggerbotMode, triggerbotMode);
+        assign(before.triggerbotShotInterval, after.triggerbotShotInterval, triggerbotShotInterval);
 
         // Deletion and every hero reference repair are one publication.
         auto repair = [&](auto& store) {
             for (auto& hero : store) for (auto& slot : hero.second)
                 if (slot.preset.dynamicFovPresetId >= 0 &&
                     std::none_of(dynamicFovPresets.begin(), dynamicFovPresets.end(), [&](const auto& p) { return p.id == slot.preset.dynamicFovPresetId; })) {
-                    slot.preset.dynamicFovPresetId = -1; slot.preset.fovMode = kFovModeFixed;
+                    slot.preset.dynamicFovPresetId = -1; slot.preset.fovMode = kFovModeFixed; changed = true;
                 }
         };
         repair(heroAimPresets); repair(heroTriggerPresets);
         if (aimbotDynamicFovPresetId >= 0 && std::none_of(dynamicFovPresets.begin(), dynamicFovPresets.end(), [&](const auto& p) { return p.id == aimbotDynamicFovPresetId; })) {
-            aimbotDynamicFovPresetId = -1; aimbotFovMode = kFovModeFixed;
+            aimbotDynamicFovPresetId = -1; aimbotFovMode = kFovModeFixed; changed = true;
         }
-        return true;
+        return changed;
     }
 
 

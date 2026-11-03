@@ -307,7 +307,10 @@ static int RunConfigCheckCli()
     OW::offset::SetActiveProfile(OW::offset::kProductRuntimeProfile);
     OW::Config::InitializeActiveConfigProfile();
     const std::string configPath = OW::Config::ConfigPath();
-    OW::Config::LoadConfig(configPath);
+    if (OW::Config::LoadConfig(configPath) != OW::Config::ConfigLoadResult::Loaded) {
+        std::fprintf(stderr, "[CONFIG] Load failed: %s\n", OW::Config::LastPersistenceError().c_str());
+        return EXIT_FAILURE;
+    }
 
     std::printf("[PRODUCT] variant=%s executable=UNDMA_V2.exe lockedProfile=%s\n",
         kProductVariantName,
@@ -529,7 +532,10 @@ int main(int argc, char** argv)
     OW::Config::InitializeActiveConfigProfile();
     const std::string configPath = OW::Config::ConfigPath();
     const std::string configPathForLog = AbsolutePathForLog(configPath);
-    OW::Config::LoadConfig(configPath);
+    if (OW::Config::LoadConfig(configPath) != OW::Config::ConfigLoadResult::Loaded) {
+        Diagnostics::Error("Config load failed: %s", OW::Config::LastPersistenceError().c_str());
+        return EXIT_FAILURE;
+    }
     if (boxPerfModeRequested) {
         OW::Config::boxPerfMode = true;
         OW::Config::boxPerfFastRect = true;

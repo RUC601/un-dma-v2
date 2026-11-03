@@ -7,6 +7,8 @@
 
 namespace V2::Acquisition {
 inline constexpr int kTargetHz = 300;
+inline constexpr bool kLatestWins = true;
+inline constexpr bool kColdTopology = true;
 using Clock = std::chrono::steady_clock;
 inline auto Period() {
     return std::chrono::duration_cast<Clock::duration>(

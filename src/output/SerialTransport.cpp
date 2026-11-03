@@ -322,10 +322,8 @@ bool SerialTransport::SendCommandOnce(const std::string& command)
     return true;
 }
 
-bool SerialTransport::SendCommandWithRetry(
-    const std::string& command,
-    OutputCommandType type,
-    bool AllowReconnectDuringStopping)
+bool SerialTransport::SendCommandOrFailSession(
+    const std::string& command)
 {
     if (SendCommandOnce(command)) return true;
     SetConnectionState(OutputConnectionState::Error);
@@ -468,7 +466,7 @@ int SerialTransport::ExecuteSafetyReleaseAll()
 {
     int aggregateStatus = success;
     const auto sendRelease = [this, &aggregateStatus](const char* command) {
-        if (!SendCommandWithRetry(command, OutputCommandType::MouseButton, true) &&
+        if (!SendCommandOrFailSession(command) &&
             aggregateStatus == success) {
             aggregateStatus = err_net_tx;
         }
@@ -601,7 +599,7 @@ void SerialTransport::QueueWorkerLoop()
         }
         const int status=command.type==OutputCommandType::Keyboard
             ? ExecuteKeyboardReport(command.keyboardKeys,command.outputIntent==OutputIntent::SafetyRelease)
-            : (SendCommandWithRetry(command.command,command.type) ? success : err_net_tx);
+            : (SendCommandOrFailSession(command.command) ? success : err_net_tx);
         CompleteCommand(command.completion,status);
 
         lastFlush = std::chrono::steady_clock::now();
@@ -871,7 +869,7 @@ int SerialTransport::ExecuteKeyboardReport(const std::vector<unsigned char>& key
         if(desired[u]==injectedKeys[u] || desired[u]!=bool(press)) continue;
         if(press) injectedKeys.set(u);
         const auto command=std::string(press?"km.down(":"km.up(")+std::to_string(u)+")\r\n";
-        if(!SendCommandWithRetry(command,OutputCommandType::Keyboard)) return err_net_tx;
+        if(!SendCommandOrFailSession(command)) return err_net_tx;
         if(!press) injectedKeys.reset(u);
     }
     return success;

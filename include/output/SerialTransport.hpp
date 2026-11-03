@@ -64,10 +64,8 @@ private:
     void SetConnectionState(OutputConnectionState state);
     bool OpenConfiguredPort(bool AllowDuringStopping = false);
     void ClosePort();
-    bool SendCommandWithRetry(
-        const std::string& command,
-        OutputCommandType type,
-        bool AllowReconnectDuringStopping = false);
+    bool SendCommandOrFailSession(
+        const std::string& command);
     bool SendCommandOnce(const std::string& command);
     int EnqueueCommand(
         const std::string& command,

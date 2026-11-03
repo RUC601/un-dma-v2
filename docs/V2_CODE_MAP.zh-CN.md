@@ -1,5 +1,7 @@
 # V2 代码阅读地图与保留契约
 
+2026-11-03：完整业务流程、当前目录责任和验证入口见 [V2 开发手册](V2_DEVELOPMENT_GUIDE.zh-CN.md)；本轮 [只读审查](../../../04_SCENARIO/un-dma-v2/reports/readonly-audit-20261103/REVIEW.zh-CN.md) 区分已检查/未检查范围及未证实项。以下是模块导航，不代表全部路径已验收。
+
 更新：2026-10-29。本文描述当前实现；验证状态见 `V2_PROGRESS.zh-CN.md` 和 `V2_DELIVERY.zh-CN.md`。文件位置按本仓库相对路径表示。Windows 的大小写兼容不意味着已完成 Linux 移植。
 
 ## 从启动到显示和输出

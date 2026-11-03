@@ -621,7 +621,6 @@ namespace OW { namespace Config {
         TriggerPreset ValidateTriggerPresetValue(TriggerPreset preset);
         HeroPreset ValidateHeroPresetValue(HeroPreset preset);
         HeroPreset ValidateHeroPresetValueForHero(uint64_t heroId, HeroPreset preset);
-        bool gLastHeroConfigHadAimOrTriggerPresets = false;
         bool gLastHeroConfigNeedsSave = false;
         int gLoadedHeroConfigVersion = kCurrentHeroConfigVersion;
 
@@ -683,13 +682,6 @@ namespace OW { namespace Config {
             } else {
                 std::printf("[CONFIG] [%s] %s\n", LevelName(level), message);
             }
-        }
-
-        bool FileExists(const std::string& path)
-        {
-            const DWORD attributes = GetFileAttributesA(path.c_str());
-            return attributes != INVALID_FILE_ATTRIBUTES &&
-                (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
         }
 
         std::string HeroSectionName(uint64_t heroId, uint64_t linkBase)
@@ -3720,8 +3712,20 @@ namespace OW { namespace Config {
             return value;
         }
 
+        // A failed load must not later be replaced by auto-save or a manual save.
+        // Clear only after an explicit successful reload of that sidecar.
+        std::vector<std::string> failedHeroLoads;
+        bool HeroSaveAllowed(const std::string& path)
+        {
+            for (const auto& failed : failedHeroLoads)
+                if (SamePathText(failed, path))
+                    return PersistenceFailure(path, "Reload hero config before saving", ERROR_INVALID_DATA);
+            return true;
+        }
+
         bool WriteJsonDocument(const std::string& path, const rapidjson::Document& document)
         {
+            if (!HeroSaveAllowed(path)) return false;
             rapidjson::StringBuffer buffer;
             rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
             writer.SetIndent(' ', 2);
@@ -3741,6 +3745,7 @@ namespace OW { namespace Config {
 
             std::ostringstream buffer;
             buffer << file.rdbuf();
+            if (file.bad()) return false;
             const std::string text = buffer.str();
             document.Parse(text.c_str(), text.size());
             if (document.HasParseError() || !document.IsObject()) {
@@ -3749,6 +3754,22 @@ namespace OW { namespace Config {
                 return false;
             }
             return true;
+        }
+
+        bool ReadHeroConfigForLoad(const std::string& path, rapidjson::Document& document)
+        {
+            const DWORD attributes = GetFileAttributesA(path.c_str());
+            const DWORD error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+            const bool missing = attributes == INVALID_FILE_ATTRIBUTES &&
+                (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+            if (!missing && (attributes == INVALID_FILE_ATTRIBUTES ||
+                    (attributes & FILE_ATTRIBUTE_DIRECTORY) || !LoadJsonDocument(path, document))) {
+                AddUniquePath(failedHeroLoads, path);
+                return PersistenceFailure(path, "Load hero config; original file preserved",
+                    error == ERROR_SUCCESS ? ERROR_INVALID_DATA : error);
+            }
+            std::erase_if(failedHeroLoads, [&](const auto& failed) { return SamePathText(failed, path); });
+            return true; // A missing sidecar leaves document null; it is not a parse failure.
         }
 
         rapidjson::Value* FindOrAddObjectMember(rapidjson::Document& document, const char* key)
@@ -4779,14 +4800,10 @@ namespace OW { namespace Config {
             }
         }
 
-        bool LoadHeroConfigUnlocked(const std::string& heroConfigPath)
+        bool LoadHeroConfigUnlocked(const std::string& heroConfigPath, const rapidjson::Document& document)
         {
-            gLastHeroConfigHadAimOrTriggerPresets = false;
             gLastHeroConfigNeedsSave = false;
 
-            rapidjson::Document document;
-            if (!LoadJsonDocument(heroConfigPath, document))
-                return false;
             const int heroConfigVersion = ReadJsonInt(document, "version", 1);
             gLoadedHeroConfigVersion = heroConfigVersion;
             const bool legacyFovApertureValues =
@@ -4794,16 +4811,6 @@ namespace OW { namespace Config {
             const bool legacyAimBehaviorValues =
                 heroConfigVersion < kHeroAimBehaviorSemanticsVersion;
             gLastHeroConfigNeedsSave = heroConfigVersion < kCurrentHeroConfigVersion;
-
-            const auto storeHasEntries = [&](const char* key) {
-                const auto store = document.FindMember(key);
-                return store != document.MemberEnd() &&
-                    store->value.IsObject() &&
-                    store->value.MemberCount() > 0;
-            };
-            gLastHeroConfigHadAimOrTriggerPresets =
-                storeHasEntries("heroAimPresets") ||
-                storeHasEntries("heroTriggerPresets");
 
             heroAimPresets.clear();
             heroTriggerPresets.clear();
@@ -4969,11 +4976,6 @@ namespace OW { namespace Config {
             ValidateHeroPresetsUnlocked();
         }
 
-        bool HasLoadedAimOrTriggerPresetsUnlocked()
-        {
-            return gLastHeroConfigHadAimOrTriggerPresets;
-        }
-
         bool IniHasHeroPresetSections(const IniFile& ini)
         {
             for (const HeroPresetDefinition& def : kHeroPresetDefinitions) {
@@ -5003,44 +5005,30 @@ namespace OW { namespace Config {
             return false;
         }
 
-        bool LoadHeroConfigOrMigrateUnlocked(const std::string& heroConfigPath, const IniFile* legacyIni)
+        bool LoadHeroConfigOrMigrateUnlocked(const std::string& heroConfigPath, const IniFile* legacyIni,
+                                             const rapidjson::Document* prepared = nullptr)
         {
-            if (FileExists(heroConfigPath) && LoadHeroConfigUnlocked(heroConfigPath)) {
-                const bool saveLoadedHeroConfig = gLastHeroConfigNeedsSave;
-                if (HasLoadedAimOrTriggerPresetsUnlocked() ||
-                    legacyIni == nullptr ||
-                    !IniHasHeroPresetSections(*legacyIni)) {
-                    if (saveLoadedHeroConfig) {
-                        const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
-                        gLastHeroConfigNeedsSave = !saved;
-                        LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
-                            "Hero config migration to version %d at %s: saved=%d.",
-                            kCurrentHeroConfigVersion,
-                            heroConfigPath.c_str(), saved ? 1 : 0);
-                    }
-                    return true;
-                }
-
-                LogConfig(Diagnostics::LogLevel::Warn,
-                    "%s contains no aim/trigger hero presets; migrating legacy INI hero presets instead.",
-                    heroConfigPath.c_str());
-            }
-
-            if (legacyIni) {
-                const HeroSkillPresetStore loadedSkillPresets = heroSkillPresets;
-                LoadHeroPresetsUnlocked(*legacyIni);
-                if (heroSkillPresets.empty() && !loadedSkillPresets.empty())
-                    heroSkillPresets = loadedSkillPresets;
+            rapidjson::Document read;
+            if (!prepared && !ReadHeroConfigForLoad(heroConfigPath, read)) return false;
+            const auto& document = prepared ? *prepared : read;
+            if (!document.IsNull()) {
+                LoadHeroConfigUnlocked(heroConfigPath, document);
+                if (!gLastHeroConfigNeedsSave) return true;
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
-                LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
-                    "Legacy INI hero migration at %s: saved=%d.", heroConfigPath.c_str(), saved ? 1 : 0);
-                return true;
+                gLastHeroConfigNeedsSave = !saved;
+                return saved;
             }
-
             heroAimPresets.clear();
             heroTriggerPresets.clear();
             heroSkillPresets.clear();
-            return false;
+            if (legacyIni && IniHasHeroPresetSections(*legacyIni)) {
+                LoadHeroPresetsUnlocked(*legacyIni);
+                const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
+                LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
+                    "Legacy INI hero migration at %s: saved=%d.", heroConfigPath.c_str(), saved ? 1 : 0);
+                return saved;
+            }
+            return true;
         }
 
         void LoadColor(const IniFile& ini, const char* section, const char* prefix, ImVec4& color)
@@ -6963,7 +6951,7 @@ namespace OW { namespace Config {
     bool TryGetHeroSkillSettings(uint64_t heroId, const std::string& skillId, HeroSkillSettings& outSettings)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         const auto hero = heroSkillPresets.find(heroId);
         if (hero == heroSkillPresets.end())
             return false;
@@ -6986,7 +6974,7 @@ namespace OW { namespace Config {
                                            const HeroSkillSettings& defaultSettings)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         const auto hero = heroSkillPresets.find(heroId);
         if (hero == heroSkillPresets.end())
             return ValidateHeroSkillSettingsValue(defaultSettings);
@@ -7056,7 +7044,7 @@ namespace OW { namespace Config {
         return true;
     }
 
-    static void LoadFullConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase)
+    static ConfigLoadResult LoadFullConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase)
     {
         std::lock_guard<std::mutex> lock(mutex);
         ScopedConfigAuthority authority;
@@ -7067,14 +7055,22 @@ namespace OW { namespace Config {
                 Diagnostics::LogLevel::Warn,
                 "Rejected config load for unknown hero id 0x%llX.",
                 static_cast<unsigned long long>(heroId));
-            return;
+            PersistenceFailure(path, "Load unknown hero", ERROR_INVALID_DATA);
+            return ConfigLoadResult::Failed;
         }
 
+        rapidjson::Document heroDocument;
+        if (!ReadHeroConfigForLoad(HeroConfigPath(path), heroDocument)) return ConfigLoadResult::Failed;
         const std::string heroName = HeroSectionName(heroId, linkBase);
+        bool migrationSaved = true;
         struct AutoSaveLoadGuard {
             const std::string& path;
-            ~AutoSaveLoadGuard() { ResetAutoSaveUnlocked(path); }
-        } autoSaveLoadGuard{path};
+            bool& migrationSaved;
+            ~AutoSaveLoadGuard() {
+                ResetAutoSaveUnlocked(path);
+                if (!migrationSaved) autoSave.saved.clear(); // Keep the failed migration pending.
+            }
+        } autoSaveLoadGuard{path, migrationSaved};
         struct ProfileLoadGuard {
             ProfileLoadGuard() { configLoadGeneration.fetch_add(1, std::memory_order_acq_rel); }
             ~ProfileLoadGuard() { configLoadGeneration.fetch_add(1, std::memory_order_release); }
@@ -7087,7 +7083,7 @@ namespace OW { namespace Config {
         IniFile ini;
         if (!LoadIniFile(path, ini)) {
             config_version = kCurrentConfigVersion;
-            LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr);
+            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr, &heroDocument);
             LogConfig(Diagnostics::LogLevel::Warn,
                 "%s is missing or unreadable; using all documented defaults.",
                 path.c_str());
@@ -7095,7 +7091,7 @@ namespace OW { namespace Config {
             ApplyLoadedHeroPresetsUnlocked(heroId);
             ValidateUnlocked();
             DumpUnlocked(Diagnostics::LogLevel::Debug);
-            return;
+            return migrationSaved ? ConfigLoadResult::Loaded : ConfigLoadResult::MigrationSaveFailed;
         }
 
         const int fileVersion = ReadInt(ini, kMetaSection, kVersionKey, 0);
@@ -7104,12 +7100,12 @@ namespace OW { namespace Config {
             LogConfig(Diagnostics::LogLevel::Warn,
                 "Config version %d is newer than supported version %d; resetting to defaults.",
                 fileVersion, kCurrentConfigVersion);
-            LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr);
+            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr, &heroDocument);
             gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
             ApplyLoadedHeroPresetsUnlocked(heroId);
             ValidateUnlocked();
             DumpUnlocked(Diagnostics::LogLevel::Debug);
-            return;
+            return migrationSaved ? ConfigLoadResult::Loaded : ConfigLoadResult::MigrationSaveFailed;
         }
 
         const bool needsMigration = fileVersion < kCurrentConfigVersion;
@@ -7123,16 +7119,16 @@ namespace OW { namespace Config {
         LoadSystemConfigUnlocked(ini);
         if (needsMigration)
             ApplySystemConfigMigrationDefaultsUnlocked(fileVersion);
-        LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini);
+        migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument);
         gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
         ApplyLoadedHeroPresetsUnlocked(heroId);
         ValidateUnlocked();
-        if (needsMigration)
-            SaveSystemConfigUnlocked(path);
+        if (needsMigration && !SaveSystemConfigUnlocked(path)) migrationSaved = false;
         DumpUnlocked(Diagnostics::LogLevel::Debug);
 
         LogConfig(Diagnostics::LogLevel::Info,
             "Loaded config for hero %s from %s.", heroName.c_str(), path.c_str());
+        return migrationSaved ? ConfigLoadResult::Loaded : ConfigLoadResult::MigrationSaveFailed;
     }
 
     void LoadConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase)
@@ -7167,6 +7163,7 @@ namespace OW { namespace Config {
     static bool SaveAllConfigUnlocked(const std::string& path)
     {
         BeginPersistenceOperation();
+        if (!HeroSaveAllowed(HeroConfigPath(path))) return false;
         ValidateUnlocked();
         if (!SaveSystemConfigUnlocked(path))
             return false;
@@ -7188,7 +7185,8 @@ namespace OW { namespace Config {
     AutoSaveResult PollAutoSave(const std::string& path, uint64_t nowMs, bool flush)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
+        if (!HeroSaveAllowed(HeroConfigPath(path))) return AutoSaveResult::Failed;
         if (autoSave.path != path) ResetAutoSaveUnlocked(path);
         const auto current = CapturePersistedConfigUnlocked(path);
         if (current != autoSave.observed) {
@@ -7199,6 +7197,7 @@ namespace OW { namespace Config {
         if (current == autoSave.saved || (!flush &&
             (nowMs - autoSave.changedMs < kAutoSaveDelayMs || nowMs < autoSave.retryMs)))
             return AutoSaveResult::Idle;
+        authority.publish = true; // Saving validates/normalizes live values. Idle polling does not.
         if (SaveAllConfigUnlocked(path)) return AutoSaveResult::Saved;
         autoSave.retryMs = nowMs + kAutoSaveDelayMs;
         LogConfig(Diagnostics::LogLevel::Warn, "Auto-save failed: %s", PersistenceError().c_str());
@@ -7297,10 +7296,10 @@ namespace OW { namespace Config {
         NormalizeOutputPortsUnlocked("runtime");
     }
 
-    void LoadConfig(const std::string& path)
+    ConfigLoadResult LoadConfig(const std::string& path)
     {
         const OW::c_entity localSnapshot = OW::SnapshotLocalEntity();
-        LoadFullConfigForHero(path, localSnapshot.HeroID, localSnapshot.LinkBase);
+        return LoadFullConfigForHero(path, localSnapshot.HeroID, localSnapshot.LinkBase);
     }
 
 #ifdef UNLEASHED_SELF_TESTS

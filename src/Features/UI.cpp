@@ -589,11 +589,12 @@ std::string NormalizeProfileFileName(const char* rawName) {
         return name;
     }
 
-    void ReloadConfigProfile()
+    OW::Config::ConfigLoadResult ReloadConfigProfile()
     {
         const std::string savedName = OW::Config::configFileName;
         const std::string path = OW::Config::ConfigPath();
-        OW::Config::LoadConfig(path);
+        const auto loadResult = OW::Config::LoadConfig(path);
+        if (loadResult == OW::Config::ConfigLoadResult::Failed) return loadResult;
         OW::Config::configFileName = savedName;
         OW::RefreshScreenSizeFromConfig();
         const OutputConnectionTestResult runtimeResult =
@@ -604,18 +605,25 @@ std::string NormalizeProfileFileName(const char* rawName) {
                 savedName.c_str(),
                 runtimeResult.message.c_str());
         }
+        return loadResult;
     }
 
 bool SelectConfigProfile(const char* name, char (&profileName)[kConfigProfileNameBufferSize],
                              bool saveCurrent) {
         if (saveCurrent && !OW::Config::SaveAllConfig(OW::Config::ConfigPath()))
             return false;
-        CopyConfigProfileName(profileName, name);
+        const std::string previousName = OW::Config::configFileName;
         OW::Config::configFileName = name ? name : "config.ini";
-        ReloadConfigProfile();
+        const auto loadResult = ReloadConfigProfile();
+        if (loadResult == OW::Config::ConfigLoadResult::Failed) {
+            OW::Config::configFileName = previousName;
+            CopyConfigProfileName(profileName, previousName);
+            return false;
+        }
+        CopyConfigProfileName(profileName, OW::Config::configFileName);
         OW::Config::lastConfigProfile = OW::Config::configFileName;
         ApplySelectedTypePreset();
-        return true;
+        return loadResult == OW::Config::ConfigLoadResult::Loaded;
     }
 
 std::vector<std::string> EnumerateConfigProfiles() {

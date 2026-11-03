@@ -6,6 +6,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <Windows.h>
+#include "runtime/Acquisition.hpp"
 #include "Utils/RuntimeTrace.hpp"
 
 #include <algorithm>
@@ -2049,22 +2050,18 @@ std::string BuildDiagnosticsJson()
     out << ",\"runtime_profile\":";
     AppendJsonString(out, OW::offset::ActiveProfileName());
     out << ",\"entity_pipeline_v2_enabled\":"
-        << (OW::EntityPipelineV2Enabled() ? "true" : "false")
+        << "true"
         << ",\"scan_latest_wins_enabled\":"
-        << (OW::ScanLatestWinsEnabled() ? "true" : "false")
+        << (V2::Acquisition::kLatestWins ? "true" : "false")
         << ",\"cold_topology_scan_enabled\":"
-        << (OW::ColdTopologyScanEnabled() ? "true" : "false")
+        << (V2::Acquisition::kColdTopology ? "true" : "false")
         << ",\"viewmatrix_poll_sleep_ms\":" << ViewMatrixPollSleepMs()
         << ",\"viewmatrix_effective_poll_sleep_ms\":";
-    AppendNumberOrNull(out, OW::CriticalBatchFusionActive()
-        ? static_cast<float>(CriticalMatrixPollPeriodUs()) / 1000.0f
-        : static_cast<float>(ViewMatrixPollSleepMs()));
-    out << ",\"viewmatrix_effective_poll_period_us\":"
-        << (OW::CriticalBatchFusionActive()
-            ? CriticalMatrixPollPeriodUs()
-            : static_cast<uint64_t>(ViewMatrixPollSleepMs()) * 1000ULL)
+    AppendNumberOrNull(out, 1000.0f / V2::Acquisition::kTargetHz);
+    out << ",\"viewmatrix_effective_poll_period_us\":" << 1000000 / V2::Acquisition::kTargetHz
+        << ",\"acquisition_target_hz\":" << V2::Acquisition::kTargetHz
         << ",\"steady_entity_scheduler_enabled\":"
-        << (OW::SteadyEntitySchedulerEnabled() ? "true" : "false")
+        << "true"
         << ",\"critical_batch_fusion_enabled\":"
         << (OW::CriticalBatchFusionEnabled() ? "true" : "false")
         << ",\"critical_batch_fusion_active\":"
@@ -4190,6 +4187,26 @@ bool IsRunning()
 #ifdef UNLEASHED_SELF_TESTS
 int RunLifecycleSelfTest()
 {
+    // Legacy environment toggles must not misreport the fixed production policy.
+    const auto profileBefore = OW::offset::ActiveProfile();
+    for (const char* flag : {"0", "1"}) {
+        for (const char* name : {"UN_DMA_ENTITY_PIPELINE_V2", "UN_DMA_SCAN_LATEST_WINS",
+                "UN_DMA_COLD_TOPOLOGY_SCAN", "UN_DMA_STEADY_ENTITY_SCHEDULER"})
+            SetEnvironmentVariableA(name, flag);
+        for (const auto profile : {OW::offset::RuntimeProfile::Cn, OW::offset::RuntimeProfile::WorldBz}) {
+            OW::offset::SetActiveProfile(profile);
+            const auto json = BuildDiagnosticsJson();
+            for (const char* expected : {"\"entity_pipeline_v2_enabled\":true", "\"scan_latest_wins_enabled\":true",
+                    "\"cold_topology_scan_enabled\":true", "\"steady_entity_scheduler_enabled\":true",
+                    "\"viewmatrix_effective_poll_period_us\":3333", "\"acquisition_target_hz\":300"}) {
+                if (json.find(expected) == std::string::npos) {
+                    std::fprintf(stderr, "Missing effective diagnostic: %s\n", expected);
+                    return 1;
+                }
+            }
+        }
+    }
+    OW::offset::SetActiveProfile(profileBefore);
     // This test only uses local sockets and empty snapshots; it never starts DMA.
     for (const char* path : { "/api/bz-offset-probe", "/api/bz-matrix-sweep" }) {
         int statusCode = 0;
