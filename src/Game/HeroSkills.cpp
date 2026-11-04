@@ -1365,6 +1365,7 @@ namespace {
 
     struct ScopedTrackingConfig {
         Config::ScopedLocalConfigOverride configOverride;
+        float previousSelectedFov = Config::selectedAimFovDeg;
         explicit ScopedTrackingConfig(const Config::HeroSkillTrackingParams& params)
         {
             Config::HeroPreset overlay=Config::MakeHeroPresetFromCurrent();
@@ -1384,7 +1385,10 @@ namespace {
             overlay.hitbox=params.hitbox;
             Config::StoreHeroBehaviorMode(overlay);
             Config::ApplyLocalHeroAimPreset(overlay);
+            // Custom skill targeting can bypass GetVector3/PublishSelectedAimPlan.
+            Config::selectedAimFovDeg = Config::View_Fov();
         }
+        ~ScopedTrackingConfig() { Config::selectedAimFovDeg = previousSelectedFov; }
     };
 
     void RunTrackingOverlayTick(const std::string& skillId,

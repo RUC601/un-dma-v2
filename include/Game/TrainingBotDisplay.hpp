@@ -21,6 +21,9 @@ constexpr TrainingBotDisplay ResolveTrainingBotDisplay(uint64_t heroId, float ma
     case MakeHeroId(0x363):
         return {"Friendly Heavy Bot", "tank-bot"};
     case MakeHeroId(0x337):
+        // This ID is also used by a 200 HP ordinary bot in the current CN range.
+        if (maxHealth >= 190.0f && maxHealth <= 210.0f)
+            return {"Standard Bot", "standard-bot"};
         return {"Tank Bot", "tank-bot"};
     case MakeHeroId(0x33C):
     case MakeHeroId(0x356):

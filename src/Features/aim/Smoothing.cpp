@@ -474,15 +474,17 @@ namespace OW {
                                             float accel,
                                             int methodOverride,
                                             float bezierSpeedOverride,
-                                            bool commitOvershootStep, float effectiveFovDeg) {
+                                            bool commitOvershootStep, float effectiveFovDeg, bool inheritTargetMotion) {
         thread_local uint64_t previousPlanTarget=0, previousActor=0, previousEpoch=0, previousScene=0;
         thread_local AimPlan::Effective previousPlan{};
+        thread_local bool previousInheritTargetMotion=true;
         const bool usePlan=Config::targetAimPlanEnabled;
         const auto selectedPlan=usePlan?Config::selectedAimPlan:AimPlan::Effective{};
         const uint64_t planTarget=usePlan?Config::selectedAimPlanTarget:0;
-        if(previousPlanTarget!=planTarget || previousPlan!=selectedPlan || previousActor!=Config::selectedAimActor || previousEpoch!=Config::selectedAimEpoch || previousScene!=Config::selectedAimScene) {
+        if(previousPlanTarget!=planTarget || previousPlan!=selectedPlan || previousActor!=Config::selectedAimActor || previousEpoch!=Config::selectedAimEpoch || previousScene!=Config::selectedAimScene || previousInheritTargetMotion!=inheritTargetMotion) {
             ResetAimSmoothingState(); previousPlanTarget=planTarget; previousPlan=selectedPlan;
             previousActor=Config::selectedAimActor; previousEpoch=Config::selectedAimEpoch; previousScene=Config::selectedAimScene;
+            previousInheritTargetMotion=inheritTargetMotion;
         }
         const float deltaTime = AimSmoothingDetail::ComputeDeltaTime();
         const int method = std::clamp(methodOverride, 0, Config::kAimMethodCount - 1);
@@ -503,20 +505,23 @@ namespace OW {
             ? target
             : AimSmoothingDetail::ApplyOvershootCurveTarget(local, target);
         const Vector3 error = adjustedTarget - local;
-        const Config::AimMethodPreset* methodPreset = Config::ActiveAimMethodPreset(method);
-        const float methodSpeedScale = Config::RuntimeAimMethodAngularSpeedScale(method);
+        const Config::AimMethodPreset* methodPreset = Config::ActiveAimMethodPreset(method,inheritTargetMotion);
+        const float methodSpeedScale = Config::RuntimeAimMethodAngularSpeedScale(method,inheritTargetMotion);
         const float slotSpeedScale = std::isfinite(speed) ? std::clamp(speed, 0.0f, 2.0f) : 0.0f;
         const float effectiveSpeed = std::clamp(slotSpeedScale * methodSpeedScale, 0.0f, 1.0f);
         const float effectiveStepFactor = OW::AimSmoothingTiming::NormalizePerTickFactor(
             effectiveSpeed,
             deltaTime);
-        const float effectiveAccel = method == 4 ? Config::RuntimeAimMethodAcceleration(method) : accel;
+        const float effectiveAccel = method == 4 ? Config::RuntimeAimMethodAcceleration(method,inheritTargetMotion) : accel;
         const float presetBezierSpeed = methodPreset ? methodPreset->bezierSpeed : Config::View_aimBezierSpeed();
         const float bezierSpeed = bezierSpeedOverride > 0.0f
             ? bezierSpeedOverride
             : presetBezierSpeed;
         const float effectiveBezierSpeed = std::clamp(bezierSpeed * slotSpeedScale * methodSpeedScale, 0.0f, 200.0f);
-        const float constantAngularSpeedDeg = Config::RuntimeAimConstantAngularSpeedDeg();
+        // ActiveAimMethodPreset uses one thread-local slot value. Do not resolve a
+        // different algorithm while methodPreset still points to the current one.
+        const float constantAngularSpeedDeg = method == 5
+            ? Config::RuntimeAimConstantAngularSpeedDeg(inheritTargetMotion) : 0.0f;
         const float effectiveConstantAngularSpeedDeg = std::clamp(
             constantAngularSpeedDeg * slotSpeedScale * methodSpeedScale,
             0.0f,

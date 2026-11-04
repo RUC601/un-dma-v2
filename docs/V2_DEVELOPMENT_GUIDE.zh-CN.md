@@ -25,6 +25,8 @@
 
 ## 完整业务流程
 
+2026-11-04 默认行为模式：system schema 16 / hero schema 19 为 Aim Slot 保留 `Default Tracking`、`Default Flick`、`Default Flick2nd`、`Default Reacquire`、`Default Magnetic Trigger`。Slot 仅选择命名模式，移除 Custom 入口；新增 Slot 一律选中 Default Tracking，默认停用、清空两类按键绑定。五个默认模式有持久化固定标识，改名后仍受保护，禁止删除和改变基础行为；算法及默认参数仍可编辑。模式库为五个默认项预留容量，不挤掉已有 64 个用户模式。旧未命名 Slot 按原行为/算法补齐引用，保留独立参数；先保存模式定义再保存 Slot 引用。
+
 ```mermaid
 flowchart TD
     A[启动参数与独立配置] --> B[ProcessSession / 映像与 Profile 核验]
@@ -146,6 +148,8 @@ Slot 显示下标与稳定 ID 分开：重排不变身份；新增复制参数�
 诊断 effective 策略来自当前统一采集：目标 `acquisition_target_hz=300`、整数目标周期 `3333µs`；旧环境开关不能改变这些值。实际 Hz/age 仍来自计数器。`critical_batch_fusion_*` 和 `viewmatrix_poll_sleep_ms` 保留旧兼容含义，不用它们推导实际采集节拍。
 
 ## 构建与验证入口
+
+更新 offset/profile 后的靶场验收必须包含动态血量：观察持续被敌方攻击的两个友方机器人，连续核对当前血量下降、同一身体最大血量稳定、死亡与重生状态，以及 overlay 是否同步跟进。按实体身份/身体代次分开记录，避免把重生或更换实体当作同一身体血量跳变。满血截图、字段可读或离线自测不能代替这一项；未采到的阶段注明待验。原始字段证据归 `03_DOWNP/vertifytool`，运行和画面证据归 `04_SCENARIO/un-dma-v2`。这是用户于 2026-11-04 指定的后续版本验收要求。
 
 在产品目录执行：
 

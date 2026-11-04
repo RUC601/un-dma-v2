@@ -216,7 +216,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     }
 
     if (hasAbsoluteEnemyHealth) {
-        SettingRow("Max Health", kAimbotRightLabelWidth);
+        SettingRow(hasControl(OW::HeroSkillControls::MeleeRange) ? "Current HP Threshold" : "Max Health",
+                   kAimbotRightLabelWidth);
         PushControlWidth();
         changed |= UISlider("##skillEnemyMaxHealth", &settings.enemyHealthThreshold, 0.0f, 300.0f, Number(0, " HP"));
         ImGui::PopItemWidth();
@@ -300,7 +301,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         PushControlWidth();
         changed |= UISlider("##skillMeleeRadius", &settings.meleeRadius, 0.0f, 2.0f, Number(2, " m"));
         ImGui::PopItemWidth();
-        ImGui::TextWrapped("%s", L("Checks the whole body. Larger values allow more crosshair offset; Max Distance still limits reach. Sends the Skill Key when enemy HP is at or below Max Health."));
+        ImGui::TextWrapped("%s", L("Checks the whole body. Expansion allows more crosshair offset; Max Distance still limits reach. Automatically sends the Skill Key when current enemy HP is at or below the threshold. No activation key is needed."));
     }
 
     if (hasControl(OW::HeroSkillControls::Hitbox)) {

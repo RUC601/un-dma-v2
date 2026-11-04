@@ -72,6 +72,8 @@ namespace OW {
 
     inline std::string HeroDisplayNameToSlug(const std::string& displayName) {
         static const std::unordered_map<std::string, std::string> specialCases = {
+            { "D.Mon", "dmon" },
+            { "DMon", "dmon" },
             { "Soldier 76", "soldier-76" },
             { "Soldier76", "soldier-76" },
             { "D.Va", "dva" },

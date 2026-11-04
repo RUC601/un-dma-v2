@@ -1659,7 +1659,6 @@ namespace AimbotDetail {
         bool innerStage = false;
         int methodOverride = -1;
         float smoothScale = 1.0f;
-        float bezierSpeed = -1.0f;
     };
 
     inline TwoStageRuntime& TwoStageState() {
@@ -1861,9 +1860,6 @@ namespace AimbotDetail {
         plan.smoothScale = innerStage
             ? std::clamp(OW::Config::View_aimbotFlick2ndInnerSmoothScale(), 0.1f, 1.0f)
             : 1.0f;
-        plan.bezierSpeed = innerStage
-            ? (std::max)(1.0f, OW::Config::View_aimBezierSpeed() * plan.smoothScale)
-            : -1.0f;
 
         float bodyDistance = 0.0f;
         Vector3 bodyTarget{};
@@ -1899,7 +1895,8 @@ namespace AimbotDetail {
                                 int methodOverride,
                                 float bezierSpeedOverride,
                                 bool commitSmoothingOutput,
-                                bool calculateSmoothing) {
+                                bool calculateSmoothing,
+                                bool inheritTargetMotion) {
         AimData data{};
         const uint64_t playerControllerBase = SDK->g_player_controller;
         if (!playerControllerBase) {
@@ -2086,7 +2083,7 @@ namespace AimbotDetail {
             ? OW::Config::ClampAimMethodIndex(methodOverride)
             : OW::Config::AimBehaviorMethod(behavior);
         const float dispatchAcceleration = dispatchMethod == 4
-            ? OW::Config::RuntimeAimMethodAcceleration(dispatchMethod)
+            ? OW::Config::RuntimeAimMethodAcceleration(dispatchMethod,inheritTargetMotion)
             : (accelerated ? acceleration : 0.0f);
         data.smoothed_angle = OW::SmoothDispatchWithMethod(
             data.local_angle,
@@ -2095,7 +2092,9 @@ namespace AimbotDetail {
             dispatchAcceleration,
             dispatchMethod,
             bezierSpeedOverride,
-            commitSmoothingOutput
+            commitSmoothingOutput,
+            -1.0f,
+            inheritTargetMotion
         );
         const Vector3 rawDelta = data.target_angle - data.local_angle;
         const Vector3 smoothDelta = data.smoothed_angle - data.local_angle;
@@ -3742,15 +3741,16 @@ namespace AimbotDetail {
                     TwoStageEntityKey(target)))
                     OW::ResetAimSmoothingState();
                 PrepareAimCharge(state);
-            AimData aim = BuildAimData(
+                AimData aim = BuildAimData(
                     aimTarget,
                     true,
                     smoothInput,
                     OW::Config::AimBehaviorAcceleration(behavior),
                     twoStagePlan.methodOverride,
-                    twoStagePlan.bezierSpeed,
+                    -1.0f,
                     true,
-                    !repeatPhase.repeat);
+                    !repeatPhase.repeat,
+                    twoStagePlan.methodOverride < 0); // An explicit stage uses its Slot motion, above hero overrides.
                 if (ordinaryFlick && !aim.valid) {
                     PauseOrdinaryFlickMovement(state);
                     break;
@@ -4237,6 +4237,34 @@ namespace AimbotDetail {
         return true;
     }
 
+    inline void RunConfiguredAimBehavior(RuntimeState& state, float origin_sens) {
+        if(state.releaseNeedsActivationUp) return;
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        if(tuning && tuning->releaseToFire && tuning->autoCharge &&
+            OW::Config::View_Flick() && OW::Config::UsesFlickFireControls(OW::Config::View_aimBehavior())) {
+            if(OW::Config::reloading || !AimModeStructureCurrent()) {
+                CancelConfiguredAimShot(state);return;
+            }
+            if(!IsAimActivationKeyDown()&&!state.releasePending) {
+                ResetShootStateOnRelease(state);return;
+            }
+            if(!PrepareAimCharge(state) && (UsesReleaseKeyUpExecution()||!state.releaseShotLatched)) return;
+            if(UsesReleaseKeyUpExecution()) {
+                if(!state.releasePending) return; // Holding charges anywhere without moving the view.
+                const auto target=OW::GetVector3(OW::Config::View_Prediction());
+                if(CompleteReleasedAimAtCrosshair(state,IsZeroVector(target))) return;
+            }
+        }
+        if(!HasEntitySnapshot()) return;
+        if (OW::Config::View_Tracking()) RunTracking(state, origin_sens);
+        else if (OW::Config::View_Flick()) {
+            if (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior()))
+                RunMagneticTrigger(state, origin_sens);
+            else
+                RunFlick(state, origin_sens);
+        }
+    }
+
     inline void RunAimbotTick(RuntimeState& state, float& origin_sens) {
         OW::ScopedConsumptionFrame frame;
         if(!RefreshAimScene(state)) return;
@@ -4279,11 +4307,11 @@ namespace AimbotDetail {
                 static DWORD lastNoSnapshotLogTick = 0;
                 const DWORD now = GetTickCount();
                 if (lastNoSnapshotLogTick == 0 || now - lastNoSnapshotLogTick >= 1000) {
-                    Diagnostics::Aim("aimbot_tick early_return reason=no_entity_snapshot");
+                    Diagnostics::Aim("aimbot_tick target_search_skipped reason=no_entity_snapshot");
                     lastNoSnapshotLogTick = now;
                 }
             }
-            return;
+            // Trigger still samples its own hotkey; release Aim can charge without targets.
         }
 
         MaintainSensitivity(origin_sens);
@@ -4294,13 +4322,8 @@ namespace AimbotDetail {
             if (OW::Config::View_triggerbot2()) RunTriggerbot(true, origin_sens);
         }
 
-        if (OW::Config::View_Tracking()) RunTracking(state, origin_sens);
-        else if (OW::Config::View_Flick()) {
-            if (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior()))
-                RunMagneticTrigger(state, origin_sens);
-            else
-                RunFlick(state, origin_sens);
-        }
+        RunConfiguredAimBehavior(state, origin_sens);
+        if(!HasEntitySnapshot()) return;
 
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
             ObserveReleaseFireInput(state);
@@ -4334,7 +4357,6 @@ namespace AimbotDetail {
         activeAimShotState=&state;
         MaintainConfiguredAimShot(state);
         ObserveAimHoldWindows(state);
-        if(state.releaseNeedsActivationUp) return;
         if (InputSequenceBlocksAim("aimbot_preset")) {
             CancelConfiguredAimShot(state);
             EndOrdinaryFlickActivation(state);
@@ -4358,28 +4380,13 @@ namespace AimbotDetail {
         if (OW::Config::View_aimBehavior() != OW::Config::kAimBehaviorFlick || !IsAimKeyPressed() ||
             OW::Config::reloading)
             EndOrdinaryFlickActivation(state);
-        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
-        if(tuning && tuning->releaseToFire && tuning->autoCharge &&
-            OW::Config::View_Flick() && OW::Config::UsesFlickFireControls(OW::Config::View_aimBehavior())) {
-            if(!LocalEntity().HasUsableBody(GetTickCount(),OW::EntitySceneGeneration()) ||
-                !OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices() || OW::Config::reloading ||
-                !AimModeStructureCurrent()) {
-                CancelConfiguredAimShot(state);return;
-            }
-            if(!IsAimActivationKeyDown()&&!state.releasePending) {
-                ResetShootStateOnRelease(state);return;
-            }
-            if(!PrepareAimCharge(state) && (UsesReleaseKeyUpExecution()||!state.releaseShotLatched)) return;
-            if(UsesReleaseKeyUpExecution()) {
-                if(!state.releasePending) return; // holding charges anywhere and never moves the view
-                const auto target=OW::GetVector3(OW::Config::View_Prediction());
-                if(CompleteReleasedAimAtCrosshair(state,IsZeroVector(target))) return;
-            }
-        }
         RunAimbotTick(state, origin_sens);
-        if(!IsAimKeyPressed()||OW::Config::reloading||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
+        const bool activationOngoing=UsesReleaseKeyUpExecution()
+            ? IsAimActivationKeyDown()||state.releasePending : IsAimKeyPressed();
+        const bool unfinishedCharge=state.releaseOwnedDown||state.releasePending||chargedAimPreset.has_value();
+        if((!activationOngoing&&unfinishedCharge)||OW::Config::reloading||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
            !AimModeStructureCurrent()||
-           (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior())&&TrackingHoldTimedOut(state))||
+           (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior())&&IsAimKeyPressed()&&TrackingHoldTimedOut(state))||
            OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) CancelConfiguredAimShot(state);
     }
 #ifdef UNLEASHED_SELF_TESTS

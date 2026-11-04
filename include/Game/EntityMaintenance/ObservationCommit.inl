@@ -5,19 +5,44 @@
             } else {
 // Shared lexical step of entity_thread; requires its surrounding cycle state.
             if (ComponentParent && LinkParent && name != "Unknown" && hasRenderablePosition) {
-                auto rejectAdmission=[&](size_t reason) {
+                auto& admissionRecord=*cacheIt->second;
+                auto rejectAdmission=[&](size_t reason,const char* detail,const char* liveDetail="none",uint64_t liveHero=0) {
                     const DWORD now=entityAdmissionNow();
-                    if(admissionDiagnosticTicks[reason] && uint32_t(now-admissionDiagnosticTicks[reason])<1000)return;
-                    admissionDiagnosticTicks[reason]=now;
-                    Diagnostics::Warn("[V2-ADMISSION] reason=%zu actor=0x%llX link=0x%llX match=%u roster=0x%llX life=%llu hp=%.1f healthDue=%d healthValid=%d healthTick=%u cycleTick=%u fence=%llu absence=%llu",
-                        reason,entity.address,entity.LinkParent,entity.match_id,entity.roster_key,entity.actor_generation,
+                    if(admissionRecord.admissionRejectReason==detail && admissionRecord.admissionRejectTick &&
+                        uint32_t(now-admissionRecord.admissionRejectTick)<1000)return;
+                    admissionRecord.admissionRejectReason=detail;admissionRecord.admissionRejectTick=now;
+                    const auto found=cycleDiscoveries.actors.find(entity.address);
+                    const auto* expected=found==cycleDiscoveries.actors.end()?nullptr:&found->second;
+                    Diagnostics::Warn("[V2-ADMISSION] reason=%zu detail=%s live_detail=%s live_hero=0x%llX actor=0x%llX link=0x%llX match=%u hero=0x%llX expected_link=0x%llX expected_match=%u expected_hero=0x%llX proof_age_ms=%u member=%d roster=0x%llX life=%llu hp=%.1f healthDue=%d healthValid=%d healthTick=%u cycleTick=%u fence=%llu absence=%llu",
+                        reason,detail,liveDetail,liveHero,entity.address,entity.LinkParent,entity.match_id,entity.HeroID,
+                        expected?expected->link:0,expected?expected->match:0,expected?expected->hero:0,
+                        expected?uint32_t(now-expected->tick):0,latestCompleteActorMembers.contains(entity.address),entity.roster_key,entity.actor_generation,
                         entity.PlayerHealth,int(refreshHealth),int(componentCache.healthValid),componentCache.healthUpdateTick,
                         processLoopTick,entity.body_observation_fence,entity.body_absence_revision);
                 };
+                const auto* initialFailure=OW::EntityRosterPolicy::DiscoveryAdmissionFailure(cycleDiscoveries,
+                    {entity.address,entity.LinkParent,entity.HeroID,entity.match_id,0},completeActorMembershipKnown,
+                    std::find(cycleMemberPairs.begin(),cycleMemberPairs.end(),std::make_pair(ComponentParent,LinkParent))!=cycleMemberPairs.end(),
+                    entityAdmissionNow());
+                bool liveBindingConfirmed=false;
+                if(initialFailure) {
+                    const char* liveFailure="not_local";
+                    uint64_t liveHero=0;
+                    if(entity.AngleBase && entity.Alive && verifyCurrentLocalBinding(entity,admissionRecord.participantControllerUid,liveFailure,&liveHero)) {
+                        const OW::EntityRosterPolicy::Discovery current{entity.address,entity.LinkParent,entity.HeroID,entity.match_id,entityAdmissionNow()};
+                        liveBindingConfirmed=publishCurrentLocalBinding(current);
+                        if(!liveBindingConfirmed)liveFailure="live_context_changed";
+                        else {
+                            const auto observation=OW::CaptureEntityBodyObservation(entity.address);
+                            entity.body_observation_fence=observation.fence;entity.body_absence_revision=observation.absence;
+                            Diagnostics::Info("[V2-LOCAL-BINDING] accepted actor=0x%llX link=0x%llX hero=0x%llX match=%u bypassed=%s",
+                                entity.address,entity.LinkParent,entity.HeroID,entity.match_id,initialFailure);
+                        }
+                    }
+                    if(!liveBindingConfirmed){rejectAdmission(0,initialFailure,liveFailure,liveHero);continue;}
+                }
                 const auto* discovery=cycleDiscoveries.Find(ComponentParent,LinkParent,entityAdmissionNow());
-                if(!discovery || discovery->match!=entity.match_id || discovery->hero!=entity.HeroID ||
-                    (completeActorMembershipKnown && std::find(cycleMemberPairs.begin(),cycleMemberPairs.end(),
-                        std::make_pair(ComponentParent,LinkParent))==cycleMemberPairs.end())) {rejectAdmission(0);continue;}
+                if(!discovery){rejectAdmission(0,"discovery_expired");continue;}
                 entity.scene_generation=processSceneGeneration;
                 entity.last_discovered_tick_ms=discovery->tick;
                 entity.body_valid=entity.Alive;
@@ -73,9 +98,9 @@
                     const bool sameController=existingRosterIt->second->entity.LinkParent==LinkParent &&
                         existingRosterIt->second->participantControllerUid==cacheIt->second->participantControllerUid;
                     uint32_t pairedUid=0;
-                    const bool incomingPaired=sameController && entity.LinkBase &&
+                    const bool incomingPaired=sameController && (liveBindingConfirmed || (entity.LinkBase &&
                         OW::ResolveCnLinkTargetMapBase(entity.LinkBase,offset::Link_UniqueId,&pairedUid)==entity.address &&
-                        pairedUid==entity.match_id;
+                        pairedUid==entity.match_id));
                     switch (OW::EntityRosterPolicy::ResolveSameParticipantObservation(
                         existingRosterIt->second->seenThisCycle || existingFresh,
                         false,
@@ -85,7 +110,7 @@
                         latestCompleteActorMembers.contains(existingRosterIt->second->entity.address),
                         latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired)) {
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::KeepExisting:
-                        rejectAdmission(1);
+                        rejectAdmission(1,!incomingFresh?"incoming_not_alive":sameController?"controller_pair_unconfirmed":"participant_ambiguous");
                         continue;
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::ReplaceExisting:
                     default:
@@ -95,10 +120,10 @@
                 }
                 const auto retiredIt=retiredActors.find(entity.address);
                 if(retiredIt!=retiredActors.end()) {
-                    if(!OW::EntityRosterPolicy::CanReturnRetiredActor(
+                    if(!liveBindingConfirmed && !OW::EntityRosterPolicy::CanReturnRetiredActor(
                         retiredIt->second.matchId==entity.match_id && retiredIt->second.link==entity.LinkParent,
                         retiredIt->second.absent || OW::EntityBodyAbsenceRevision(entity.address)>retiredIt->second.absenceRevision,
-                        latestCompleteActorMembers.contains(entity.address))){rejectAdmission(2);continue;}
+                        latestCompleteActorMembers.contains(entity.address))){rejectAdmission(2,"retired_body_unconfirmed");continue;}
                     retiredActors.erase(retiredIt);
                 }
                 entity.connection_epoch=connectionEpoch;
@@ -111,11 +136,13 @@
                     entity.actual_scan_generation=old->actual_scan_generation;entity.actual_scan_source=old->actual_scan_source;
                 }
                 entity.actor_generation=sameLifetime && old->actor_generation ? old->actor_generation : ++actorGenerationSequence;
+                const char* authorityFailure=nullptr;
                 entity.body_authority_revision=OW::AdmitEntityBodyObservation(*discovery,entity.actor_generation,
                     processSceneGeneration,processRegistry,{entity.body_observation_fence,entity.body_absence_revision},
                     entity.Alive,(refreshHealth || hotReads.HealthRead()) && componentCache.healthValid &&
-                        componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow());
-                if(!entity.body_authority_revision){rejectAdmission(3);continue;}
+                        componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow(),&authorityFailure);
+                if(!entity.body_authority_revision){rejectAdmission(3,authorityFailure);continue;}
+                admissionRecord.admissionRejectReason={};
                 if(!entity.Alive)OW::TargetingDetail::InvalidateTargetBody(entity.address,entity.roster_key,entity.actor_generation);
                 if(old && !sameLifetime) {
                     const auto oldAddress=old->address,oldGeneration=old->actor_generation;

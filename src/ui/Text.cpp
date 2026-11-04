@@ -221,6 +221,7 @@ const char* Label(const char* text, bool chinese) {
     { "Manual release is unavailable: this output device needs physical-button monitoring and masking.", "手动松开发射不可用：当前输出设备需要支持物理按键监听和屏蔽。" },
     { "These values belong to this Slot. Mode edits change behavior and method, not these values.", "下列参数只属于当前 Slot。模式编辑会改变基础行为与算法，已有参数由 Slot 独立保存。" },
     { "Edit mode structure and defaults here. Existing Slot parameters stay independent.", "在此编辑模式结构与默认值。已有 Slot 的参数仍独立保存。" },
+    { "Default modes cannot be deleted.", "默认模式不能删除。" },
     { "This mode is in use. Choose another mode in its Slots before deleting it.", "此模式正被使用。请先为相关 Slot 更换模式，再删除。" },
     { "Mode structure is shared. Slot parameters stay independent.", "模式结构共享，Slot 参数独立保存。" },
 

@@ -86,6 +86,8 @@ inline constexpr NamedU64 kHeroIds[] = {
     { "Mizuki", MakeHeroId(0x4E3) },
     { "Jetpack Cat", MakeHeroId(0x516) },
     { "Shion", MakeHeroId(0x52C) },
+    // Pure hero catalog 0x3CC1F0; CN live 2026-11-04, confirmed by the user.
+    { "D.Mon", MakeHeroId(0x542) },
     { "Standard Bot", MakeHeroId(0x33C) },
     { "Tank Bot", MakeHeroId(0x337) },
     { "Sniper Bot", MakeHeroId(0x35A) },

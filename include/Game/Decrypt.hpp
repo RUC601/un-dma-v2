@@ -1642,7 +1642,7 @@ namespace OW {
         std::vector<std::pair<uint64_t,uint64_t>>* bindingMembers=nullptr,bool* bindingComplete=nullptr,
         std::vector<EntityRosterPolicy::Discovery>* discoveries=nullptr,
         const std::unordered_map<uint64_t,EntityHeaderSnapshot>* headers=nullptr,
-        const std::vector<EntityRosterPolicy::Discovery>* hotActors=nullptr) {
+        const std::vector<EntityRosterPolicy::Discovery>* hotActors=nullptr,bool currentController=false) {
         std::vector<std::pair<uint64_t,uint64_t>> result;
         const DWORD discoveryTick = static_cast<DWORD>(EntityRegistryNowMs());
         if (discoveries) discoveries->clear();
@@ -1664,11 +1664,20 @@ namespace OW {
         const bool linkIdRead=link && SDK->read_range(link+offset::Link_TargetId,linkIds.data(),sizeof(linkIds));
         const bool targetIdRead=linkIdRead;
         const uint32_t targetId=linkIds[0],linkId=linkIds[1];
-        bool allBindingsResolved=topology.member_ids_complete && linkIdRead && targetIdRead;
+        bool allBindingsResolved=(currentController || topology.member_ids_complete) && linkIdRead && targetIdRead;
         std::vector<std::pair<uint64_t,uint64_t>> contextBindings;
         if(linkIdRead && targetIdRead)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
             const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
             if(!id || (idOffset==offset::Link_UniqueId && id==targetId))continue;
+            if(currentController) {
+                uint32_t resolvedId=0;
+                const auto target=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId);
+                if(resolvedId==id && IsPlausibleUserPointer(target)) {
+                    if(std::find(components.begin(),components.end(),target)==components.end())components.push_back(target);
+                    contextBindings.emplace_back(idOffset,target);
+                    continue;
+                }
+            }
             std::vector<uint64_t> matches;
             for(const auto& [component,memberId]:topology.member_ids)
                 if(memberId==id && component!=parent)matches.push_back(component);
@@ -1684,6 +1693,7 @@ namespace OW {
         }
         if(link)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
             const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
+            if(std::any_of(contextBindings.begin(),contextBindings.end(),[&](const auto& pair){return pair.first==idOffset;}))continue;
             if(id && std::any_of(topology.member_ids.begin(),topology.member_ids.end(),[&](const auto& pair){return pair.second==id;}))continue;
             const auto target=ResolveCnLinkTargetMapBase(link,idOffset);
             if(id && !IsPlausibleUserPointer(target) &&
@@ -1703,8 +1713,10 @@ namespace OW {
             const auto matchedId=std::find_if(topology.member_ids.begin(),topology.member_ids.end(),[&](const auto& pair) {
                 return pair.first==component && pair.second && (pair.second==linkId || pair.second==targetId);
             });
-            const bool matchedById=matchedId!=topology.member_ids.end();
-            const uint32_t expectedId=matchedById?matchedId->second:0;
+            const auto context=std::find_if(contextBindings.begin(),contextBindings.end(),[&](const auto& pair){return pair.second==component;});
+            const bool matchedById=context!=contextBindings.end() || matchedId!=topology.member_ids.end();
+            const uint32_t expectedId=context!=contextBindings.end()
+                ? (context->first==offset::Link_TargetId?targetId:linkId) : (matchedById?matchedId->second:0);
             uint32_t componentMatch=0;
             if(matchedById && (!componentHeader.ReadParentOffset(offset::Entity_MatchId,componentMatch) || componentMatch!=expectedId)) {
                 trace(8,component);continue;

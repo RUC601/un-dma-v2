@@ -106,14 +106,28 @@ inline bool EntityBodyEvidenceCurrentLocked(const EntityRosterPolicy::Discovery&
 // Only the verified observation/identity reconciliation path calls this, never publication.
 inline uint64_t AdmitEntityBodyObservation(const EntityRosterPolicy::Discovery& identity,uint64_t generation,
     uint64_t scene,const EntityRegistry::Snapshot& registry,EntityBodyObservation observation,
-    bool alive,bool lifeStateObserved,uint32_t now) {
+    bool alive,bool lifeStateObserved,uint32_t now,const char** rejection=nullptr) {
+    if(rejection)*rejection=nullptr;
+    const auto reject=[&](const char* reason)->uint64_t {if(rejection)*rejection=reason;return 0;};
     std::lock_guard<std::mutex> registryLock(entityRegistryMonitor.mutex);
     std::lock_guard<std::mutex> lock(entityBodyValidityMutex);
-    if(!generation || !runtimeWorkersRunning.load(std::memory_order_acquire) || !ProcessConnection::IsConnected() ||
-        ProcessConnection::ConnectionEpoch()!=registry.epoch || !entityRegistryMonitor.state.Accept(registry) ||
-        !EntityBodyEvidenceCurrentLocked(identity,scene,now,observation.absence))return 0;
+    if(!generation)return reject("generation_missing");
+    if(!runtimeWorkersRunning.load(std::memory_order_acquire))return reject("worker_stopped");
+    if(!ProcessConnection::IsConnected())return reject("disconnected");
+    if(ProcessConnection::ConnectionEpoch()!=registry.epoch)return reject("connection_changed");
+    if(!entityRegistryMonitor.state.Accept(registry))return reject("registry_changed");
+    if(scene!=EntitySceneGeneration())return reject("scene_changed");
+    const auto absence=entityBodyAbsenceRevisions.find(identity.address);
+    if(observation.absence!=(absence==entityBodyAbsenceRevisions.end()?0:absence->second))return reject("absence_changed");
+    if(blockedEntityBodies.contains(identity.address))return reject("body_blocked");
+    const auto evidence=entityBodyDiscoveries.find(identity.address);
+    if(evidence==entityBodyDiscoveries.end())return reject("evidence_missing");
+    if(evidence->second.link!=identity.link)return reject("evidence_link_mismatch");
+    if(evidence->second.hero!=identity.hero)return reject("evidence_hero_mismatch");
+    if(evidence->second.match!=identity.match)return reject("evidence_match_mismatch");
+    if(EntityRosterPolicy::Expired(evidence->second.tick,now))return reject("evidence_expired");
     auto found=entityBodyAuthorities.find(identity.address);
-    if(found!=entityBodyAuthorities.end() && found->second.revision>observation.fence)return 0;
+    if(found!=entityBodyAuthorities.end() && found->second.revision>observation.fence)return reject("observation_superseded");
     const bool changed=found==entityBodyAuthorities.end() || !found->second.admitted ||
         found->second.generation!=generation || found->second.epoch!=registry.epoch || found->second.scene!=scene ||
         found->second.registry!=registry.generation || found->second.absence!=observation.absence ||
@@ -121,7 +135,7 @@ inline uint64_t AdmitEntityBodyObservation(const EntityRosterPolicy::Discovery& 
         found->second.identity.match!=identity.match || found->second.alive!=alive;
     if(changed) {
         // Death needs a current death byte; admission/revival also needs complete current health.
-        if(!lifeStateObserved)return 0;
+        if(!lifeStateObserved)return reject("life_sample_missing");
         const auto revision=++entityBodyAuthoritySequence;
         entityBodyAuthorities[identity.address]={identity,generation,registry.epoch,scene,registry.generation,
             observation.absence,revision,alive,true};

@@ -14,7 +14,7 @@ struct HeroProfileSwitch {
 
 class HeroProfileSwitchDebouncer {
 public:
-    explicit HeroProfileSwitchDebouncer(uint64_t stableWindowMs = 300) noexcept
+    explicit HeroProfileSwitchDebouncer(uint64_t stableWindowMs = 100) noexcept
         : stableWindowMs_(stableWindowMs)
     {
     }
@@ -84,7 +84,7 @@ private:
         candidateSinceMs_ = 0;
     }
 
-    uint64_t stableWindowMs_ = 300;
+    uint64_t stableWindowMs_ = 100;
     uint64_t confirmedHeroId_ = 0;
     uint64_t confirmedLinkBase_ = 0;
     uint64_t candidateHeroId_ = 0;

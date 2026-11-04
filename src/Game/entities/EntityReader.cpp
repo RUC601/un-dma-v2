@@ -1196,6 +1196,7 @@ void entity_thread() {
             }
         }
         StepAcquisitionDiscovery();
+#include "Game/EntityMaintenance/LiveBinding.inl"
         const uint64_t maintenanceStartedUs=RuntimeTrace::NowUs();
         size_t maintenanceVisited=0;
 

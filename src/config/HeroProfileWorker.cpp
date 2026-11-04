@@ -11,7 +11,7 @@ namespace OW { namespace Config {
 }}
 
 void configsavenloadthread() {
-    OW::HeroProfileSwitchDebouncer heroSwitchDebouncer(300);
+    OW::HeroProfileSwitchDebouncer heroSwitchDebouncer;
     uint64_t observedConnectionEpoch = 0;
     DWORD lastInvalidHeroLogTick = 0;
     while (OW::RuntimeWorkersRunning()) {

@@ -70,7 +70,8 @@ namespace AimbotDetail {
                                 int methodOverride = -1,
                                 float bezierSpeedOverride = -1.0f,
                                 bool commitSmoothingOutput = true,
-                                bool calculateSmoothing = true);
+                                bool calculateSmoothing = true,
+                                bool inheritTargetMotion = true);
     void ResetTrackingSession(RuntimeState& state);
     void PauseOrdinaryFlickMovement(RuntimeState& state);
     void EndOrdinaryFlickActivation(RuntimeState& state);

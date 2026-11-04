@@ -171,7 +171,7 @@ namespace {
 
         static constexpr const char* kHeroAvatarNames[] = {
             "Ana", "Anran", "Ashe", "Baptiste", "Bastion", "Brigitte",
-            "Cassidy", "Domina", "Doomfist", "D.Va", "Echo", "Emre",
+            "Cassidy", "Domina", "Doomfist", "D.Va", "D.Mon", "Echo", "Emre",
             "Freja", "Genji", "Hanzo", "Hazard", "Illari", "Jetpack Cat",
             "Junker Queen", "Junkrat", "Juno", "Kiriko", "LifeWeaver",
             "Lucio", "Mauga", "Mei", "Mercy", "Mizuki", "Moira", "Orisa",

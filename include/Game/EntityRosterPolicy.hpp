@@ -89,6 +89,19 @@ struct DiscoveryBook {
     }
 };
 
+inline const char* DiscoveryAdmissionFailure(const DiscoveryBook& book, const Discovery& current,
+    bool membershipKnown, bool member, uint32_t now) {
+    const auto found=book.actors.find(current.address);
+    if(found==book.actors.end())return "discovery_missing";
+    const auto& proof=found->second;
+    if(proof.link!=current.link)return "discovery_link_mismatch";
+    if(Expired(proof.tick,now))return "discovery_expired";
+    if(proof.match!=current.match)return "discovery_match_mismatch";
+    if(proof.hero!=current.hero)return "discovery_hero_mismatch";
+    if(membershipKnown && !member)return "membership_pending";
+    return nullptr;
+}
+
 enum class SceneAudit : uint8_t { Unknown, Present, Empty };
 inline SceneAudit ClassifySceneMember(bool headerRead,bool heroComponent,bool knownHero,
     bool actorComponents,bool knownDynamic) {
@@ -209,9 +222,9 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     (void)existingSeenThisCycle;
     if(sameActor)return SameParticipantObservationAction::ReplaceExisting;
     if(!incomingFresh)return SameParticipantObservationAction::KeepExisting;
-    if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
+    if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if (membershipKnown && existingMember && incomingMember)
         return SameParticipantObservationAction::KeepExisting;
     if (incomingFresh && !existingFresh)

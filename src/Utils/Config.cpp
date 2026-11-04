@@ -294,13 +294,13 @@ namespace OW { namespace Config {
 
     namespace Detail {
 
-        constexpr int kCurrentConfigVersion = 14;
+        constexpr int kCurrentConfigVersion = 16;
         constexpr int kPresetBonesStoredAsAimBonesVersion = 3;
         constexpr int kFovAnglesStoredAsHalfAnglesVersion = 5;
         constexpr int kAimBehaviorSemanticsVersion = 6;
         constexpr int kVisualOverlayCleanupVersion = 8;
         constexpr int kDefaultAimPolicyVersion = 14;
-        constexpr int kCurrentHeroConfigVersion = 18;
+        constexpr int kCurrentHeroConfigVersion = 19;
         constexpr int kHeroFovAnglesStoredAsHalfAnglesVersion = 2;
         constexpr int kHeroAimBehaviorSemanticsVersion = 3;
         constexpr int kRoadhogChainHookFullHealthDefaultVersion = 5;
@@ -316,6 +316,7 @@ namespace OW { namespace Config {
         constexpr const char* kAimbotSection = "Aimbot";
         constexpr const char* kAimMethodSection = "AimMethod";
         constexpr int kMaxAimCustomPresets = 64;
+        constexpr int kMaxAimBehaviorPresets = kMaxAimCustomPresets + kAimBehaviorCount;
         constexpr const char* kDefaultOutputIp = "192.168.2.188";
         constexpr int kDefaultOutputPort = 8808;
         constexpr int kDefaultOutputMonitorPort = kDefaultOutputPort + 1;
@@ -510,6 +511,9 @@ namespace OW { namespace Config {
         AimBehaviorPreset ValidateAimBehaviorPresetValue(AimBehaviorPreset preset, int fallbackIndex = -1)
         {
             preset.name = NormalizeAimPresetName(preset.name, "Behavior Preset", fallbackIndex);
+            if (preset.defaultBehavior < -1 || preset.defaultBehavior >= kAimBehaviorCount)
+                preset.defaultBehavior = -1;
+            if (preset.defaultBehavior >= 0) preset.behavior = preset.defaultBehavior;
             preset.behavior = ClampAimBehaviorIndex(preset.behavior);
             preset.methodPresetId = ClampAimMethodPresetId(preset.methodPresetId);
             if (const AimMethodPreset* methodPreset = FindAimMethodPreset(preset.methodPresetId))
@@ -590,6 +594,7 @@ namespace OW { namespace Config {
             { OW::eHero::HERO_VENDETTA,     "Vendetta",     nullptr,          nullptr },
             { OW::eHero::HERO_ANRAN,        "Anran",        nullptr,          nullptr },
             { OW::eHero::HERO_SHION,        "Shion",        nullptr,          nullptr },
+            { OW::eHero::HERO_DMON,         "DMon",         "D.Mon",          nullptr },
             { OW::eHero::HERO_REINHARDT,    "Reinhardt",    "Reinhardt",      nullptr },
             { OW::eHero::HERO_WINSTON,      "Winston",      "Winston",        nullptr },
             { OW::eHero::HERO_ZARYA,        "Zarya",        "Zarya",          nullptr },
@@ -628,6 +633,8 @@ namespace OW { namespace Config {
 
         HeroPreset ValidateHeroPresetValueForHero(uint64_t heroId, HeroPreset preset);
         bool gLastHeroConfigNeedsSave = false;
+        bool gDefaultBehaviorModesChanged = false;
+        void MigrateDefaultBehaviorModesUnlocked();
         int gLoadedHeroConfigVersion = kCurrentHeroConfigVersion;
 
         struct IniFile {
@@ -2562,6 +2569,81 @@ namespace OW { namespace Config {
             };
             ensureBasicStore(heroAimPresets, HeroPresetSlotKind::Aim);
             ensureBasicStore(heroTriggerPresets, HeroPresetSlotKind::Trigger);
+            MigrateDefaultBehaviorModesUnlocked();
+        }
+
+        int EnsureDefaultBehaviorModeUnlocked(int behavior, int method)
+        {
+            constexpr const char* names[] = {
+                "Default Tracking", "Default Flick", "Default Flick2nd",
+                "Default Reacquire", "Default Magnetic Trigger"
+            };
+            constexpr const char* methods[] = {
+                "Linear", "PID", "Bezier", "Piecewise", "Accel Limited",
+                "Constant", "Hybrid PID", "Shuwu", "Error Response Curve"
+            };
+            const auto motion = CaptureBehaviorMotion(behavior, true);
+            const bool builtin = method < 0;
+            if (builtin) {
+                if (const int id = DefaultAimBehaviorPresetId(behavior); id >= 0) return id;
+                method = motion.method;
+            }
+            std::string name = names[behavior];
+            if (method != motion.method)
+                name += std::string(" (") + methods[method] + ")";
+            for (auto& mode : aimBehaviorPresets)
+                if (mode.name == name && mode.behavior == behavior && mode.method == method) {
+                    if (builtin) { mode.defaultBehavior = behavior; gDefaultBehaviorModesChanged = true; }
+                    return mode.id;
+                }
+            if (aimBehaviorPresets.size() >= static_cast<size_t>(kMaxAimBehaviorPresets)) {
+                LogConfig(Diagnostics::LogLevel::Warn,
+                    "Cannot migrate %s: behavior mode list is full; keeping Slot custom.", name.c_str());
+                return -1;
+            }
+            AimBehaviorPreset mode;
+            nextAimBehaviorPresetId = (std::max)(nextAimBehaviorPresetId, NextCustomPresetId(aimBehaviorPresets));
+            mode.id = nextAimBehaviorPresetId++;
+            mode.defaultBehavior = builtin ? behavior : -1;
+            mode.name = name;
+            mode.behavior = behavior;
+            mode.method = method;
+            mode.motion = motion;
+            mode.motion.method = method;
+            mode.baseSpeed = aimBehaviorBaseSpeed[behavior];
+            mode.startLimiter = aimBehaviorStartLimiterProfiles[behavior];
+            mode.moveSplitEnabled = aimBehaviorMoveSplitEnabled[behavior];
+            mode.moveSplitMaxPixels = aimBehaviorMoveSplitMaxPixels[behavior];
+            mode.moveSplitDelayUs = aimBehaviorMoveSplitDelayUs[behavior];
+            aimBehaviorPresets.push_back(ValidateAimBehaviorPresetValue(mode));
+            gDefaultBehaviorModesChanged = true;
+            return mode.id;
+        }
+
+        void MigrateDefaultBehaviorModesUnlocked()
+        {
+            for (int behavior = 0; behavior < kAimBehaviorCount; ++behavior)
+                EnsureDefaultBehaviorModeUnlocked(behavior);
+            for (auto& [hero, slots] : heroAimPresets) {
+                for (auto& slot : slots) {
+                    auto& preset = slot.preset;
+                    if (!slot.present || preset.aimBehaviorPresetId >= 0)
+                        continue;
+                    const auto* base = FindAimBehaviorPreset(DefaultAimBehaviorPresetId(preset.aimBehavior));
+                    const int id = base && base->method == preset.aimMethod ? base->id :
+                        EnsureDefaultBehaviorModeUnlocked(preset.aimBehavior, preset.aimMethod);
+                    if (id < 0) continue;
+                    StoreHeroBehaviorMode(preset);
+                    // Copy the Slot's effective values before binding the shared structure.
+                    auto config = EnsureSlotBehaviorConfig(preset, -1);
+                    config.presetId = id;
+                    EnsureSlotBehaviorConfig(preset, id) = std::move(config);
+                    preset.aimBehaviorPresetId = id;
+                    preset.resolvedModeId = id;
+                    ResolveHeroBehaviorMode(preset);
+                    gLastHeroConfigNeedsSave = true;
+                }
+            }
         }
 
         void ValidateHeroSkillPresetsUnlocked()
@@ -2606,8 +2688,8 @@ namespace OW { namespace Config {
             }
 
             int nextBehaviorId = NextCustomPresetId(aimBehaviorPresets);
-            if (aimBehaviorPresets.size() > static_cast<size_t>(kMaxAimCustomPresets))
-                aimBehaviorPresets.resize(static_cast<size_t>(kMaxAimCustomPresets));
+            if (aimBehaviorPresets.size() > static_cast<size_t>(kMaxAimBehaviorPresets))
+                aimBehaviorPresets.resize(static_cast<size_t>(kMaxAimBehaviorPresets));
             for (size_t index = 0; index < aimBehaviorPresets.size(); ++index) {
                 if (aimBehaviorPresets[index].id < 0 || idUsed(aimBehaviorPresets, aimBehaviorPresets[index].id, index))
                     aimBehaviorPresets[index].id = nextBehaviorId++;
@@ -2861,6 +2943,7 @@ namespace OW { namespace Config {
             aimMethodPresets.clear();
             aimBehaviorPresets.clear();
             dynamicFovPresets.clear();
+            gDefaultBehaviorModesChanged = false;
             aimbotFovMode = kFovModeFixed;
             aimbotDynamicFovPresetId = -1;
         }
@@ -4929,8 +5012,13 @@ namespace OW { namespace Config {
                     heroConfigVersion,
                     legacyFovApertureValues);
 
+            const bool needsSaveBeforeGeneratedSlots = gLastHeroConfigNeedsSave;
             ValidateHeroPresetsUnlocked();
             ValidateHeroSkillPresetsUnlocked();
+            if (heroConfigVersion < 19)
+                MigrateDefaultBehaviorModesUnlocked();
+            if (aimStore == document.MemberEnd() || (aimStore->value.IsObject() && aimStore->value.ObjectEmpty()))
+                gLastHeroConfigNeedsSave = needsSaveBeforeGeneratedSlots;
             LogConfig(Diagnostics::LogLevel::Info,
                 "Loaded hero config JSON from %s.", heroConfigPath.c_str());
             return true;
@@ -5062,6 +5150,7 @@ namespace OW { namespace Config {
             }
 
             ValidateHeroPresetsUnlocked();
+            MigrateDefaultBehaviorModesUnlocked();
         }
 
         bool IniHasHeroPresetSections(const IniFile& ini)
@@ -5094,14 +5183,15 @@ namespace OW { namespace Config {
         }
 
         bool LoadHeroConfigOrMigrateUnlocked(const std::string& heroConfigPath, const IniFile* legacyIni,
-                                             const rapidjson::Document* prepared = nullptr)
+                                             const rapidjson::Document* prepared = nullptr,
+                                             bool deferMigrationSave = false)
         {
             rapidjson::Document read;
             if (!prepared && !ReadHeroConfigForLoad(heroConfigPath, read)) return false;
             const auto& document = prepared ? *prepared : read;
             if (!document.IsNull()) {
                 LoadHeroConfigUnlocked(heroConfigPath, document);
-                if (!gLastHeroConfigNeedsSave) return true;
+                if (!gLastHeroConfigNeedsSave || deferMigrationSave) return true;
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 gLastHeroConfigNeedsSave = !saved;
                 return saved;
@@ -5111,11 +5201,15 @@ namespace OW { namespace Config {
             heroSkillPresets.clear();
             if (legacyIni && IniHasHeroPresetSections(*legacyIni)) {
                 LoadHeroPresetsUnlocked(*legacyIni);
+                if (deferMigrationSave) { gLastHeroConfigNeedsSave = true; return true; }
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
                     "Legacy INI hero migration at %s: saved=%d.", heroConfigPath.c_str(), saved ? 1 : 0);
                 return saved;
             }
+            ValidateHeroPresetsUnlocked();
+            MigrateDefaultBehaviorModesUnlocked();
+            gLastHeroConfigNeedsSave = false; // No existing sidecar or legacy data to migrate.
             return true;
         }
 
@@ -5442,6 +5536,7 @@ namespace OW { namespace Config {
             preset.id = ReadInt(ini, section, "id", fallbackIndex + 1);
             preset.name = ReadString(ini, section, "name", NormalizeAimPresetName("", "Behavior Preset", fallbackIndex).c_str());
             preset.behavior = ReadInt(ini, section, "behavior", preset.behavior);
+            preset.defaultBehavior = ReadInt(ini, section, "defaultBehavior", -1);
             preset.method = ReadInt(ini, section, "method", preset.method);
             preset.methodPresetId = ReadInt(ini, section, "methodPresetId", preset.methodPresetId);
             preset.baseSpeed = ReadFixedFloat(ini, section, "baseSpeed", preset.baseSpeed);
@@ -5507,7 +5602,7 @@ namespace OW { namespace Config {
             const int behaviorPresetCount = std::clamp(
                 ReadInt(ini, section, "behaviorPresetCount", 0),
                 0,
-                kMaxAimCustomPresets);
+                kMaxAimBehaviorPresets);
             nextAimBehaviorPresetId=(std::max)(1,ReadInt(ini,section,"nextBehaviorPresetId",1));
             aimBehaviorPresets.clear();
             aimBehaviorPresets.reserve(static_cast<size_t>(behaviorPresetCount));
@@ -5890,6 +5985,7 @@ namespace OW { namespace Config {
             WriteIntValue(path, section, "id", preset.id);
             WriteStringValue(path, section, "name", preset.name.c_str());
             WriteIntValue(path, section, "behavior", preset.behavior);
+            WriteIntValue(path, section, "defaultBehavior", preset.defaultBehavior);
             WriteIntValue(path, section, "method", preset.method);
             WriteIntValue(path, section, "methodPresetId", preset.methodPresetId);
             WriteFixedFloatValue(path, section, "baseSpeed", preset.baseSpeed);
@@ -7241,11 +7337,17 @@ namespace OW { namespace Config {
         LoadSystemConfigUnlocked(ini);
         if (needsMigration)
             ApplySystemConfigMigrationDefaultsUnlocked(fileVersion);
-        migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument);
+        migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument, true);
         gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
         ApplyLoadedHeroPresetsUnlocked(heroId);
         ValidateUnlocked();
-        if (needsMigration && !SaveSystemConfigUnlocked(path)) migrationSaved = false;
+        const bool migratedModes = heroDocument.IsNull() || ReadJsonInt(heroDocument, "version", 1) < 19;
+        if ((needsMigration || migratedModes || gDefaultBehaviorModesChanged) && !SaveSystemConfigUnlocked(path)) migrationSaved = false;
+        // Persist definitions first so a failed INI write cannot leave dangling Slot IDs.
+        if (migrationSaved && gLastHeroConfigNeedsSave) {
+            migrationSaved = SaveHeroPresetsUnlocked(HeroConfigPath(path));
+            gLastHeroConfigNeedsSave = !migrationSaved;
+        }
         DumpUnlocked(Diagnostics::LogLevel::Debug);
 
         LogConfig(Diagnostics::LogLevel::Info,
@@ -7412,6 +7514,7 @@ namespace OW { namespace Config {
 
     bool AimBehaviorPresetInUse(int id) {
         std::lock_guard<std::mutex> lock(mutex);ScopedConfigAuthority authority(false);
+        if (const auto* mode = FindAimBehaviorPreset(id); mode && mode->defaultBehavior >= 0) return true;
         if(aimBehaviorPresetId==id || gSystemHeroFallback.aimBehaviorPresetId==id) return true;
         for(const auto& [hero,slots]:heroAimPresets) for(const auto& slot:slots)
             if(slot.present && slot.preset.aimBehaviorPresetId==id) return true;

@@ -2152,14 +2152,16 @@ bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod)
 }
 
 bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior, const char* noneText) {
-    if (!OW::Config::FindAimBehaviorPreset(*presetId))
-        *presetId = -1;
-
     bool changed = false;
-    const char* preview = AimBehaviorPresetPreview(*presetId, L(noneText));
+    if (!OW::Config::FindAimBehaviorPreset(*presetId)) {
+        const int fallback = noneText ? -1 : OW::Config::DefaultAimBehaviorPresetId();
+        changed = *presetId != fallback;
+        *presetId = fallback;
+    }
+    const char* preview = AimBehaviorPresetPreview(*presetId, noneText ? L(noneText) : "");
     if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest)) {
         const bool noneSelected = *presetId < 0;
-        if (ImGui::Selectable(L(noneText), noneSelected)) {
+        if (noneText && ImGui::Selectable(L(noneText), noneSelected)) {
             *presetId = -1;
             changed = true;
         }
@@ -2190,6 +2192,8 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
         }
         ImGui::EndCombo();
     }
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    IMGUI_TEST_ENGINE_ITEM_INFO(ImGui::GetID(label), label, g.LastItemData.StatusFlags);
     return changed;
 }
 

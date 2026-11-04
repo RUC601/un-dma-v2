@@ -18,6 +18,7 @@ int ClampHeroPresetSlotIndex(int slotIndex);
 std::string DefaultHeroSlotName(int slotIndex);
 std::string NormalizeHeroSlotName(const std::string& name, int slotIndex);
 uint64_t NewSlotIdentity();
+int EnsureDefaultBehaviorModeUnlocked(int behavior, int method = -1);
 void ResetHeroPresetSlot(HeroSlotPreset& slot, int slotIndex);
 void InitializeBasicHeroPresetSlots(std::array<HeroSlotPreset, kHeroPresetSlotCount>& slots,
                                             uint64_t heroId,

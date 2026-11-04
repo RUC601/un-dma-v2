@@ -405,12 +405,16 @@ void DrawMiscBehaviorPage() {
     if(ImGui::InputText("##modeName",name,IM_ARRAYSIZE(name))) {mode.name=NormalizeUiPresetName(name,"Behavior Preset",-1);changed=true;}
     ImGui::PopItemWidth();
     SettingRow("Aim Behavior");PushControlWidth();
+    ImGui::BeginDisabled(mode.defaultBehavior >= 0);
     changed|=UISelect("##modeBehavior",&mode.behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior));ImGui::PopItemWidth();
+    ImGui::EndDisabled();
     ImGui::TextWrapped("%s",L("Edit mode structure and defaults here. Existing Slot parameters stay independent."));
     changed|=UI::BehaviorTuningEditor(mode,mode.behavior);
     changed|=UI::AimPlanEditor::Motion(mode.motion);
     mode.method=mode.motion.method;mode.methodPresetId=-1;
-    ImGui::BeginDisabled(View_aimBehaviorPresets().size()>=64);
+    const bool modeListFull = std::count_if(View_aimBehaviorPresets().begin(), View_aimBehaviorPresets().end(),
+        [](const auto& p) { return p.defaultBehavior < 0; }) >= 64;
+    ImGui::BeginDisabled(modeListFull);
     if(UIActionButton(L("Save as new mode"),140.f)) {
         auto created=CaptureBehaviorPresetFromCurrent(mode.behavior,mode.method,-1,mode.baseSpeed,
             mode.startLimiter,mode.moveSplitEnabled,mode.moveSplitMaxPixels,mode.moveSplitDelayUs,name);
@@ -418,16 +422,19 @@ void DrawMiscBehaviorPage() {
         View_aimBehaviorPresets().push_back(created);selectedId=created.id;lastId=-2;changed=true;
     }
     ImGui::EndDisabled();
-    if(View_aimBehaviorPresets().size()>=64) ImGui::TextWrapped("%s",L("The mode list is full (64). Delete an unused mode to add another."));
+    if(modeListFull) ImGui::TextWrapped("%s",L("The mode list is full (64). Delete an unused mode to add another."));
     if(selectedId>=0) {
+        const auto* deleteCandidate=FindAimBehaviorPreset(selectedId);
+        const bool protectedDefault=deleteCandidate && deleteCandidate->defaultBehavior>=0;
         const bool used=AimBehaviorPresetInUse(selectedId);
         ImGui::SameLine();ImGui::BeginDisabled(used);
         if(UIActionButton(L("Delete mode"),110.f)) {
-            std::erase_if(View_aimBehaviorPresets(),[&](const auto& p){return p.id==selectedId;});
+            std::erase_if(View_aimBehaviorPresets(),[&](const auto& p){return p.id==selectedId && p.defaultBehavior<0;});
             selectedId=-1;lastId=-2;changed=true;
         }
         ImGui::EndDisabled();
-        if(used) ImGui::TextWrapped("%s",L("This mode is in use. Choose another mode in its Slots before deleting it."));
+        if(protectedDefault) ImGui::TextWrapped("%s",L("Default modes cannot be deleted."));
+        else if(used) ImGui::TextWrapped("%s",L("This mode is in use. Choose another mode in its Slots before deleting it."));
     }
     CloseGroupBox();
     UIGroupBox("Output shaping");

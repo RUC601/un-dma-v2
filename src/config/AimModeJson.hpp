@@ -108,7 +108,8 @@ inline std::vector<SlotBehaviorConfig> ReadConfigs(const Value& value) {
     std::vector<SlotBehaviorConfig> result;
     if(!value.IsArray()) return result;
     for(const auto& v:value.GetArray()) {
-        if(result.size()>=65) break;
+        // Protected defaults and retained legacy caches also occupy entries.
+        // ResolveHeroBehaviorMode removes unknown mode IDs after loading.
         SlotBehaviorConfig c; Read(v,"presetId",c.presetId);
         if(c.presetId< -1 || std::any_of(result.begin(),result.end(),[&](const auto& old){return old.presetId==c.presetId;})) continue;
         if(v.IsObject()&&v.HasMember("behaviors")&&v["behaviors"].IsArray()) for(const auto& b:v["behaviors"].GetArray()) {

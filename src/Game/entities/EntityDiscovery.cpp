@@ -17,7 +17,9 @@ struct DiscoveryState {
     uint64_t validationRevision=0;
     bool validating=false, bindingsComplete=false;
     uint64_t epoch=0, scene=0, completed=0, scanRequest=0;
-    DWORD lastScan=0, lastKnownProbe=0;
+    DWORD lastScan=0, lastKnownProbe=0, lastLocalProbe=0;
+    uint64_t localLink=0;
+    OW::EntityRosterPolicy::Discovery lastLocalIdentity{};
     std::chrono::steady_clock::time_point started;
 };
 
@@ -33,7 +35,8 @@ bool PublishDiscovery(DiscoveryState& state,
     sample.binding_complete=bindingComplete; sample.binding_entities=std::move(bindings);
     for(const auto& pair:sample.raw_entities)sample.actual_members.push_back(pair.first);
     sample.scan_started_at=state.started; sample.scan_finished_at=std::chrono::steady_clock::now();
-    sample.source=state.validating?1:2; sample.valid=true;
+    // A live binding keeps its replacement authority while the full scan is validating.
+    sample.source=bindingComplete?2:(state.validating?1:2); sample.valid=true;
     std::lock_guard<std::mutex> lock(OW::raw_scan_mutex);
     if(!OW::RuntimeWorkersRunning() || !OW::ProcessConnection::IsConnected() ||
         OW::EntitySceneGeneration()!=state.scene || !OW::AcceptEntityRegistry(state.registry))return false;
@@ -69,6 +72,31 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     }
     if(!registry.available)return;
     const DWORD now=static_cast<DWORD>(OW::EntityRegistryNowMs());
+    const auto frame=OW::SnapshotFrame();
+    const auto& local=frame->local;
+    // Keep only a controller hint across body replacement; the probe still validates the entire new binding.
+    if(local.LinkParent && local.AngleBase && local.connection_epoch==epoch && local.scene_generation==scene)
+        state.localLink=local.LinkParent;
+    if(state.localLink && state.topology.complete &&
+        (!state.lastLocalProbe || now-state.lastLocalProbe>=50)) {
+        discoveryOperation="local_binding";
+        std::vector<OW::EntityRosterPolicy::Discovery> proofs;
+        std::vector<std::pair<uint64_t,uint64_t>> bindings;
+        std::vector<OW::EntityRosterPolicy::Discovery> hotActors;
+        if(local.HasUsableBody(now,scene))
+            hotActors.push_back({local.address,local.LinkParent,local.HeroID,local.match_id,local.anchor_sample_tick_ms});
+        bool complete=false;
+        auto pairs=OW::ProbePriorityActor(state.localLink,state.topology,true,&bindings,&complete,&proofs,nullptr,&hotActors,true);
+        for(const auto& proof:proofs)if(proof.address!=state.lastLocalIdentity.address ||
+            proof.match!=state.lastLocalIdentity.match || proof.hero!=state.lastLocalIdentity.hero) {
+            Diagnostics::Info("[V2-LOCAL-PROBE] actor=0x%llX link=0x%llX hero=0x%llX match=%u binding_complete=%d",
+                proof.address,proof.link,proof.hero,proof.match,int(complete));
+            state.lastLocalIdentity=proof;
+        }
+        if(!pairs.empty())PublishDiscovery(state,std::move(pairs),std::move(proofs),false,complete,std::move(bindings));
+        state.lastLocalProbe=static_cast<DWORD>(OW::EntityRegistryNowMs());
+        return;
+    }
     // Renew known bindings from the same topology used by the resumable full scan.
     if(!state.validating && !state.knownLinks.empty() && now-state.lastKnownProbe>=32 && state.topology.complete) {
         discoveryOperation="known_binding";
@@ -77,7 +105,6 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         std::vector<OW::EntityRosterPolicy::Discovery> proofs;
         std::vector<std::pair<uint64_t,uint64_t>> bindings;
         bool complete=false;
-        const auto frame=OW::SnapshotFrame();
         std::vector<OW::EntityRosterPolicy::Discovery> hotActors;
         for(const auto& entity:frame->entities)if(entity.HasUsableBody(now,scene))
             hotActors.push_back({entity.address,entity.LinkParent,entity.HeroID,entity.match_id,entity.anchor_sample_tick_ms});

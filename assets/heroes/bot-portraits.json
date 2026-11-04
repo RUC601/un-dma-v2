@@ -1,7 +1,8 @@
 {
   "source": "OWLib DataTool v2.25.0.0+1151; CN 2.25.0.0.154461N, internal manifest build 154088",
   "export_date": "2026-11-04",
-  "friendly_heavy_override": "Friendly bot IDs 4E7/16C with maximum base health 500 (+/-10), and ID 363, use tank-bot per user confirmation. Runtime identity is unchanged.",
+  "friendly_heavy_override": "Friendly bot IDs 4E7/16C with maximum total health 500 (+/-10), and ID 363, use tank-bot per user confirmation. Runtime identity is unchanged.",
+  "tank_bot_override": "ID 337 is shared: maximum total health 200 (+/-10) uses standard-bot; the 400 HP heavy bot uses tank-bot. Classification uses maximum health so damage does not change portraits.",
   "portraits": [
     {
       "slug": "standard-bot",

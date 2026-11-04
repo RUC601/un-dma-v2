@@ -1005,6 +1005,7 @@ inline constexpr HeroSkillHeroEntry kHeroSkillAutoMeleeHeroes[] = {
     { OW::eHero::HERO_WINSTON,      "winston" },
     { OW::eHero::HERO_ZARYA,        "zarya" },
     { OW::eHero::HERO_DVA,          "dva" },
+    { OW::eHero::HERO_DMON,         "dmon" },
     { OW::eHero::HERO_ROADHOG,      "roadhog" },
     { OW::eHero::HERO_ORISA,        "orisa" },
     { OW::eHero::HERO_WRECKINGBALL, "wrecking-ball" },

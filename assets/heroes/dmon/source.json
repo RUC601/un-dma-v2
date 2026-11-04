@@ -1,0 +1,9 @@
+{
+  "hero": "D.Mon",
+  "hero_id": "0x02E0000000000542",
+  "identity_source": "07_Reverse/Pure/research/20261028-entity-assets/extracted/heroes.csv, catalog RVA 0x3CC1F0",
+  "portrait_source": "07_Reverse/Pure/research/20261028-entity-assets/extracted/portraits/DMon.png",
+  "portrait_sha256": "D7EC811EF74D7EC31CE98558A50CFCDFA17D811D4B4B68089AD30C9AE22C8A52",
+  "live_confirmation": "CN readback and user-confirmed current hero, 2026-11-04",
+  "scope": "Identity, name, portrait, profile entry and shared auto-melee definition only; no verified weapon, ability or rig parameters added."
+}

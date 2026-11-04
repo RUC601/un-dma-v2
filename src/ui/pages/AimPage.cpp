@@ -186,21 +186,13 @@ void UI::AimbotPage() {
         UIGroupBox("Behavior & Input");
             SettingRow("Behavior mode",kAimbotLeftLabelWidth);PushControlWidth();
             int chosenMode=activePreset.aimBehaviorPresetId;
-            if(UISelectAimBehaviorPreset("##aimBehaviorMode",&chosenMode,-1,"Custom")) {
+            if(UISelectAimBehaviorPreset("##aimBehaviorMode",&chosenMode,-1,nullptr)) {
                 OW::Config::StoreHeroBehaviorMode(activePreset);
                 activePreset.aimBehaviorPresetId=chosenMode;
                 OW::Config::ResolveHeroBehaviorMode(activePreset);presetChanged=true;
             }
             ImGui::PopItemWidth();
-            if(chosenMode<0) {
-                SettingRow("Aim Behavior",kAimbotLeftLabelWidth);PushControlWidth();
-                int behavior=activePreset.aimBehavior;
-                if(UISelect("##customBehavior",&behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior))) {
-                    OW::Config::StoreHeroBehaviorMode(activePreset);activePreset.aimBehavior=behavior;activePreset.resolvedModeId=-2;
-                    OW::Config::ResolveHeroBehaviorMode(activePreset);presetChanged=true;
-                }
-                ImGui::PopItemWidth();
-            } else ImGui::TextWrapped("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
+            ImGui::TextWrapped("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
 
             // Aim activation key is stored per aim slot.
             SettingRow("Aim Activation Key", kAimbotLeftLabelWidth);
@@ -283,16 +275,9 @@ void UI::AimbotPage() {
     CloseGroupBox();
     if(activePreset.aimBehavior==OW::Config::kAimBehaviorFlick2nd && activePreset.flick2ndInnerMethod>=0 &&
        activePreset.flick2ndInnerMethod!=activePreset.aimMethod) {
-        auto& mode=OW::Config::EnsureSlotBehaviorConfig(activePreset,activePreset.aimBehaviorPresetId);
-        auto motion=std::find_if(mode.motions.begin(),mode.motions.end(),[&](const auto& m){return m.method==activePreset.flick2ndInnerMethod;});
-        if(motion==mode.motions.end()) {
-            auto defaults=activePreset.aimPlan.motion;
-            if(const auto* definition=OW::Config::FindAimBehaviorPreset(activePreset.aimBehaviorPresetId)) defaults=definition->motion;
-            defaults.method=activePreset.flick2ndInnerMethod;mode.motions.push_back(defaults);motion=std::prev(mode.motions.end());
-            presetChanged=true;
-        }
+        auto& motion=OW::Config::EnsureSlotMotion(activePreset,activePreset.flick2ndInnerMethod);
         UIGroupBox("Second stage motion parameters");
-        presetChanged|=UI::AimPlanEditor::Motion(*motion,false);
+        presetChanged|=UI::AimPlanEditor::Motion(motion,false);
         CloseGroupBox();
     }
     presetChanged |= UI::AimPlanEditor::Editor(activePreset);

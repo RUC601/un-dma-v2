@@ -17,7 +17,13 @@ namespace OW {
         bool scatterExecuted=false, scatterOk=false;
         bool VelocityRead() const { return scatterOk && velocityRequested && velocityBytes[0]==12 && velocityBytes[1]==12; }
         bool DeathRead() const { return scatterOk && deathRequested && deathBytes==1 && health.death<=1; }
-        bool HealthRead() const { return DeathRead() && healthRequested && healthBytes==std::array<DWORD,4>{32,8,8,2}; }
+        bool HealthRead() const {
+            const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
+            const std::array<DWORD,4> expected = cn
+                ? std::array<DWORD,4>{kCnHealthPoolBytes,kCnHealthPoolBytes,kCnHealthPoolBytes,2}
+                : std::array<DWORD,4>{32,8,8,2};
+            return DeathRead() && healthRequested && healthBytes == expected;
+        }
         bool HeroRead() const { return scatterOk && heroRequested && heroBytes==8; }
         bool VisibilityRead() const { return scatterOk && visibilityRequested && visibilityBytes==8; }
     };

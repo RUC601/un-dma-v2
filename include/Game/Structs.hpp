@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 #include <cmath>
 #include <array>
@@ -112,6 +112,7 @@ namespace OW {
         HERO_MIZUKI        = GameData::MakeHeroId(0x4E3),
         HERO_JETPACKCAT    = GameData::MakeHeroId(0x516),
         HERO_SHION         = GameData::MakeHeroId(0x52C),
+        HERO_DMON          = GameData::MakeHeroId(0x542),
         HERO_TRAININGBOT1  = GameData::MakeHeroId(0x33C),
         HERO_TRAININGBOT2  = GameData::MakeHeroId(0x337),
         HERO_TRAININGBOT3  = GameData::MakeHeroId(0x35A),
@@ -174,21 +175,6 @@ namespace OW {
         };
     };
 
-    // Normalize a local copy after the complete read; shared BZ fields retain
-    // their old layout. CN Health blocks grew from 0x140 to 0x180 bytes.
-    inline void NormalizeHealthPayload(health_compo_t& health) {
-        if (offset::Active().componentTransform != offset::ComponentTransformMode::Cn154905)
-            return;
-        const Vector2 extra = health.cn154461_health_ext;
-        health.armor_max = health.cn154461_armor_max;
-        health.armor = health.cn154461_armor;
-        health.barrier_max = health.cn154461_barrier_max;
-        health.barrier = health.cn154461_barrier;
-        health.isImmortal = health.cn154461_isImmortal;
-        health.isBarrierProjected = health.cn154461_isBarrierProjected;
-        health.health_ext = extra;
-    }
-
     struct HealthPayloadSummary {
         float health = 0, health_max = 0;
         float armor = 0, armor_max = 0;
@@ -199,20 +185,73 @@ namespace OW {
         bool isDead = false;
     };
 
+    inline constexpr size_t kCnHealthPoolBytes = 0x180;
+    inline constexpr size_t kCnHealthExtraStride = 0x18;
+    inline constexpr size_t kCnHealthMaxExtraPools = (kCnHealthPoolBytes - 0x1C) / kCnHealthExtraStride;
+
+    inline bool TryParseCnHealthPool(const uint8_t* bytes, float& current, float& maximum) {
+        uint32_t count = 0;
+        std::memcpy(&maximum, bytes + 8, 4);
+        std::memcpy(&current, bytes + 12, 4);
+        std::memcpy(&count, bytes + 0x18, 4);
+        if (count > kCnHealthMaxExtraPools)
+            return false;
+        const auto valid = [](float value) { return std::isfinite(value) && value >= 0.0f; };
+        if (!valid(current) || !valid(maximum))
+            return false;
+        for (size_t i = 0; i < count; ++i) {
+            float extraMax = 0, extraCurrent = 0;
+            const uint8_t* extra = bytes + 0x1C + i * kCnHealthExtraStride;
+            std::memcpy(&extraMax, extra + 4, 4);
+            std::memcpy(&extraCurrent, extra + 8, 4);
+            if (!valid(extraMax) || !valid(extraCurrent))
+                return false;
+            maximum += extraMax;
+            current += extraCurrent;
+        }
+        return valid(current) && valid(maximum);
+    }
+
+    inline bool IsHealthSummaryValid(const HealthPayloadSummary& result, uint8_t death) {
+        return death <= 1 && std::isfinite(result.total) && std::isfinite(result.total_max) &&
+            result.total_max > 0 && result.total_max <= 10000 &&
+            result.total >= 0 && result.total <= result.total_max + 2000;
+    }
+
+    inline bool TryParseCnHealthPools(const uint8_t* health, const uint8_t* armor,
+                                     const uint8_t* barrier, const uint8_t* flags,
+                                     uint8_t death, HealthPayloadSummary& result) {
+        result = {};
+        // Each resource includes every active extra pool; the third scalar is
+        // current HP. The first two scalars stay at their configured maxima.
+        if (!TryParseCnHealthPool(health, result.health, result.health_max) ||
+            !TryParseCnHealthPool(armor, result.armor, result.armor_max) ||
+            !TryParseCnHealthPool(barrier, result.barrier, result.barrier_max))
+            return false;
+        result.isBarrierProjected = flags[0] != 0;
+        result.isImmortal = flags[1] != 0;
+        result.isDead = death == 1;
+        result.total = result.health + result.armor + result.barrier;
+        result.total_max = result.health_max + result.armor_max + result.barrier_max;
+        return IsHealthSummaryValid(result, death);
+    }
+
     // Call only after a complete read. Invalid totals remain available for
     // diagnostics, but callers must check the result before updating state.
     inline bool TryParseHealthPayload(const health_compo_t& raw, HealthPayloadSummary& result) {
-        auto health = raw;
-        NormalizeHealthPayload(health);
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905) {
+            const auto* bytes = reinterpret_cast<const uint8_t*>(&raw);
+            return TryParseCnHealthPools(bytes + 0xD8, bytes + 0x258, bytes + 0x3D8,
+                bytes + 0x568, raw.death, result);
+        }
+        const auto& health = raw;
         result = { health.health, health.health_max, health.armor, health.armor_max,
             health.barrier, health.barrier_max, health.health_ext,
             health.isImmortal, health.isBarrierProjected,
             health.health + health.armor + health.barrier + health.health_ext.Y,
             health.health_max + health.armor_max + health.barrier_max + health.health_ext.X };
         result.isDead = health.death == 1;
-        return health.death <= 1 && std::isfinite(result.total) && std::isfinite(result.total_max) &&
-            result.total_max > 0.0f && result.total_max <= 10000.0f &&
-            result.total >= 0.0f && result.total <= result.total_max + 2000.0f;
+        return IsHealthSummaryValid(result, health.death);
     }
 
     struct velocity_fields_t {
@@ -222,26 +261,27 @@ namespace OW {
 
     struct health_fields_t {
         std::array<uint8_t, 32> vital{};
-        Vector2 armor{}, barrier{}; // maximum, current
+        Vector2 armor{}, barrier{}; // legacy maximum, current
+        std::array<std::array<uint8_t, kCnHealthPoolBytes>, 3> cnPools{};
         std::array<uint8_t, 2> flags{};
         uint8_t death = 0;
     };
 
     inline bool TryParseHealthPayload(const health_fields_t& raw, HealthPayloadSummary& result) {
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
+            return TryParseCnHealthPools(raw.cnPools[0].data(), raw.cnPools[1].data(),
+                raw.cnPools[2].data(), raw.flags.data(), raw.death, result);
         result = {};
         std::memcpy(&result.health_max, raw.vital.data(), 4);
         std::memcpy(&result.health, raw.vital.data() + 4, 4);
-        const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
-        std::memcpy(&result.health_ext, raw.vital.data() + (cn ? 24 : 20), 8);
+        std::memcpy(&result.health_ext, raw.vital.data() + 20, 8);
         result.armor_max = raw.armor.X; result.armor = raw.armor.Y;
         result.barrier_max = raw.barrier.X; result.barrier = raw.barrier.Y;
         result.isBarrierProjected = raw.flags[0] != 0; result.isImmortal = raw.flags[1] != 0;
         result.total = result.health + result.armor + result.barrier + result.health_ext.Y;
         result.total_max = result.health_max + result.armor_max + result.barrier_max + result.health_ext.X;
         result.isDead = raw.death == 1;
-        return raw.death <= 1 && std::isfinite(result.total) && std::isfinite(result.total_max) &&
-            result.total_max > 0 && result.total_max <= 10000 &&
-            result.total >= 0 && result.total <= result.total_max + 2000;
+        return IsHealthSummaryValid(result, raw.death);
     }
 
     struct obj_compo_t {

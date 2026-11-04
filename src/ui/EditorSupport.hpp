@@ -73,6 +73,7 @@ inline const HeroOption kHeroOptions[] = {
     { "Wuyang", OW::eHero::HERO_WUYANG, "Support" },
     { "JetpackCat", OW::eHero::HERO_JETPACKCAT, "Support" },
     { "Domina", OW::eHero::HERO_DOMINA, "Tank" },
+    { "D.Mon", OW::eHero::HERO_DMON, "Tank" },
 };
 inline const char* kHeroSkillModes[] = {
     "Auto", "Assist", "Manual"
