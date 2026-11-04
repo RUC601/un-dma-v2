@@ -1,5 +1,6 @@
 #include "EntityVisuals.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/TrainingBotDisplay.hpp"
 #include "Game/snapshots/Interpolation.hpp"
 namespace OverlayRenderDetail {
 
@@ -627,6 +628,19 @@ namespace OverlayRenderDetail {
 
         const std::string slugKey = OW::HeroDisplayNameToSlug(heroName);
         return icons->LoadHeroAvatar(slugKey, IconManager::AvatarUse::Overlay);
+    }
+
+    inline std::string EntityHeroName(const OW::c_entity& entity) {
+        const auto bot = OW::ResolveTrainingBotDisplay(entity.HeroID, entity.PlayerHealthMax);
+        return bot.name ? bot.name : OW::GetHeroEngNames(entity.HeroID, entity.LinkBase);
+    }
+
+    inline ID3D11ShaderResourceView* FindEntityHeroIcon(const OW::c_entity& entity) {
+        const auto bot = OW::ResolveTrainingBotDisplay(entity.HeroID, entity.PlayerHealthMax);
+        if (!bot.avatarSlug)
+            return FindHeroIcon(EntityHeroName(entity));
+        IconManager* icons = Render::GetIconManager();
+        return icons ? icons->LoadHeroAvatar(bot.avatarSlug, IconManager::AvatarUse::Overlay) : nullptr;
     }
 
     inline void DrawUltimateReadyIndicator(const Vector2& center, float opacity) {
@@ -1757,13 +1771,13 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         std::string heroName;
         const bool showAboveHeadSkillCooldowns = OW::Config::skillinfo && OW::Config::skillDisplayMode == 0;
         if (OW::Config::skillinfo || OW::Config::healthbar2 || OW::Config::draw_avatar || OW::Config::name)
-            heroName = OW::GetHeroEngNames(entity.HeroID, entity.LinkBase);
+            heroName = OverlayRenderDetail::EntityHeroName(entity);
 
         ID3D11ShaderResourceView* heroIcon = nullptr;
         if (OW::Config::draw_avatar &&
             OW::EntityRosterPolicy::ShouldRenderWorldHeroAvatar(entity.Team) &&
             !specialEntity && heroName != "Unknown")
-            heroIcon = OverlayRenderDetail::FindHeroIcon(heroName);
+            heroIcon = OverlayRenderDetail::FindEntityHeroIcon(entity);
 
         constexpr float iconSize = 24.0f;
         Vector2 ultimateIndicatorCenter(centerX, top - 18.0f);
@@ -1910,7 +1924,7 @@ void skillinfo(const std::vector<OW::c_entity>& entity_snapshot) {
     for (const OW::c_entity& entity : entity_snapshot) {
         if(!entity.team_known || entity.scene_generation!=OW::EntitySceneGeneration() ||
             OW::EntityRosterPolicy::Expired(entity.last_discovered_tick_ms,GetTickCount()))continue;
-        std::string heroname = OW::GetHeroEngNames(entity.HeroID, entity.LinkBase);
+        std::string heroname = OverlayRenderDetail::EntityHeroName(entity);
         if (heroname == "Bot" || heroname == "Unknown")
             continue;
         if (entity.HeroID == 0x16dd || entity.HeroID == 0x16ee || entity.HeroID == 0x16bb)
@@ -1929,7 +1943,7 @@ void skillinfo(const std::vector<OW::c_entity>& entity_snapshot) {
                                     bool includeUltimate, bool includeCooldowns) -> float {
         if(entity.scene_generation!=OW::EntitySceneGeneration() ||
             OW::EntityRosterPolicy::Expired(entity.last_discovered_tick_ms,GetTickCount()))return y;
-        const std::string heroname = OW::GetHeroEngNames(entity.HeroID, entity.LinkBase);
+        const std::string heroname = OverlayRenderDetail::EntityHeroName(entity);
         constexpr float rowHeight = 54.0f;
         constexpr float cardWidth = 232.0f;
         constexpr float avatarSize = 42.0f;
@@ -1988,18 +2002,9 @@ void skillinfo(const std::vector<OW::c_entity>& entity_snapshot) {
             return initials.empty() ? std::string("?") : initials;
         };
 
-        auto findHeroAvatar = [&]() -> ID3D11ShaderResourceView* {
-            if (!iconManager)
-                return nullptr;
-            const std::string slug = OW::HeroDisplayNameToSlug(heroname);
-            if (slug.empty() || slug == "all")
-                return nullptr;
-            return iconManager->LoadHeroAvatar(slug, IconManager::AvatarUse::Overlay);
-        };
-
         const float avatarX = x + 6.0f;
         const float avatarY = y + (rowHeight - avatarSize) * 0.5f;
-        if (ID3D11ShaderResourceView* avatar = findHeroAvatar()) {
+        if (ID3D11ShaderResourceView* avatar = OverlayRenderDetail::FindEntityHeroIcon(entity)) {
             Render::DrawIcon(avatar, ImVec2(avatarX, avatarY), ImVec2(avatarSize, avatarSize),
                              OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha));
         } else {

@@ -1,0 +1,52 @@
+{
+  "source": "OWLib DataTool v2.25.0.0+1151; CN 2.25.0.0.154461N, internal manifest build 154088",
+  "export_date": "2026-11-04",
+  "friendly_heavy_override": "Friendly bot IDs 4E7/16C with maximum base health 500 (+/-10), and ID 363, use tank-bot per user confirmation. Runtime identity is unchanged.",
+  "portraits": [
+    {
+      "slug": "standard-bot",
+      "texture_guid": "000000043E0C.004",
+      "sha256": "f98776955c577ea87a4bd01c4770cc42acf763030a8548488dc3150a0343207d"
+    },
+    {
+      "slug": "tank-bot",
+      "texture_guid": "000000043E09.004",
+      "sha256": "5e1935fc55833bb93c4811755ff21eb21bae615f234fdbd5ec0b99abd8f7ed9a"
+    },
+    {
+      "slug": "rocket-bot",
+      "texture_guid": "000000043E0A.004",
+      "sha256": "3b02908edb155fc96a0cb43ae43066b7f2e81c1a9e77de187052bb5294fc653a"
+    },
+    {
+      "slug": "sniper-bot",
+      "texture_guid": "000000043E0B.004",
+      "sha256": "3b5c528b65688a77817f92431004e86c3bfb19dd77acef9df515be5b23e31fab"
+    },
+    {
+      "slug": "friendly-bot",
+      "texture_guid": "000000043E0F.004",
+      "sha256": "7b4bb215e318d100eefb8a82eb65b9a18da07f1ea3e3364a401f5c7ffc4f841c"
+    },
+    {
+      "slug": "attack-bot",
+      "texture_guid": "000000043E0D.004",
+      "sha256": "3f32a01ec9dea33cb314ae06dd35286193b7aba12ff03a84e323e572c31cac70"
+    },
+    {
+      "slug": "healing-bot",
+      "texture_guid": "000000043E08.004",
+      "sha256": "8df49f1e4389f0241d4380da00b83a8bf42b90dba8624d9b43cd871a9c85301f"
+    },
+    {
+      "slug": "explosive-bot",
+      "texture_guid": "000000043E0E.004",
+      "sha256": "9760c0a2d889b69d657d7c69444d8495c48653d670622e0a196d8f8973611157"
+    },
+    {
+      "slug": "training-bot-legacy",
+      "texture_guid": "000000007537.004",
+      "sha256": "18c97695bde47404cc449ffbb49d45d0052cf67cba56dd69f08e1cdf671b4d5f"
+    }
+  ]
+}
