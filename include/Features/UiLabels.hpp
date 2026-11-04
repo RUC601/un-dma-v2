@@ -14,6 +14,19 @@ struct UiLabelPair {
 };
 
 inline constexpr UiLabelPair kUiLabels[] = {
+    { "Max Height Above", "目标最高高差" },
+    { "Max Height Below", "目标最低高差" },
+    { "Full Charge Time", "预计满蓄力时间" },
+    { "Auto-release Total Time", "预计自动出拳总时长" },
+    { "Full charge sets punch strength. Total time includes charging and holding before automatic release; both times are estimates.", "满蓄力时间用于估算拳速和距离；自动出拳总时长包含蓄力及蓄满后的保持时间。两项均为待校准估值。" },
+    { "Release Lead", "截止提前量" },
+    { "Hold RMB to charge; press the activation key to aim horizontally and release. Release RMB before the next attempt.", "手动按住右键蓄力，按辅助热键后水平瞄准并松开发射。下一次尝试前先松开物理右键。" },
+    { "Charge timing is estimated from input. Height limits do not check stairs or obstacles.", "蓄力计时来自按键估算。高差筛选不能判断楼梯、墙体及路径是否可通行。" },
+    { "Rocket Punch assist needs mouse masking from the output device.", "右键辅助需要输出设备支持鼠标屏蔽。" },
+    { "Tap RMB when the selected enemy is below the health and distance limits.", "所选敌人的血量、距离低于阈值时，自动点一次右键。" },
+    { "Use a supported hero's defensive ability at low self health.", "自身低血量时施放已支持英雄的保命技能。" },
+    { "Legacy repeat-fire timer; this does not enable an individual hero skill.", "旧版重复开火间隔控制；英雄专属技能需要单独启用。" },
+
     { "Reinhardt", "莱因哈特" }, { "Winston", "温斯顿" },
     { "Zarya", "查莉娅" }, { "DVa", "D.Va" }, { "Roadhog", "路霸" },
     { "Orisa", "奥丽莎" }, { "WreckingBall", "破坏球" }, { "Sigma", "西格玛" },
@@ -245,7 +258,10 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Target Priority", "目标优先级" },
     { "Target Team", "目标阵营" },
     { "Max Aim Time", "瞄准时限" },
+    { "Tracking time starts when the aim key is pressed, even without a target. Switching targets does not restart it. Release and press again to rearm.", "跟踪时限从按下瞄准键开始计算，无目标时也计时；切换目标不重新计时，松开再按才开始下一轮。" },
     { "Hitbox Scale", "命中范围比例" },
+    { "Melee Range Expansion", "近战范围扩展" },
+    { "Checks the whole body. Larger values allow more crosshair offset; Max Distance still limits reach. Sends the Skill Key when enemy HP is at or below Max Health.", "覆盖全身；数值越大，允许准星偏离身体越多，最远距离仍由距离上限控制。敌人血量不超过血量上限时，自动发送技能按键。" },
     { "Second Method", "第二阶段方法" },
     { "Trigger Gate", "触发条件限制" },
     { "Box Padding", "方框扩边" },

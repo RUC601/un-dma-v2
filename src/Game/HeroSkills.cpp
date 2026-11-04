@@ -1,4 +1,4 @@
-#include <Windows.h>
+﻿#include <Windows.h>
 
 #include "Game/HeroSkills.hpp"
 #ifdef UNLEASHED_SELF_TESTS
@@ -6,6 +6,8 @@
 #endif
 
 #include "Game/AimFirePhase.hpp"
+#include "Game/AutoMelee.hpp"
+#include "Game/DoomfistPunch.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
 #include "output/OutputRuntime.hpp"
@@ -295,6 +297,19 @@ namespace {
     std::uint64_t g_lastTimedOutputGeneration = 0;
     bool g_lastTimedOutputGateOpen = false;
     uint64_t g_lastHeroId = 0;
+
+    struct RocketPunchRuntime {
+        DoomfistPunch::ChargeSession charge{};
+        std::string maskKey;
+        uint64_t generation = 0;
+        uint64_t scene = 0;
+        uint64_t connection = 0;
+        uint64_t releasedAtMs = 0;
+        uint64_t unmaskedAtMs = 0;
+        bool masked = false;
+    };
+    RocketPunchRuntime g_rocketPunch;
+    std::atomic<bool> g_rocketPunchOwnsAim{ false };
 
     void RefreshAnyInputSequenceActive();
     bool IsActionDebounced(const std::string& runtimeKey);
@@ -1349,34 +1364,26 @@ namespace {
     }
 
     struct ScopedTrackingConfig {
-        Config::HeroPreset originalPreset{};
-        bool active = false;
-
+        Config::ScopedLocalConfigOverride configOverride;
         explicit ScopedTrackingConfig(const Config::HeroSkillTrackingParams& params)
         {
-            originalPreset = Config::MakeHeroPresetFromCurrent();
-
-            Config::HeroPreset overlay = originalPreset;
-            overlay.aimBehavior = Config::ClampAimBehaviorIndex(params.aimBehavior);
-            overlay.aimBehaviorPresetId = Config::ClampAimBehaviorPresetId(params.aimBehaviorPresetId);
-            overlay.aimMethod = Config::ClampAimMethodIndex(params.method);
-            overlay.aimMode = Config::IsTrackingBehavior(overlay.aimBehavior) ? 0 : 1;
-            overlay.fov = params.fov;
-            overlay.smooth = params.speedScale;
-            overlay.bone = params.bone;
-            overlay.autoBone = params.bone == Config::kAimBoneClosest;
-            overlay.aimBoneMask = HeroSkillDetail::TrackingBoneMaskForSelection(params.bone);
-            overlay.hitbox = params.hitbox;
-            Config::ApplyHeroPresetToGlobals(overlay);
-            active = true;
-        }
-
-        ~ScopedTrackingConfig()
-        {
-            if (!active)
-                return;
-
-            Config::ApplyHeroPresetToGlobals(originalPreset);
+            Config::HeroPreset overlay=Config::MakeHeroPresetFromCurrent();
+            overlay.behaviorConfigs.clear();overlay.resolvedModeId=-2;
+            overlay.aimBehavior=Config::ClampAimBehaviorIndex(params.aimBehavior);
+            overlay.aimMode=Config::IsTrackingBehavior(overlay.aimBehavior)?0:1;
+            overlay.aimBehaviorPresetId=Config::ClampAimBehaviorPresetId(params.aimBehaviorPresetId);
+            overlay.modeConfigVersion=overlay.aimBehaviorPresetId>=0?1:0;
+            overlay.aimMethod=Config::ClampAimMethodIndex(params.method);
+            overlay.aimPlan.overrideMotion=true;
+            overlay.aimPlan.motion=Config::CaptureBehaviorMotion(overlay.aimBehavior);
+            overlay.aimPlan.motion.method=overlay.aimMethod;
+            Config::ResolveHeroBehaviorMode(overlay);
+            overlay.fov=params.fov;overlay.smooth=params.speedScale;
+            overlay.bone=params.bone;overlay.autoBone=params.bone==Config::kAimBoneClosest;
+            overlay.aimBoneMask=HeroSkillDetail::TrackingBoneMaskForSelection(params.bone);
+            overlay.hitbox=params.hitbox;
+            Config::StoreHeroBehaviorMode(overlay);
+            Config::ApplyLocalHeroAimPreset(overlay);
         }
     };
 
@@ -1662,95 +1669,14 @@ namespace {
         return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
     }
 
-    float AutoMeleeBoneScore(const TargetingDetail::FovRuntimeContext& fovContext,
-                             const Vector3& source,
-                             const Vector3& point)
-    {
-        if (fovContext.valid) {
-            const float score = TargetingDetail::FovScoreDeg(fovContext, point);
-            if (std::isfinite(score))
-                return score;
-        }
+    struct AutoMeleeScanStats {
+        int selectable = 0;
+        int healthReady = 0;
+        int rangeReadyBones = 0;
+    };
 
-        return source.DistTo(point);
-    }
-
-    bool ResolveAutoMeleeBone(c_entity& entity,
-                              int boneSetting,
-                              const TargetingDetail::FovRuntimeContext& fovContext,
-                              const Vector3& source,
-                              int& outBoneId,
-                              Vector3& outPoint,
-                              float& outScore)
-    {
-        bool found = false;
-        float bestScore = (std::numeric_limits<float>::max)();
-
-        auto considerBone = [&](int boneId, const Vector3& point) {
-            if (!IsUsablePosition(point) || point == entity.pos)
-                return;
-
-            const float score = AutoMeleeBoneScore(fovContext, source, point);
-            if (!std::isfinite(score))
-                return;
-
-            if (!found || score < bestScore) {
-                found = true;
-                bestScore = score;
-                outBoneId = boneId;
-                outPoint = point;
-                outScore = score;
-            }
-        };
-
-        if (boneSetting == Config::kAimBoneClosest) {
-            static constexpr std::array<int, 3> kCoreBones{
-                BONE_HEAD,
-                BONE_NECK,
-                BONE_CHEST,
-            };
-            for (int boneId : kCoreBones)
-                considerBone(boneId, TargetingDetail::CoreBoneHitboxCenter(entity, boneId));
-            if (found)
-                return true;
-        }
-
-        const int normalizedBone = Config::NormalizeAimBone(boneSetting);
-        const int boneId = AimBoneToSkeletonBoneId(normalizedBone);
-        Vector3 point = TargetingDetail::ConfiguredBonePosition(entity, normalizedBone);
-        if (!IsUsablePosition(point))
-            point = CandidatePositionForAction(entity);
-        considerBone(boneId, point);
-        return found;
-    }
-
-    bool IsAutoMeleeHitReady(const SkillAimCandidate& candidate)
-    {
-        if (!candidate.valid || !IsUsablePosition(candidate.aimPoint) ||
-            candidate.hitWindow <= 0.0f) {
-            return false;
-        }
-
-        const AimbotDetail::AimData aim = AimbotDetail::BuildAimData(
-            candidate.aimPoint,
-            false,
-            1.0f,
-            0.0f);
-        if (!IsFiniteVector(aim.local_angle) ||
-            !IsFiniteVector(aim.target_angle) ||
-            !IsFiniteVector(aim.local_pos)) {
-            return false;
-        }
-
-        return OW::in_range(
-            aim.local_angle,
-            aim.target_angle,
-            aim.local_pos,
-            candidate.aimPoint,
-            candidate.hitWindow);
-    }
-
-    SkillAimCandidate FindBestAutoMeleeCandidate(const Config::HeroSkillSettings& settings)
+    SkillAimCandidate FindBestAutoMeleeCandidate(const Config::HeroSkillSettings& settings,
+                                                AutoMeleeScanStats& stats)
     {
         SkillAimCandidate best{};
         const float effectiveRange = settings.distance;
@@ -1758,21 +1684,19 @@ namespace {
             return best;
 
         const c_entity local = TargetingDetail::SnapshotLocalEntity();
-        const Vector3 source = SourcePositionForAction(local);
-        if (!IsUsablePosition(source))
+        const TargetingDetail::FovRuntimeContext view =
+            TargetingDetail::SnapshotFovRuntimeContext();
+        if (!view.valid)
             return best;
 
         const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
-        const TargetingDetail::FovRuntimeContext fovContext =
-            TargetingDetail::SnapshotFovRuntimeContext();
-        const SkillProjectileRuntime meleeProjectile{};
         const float maxHealth = std::clamp(settings.enemyHealthThreshold, 0.0f, 500.0f);
-
+        const float expansion = std::clamp(settings.meleeRadius, 0.0f, 2.0f);
         float bestScore = (std::numeric_limits<float>::max)();
         float bestDistance = (std::numeric_limits<float>::max)();
 
         for (size_t index = 0; index < snapshot.size(); ++index) {
-            c_entity entity = snapshot[index];
+            const c_entity& entity = snapshot[index];
             if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
                 continue;
             if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
@@ -1781,58 +1705,48 @@ namespace {
                 continue;
             if (entity.skill1act && entity.HeroID == eHero::HERO_VENTURE)
                 continue;
+            ++stats.selectable;
             if (!std::isfinite(entity.PlayerHealth) ||
-                entity.PlayerHealth <= 0.0f ||
-                entity.PlayerHealth > maxHealth) {
+                entity.PlayerHealth <= 0.0f || entity.PlayerHealth > maxHealth)
                 continue;
-            }
+            ++stats.healthReady;
 
-            int boneId = BONE_CHEST;
-            Vector3 aimPoint{};
-            float fovScore = 0.0f;
-            if (!ResolveAutoMeleeBone(
-                    entity,
-                    settings.tracking.bone,
-                    fovContext,
-                    source,
-                    boneId,
-                    aimPoint,
-                    fovScore)) {
-                continue;
-            }
+            // Check each window before ranking: a small, closer-to-center bone
+            // must not hide a wider valid hit on another part of the body.
+            for (size_t slot = 0; slot < entity.skeleton_bones.size(); ++slot) {
+                int boneId = 0;
+                Vector3 point{};
+                if (!TargetingDetail::TryResolveSkeletonBonePoint(entity, slot, boneId, point))
+                    continue;
+                const float distance = view.camera.DistTo(point);
+                if (!std::isfinite(distance) || distance > effectiveRange)
+                    continue;
+                ++stats.rangeReadyBones;
+                const float radius = ResolveBoneHitboxRadius(
+                    entity.HeroID, boneId, Config::kLegacyDefaultHitboxRadius) + expansion;
+                if (!AutoMelee::InWindow(view, point, radius, effectiveRange))
+                    continue;
+                const float score = TargetingDetail::FovScoreDeg(view, point);
+                if (!std::isfinite(score) ||
+                    !(score < bestScore ||
+                      (std::fabs(score - bestScore) <= 0.001f && distance < bestDistance)))
+                    continue;
 
-            const float distance = source.DistTo(aimPoint);
-            if (!std::isfinite(distance) || distance > effectiveRange)
-                continue;
-
-            SkillAimCandidate candidate{};
-            candidate.valid = true;
-            candidate.entity = entity;
-            candidate.entityIndex = static_cast<int>(index);
-            candidate.entityKey = entity.address ? entity.address : entity.LinkBase;
-            candidate.boneId = boneId;
-            candidate.distance = distance;
-            candidate.vitalityPercent = entity.PlayerHealth;
-            candidate.fovScore = fovScore;
-            candidate.hitWindow = ResolveSkillHitWindow(
-                entity,
-                boneId,
-                meleeProjectile,
-                settings.tracking.hitbox);
-            candidate.rawAimPoint = aimPoint;
-            candidate.aimPoint = aimPoint;
-
-            if (!IsAutoMeleeHitReady(candidate))
-                continue;
-
-            if (fovScore < bestScore ||
-                (std::fabs(fovScore - bestScore) <= 0.001f && distance < bestDistance)) {
-                best = candidate;
-                bestScore = fovScore;
+                best.valid = true;
+                best.entity = entity;
+                best.entityIndex = static_cast<int>(index);
+                best.entityKey = entity.address ? entity.address : entity.LinkBase;
+                best.boneId = boneId;
+                best.distance = distance;
+                best.vitalityPercent = entity.PlayerHealth;
+                best.fovScore = score;
+                best.hitWindow = radius;
+                best.rawAimPoint = point;
+                best.aimPoint = point;
+                bestScore = score;
                 bestDistance = distance;
             }
         }
-
         return best;
     }
 
@@ -3622,13 +3536,25 @@ namespace {
                                  const HeroSkillDefinition& definition,
                                  const Config::HeroSkillSettings& settings)
     {
-        const SkillAimCandidate candidate = FindBestAutoMeleeCandidate(settings);
-        if (!candidate.valid || IsActionDebounced(runtimeKey))
+        AutoMeleeScanStats stats{};
+        const SkillAimCandidate candidate = FindBestAutoMeleeCandidate(settings, stats);
+        if (!candidate.valid) {
+            if (ShouldLogSkillGuard(runtimeKey + ":melee_scan")) {
+                Diagnostics::Aim("melee.scan skill=%s selectable=%d healthReady=%d rangeReadyBones=%d maxHp=%.1f maxDistance=%.2f expansion=%.2f",
+                    runtimeKey.c_str(), stats.selectable, stats.healthReady, stats.rangeReadyBones,
+                    settings.enemyHealthThreshold, settings.distance, settings.meleeRadius);
+            }
+            return false;
+        }
+        if (IsActionDebounced(runtimeKey))
             return false;
 
         const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse)) {
+            if (ShouldLogSkillGuard(runtimeKey + ":melee_output"))
+                Diagnostics::Warn("Auto melee output rejected. skill=%s vk=%d", runtimeKey.c_str(), vk);
             return false;
+        }
 
         MarkActionExecuted(runtimeKey);
         Diagnostics::Info("Hero skill auto melee fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f fovScore=%.2f bone=%d hitWindow=%.3f vk=%d",
@@ -3643,33 +3569,218 @@ namespace {
         return true;
     }
 
-    bool EvaluateChargeReleaseAction(const std::string& runtimeKey,
-                                     const HeroSkillDefinition& definition,
-                                     const Config::HeroSkillSettings& settings)
+    void CancelRocketPunch()
     {
-        if (!IsActivationKeyHeld(settings.key))
-            return false;
+        if (g_rocketPunch.masked) {
+            (void)ReleasePhysicalMouseMaskLease(g_rocketPunch.maskKey,
+                OutputOwnerSource::HeroTimedAction, g_rocketPunch.generation);
+        }
+        g_rocketPunch = {};
+        g_rocketPunchOwnsAim.store(false, std::memory_order_release);
+    }
 
-        const float effectiveRange = settings.distance > 0.0f
-            ? (std::min)(settings.distance, 20.0f)
-            : 20.0f;
-        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
-        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
-            return false;
+    bool ReleaseRocketPunchInput(const std::string& runtimeKey, uint64_t generation)
+    {
+        bool released = false;
+        (void)TimedOutputScheduler().ReleaseManualControlOrExecuteIfUnownedForGeneration(
+            runtimeKey, OutputOwnerSource::HeroTimedAction,
+            { OutputControlKind::MouseButton, 1 }, generation,
+            [&released](uint64_t expectedGeneration) {
+                released = V2::Output::DispatchForceReleaseMouseButtonForGeneration(expectedGeneration, 1) == success;
+                return released;
+            });
+        return released;
+    }
 
-        const float chargeScale = std::clamp(candidate.distance / effectiveRange, 0.0f, 1.0f);
-        const int chargeMs = std::clamp(static_cast<int>(chargeScale * 1000.0f), 200, 1000);
-        const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, std::chrono::milliseconds(chargeMs)))
-            return false;
+    SkillAimCandidate FindRocketPunchCandidate(const Config::HeroSkillSettings& settings,
+                                               const c_entity& local, float fraction)
+    {
+        SkillAimCandidate best{};
+        const Vector3 source = SourcePositionForAction(local);
+        if (!IsUsablePosition(source) || !IsUsablePosition(local.pos))
+            return best;
+        // shortcut: conservative normal-punch reach estimate; calibrate against live charge data.
+        const float reach = (std::min)(settings.distance, 20.0f * fraction);
+        const float speed = 15.0f + 20.0f * fraction;
+        const auto fov = TargetingDetail::SnapshotFovRuntimeContext();
+        const auto entities = TargetingDetail::SnapshotEntities();
+        float bestScore = (std::numeric_limits<float>::max)();
+        for (size_t index = 0; index < entities.size(); ++index) {
+            c_entity entity = entities[index];
+            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local) ||
+                !entity.Vis || entity.imort || entity.barrprot || !IsUsablePosition(entity.pos) ||
+                VitalityPercent(entity) > settings.enemyHealthThreshold)
+                continue;
+            Vector3 point = entity.pos;
+            float distance = DoomfistPunch::HorizontalDistance(point.X-local.pos.X, point.Z-local.pos.Z);
+            if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
+                    settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
+                continue;
+            if (settings.prediction) {
+                // Predict travel on the ground plane; vertical velocity never tilts the punch.
+                if (!IsFiniteVector(entity.velocity))
+                    continue;
+                point = point + entity.velocity * (distance / speed);
+                distance = DoomfistPunch::HorizontalDistance(point.X-local.pos.X, point.Z-local.pos.Z);
+                if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
+                        settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
+                    continue;
+            }
+            point.Y = source.Y;
+            float score = 0.0f;
+            if (!TargetingDetail::IsWithinFovDeg(fov, point, settings.tracking.fov, &score) ||
+                score >= bestScore)
+                continue;
+            best = {};
+            best.valid = true;
+            best.entity = entity;
+            best.entityIndex = static_cast<int>(index);
+            best.distance = distance;
+            best.aimPoint = point;
+            const SkillProjectileRuntime projectile{ speed, reach, false, 0.0f, 0.0f };
+            best.hitWindow = ResolveSkillHitWindow(entity, BONE_CHEST, projectile, settings.tracking.hitbox);
+            bestScore = score;
+        }
+        return best;
+    }
 
-        MarkActionExecuted(runtimeKey);
-        Diagnostics::Info("Hero skill charge-release action fired. skill=%s targetIndex=%d distance=%.2f holdMs=%d",
-            definition.skillId ? definition.skillId : "",
-            candidate.entityIndex,
-            candidate.distance,
-            chargeMs);
-        return true;
+    void EvaluateRocketPunch(const std::string& runtimeKey,
+                             const Config::HeroSkillSettings& settings,
+                             const c_entity& local)
+    {
+        auto& runtime = g_rocketPunch;
+        const auto applied = V2::Output::ActiveRuntimeSnapshot();
+        const auto connection = ProcessConnection::ConnectionEpoch();
+        const auto scene = EntitySceneGeneration();
+        if (runtime.generation != applied.generation || runtime.connection != connection ||
+            runtime.scene != scene) {
+            CancelRocketPunch();
+            runtime.generation = applied.generation;
+            runtime.connection = connection;
+            runtime.scene = scene;
+            runtime.maskKey = runtimeKey + ":physical_rmb_mask";
+        }
+        const uint64_t now = GetTickCount64();
+        const auto physical = V2::Output::ActivePhysicalInput();
+        const bool fresh = physical.available && physical.sampledAtMs != 0 &&
+            now >= physical.sampledAtMs && now - physical.sampledAtMs <= 250;
+        if (!V2::Output::SupportsMouseMask(applied.descriptor) ||
+            !HasFreshViewMatrices() || local.PlayerHealth <= 0.0f || Config::aimDryRun) {
+            CancelRocketPunch();
+            if (IsActivationKeyHeld(settings.key) && ShouldLogSkillGuard(runtimeKey + ":punch_input"))
+                Diagnostics::Info("doomfist.punch blocked reason=mask_or_scene_unavailable dryRun=%d", Config::aimDryRun);
+            return;
+        }
+        if (runtime.masked) {
+            // Never use DMA KeyState here: our own mask makes the game see RMB up.
+            if (DoomfistPunch::RestoreMouseAfterRelease(now - runtime.releasedAtMs,
+                    fresh, (physical.buttons & 0x02u) != 0)) {
+                const bool restored = ReleasePhysicalMouseMaskLease(runtime.maskKey,
+                    OutputOwnerSource::HeroTimedAction, runtime.generation);
+                if (restored) {
+                    runtime.masked = false;
+                    runtime.unmaskedAtMs = now;
+                }
+                if (restored || ShouldLogSkillGuard(runtimeKey + ":punch_restore"))
+                    Diagnostics::Info("doomfist.punch restore accepted=%d elapsedMs=%llu monitorFresh=%d physicalRight=%d",
+                        restored, now-runtime.releasedAtMs, fresh, (physical.buttons & 0x02u) != 0);
+            }
+            return;
+        }
+        // Allow the mask restoration and the next DMA poll to settle before accepting an up sample.
+        if (runtime.unmaskedAtMs != 0 && now - runtime.unmaskedAtMs < 100)
+            return;
+        const auto rightSample = KeyState::SampleVk(VK_RBUTTON);
+        const auto assistSample = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
+        if (!rightSample.available || !assistSample.available) {
+            if (ShouldLogSkillGuard(runtimeKey + ":punch_keys"))
+                Diagnostics::Info("doomfist.punch blocked reason=dma_key_sample_unavailable");
+            return;
+        }
+        const bool rightDown = rightSample.down;
+        const auto leftSample = KeyState::SampleVk(VK_LBUTTON);
+        const unsigned cancelInputs = (leftSample.available && leftSample.down ? 1u : 0u) |
+            (AimbotDetail::IsInputVkDown(VK_LSHIFT) ? 2u : 0u) |
+            (AimbotDetail::IsInputVkDown('E') ? 4u : 0u) |
+            (AimbotDetail::IsInputVkDown('Q') ? 8u : 0u);
+        if (rightDown && cancelInputs && !runtime.charge.blocked) {
+            Diagnostics::Info("doomfist.punch blocked reason=cancel_input keys=0x%X elapsedMs=%llu",
+                cancelInputs, runtime.charge.charging ? now-runtime.charge.startedMs : 0);
+            runtime.charge.Block();
+        }
+        const bool assistHeld = assistSample.down;
+        const bool wasBlocked = runtime.charge.blocked;
+        const bool active = runtime.charge.Update(now, rightDown, assistHeld,
+            settings.punchMaxHoldMs, settings.punchReleaseLeadMs);
+        const bool ownsAim = (runtime.charge.released && assistHeld) ||
+            (rightDown && (runtime.charge.requested || assistHeld));
+        const bool previouslyOwned = g_rocketPunchOwnsAim.exchange(ownsAim, std::memory_order_acq_rel);
+        if (ownsAim && !previouslyOwned) {
+            TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
+            TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
+        }
+        if (!wasBlocked && runtime.charge.blocked && runtime.charge.requested)
+            Diagnostics::Info("doomfist.punch blocked reason=%s elapsedMs=%llu",
+                DoomfistPunch::BlockReasonName(runtime.charge.blockReason), now-runtime.charge.startedMs);
+        if (!active) {
+            if (assistHeld && ShouldLogSkillGuard(runtimeKey + ":punch_inactive"))
+                Diagnostics::Info("doomfist.punch inactive rightDown=%d armed=%d blocked=%d released=%d monitorFresh=%d reason=%s elapsedMs=%llu maxHoldMs=%.0f",
+                    rightDown, runtime.charge.armed, runtime.charge.blocked, runtime.charge.released, fresh,
+                    DoomfistPunch::BlockReasonName(runtime.charge.blockReason),
+                    runtime.charge.charging ? now-runtime.charge.startedMs : 0, settings.punchMaxHoldMs);
+            return;
+        }
+        const float elapsed = static_cast<float>(now - runtime.charge.startedMs);
+        const float fraction = DoomfistPunch::ChargeFraction(elapsed, settings.punchFullChargeMs);
+        ScopedTrackingConfig trackingOverride(settings.tracking);
+        const auto candidate = FindRocketPunchCandidate(settings, local, fraction);
+        if (!candidate.valid || settings.tracking.fov <= 0.0f || settings.tracking.speedScale <= 0.0f) {
+            if (ShouldLogSkillGuard(runtimeKey + ":punch_target"))
+                Diagnostics::Info("doomfist.punch waiting reason=no_eligible_target_or_aim_disabled elapsedMs=%.1f fraction=%.3f", elapsed, fraction);
+            return;
+        }
+        const int behavior = Config::ClampAimBehaviorIndex(settings.tracking.aimBehavior);
+        auto aim = AimbotDetail::BuildAimData(candidate.aimPoint, Config::IsFlickBehavior(behavior),
+            Config::AimBehaviorSmoothInput(behavior, settings.tracking.speedScale),
+            Config::AimBehaviorAcceleration(behavior), Config::AimBehaviorMethod(behavior));
+        if (!IsFiniteVector(aim.local_angle) || !IsFiniteVector(aim.target_angle) ||
+            !IsFiniteVector(aim.smoothed_angle) || candidate.hitWindow <= 0.0f)
+            return;
+        const float yawError = std::fabs(NormalizeAngle(aim.target_angle.Y - aim.local_angle.Y));
+        const float tolerance = std::atan2(candidate.hitWindow, candidate.distance);
+        if (yawError > tolerance) {
+            aim.smoothed_angle.X = aim.local_angle.X;
+            aim.smoothed_angle.Z = aim.local_angle.Z;
+            AimbotDetail::MoveAimDelta(aim.local_angle, aim.smoothed_angle);
+            return;
+        }
+        // Release only from an observed aligned view; queued motion may run after button output.
+        if (TimedOutputScheduler().IsControlHeld({ OutputControlKind::MouseButton, 1 }))
+            return;
+        if (!AcquirePhysicalMouseMaskLease(runtime.maskKey, OutputOwnerSource::HeroTimedAction,
+                0x02u, runtime.generation)) {
+            runtime.charge.Block(DoomfistPunch::BlockReason::OutputFailure);
+            Diagnostics::Warn("doomfist.punch blocked reason=physical_mask_failed");
+            return;
+        }
+        runtime.masked = true;
+        runtime.releasedAtMs = GetTickCount64();
+        runtime.charge.Block(DoomfistPunch::BlockReason::OutputFailure);
+        const bool beforeDeadline = static_cast<float>(runtime.releasedAtMs - runtime.charge.startedMs) <
+            settings.punchMaxHoldMs - settings.punchReleaseLeadMs;
+        const bool released = beforeDeadline && ReleaseRocketPunchInput(runtimeKey, runtime.generation);
+        if (released)
+            runtime.charge.MarkReleased();
+        Diagnostics::Info("doomfist.punch release accepted=%d targetIndex=%d distance=%.2f chargeMs=%llu yawErrorDeg=%.3f deadline=%d",
+            released, candidate.entityIndex, candidate.distance,
+            runtime.releasedAtMs-runtime.charge.startedMs, yawError*kRadToDeg, beforeDeadline);
+        if (!released) {
+            const bool restored = ReleasePhysicalMouseMaskLease(runtime.maskKey,
+                OutputOwnerSource::HeroTimedAction, runtime.generation);
+            runtime.masked = !restored;
+            if (restored)
+                runtime.unmaskedAtMs = GetTickCount64();
+        }
     }
 
     bool EvaluateHealthThresholdAction(const std::string& runtimeKey,
@@ -3888,6 +3999,8 @@ namespace {
 
     void CancelSkill(const std::string& skillId, bool cancelTimedAction)
     {
+        if (g_rocketPunch.maskKey == skillId + ":physical_rmb_mask")
+            CancelRocketPunch();
         if (cancelTimedAction) {
             (void)TimedOutputScheduler().Cancel(skillId);
             (void)TimedOutputScheduler().Cancel(skillId + ":auto_right");
@@ -3941,6 +4054,8 @@ bool ShouldBlockForActiveSequence(ExecutionSource requester)
 {
     if (requester == ExecutionSource::SequenceInternal)
         return false;
+    if (g_rocketPunchOwnsAim.load(std::memory_order_acquire))
+        return true;
 
     const bool sequenceClaimsExecution = HeroSkillDetail::SequenceClaimsExecution(
         AnyInputSequenceActive(),
@@ -4273,6 +4388,7 @@ namespace {
 
 void CancelActiveSkillStateLocked()
 {
+    CancelRocketPunch();
     g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
 
     for (auto& item : g_sequences)
@@ -4425,6 +4541,11 @@ void ProcessHeroSkills()
             continue;
         }
 
+        if (SkillControls(definition, HeroSkillControls::PunchAssist)) {
+            EvaluateRocketPunch(skillKey, settings, localSnapshot);
+            continue;
+        }
+
         const bool sequenceSkill = SkillControls(definition, HeroSkillControls::SequenceSteps);
         const bool genjiComboSkill = IsGenjiDashComboDefinition(definition);
         const bool sequenceActive = sequenceSkill && IsSequenceActive(skillKey);
@@ -4509,9 +4630,6 @@ void ProcessHeroSkills()
         } else if (definition.category == HeroSkillCategory::Ultimate &&
                    !SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
             EvaluateChargedConditionAction(skillKey, definition, settings);
-        } else if (definition.inputAction == HeroSkillInputAction::SecondaryFire &&
-                   std::string(definition.skillId ? definition.skillId : "") == "rocket-punch") {
-            EvaluateChargeReleaseAction(skillKey, definition, settings);
         } else {
             EvaluateTrajectoryAction(skillKey, definition, settings, GetTrajectoryParams(definition.skillId));
         }
@@ -4527,6 +4645,8 @@ void ProcessHeroSkills()
 
 #ifdef UNLEASHED_SELF_TESTS
 // Seeds real ownership and calls real cancellation consumers; the caller selects Mock.
+#include "SkillModeScopeSelfTest.inl"
+
 bool RunHeroSkillRuntimeStopSelfTest()
 {
     const std::string key = "f01b-stop";
@@ -4557,6 +4677,20 @@ bool RunHeroSkillRuntimeStopSelfTest()
     ok &= seed();
     ProcessHeroSkills();
     ok &= released();
+    const uint64_t generation = V2::Output::ActiveRuntimeSnapshot().generation;
+    g_rocketPunch.generation = generation;
+    g_rocketPunch.maskKey = key + ":physical_rmb_mask";
+    g_rocketPunch.masked = AcquirePhysicalMouseMaskLease(g_rocketPunch.maskKey,
+        OutputOwnerSource::HeroTimedAction, 0x02u, generation);
+    ok &= g_rocketPunch.masked && ReleaseRocketPunchInput(key, generation);
+    ok &= V2::Output::MockHardwareMgr.Snapshot().maskedButtons == 0x02u &&
+        V2::Output::MockHardwareMgr.Snapshot().outputMouseButtons == 0;
+    g_rocketPunchOwnsAim.store(true, std::memory_order_release);
+    ok &= ShouldBlockForActiveSequence(ExecutionSource::GlobalAim) &&
+        ShouldBlockForActiveSequence(ExecutionSource::Trigger);
+    ProcessHeroSkills();
+    ok &= V2::Output::MockHardwareMgr.Snapshot().maskedButtons == 0 &&
+        !g_rocketPunchOwnsAim.load(std::memory_order_acquire);
     CancelActiveSkill();
     g_viewpoints.erase(key);
     return ok;

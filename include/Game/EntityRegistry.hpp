@@ -4,10 +4,10 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include "Game/Cn154504.hpp"
+#include "Game/Cn154905.hpp"
 
 namespace OW::EntityRegistry {
-inline constexpr uint64_t stateRva=Cn154504::entityState, lockRva=Cn154504::entityLock;
+inline constexpr uint64_t stateRva=Cn154905::entityState, lockRva=Cn154905::entityLock;
 inline constexpr uint32_t maxSlots=0x200000, slotBytes=16;
 inline constexpr uint64_t pollMs=250, retryMs=50;
 enum class Error : uint8_t { None, ReadFailed, Busy, Unstable, Invalid, Changed, Disconnected };
@@ -23,7 +23,7 @@ struct Snapshot {
 inline bool Valid(const Snapshot& s) {
     return s.epoch && s.module && s.capacity && s.capacity<=maxSlots && s.root>=0x10000 &&
         !(s.root&7) && s.root<0x800000000000ull && s.Bytes()<=0x800000000000ull-s.root &&
-        (s.root<s.module || s.root>=s.module+Cn154504::imageSize);
+        (s.root<s.module || s.root>=s.module+Cn154905::imageSize);
 }
 template<class Read>
 Error ReadSnapshotAt(uint64_t epoch,uint64_t module,uint64_t stateLocation,uint64_t lockLocation,Read&& read,Snapshot& out) {

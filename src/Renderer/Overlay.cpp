@@ -1,4 +1,5 @@
 #include "Renderer/Overlay.hpp"
+#include "Renderer/FrameSchedule.hpp"
 #include "Features/UI.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/SDK.hpp"
@@ -30,6 +31,42 @@ constexpr ULONGLONG kCanvasBoundsRefreshMs = 2000;
 constexpr ULONGLONG kMenuRenderIntervalMs = 16;
 
 ImGuiContext* g_menuContext = nullptr;
+
+struct FrameWaitTimer {
+    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    ~FrameWaitTimer() { if (handle) CloseHandle(handle); }
+
+    void WaitUntil(V2::Rendering::FrameSchedule::Clock::time_point deadline) const {
+        using Clock = V2::Rendering::FrameSchedule::Clock;
+        while (Clock::now() < deadline) {
+            const auto remaining = deadline - Clock::now();
+            // Sleep most of the interval; a short tail avoids the 1 ms Sleep floor at 2000 FPS.
+            if (handle && remaining > std::chrono::microseconds(150)) {
+                LARGE_INTEGER due{};
+                due.QuadPart = -(std::max)(1LL,
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        remaining - std::chrono::microseconds(100)).count() / 100);
+                if (SetWaitableTimer(handle, &due, 0, nullptr, nullptr, FALSE)) {
+                    const DWORD result = MsgWaitForMultipleObjectsEx(
+                        1, &handle, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    if (result == WAIT_OBJECT_0 + 1) return;
+                    if (result == WAIT_OBJECT_0) continue;
+                }
+            }
+            if (remaining > std::chrono::milliseconds(2)) {
+                const DWORD timeout = static_cast<DWORD>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count() - 1);
+                if (MsgWaitForMultipleObjectsEx(0, nullptr, timeout, QS_ALLINPUT,
+                        MWMO_INPUTAVAILABLE) == WAIT_OBJECT_0) return;
+            } else {
+                MSG message;
+                if (PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE)) return;
+                YieldProcessor();
+            }
+        }
+    }
+};
 
 struct CanvasBounds {
     int x = 0;
@@ -247,22 +284,6 @@ bool IsWindowVisibleAndRestored(HWND hWnd) {
     return hWnd && IsWindow(hWnd) && IsWindowVisible(hWnd) && !IsIconic(hWnd);
 }
 
-void DrawCanvasBackdrop(UINT width, UINT height) {
-    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    if (!drawList)
-        return;
-
-    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-    const float w = displaySize.x > 0.0f ? displaySize.x : static_cast<float>(width);
-    const float h = displaySize.y > 0.0f ? displaySize.y : static_cast<float>(height);
-    if (w <= 0.0f || h <= 0.0f)
-        return;
-
-    // The layered window uses RGB(0,0,0) as a transparency key. RGB(1,1,1)
-    // is visually black, but remains a real bottom-layer primitive.
-    drawList->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(w, h), IM_COL32(1, 1, 1, 255));
-}
-
 void ConfigureCanvasFont(ImGuiIO& io) {
     if (io.Fonts->Locked)
         return;
@@ -307,7 +328,13 @@ bool RegisterClassIfNeeded(const WNDCLASSEXW& windowClass) {
 LRESULT WINAPI CanvasWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_NCHITTEST:
-            return HTTRANSPARENT;
+            return HTCLIENT;
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) != WA_INACTIVE && HIWORD(wParam) == 0)
+                g_Overlay.OnMenuActivated();
+            else if (LOWORD(wParam) == WA_INACTIVE)
+                g_Overlay.OnMenuDeactivated(reinterpret_cast<HWND>(lParam));
+            break;
         case WM_ERASEBKGND:
             return 1;
         case WM_SYSCOMMAND:
@@ -423,6 +450,8 @@ void Overlay::Run(std::function<void()> renderCallback) {
     if (!m_canvasHWnd || !m_canvasSwapChain || !m_canvasRenderTargetView)
         return;
 
+    V2::Rendering::FrameSchedule canvasSchedule;
+    FrameWaitTimer frameTimer;
     bool running = true;
     while (running) {
         MSG msg;
@@ -448,6 +477,8 @@ void Overlay::Run(std::function<void()> renderCallback) {
 
         UI::AutoSave();
         UpdateWindowVisibility();
+        // The canvas cannot activate, so also yield when Home has hidden the menu.
+        OnMenuDeactivated(GetForegroundWindow());
         if (m_minimizedToTaskbar) {
             // 整层收起时暂停绘制和尺寸刷新，真正把屏幕让给 Codex；继续处理窗口消息并轮询恢复热键。
             // 此时 render_fps 降低是预期行为；后台线程独立运行，不要为了 FPS 取消这里的保护。
@@ -458,7 +489,13 @@ void Overlay::Run(std::function<void()> renderCallback) {
         UpdateCanvasBounds();
         UpdateSwapChainSizes();
 
-        RenderCanvas(renderCallback);
+        using Clock = V2::Rendering::FrameSchedule::Clock;
+        const auto now = Clock::now();
+        canvasSchedule.SetLimit(OW::Config::overlayFrameLimit, now);
+        if (canvasSchedule.Due(now)) {
+            canvasSchedule.FrameStarted(now);
+            RenderCanvas(renderCallback);
+        }
         if (OW::Config::Menu) {
             const ULONGLONG now = GetTickCount64();
             if (m_lastMenuRenderMs == 0 ||
@@ -468,6 +505,16 @@ void Overlay::Run(std::function<void()> renderCallback) {
             }
         } else {
             m_lastMenuRenderMs = 0;
+        }
+        if (OW::Config::overlayFrameLimit > 0) {
+            // Keep menu, autosave and Home polling responsive even at a very low canvas FPS.
+            auto wake = (std::min)(canvasSchedule.Next(), Clock::now() + std::chrono::milliseconds(8));
+            if (OW::Config::Menu && m_lastMenuRenderMs) {
+                const auto elapsed = GetTickCount64() - m_lastMenuRenderMs;
+                const auto menuWait = elapsed < kMenuRenderIntervalMs ? kMenuRenderIntervalMs - elapsed : 0;
+                wake = (std::min)(wake, Clock::now() + std::chrono::milliseconds(menuWait));
+            }
+            frameTimer.WaitUntil(wake);
         }
     }
 
@@ -535,7 +582,7 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
     RefreshTargetScreenSize();
 
     m_canvasHWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kCanvasClassName,
         overlayTitle,
         WS_POPUP | WS_VISIBLE,
@@ -551,9 +598,7 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
     if (!m_canvasHWnd)
         return false;
 
-    // The canvas is cleared to black every frame; color-key that clear color so
-    // empty overlay pixels do not cover the target display.
-    SetLayeredWindowAttributes(m_canvasHWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+    // The canvas has an opaque black backdrop; layered color-key composition only adds overhead.
 
     ShowWindow(m_canvasHWnd, SW_SHOW);
     SetWindowPos(m_canvasHWnd, HWND_TOPMOST, m_canvasX, m_canvasY,
@@ -805,9 +850,9 @@ void Overlay::UpdateCanvasBounds(bool force) {
     m_canvasY = bounds.y;
 
     if (boundsChanged) {
-        SetWindowPos(m_canvasHWnd, HWND_TOPMOST, bounds.x, bounds.y,
+        SetWindowPos(m_canvasHWnd, nullptr, bounds.x, bounds.y,
                      static_cast<int>(bounds.width), static_cast<int>(bounds.height),
-                     SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+                     SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
     }
 
     RECT finalRect = currentRect;
@@ -876,9 +921,9 @@ void Overlay::ApplyDesiredMenuClientSize() {
         return;
     }
 
-    SetWindowPos(m_menuHWnd, HWND_TOPMOST, m_menuAnchorX, m_menuAnchorY,
+    SetWindowPos(m_menuHWnd, nullptr, m_menuAnchorX, m_menuAnchorY,
                  targetWindowW, targetWindowH,
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
 }
 
 void Overlay::UpdateSwapChainSizes() {
@@ -923,8 +968,6 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     const ImGuiIO& io = ImGui::GetIO();
     Diagnostics::RecordOverlayCanvasFrame(m_canvasWidth, m_canvasHeight, io.DisplaySize.x, io.DisplaySize.y, false);
 
-    DrawCanvasBackdrop(m_canvasWidth, m_canvasHeight);
-
     {
         Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::RenderCanvas);
         if (renderCallback)
@@ -935,7 +978,7 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
 
     const auto t1 = std::chrono::steady_clock::now();
 
-    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float clearColor[4] = { 1.0f / 255, 1.0f / 255, 1.0f / 255, 1.0f };
     m_pContext->OMSetRenderTargets(1, &m_canvasRenderTargetView, nullptr);
     m_pContext->ClearRenderTargetView(m_canvasRenderTargetView, clearColor);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -963,7 +1006,7 @@ void Overlay::RenderMenu() {
     UI::Render();
 
     ImGui::Render();
-    // 本帧 UI 按钮可能刚收起整层；必须在下面重新启用失焦处理之前返回，防止收起/恢复状态反复跳转。
+    // 本帧 UI 按钮可能刚收起整层。
     if (m_minimizedToTaskbar || !OW::Config::Menu)
         return;
 
@@ -972,5 +1015,4 @@ void Overlay::RenderMenu() {
     m_pContext->ClearRenderTargetView(m_menuRenderTargetView, clearColor);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_menuSwapChain->Present(0, 0);
-    m_canYieldOnDeactivate = true;
 }

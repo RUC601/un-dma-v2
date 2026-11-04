@@ -1,4 +1,4 @@
-﻿#include <Windows.h>
+#include <Windows.h>
 #include <shellapi.h>
 
 #include "Features/UI.hpp"
@@ -891,8 +891,6 @@ using namespace UI::Theme;
 static ImGuiID s_preNewFrameInitHook = 0;
 static ID3D11ShaderResourceView* s_logoTexture = nullptr;
 static constexpr int kLogoTextureSize = 32;
-static constexpr float kBrandLogoDrawSize = 30.0f;
-static constexpr float kBrandTitleGap = 12.0f;
 static float s_measuredBodyHeightByPage[kMeasuredPageCount] = {};
 static UI::MenuClientSize s_desiredMenuClientSize{ kShellWidth, 680.0f };
 
@@ -1193,83 +1191,6 @@ static void DrawPresetSummary(const HeroOption& hero,
                       OW::Labels::AimModeName(preset.aimMode));
     }
     ImGui::TextUnformatted(summary);
-}
-
-static bool TypeSelectorButton(const HeroOption& hero, const ImVec2& size) {
-    ImGuiContext& g = *ImGui::GetCurrentContext();
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (window->SkipItems)
-        return false;
-
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const ImRect bb(pos, ImVec2(pos.x + size.x, pos.y + size.y));
-    const ImGuiID id = window->GetID("##globalTypeSelector");
-
-    ImGui::ItemSize(bb);
-    if (!ImGui::ItemAdd(bb, id))
-        return false;
-
-    bool hovered = false;
-    bool held = false;
-    const bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    const float hoverT = VisualTransition(id ^ 0x61ad, hovered || held, 18.0f);
-
-    const ImU32 frameCol = MixColor(kColControl, kColControlHover, hoverT);
-    window->DrawList->AddRectFilled(bb.Min, bb.Max, frameCol, kControlRounding);
-    window->DrawList->AddRect(bb.Min, bb.Max,
-                              MixColor(kColStrokeDark, kColStroke, hoverT),
-                              kControlRounding, 0, 1.0f);
-
-    const float iconSize = 20.0f;
-    const ImVec2 iconMin(bb.Min.x + 5.0f, bb.Min.y + (size.y - iconSize) * 0.5f);
-    const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
-    if (ID3D11ShaderResourceView* avatar = HeroAvatarForOption(hero)) {
-        window->DrawList->AddImage(reinterpret_cast<ImTextureID>(avatar), iconMin, iconMax);
-    } else {
-        window->DrawList->AddRectFilled(iconMin, iconMax, kColPanelSoft, 0.0f);
-        window->DrawList->AddRect(iconMin, iconMax, kColStroke, 0.0f);
-        const char* fallback = hero.heroId == 0 ? "All" : "?";
-        const ImVec2 fallbackSize = ImGui::CalcTextSize(fallback);
-        window->DrawList->AddText(ImVec2(iconMin.x + (iconSize - fallbackSize.x) * 0.5f,
-                                         iconMin.y + (iconSize - fallbackSize.y) * 0.5f),
-                                  kColTextMuted, fallback);
-    }
-
-    const ImVec2 textPos(iconMax.x + 7.0f,
-                         bb.Min.y + (size.y - ImGui::GetTextLineHeight()) * 0.5f);
-    window->DrawList->AddText(textPos, kColText, HeroScopeName(hero));
-
-    const ImVec2 caretCenter(bb.Max.x - 11.0f, bb.Min.y + size.y * 0.5f);
-    const ImU32 caretCol = MixColor(kColTextDim, kColText, hoverT);
-    window->DrawList->AddLine(ImVec2(caretCenter.x - 4.0f, caretCenter.y - 2.0f),
-                              ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              caretCol, 1.35f);
-    window->DrawList->AddLine(ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              ImVec2(caretCenter.x + 4.0f, caretCenter.y - 2.0f),
-                              caretCol, 1.35f);
-
-    ImGui::RenderNavCursor(bb, id);
-    IMGUI_TEST_ENGINE_ITEM_INFO(id, "##globalTypeSelector", ImGui::GetCurrentContext()->LastItemData.StatusFlags);
-    return pressed;
-}
-
-static void DrawDetectedTypeReadout() {
-    const uint64_t heroId = DetectedLocalHeroId();
-    const bool detected = heroId != 0;
-    const std::string displayName = HeroDisplayNameForId(heroId);
-    const HeroOption* option = detected ? FindHeroOptionById(heroId) : nullptr;
-    ID3D11ShaderResourceView* avatar = option ? HeroAvatarForOption(*option) : HeroAvatarForName(displayName.c_str());
-
-    if (avatar) {
-        constexpr float kDetectedAvatarSize = 28.0f;
-        ImGui::Image(reinterpret_cast<ImTextureID>(avatar),
-                     ImVec2(kDetectedAvatarSize, kDetectedAvatarSize));
-        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-    }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(detected ? kColText : kColTextDim),
-                       "%s", displayName.c_str());
 }
 
 // Shared avatar browser for the editing hero and target-hero sets.
@@ -1875,6 +1796,7 @@ bool UISlider(const char* label, float* value, float v_min, float v_max,
         ImGui::MarkItemEdited(id);
 
     ImGui::RenderNavCursor(bb, id);
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags);
     return valueChanged;
 }
 
@@ -2082,10 +2004,9 @@ int NextAimMethodPresetId() {
 }
 
 static int NextAimBehaviorPresetId() {
-    int nextId = 1;
-    for (const OW::Config::AimBehaviorPreset& preset : OW::Config::View_aimBehaviorPresets())
-        nextId = (std::max)(nextId, preset.id + 1);
-    return nextId;
+    auto& next=OW::Config::View_nextAimBehaviorPresetId();
+    for(const auto& p:OW::Config::View_aimBehaviorPresets()) next=(std::max)(next,p.id+1);
+    return next++;
 }
 
 int NextDynamicFovPresetId() {
@@ -2174,6 +2095,7 @@ OW::Config::AimBehaviorPreset CaptureBehaviorPresetFromCurrent(int behavior,
     preset.moveSplitEnabled = moveSplitEnabled;
     preset.moveSplitMaxPixels = OW::Config::ClampMoveSplitMaxPixels(moveSplitMaxPixels);
     preset.moveSplitDelayUs = OW::Config::ClampMoveSplitDelayUs(moveSplitDelayUs);
+    preset.motion=OW::Config::CaptureBehaviorMotion(behavior);preset.motion.method=preset.method;
     return preset;
 }
 
@@ -2229,15 +2151,15 @@ bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod)
     return changed;
 }
 
-bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior) {
+bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior, const char* noneText) {
     if (!OW::Config::FindAimBehaviorPreset(*presetId))
         *presetId = -1;
 
     bool changed = false;
-    const char* preview = AimBehaviorPresetPreview(*presetId, L("Class Default"));
+    const char* preview = AimBehaviorPresetPreview(*presetId, L(noneText));
     if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest)) {
         const bool noneSelected = *presetId < 0;
-        if (ImGui::Selectable(L("Class Default"), noneSelected)) {
+        if (ImGui::Selectable(L(noneText), noneSelected)) {
             *presetId = -1;
             changed = true;
         }
@@ -2257,6 +2179,7 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
                 labelText += " / ";
                 labelText += methodPreset->name;
             }
+            else {labelText += " / ";labelText += L(kAimMethod[OW::Config::ClampAimMethodIndex(preset.method)]);}
             const bool selected = *presetId == preset.id;
             if (ImGui::Selectable(labelText.c_str(), selected)) {
                 *presetId = preset.id;
@@ -2868,9 +2791,13 @@ static void DrawRuntimeStatusStrip(ImDrawList* dl, const ImVec2& pos, float widt
         const float diagnosticWidth = (std::max)(98.0f, ImGui::CalcTextSize(T(UiText::SubDiagnostics)).x+20.0f);
         ImGui::PushClipRect(pos, ImVec2(pos.x + width - diagnosticWidth - 20.0f, pos.y + ImGui::GetFontSize()+16.0f), true);
         ImGui::SetCursorScreenPos(ImVec2(pos.x + 12.0f, pos.y + 6.0f));
-        ImGui::TextDisabled("%s", summary);
+        const int requestedProfile = V2::Profiles::requestedProfile.load();
+        const char* region = requestedProfile == 1 ? "KR candidate" : requestedProfile == 2 ? "BZ candidate" : "CN";
+        const char* connection = connected ? "Connected" : OW::ProcessConnection::IsConnecting() ? "Connecting" : "Disconnected";
+        ImGui::TextColored(connected ? ImVec4(.55f,.84f,.66f,1) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
+            "%s  %s", region, connection);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\n%s", readiness, nextStep);
+            ImGui::SetTooltip("%s\n%s\n%s", summary, readiness, nextStep);
         ImGui::SameLine();
         if (!s_configSaveStatus.empty()) {
             ImGui::TextColored(s_configSaveFailed ? ImVec4(1.0f,.4f,.3f,1) : ImVec4(.7f,.73f,.77f,1),
@@ -2933,24 +2860,60 @@ static void DrawHeroStrip() {
     ImGui::SetItemTooltip("%s",L("Browse all heroes"));
 }
 
-static void DrawHeroContextToolbar() {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", L("Editing"));
-    ImGui::SameLine();
-    if (TypeSelectorButton(CurrentHeroOption(), ImVec2((std::min)(192.0f,ImGui::GetContentRegionAvail().x), ControlHeight())))
-        ImGui::OpenPopup("TypePickerPopup");
-    const float followWidth = ImGui::CalcTextSize(L("Follow current hero")).x + ControlHeight() + 20.0f;
-    if (ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - ImGui::GetItemRectMax().x > followWidth) ImGui::SameLine();
-    if (UICheckbox(L("Follow current hero"), &UI::state.followDetectedHero) &&
-        UI::state.followDetectedHero) {
-        s_lastSyncedDetectedHeroId = 0;
-        SyncSelectedTypeWithDetectedHero();
+static void DrawHeroContextToolbar(float saveWidth, float height) {
+    const uint64_t heroId = DetectedLocalHeroId();
+    const std::string detectedName = HeroDisplayNameForId(heroId);
+    const std::string current = std::string(L("Current")) + ": " + L(detectedName.c_str());
+    const HeroOption* hero = FindHeroOptionById(heroId);
+    auto* avatar = hero ? HeroAvatarForOption(*hero) : nullptr;
+    const float avatarSize = height - 12.0f;
+    const float avatarWidth = avatar ? avatarSize + 8.0f : 0.0f;
+    const float currentWidth = avatarWidth + ImGui::CalcTextSize(current.c_str()).x;
+    const bool following = UI::state.followDetectedHero;
+    const bool chinese = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
+    std::string followLabel = L("Follow current hero");
+    followLabel += chinese ? (following ? "  /  开" : "  /  关") : (following ? "  /  On" : "  /  Off");
+    const float followWidth = ImGui::CalcTextSize(followLabel.c_str()).x + 32.0f;
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float right = ImGui::GetWindowContentRegionMax().x;
+    const float toolbarWidth = currentWidth + followWidth + saveWidth + gap * 2;
+    const float toolbarX = (std::max)(ImGui::GetWindowContentRegionMin().x, right - toolbarWidth);
+    if (ImGui::GetItemRectMax().x + 24.0f <= ImGui::GetWindowPos().x + toolbarX)
+        ImGui::SameLine(toolbarX);
+    else
+        ImGui::SetCursorPosX(toolbarX);
+
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(currentWidth, height));
+    auto* draw = ImGui::GetWindowDrawList();
+    if (avatar) {
+        const ImVec2 imageMin(pos.x, pos.y + 6.0f);
+        const ImVec2 imageMax(pos.x + avatarSize, pos.y + 6.0f + avatarSize);
+        draw->AddImageRounded(reinterpret_cast<ImTextureID>(avatar), imageMin, imageMax,
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4.0f);
+        draw->AddRect(imageMin, imageMax, IM_COL32(255, 255, 255, 25), 4.0f);
     }
-    TypePickerPanel();
-    const std::string detectedName = HeroDisplayNameForId(DetectedLocalHeroId());
-    const float detectedWidth = ImGui::CalcTextSize(L("Current")).x + ImGui::CalcTextSize(L(detectedName.c_str())).x + 24.0f;
-    if (ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - ImGui::GetItemRectMax().x > detectedWidth) ImGui::SameLine();
-    ImGui::TextDisabled("%s: %s", L("Current"), L(detectedName.c_str()));
+    draw->AddText(ImVec2(pos.x + avatarWidth, pos.y + (height - ImGui::GetTextLineHeight()) * .5f),
+        heroId ? kColTextMuted : kColTextDim, current.c_str());
+    if (ImGui::GetItemRectMax().x + gap + followWidth <= ImGui::GetWindowPos().x + right)
+        ImGui::SameLine();
+    else
+        ImGui::SetCursorPosX((std::max)(ImGui::GetWindowContentRegionMin().x, right - followWidth - saveWidth - gap));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(.72f,.17f,.29f,1));
+    ImGui::PushStyleColor(ImGuiCol_Button, following ? ImVec4(.38f,.08f,.14f,1) : ImVec4(.18f,.09f,.12f,1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.49f,.11f,.20f,1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.58f,.12f,.23f,1));
+    if (ImGui::Button((followLabel + "###FollowCurrentHero").c_str(), ImVec2(followWidth, height))) {
+        UI::state.followDetectedHero = !following;
+        if (UI::state.followDetectedHero) {
+            s_lastSyncedDetectedHeroId = 0;
+            SyncSelectedTypeWithDetectedHero();
+        }
+    }
+    ImGui::PopStyleColor(4);
+    ImGui::PopStyleVar(2);
 }
 
 static void DrawEditingContext() {
@@ -3009,7 +2972,7 @@ void UI::Render() {
         {chinese?"画面":"Visuals", chinese?"显示":"Display"},
         {chinese?"主题":"Theme", chinese?"显示":"Display"},
         {chinese?"范围圈":"FOV rings", chinese?"显示":"Display"},
-        {"Behavior", chinese?"共享参数":"Shared settings"},
+        {chinese?"行为模式":"Behavior modes", chinese?"共享参数":"Shared settings"},
         {chinese?"运动方法":"Methods", chinese?"共享参数":"Shared settings"},
         {chinese?"动态范围":"Dynamic FOV", chinese?"共享参数":"Shared settings"},
         {chinese?"设备":"Devices", chinese?"系统":"System"},
@@ -3019,6 +2982,7 @@ void UI::Render() {
     };
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
+    model.brandIcon = reinterpret_cast<ImTextureID>(s_logoTexture);
     Workspace::Render(model, [] {
         SetPersistenceStatus(OW::Config::SaveAllConfig(OW::Config::ConfigPath()), T(UiText::SavedAllChanges));
     }, [&](int selected) {

@@ -29,10 +29,9 @@ namespace AimbotDetail {
     }
 
     void ResetTrackingSession(RuntimeState& state) {
+        // Motion cleanup must not rearm aimHoldWindows; only physical release does.
         ResetMagneticTriggerQuantization(state, "tracking_session_reset");
         state.trackingSessionActive = false;
-        state.trackingSessionTimedOut = false;
-        state.trackingSessionStartedTick = 0;
         state.trackingSessionHeroId = 0;
         state.trackingSessionSlotIndex = -1;
         state.trackingSessionSlotId = 0;

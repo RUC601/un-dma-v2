@@ -102,6 +102,8 @@ namespace V2::Output
             OutputIntent intent);
         int RecordKeyboardKey(unsigned char hidCode, bool down);
 
+        void SetPhysicalMouseButtons(uint32_t buttons);
+        PhysicalInputSnapshot PhysicalInput() const;
         MockHardwareSnapshot Snapshot() const;
         std::vector<MockEvent> RecentEvents() const;
 
@@ -120,6 +122,7 @@ namespace V2::Output
         std::array<unsigned char, 10> keyboardUsages_{};
         uint32_t outputMouseButtons_ = 0;
         uint32_t maskedButtons_ = 0;
+        uint32_t physicalButtons_ = 0;
         unsigned long long totalEvents_ = 0;
         unsigned long long moveEvents_ = 0;
         unsigned long long buttonEvents_ = 0;

@@ -12,7 +12,7 @@
 
 // -----------------------------------------------------------------------
 // Overlay -- two-layer DX11 overlay:
-// 1) a full-screen black click-through canvas for ESP draw lists
+// 1) a full-screen black canvas for ESP draw lists and background clicks
 // 2) a separate topmost borderless app window for the interactive ImGui menu
 // -----------------------------------------------------------------------
 
@@ -55,7 +55,6 @@ private:
     unsigned long long      m_lastCanvasBoundsRefreshMs = 0;
     unsigned long long      m_lastMenuRenderMs = 0;
     bool                    m_menuAnchorValid = false;
-    bool                    m_canYieldOnDeactivate = false;
     bool                    m_minimizedToTaskbar = false;
 
     bool RegisterWindowClasses(HINSTANCE instance);
@@ -70,6 +69,7 @@ private:
     bool InitializeImGuiContext(ImGuiContext** context, HWND hWnd);
     void ShutdownImGuiContext(ImGuiContext*& context);
     void UpdateWindowVisibility();
+    void SetWindowsTopmost(bool topmost);
     void UpdateCanvasBounds(bool force = false);
     void ApplyDesiredMenuClientSize();
     void UpdateSwapChainSizes();

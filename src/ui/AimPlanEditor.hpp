@@ -1,5 +1,6 @@
 #pragma once
 #include "ui/EditorSupport.hpp"
+#include "ui/ResponseCurveEditor.hpp"
 #include <imgui.h>
 #include <cstdio>
 
@@ -45,10 +46,10 @@ inline bool Shuwu(koi::ShuwuConfig& s) {
     }
     return changed;
 }
-inline bool Motion(AimPlan::Motion& m) {
+inline bool Motion(AimPlan::Motion& m,bool chooseMethod=true) {
     bool changed=false;
-    SettingRow("Motion method"); PushControlWidth();
-    changed|=UISelect("##motionMethod",&m.method,kAimMethod,IM_ARRAYSIZE(kAimMethod)); ImGui::PopItemWidth();
+    if(chooseMethod) { SettingRow("Motion method"); PushControlWidth();
+    changed|=UISelect("##motionMethod",&m.method,kAimMethod,IM_ARRAYSIZE(kAimMethod)); ImGui::PopItemWidth(); }
     changed|=Float("Method speed scale","##methodScale",m.angularSpeedScale,0,200," %");
     if(m.method==1||m.method==6) {
         changed|=Float("PID P","##p",m.pidP,0,2);
@@ -84,6 +85,7 @@ inline bool Motion(AimPlan::Motion& m) {
         changed|=Float("Deadzone","##hybridDeadzone",m.hybridDeadzoneDeg,0,180," deg");
     }
     if(m.method==7) changed|=Shuwu(m.shuwu);
+    if(m.method==8) changed|=UI::ResponseCurveEditor(m.responseCurve);
     return changed;
 }
 inline bool Policy(OW::Config::HeroPreset& preset, bool weightedRanking = true) {
@@ -112,14 +114,22 @@ inline bool Editor(OW::Config::HeroPreset& preset) {
     UIGroupBox("Default motion and target hero exceptions");
     ImGui::TextWrapped("%s",L("Slot behavior stays fixed. Hero exceptions change settings, not which heroes are allowed."));
     if(ImGui::TreeNodeEx(L("Default for all target heroes"),ImGuiTreeNodeFlags_DefaultOpen)) {
-        const bool was=p.overrideMotion;
-        changed|=UICheckbox(L("Use Slot motion settings"),&p.overrideMotion);
-        if(!was && p.overrideMotion) {
-            if(const auto* shared=Config::AimMethodPresetForBehavior(preset.aimBehavior)) p.motion=*shared;
-            else p.motion=CaptureMethodPresetFromCurrent(Config::AimBehaviorMethod(preset.aimBehavior), "Slot motion");
+        p.overrideMotion=true;
+        const auto previous=p.motion;
+        if(Motion(p.motion,preset.aimBehaviorPresetId<0)) {
+            const int chosen=p.motion.method;
+            if(chosen!=previous.method) {
+                p.motion=previous;preset.aimMethod=previous.method;Config::StoreHeroBehaviorMode(preset);
+                auto& cache=Config::EnsureSlotBehaviorConfig(preset,preset.aimBehaviorPresetId);
+                auto stored=std::find_if(cache.motions.begin(),cache.motions.end(),[&](const auto& m){return m.method==chosen;});
+                if(stored==cache.motions.end()) {
+                    auto defaults=Config::CaptureBehaviorMotion(preset.aimBehavior);defaults.method=chosen;
+                    cache.motions.push_back(defaults);stored=std::prev(cache.motions.end());
+                }
+                p.motion=*stored;
+            }
+            preset.aimMethod=chosen;changed=true;
         }
-        if(p.overrideMotion) changed|=Motion(p.motion);
-        else ImGui::TextDisabled("%s",L("Inherits the shared behavior/method preset."));
         ImGui::TreePop();
     }
     int remove=-1;

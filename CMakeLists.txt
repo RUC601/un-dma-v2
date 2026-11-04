@@ -153,6 +153,11 @@ add_executable(Unleashed
     ${IMGUI_SOURCES}
 )
 set_target_properties(Unleashed PROPERTIES OUTPUT_NAME "UNDMA_V2")
+if(NOT UNLEASHED_BUILD_TESTS)
+    # The desktop product should not launch a foreground console/Terminal window.
+    set_target_properties(Unleashed PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(Unleashed PRIVATE /ENTRY:mainCRTStartup)
+endif()
 if(UNLEASHED_OBSERVATION_ONLY)
     target_compile_definitions(Unleashed PRIVATE UNLEASHED_OBSERVATION_ONLY=1)
 endif()

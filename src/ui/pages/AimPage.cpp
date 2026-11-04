@@ -48,6 +48,7 @@ using namespace UI::ValueFormat;
 
 #include "ui/EditorSupport.hpp"
 #include "ui/AimPlanEditor.hpp"
+#include "ui/BehaviorTuningEditor.hpp"
 using namespace UI::Theme;
 
 void UI::AimbotPage() {
@@ -88,6 +89,7 @@ void UI::AimbotPage() {
         }
     };
     refreshActivePreset();
+    OW::Config::ResolveHeroBehaviorMode(activePreset);
 
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.aimHeroSegActive);
 
@@ -182,27 +184,23 @@ void UI::AimbotPage() {
         CloseGroupBox();
     }, [&]() {
         UIGroupBox("Behavior & Input");
-            // Aim Behavior
-            SettingRow("Aim Behavior", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelect("##aimBehavior", &activePreset.aimBehavior,
-                         kAimBehavior, IM_ARRAYSIZE(kAimBehavior))) {
-                activePreset.aimBehaviorPresetId = -1;
-                ApplyAimBehaviorToHeroPreset(activePreset, activePreset.aimBehavior);
-                presetChanged = true;
+            SettingRow("Behavior mode",kAimbotLeftLabelWidth);PushControlWidth();
+            int chosenMode=activePreset.aimBehaviorPresetId;
+            if(UISelectAimBehaviorPreset("##aimBehaviorMode",&chosenMode,-1,"Custom")) {
+                OW::Config::StoreHeroBehaviorMode(activePreset);
+                activePreset.aimBehaviorPresetId=chosenMode;
+                OW::Config::ResolveHeroBehaviorMode(activePreset);presetChanged=true;
             }
             ImGui::PopItemWidth();
-
-            SettingRow("Behavior Preset", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelectAimBehaviorPreset("##aimBehaviorPreset", &activePreset.aimBehaviorPresetId, -1)) {
-                if (const OW::Config::AimBehaviorPreset* behaviorPreset =
-                        OW::Config::FindAimBehaviorPreset(activePreset.aimBehaviorPresetId)) {
-                    ApplyAimBehaviorToHeroPreset(activePreset, behaviorPreset->behavior);
+            if(chosenMode<0) {
+                SettingRow("Aim Behavior",kAimbotLeftLabelWidth);PushControlWidth();
+                int behavior=activePreset.aimBehavior;
+                if(UISelect("##customBehavior",&behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior))) {
+                    OW::Config::StoreHeroBehaviorMode(activePreset);activePreset.aimBehavior=behavior;activePreset.resolvedModeId=-2;
+                    OW::Config::ResolveHeroBehaviorMode(activePreset);presetChanged=true;
                 }
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
+                ImGui::PopItemWidth();
+            } else ImGui::TextWrapped("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
 
             // Aim activation key is stored per aim slot.
             SettingRow("Aim Activation Key", kAimbotLeftLabelWidth);
@@ -268,17 +266,6 @@ void UI::AimbotPage() {
                     ? "Aim only while the selected weapon or skill action is physically held."
                     : "This action has no physical mouse-button mapping.");
 
-            // Fire Policy
-            SettingRow("Fire Policy", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelect("##aimFirePolicy", &activePreset.firePolicy,
-                         kFirePolicy, IM_ARRAYSIZE(kFirePolicy))) {
-                activePreset.keepFiring = activePreset.firePolicy == 1;
-                activePreset.autoshot = activePreset.firePolicy >= 2;
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
-
             SettingRow("Skeleton", kAimbotLeftLabelWidth);
             PushControlWidth();
             presetChanged |= UISkeletonBoneMultiSelect("##aimSkeleton", &activePreset.aimBoneMask);
@@ -286,22 +273,28 @@ void UI::AimbotPage() {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", L("Choose All or combine groups, for example Head + Feet."));
 
-            // Speed scale
-            SettingRow("Speed Scale", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimSmooth", &activePreset.smooth, 0.0f, 100.0f, Number(2, " %"));
-            ImGui::PopItemWidth();
-
-            if (OW::Config::UsesTrackingDeadzone(activePreset.aimBehavior)) {
-                SettingRow("Deadzone", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimTrackingDeadzone", &activePreset.trackingDeadzone, 0.0f, 250.0f, Number(0, " px"));
-                ImGui::PopItemWidth();
-            }
-
         CloseGroupBox();
     });
 
+    UIGroupBox("Current Slot parameters");
+    ImGui::TextWrapped("%s",L("These values belong to this Slot. Mode edits change behavior and method, not these values."));
+    if(ImGui::Button(L("Restore mode defaults"))) {OW::Config::ResolveHeroBehaviorMode(activePreset,true);presetChanged=true;}
+    presetChanged|=UI::BehaviorTuningEditor(activePreset,activePreset.aimBehavior);
+    CloseGroupBox();
+    if(activePreset.aimBehavior==OW::Config::kAimBehaviorFlick2nd && activePreset.flick2ndInnerMethod>=0 &&
+       activePreset.flick2ndInnerMethod!=activePreset.aimMethod) {
+        auto& mode=OW::Config::EnsureSlotBehaviorConfig(activePreset,activePreset.aimBehaviorPresetId);
+        auto motion=std::find_if(mode.motions.begin(),mode.motions.end(),[&](const auto& m){return m.method==activePreset.flick2ndInnerMethod;});
+        if(motion==mode.motions.end()) {
+            auto defaults=activePreset.aimPlan.motion;
+            if(const auto* definition=OW::Config::FindAimBehaviorPreset(activePreset.aimBehaviorPresetId)) defaults=definition->motion;
+            defaults.method=activePreset.flick2ndInnerMethod;mode.motions.push_back(defaults);motion=std::prev(mode.motions.end());
+            presetChanged=true;
+        }
+        UIGroupBox("Second stage motion parameters");
+        presetChanged|=UI::AimPlanEditor::Motion(*motion,false);
+        CloseGroupBox();
+    }
     presetChanged |= UI::AimPlanEditor::Editor(activePreset);
 
     ImGui::SetNextItemOpen(state.aimAdvanced, ImGuiCond_Always);
@@ -333,88 +326,6 @@ void UI::AimbotPage() {
                 ImGui::PopItemWidth();
             }
 
-            if (OW::Config::UsesFlickFireControls(activePreset.aimBehavior)) {
-                SettingRow("Shot Clamp", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimFlickShotClamp", &activePreset.flickShotClampMs, 0.0f, 1000.0f, Number(0, " ms"));
-                ImGui::PopItemWidth();
-
-                SettingRow("Post-fire Delay", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimFlickPostFireDelay", &activePreset.flickPostFireDelayMs, 0.0f, 500.0f, Number(0, " ms"));
-                ImGui::PopItemWidth();
-
-                if (OW::Config::IsMagneticTriggerBehavior(activePreset.aimBehavior)) {
-                    SettingRow("Repeat Interval", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticInterval", &activePreset.magneticShotIntervalMs, 0.0f, 5000.0f, AtOrBelow("Auto", 0, Number(0, " ms")));
-                    ImGui::PopItemWidth();
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", L("0 uses trigger_cycle_interval_ms for the current WeaponSpec. A non-zero value overrides the table."));
-
-                    SettingRow("Aim Pause", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticPause", &activePreset.magneticPostFirePauseMs, 0.0f, 500.0f, Number(0, " ms"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Aim Recovery", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticRecovery", &activePreset.magneticRecoveryMs, 0.0f, 1000.0f, Number(0, " ms"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Pause X Scale", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticYawScale", &activePreset.magneticPostFireYawScale, 0.0f, 1.0f, Number(2, "x"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Pause Y Scale", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticPitchScale", &activePreset.magneticPostFirePitchScale, 0.0f, 1.0f, Number(2, "x"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Pre-fire Window", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticBoostWindow", &activePreset.magneticPreFireBoostWindowMs, 0.0f, 250.0f, Number(0, " ms"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Pre-fire Boost", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimMagneticBoostScale", &activePreset.magneticPreFireBoostScale, 1.0f, 3.0f, Number(2, "x"));
-                    ImGui::PopItemWidth();
-                }
-
-                SettingRow("Trajectory Wait", kAimbotLeftLabelWidth);
-                presetChanged |= UICheckbox("##aimFlickTrajectoryWait", &activePreset.flickTrajectoryWait);
-
-                if (activePreset.flickTrajectoryWait) {
-                    SettingRow("Wait Limit", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimFlickTrajectoryWaitMs", &activePreset.flickTrajectoryWaitMs, 0.0f, 1000.0f, Number(0, " ms"));
-                    ImGui::PopItemWidth();
-
-                    SettingRow("Apex Window", kAimbotLeftLabelWidth);
-                    PushControlWidth();
-                    presetChanged |= UISlider("##aimFlickTrajectoryApexWindow", &activePreset.flickTrajectoryApexWindowMs, 0.0f, 300.0f, Number(0, " ms"));
-                    ImGui::PopItemWidth();
-                }
-            }
-
-            const bool showAimChargeSettings =
-                activePreset.firePolicy == static_cast<int>(OW::FirePolicyType::ChargeRelease);
-            if (showAimChargeSettings) {
-                // Aim Min Charge
-                SettingRow("Aim Min Charge", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimMinChg", &activePreset.minCharge, 0.0f, 100.0f, Number(0, " %"));
-                ImGui::PopItemWidth();
-
-                // Autoshot Max Charge
-                SettingRow("Autoshot Max Charge", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimMaxChg", &activePreset.maxCharge, 0.0f, 100.0f, Number(0, " %"));
-                ImGui::PopItemWidth();
-            }
-
         CloseGroupBox();
         }, [&]() {
         UIGroupBox("Tracking & Limits");
@@ -429,38 +340,6 @@ void UI::AimbotPage() {
             PushControlWidth();
             presetChanged |= UISlider("##aimStick", &activePreset.stickiness, 0.0f, 100.0f, AtOrAbove("Max", 100, Number(1, " %")));
             ImGui::PopItemWidth();
-
-            // Max Aim Time
-            SettingRow("Max Aim Time", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimMaxAim", &activePreset.maxAimTime, 0.0f, 100.0f, AtOrAbove("Endless", 100, AtOrBelow("Endless", 0, Number(0, " ms", 20))));
-            ImGui::PopItemWidth();
-
-            if (OW::Config::IsFlick2ndBehavior(activePreset.aimBehavior)) {
-                SettingRow("Second Method", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISelect("##aimFlick2ndInnerMethod", &activePreset.flick2ndInnerMethod,
-                                          kAimMethod, IM_ARRAYSIZE(kAimMethod));
-                ImGui::PopItemWidth();
-
-                SettingRow("Trigger Gate", kAimbotRightLabelWidth);
-                presetChanged |= UICheckbox("##aimFlick2ndTriggerGate", &activePreset.flick2ndTriggerGate);
-
-                SettingRow("Box Padding", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimFlick2ndBoxPadding", &activePreset.flick2ndBoxPadding, 0.0f, 80.0f, Number(0, " px"));
-                ImGui::PopItemWidth();
-
-                SettingRow("Inner Radius", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimFlick2ndInnerRadius", &activePreset.flick2ndInnerRadius, 0.0f, 250.0f, Number(0, " px"));
-                ImGui::PopItemWidth();
-
-                SettingRow("Inner Smooth", kAimbotRightLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISlider("##aimFlick2ndInnerSmooth", &activePreset.flick2ndInnerSmoothScale, 0.1f, 1.0f, Number(2, "x"));
-                ImGui::PopItemWidth();
-            }
 
             // Unlock Condition
             SettingRow("Unlock Condition", kAimbotRightLabelWidth);
@@ -485,8 +364,9 @@ void UI::AimbotPage() {
     ImGui::SameLine();
     if (ImGui::SmallButton(L("Edit FOV preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 4; }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", L("Shared presets affect every hero that uses them."));
+        ImGui::SetTooltip("%s", L("Mode structure is shared. Slot parameters stay independent."));
 
+    if(presetChanged) OW::Config::StoreHeroBehaviorMode(activePreset);
     if (selectedHero->heroId == 0) {
         if (presetChanged)
             ApplyHeroActionPresetToGlobals(slotKind, activePreset);

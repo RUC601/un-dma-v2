@@ -29,7 +29,7 @@
             }
             if (readHealth && healthBase) {
                 reads.healthRequested = true;
-                const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504;
+                const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
                 request(healthBase + 0xDC, reads.health.vital.data(), 32, reads.healthBytes[0]);
                 request(healthBase + (cn ? 0x25C : 0x21C), &reads.health.armor, 8, reads.healthBytes[1]);
                 request(healthBase + (cn ? 0x3DC : 0x35C), &reads.health.barrier, 8, reads.healthBytes[2]);
@@ -77,7 +77,7 @@
             return reads;
         };
         auto readHealthFields = [&](uint64_t base, OW::health_fields_t& health) {
-            const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504;
+            const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
             return SDK->read_range(base+0xDC,health.vital.data(),32) &&
                 SDK->read_range(base+(cn?0x25C:0x21C),&health.armor,8) &&
                 SDK->read_range(base+(cn?0x3DC:0x35C),&health.barrier,8) &&

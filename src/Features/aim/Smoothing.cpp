@@ -474,7 +474,7 @@ namespace OW {
                                             float accel,
                                             int methodOverride,
                                             float bezierSpeedOverride,
-                                            bool commitOvershootStep) {
+                                            bool commitOvershootStep, float effectiveFovDeg) {
         thread_local uint64_t previousPlanTarget=0, previousActor=0, previousEpoch=0, previousScene=0;
         thread_local AimPlan::Effective previousPlan{};
         const bool usePlan=Config::targetAimPlanEnabled;
@@ -499,7 +499,7 @@ namespace OW {
         }
 
         // Hybrid PID owns its braking curve and must converge on the real target.
-        const Vector3 adjustedTarget = (method == 6 || method == 7)
+        const Vector3 adjustedTarget = (method == 6 || method == 7 || method == 8)
             ? target
             : AimSmoothingDetail::ApplyOvershootCurveTarget(local, target);
         const Vector3 error = adjustedTarget - local;
@@ -649,13 +649,20 @@ namespace OW {
             result=local+Vector3(float(move.pitch),float(move.yaw),0);
             break;
         }
+        case 8: {
+            const auto points=methodPreset?methodPreset->responseCurve:AimResponseCurve::Points{};
+            const float fov=effectiveFovDeg>=0?effectiveFovDeg:Config::selectedAimFovDeg;
+            const float factor=AimResponseCurve::StepFactor(error.Size(),DEG2RAD(fov),effectiveSpeed,deltaTime,points);
+            result=local+error*factor;
+            break;
+        }
         default:
             result = SmoothLinear(local, adjustedTarget, effectiveStepFactor);
             break;
         }
 
         const Vector3 outputDelta = result - local;
-        if (commitOvershootStep && method != 6 && method != 7)
+        if (commitOvershootStep && method != 6 && method != 7 && method != 8)
             AimSmoothingDetail::CommitOvershootStep(outputDelta);
         Diagnostics::Aim("smooth.result method=%d result=(%.9f,%.9f,%.9f) output_delta=(%.9f,%.9f,%.9f) output_len=%.9f",
             method,

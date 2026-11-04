@@ -17,12 +17,14 @@ template<class T> void Read(const Value& v,const char* key,T& dst) {
     if(!v.IsObject()) return; auto i=v.FindMember(key); if(i==v.MemberEnd()) return;
     const auto& x=i->value;
     if constexpr(std::is_same_v<T,bool>) { if(x.IsBool()) dst=x.GetBool(); }
+    else if constexpr(std::is_integral_v<T> && std::is_signed_v<T>) { if(x.IsInt64() && x.GetInt64()>=(std::numeric_limits<T>::min)() && x.GetInt64()<=(std::numeric_limits<T>::max)()) dst=T(x.GetInt64()); }
     else if constexpr(std::is_integral_v<T>) { if(x.IsUint64() && x.GetUint64()<=uint64_t((std::numeric_limits<T>::max)())) dst=T(x.GetUint64()); }
     else if(x.IsNumber() && std::isfinite(x.GetDouble())) dst=T(x.GetDouble());
 }
 template<class T> void Put(Value& v,const char* key,T x,Allocator& a) {
     Value k; k.SetString(key,a); Value b;
     if constexpr(std::is_same_v<T,bool>) b.SetBool(x);
+    else if constexpr(std::is_integral_v<T> && std::is_signed_v<T>) b.SetInt64(int64_t(x));
     else if constexpr(std::is_integral_v<T>) b.SetUint64(uint64_t(x));
     else b.SetDouble(x);
     v.AddMember(k,b,a);
@@ -39,6 +41,8 @@ inline void PutIds(Value& v,const char* key,const std::vector<uint64_t>& ids,All
     Value k; k.SetString(key,a); v.AddMember(k,list,a);
 }
 inline Motion ReadMotion(const Value& v,Motion m={}) {
+    Read(v,"responseX1",m.responseCurve.x1); Read(v,"responseY1",m.responseCurve.y1);
+    Read(v,"responseX2",m.responseCurve.x2); Read(v,"responseY2",m.responseCurve.y2);
     Read(v,"method",m.method);
     Read(v,"angularSpeedScale",m.angularSpeedScale);
     Read(v,"pidP",m.pidP);
@@ -100,6 +104,8 @@ inline Motion ReadMotion(const Value& v,Motion m={}) {
 }
 inline Value MotionJson(const Motion& m,Allocator& a) {
     Value v(rapidjson::kObjectType);
+    Put(v,"responseX1",m.responseCurve.x1,a); Put(v,"responseY1",m.responseCurve.y1,a);
+    Put(v,"responseX2",m.responseCurve.x2,a); Put(v,"responseY2",m.responseCurve.y2,a);
     Put(v,"method",m.method,a);
     Put(v,"angularSpeedScale",m.angularSpeedScale,a);
     Put(v,"pidP",m.pidP,a);

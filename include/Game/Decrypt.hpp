@@ -201,8 +201,8 @@ namespace OW {
     }
 
     inline uint64_t GetParent(uint64_t encrypted) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504)
-            return Cn154504::Parent(encrypted);
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
+            return Cn154905::Parent(encrypted);
         __try {
             auto result = encrypted;
             result = (result >> 0x20) | (result << 0x20);
@@ -337,7 +337,7 @@ namespace OW {
                 -static_cast<int32_t>(present)));
         const auto& activeOffsets = offset::Active();
 
-        if (activeOffsets.componentTransform == offset::ComponentTransformMode::Cn154504) {
+        if (activeOffsets.componentTransform == offset::ComponentTransformMode::Cn154905) {
             struct Keys {
                 uint64_t base = 0, epoch = 0, sampled = 0;
                 uint8_t a = 0, b = 0;
@@ -353,14 +353,14 @@ namespace OW {
             if (!keys.valid || keys.base != SDK->dwGameBase || keys.epoch != epoch || now - keys.sampled >= 16) {
                 keys.valid = false;
                 uint8_t a = 0, b = 0;
-                if (!SDK->read_range(SDK->dwGameBase + Cn154504::keyByteA, &a, sizeof(a)) ||
-                    !SDK->read_range(SDK->dwGameBase + Cn154504::keyByteB, &b, sizeof(b))) {
+                if (!SDK->read_range(SDK->dwGameBase + Cn154905::keyByteA, &a, sizeof(a)) ||
+                    !SDK->read_range(SDK->dwGameBase + Cn154905::keyByteB, &b, sizeof(b))) {
                     Diagnostics::RecordDecryptFailure();
                     return 0;
                 }
                 keys = {SDK->dwGameBase, epoch, now, a, b, true};
             }
-            const uintptr_t decoded = static_cast<uintptr_t>(present_mask & Cn154504::Component(component, keys.a, keys.b));
+            const uintptr_t decoded = static_cast<uintptr_t>(present_mask & Cn154905::Component(component, keys.a, keys.b));
             uint8_t type = 0;
             if (decoded < 0x10000 || decoded >= 0x0000800000000000ULL ||
                 !SDK->read_range(decoded + 0x10, &type, sizeof(type)) || type != idx) {
@@ -477,8 +477,8 @@ namespace OW {
     }
 
     inline uint64_t DecodeVisibilityRaw(uint64_t raw) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504)
-            return Cn154504::Visibility(raw);
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
+            return Cn154905::Visibility(raw);
         return offset::IsCnProfile() ? raw : ((raw & offset::VisibilityBzVisibleMask) != 0 ? 1 : 0);
     }
 
@@ -498,7 +498,7 @@ namespace OW {
                     static_cast<unsigned long long>(activeOffsets.VisibilityValueOffset),
                     static_cast<unsigned long long>(offset::VisibilityBzVisibleMask));
             } else {
-                Diagnostics::Info("[VISIBILITY] CN 154504N component 0x34 +0x%llX uses encrypted state; visible when decoded == 1.",
+                Diagnostics::Info("[VISIBILITY] CN 154905N component 0x34 +0x%llX uses encrypted state; visible when decoded == 1.",
                     static_cast<unsigned long long>(activeOffsets.VisibilityValueOffset));
             }
             loggedVisibility = true;
@@ -605,26 +605,27 @@ namespace OW {
         if (!IsPlausibleUserPointer(linkBase))
             return 0;
 
-        const uint32_t id = SDK->RPM<uint32_t>(linkBase + idOffset);
-        if (id == 0)
+        uint32_t id=0;
+        if (!SDK->read_range(linkBase+idOffset,&id,sizeof(id)) || id == 0)
             return 0;
 
-        const uint64_t context = SDK->RPM<uint64_t>(linkBase + 0x8);
-        if (!IsPlausibleUserPointer(context))
+        uint64_t context=0;
+        if (!SDK->read_range(linkBase+0x8,&context,sizeof(context)) || !IsPlausibleUserPointer(context))
             return 0;
 
-        const uint64_t bucketOwner = SDK->RPM<uint64_t>(context + 0x28);
-        if (!IsPlausibleUserPointer(bucketOwner))
+        uint64_t bucketOwner=0;
+        if (!SDK->read_range(context+0x28,&bucketOwner,sizeof(bucketOwner)) || !IsPlausibleUserPointer(bucketOwner))
             return 0;
 
-        const uint64_t bucketArray = SDK->RPM<uint64_t>(bucketOwner + 0x18);
-        if (!IsPlausibleUserPointer(bucketArray))
+        uint64_t bucketArray=0;
+        if (!SDK->read_range(bucketOwner+0x18,&bucketArray,sizeof(bucketArray)) || !IsPlausibleUserPointer(bucketArray))
             return 0;
 
         const uint64_t bucket = id & 0xFFFu;
-        const uint64_t entries = SDK->RPM<uint64_t>(bucketArray + 16ull * bucket);
-        const uint32_t count = SDK->RPM<uint32_t>(bucketArray + 16ull * bucket + 8);
-        if (!IsPlausibleUserPointer(entries) || count == 0 || count > 4096)
+        uint64_t entries=0;uint32_t count=0;
+        if (!SDK->read_range(bucketArray+16ull*bucket,&entries,sizeof(entries)) ||
+            !SDK->read_range(bucketArray+16ull*bucket+8,&count,sizeof(count)) ||
+            !IsPlausibleUserPointer(entries) || count == 0 || count > 4096)
             return 0;
 
         const uint32_t cappedCount = (std::min)(count, 512u);
@@ -768,8 +769,8 @@ namespace OW {
 
     inline uint64_t ResolveSingletonList(uint64_t raw) {
         switch (offset::Active().singletonListMode) {
-        case offset::SingletonListMode::Cn154504:
-            return Cn154504::Singleton(raw);
+        case offset::SingletonListMode::Cn154905:
+            return Cn154905::Singleton(raw);
         case offset::SingletonListMode::Plain:
             return raw;
         case offset::SingletonListMode::LiveGameAdminWorldBz:
@@ -1344,7 +1345,7 @@ namespace OW {
     // =========================================================================
 
     inline bool DynamicEntityRegistryEnabled() {
-        return offset::Active().componentTransform==offset::ComponentTransformMode::Cn154504;
+        return offset::Active().componentTransform==offset::ComponentTransformMode::Cn154905;
     }
 #ifdef UNLEASHED_REGISTRY_PRODUCER_TEST
     inline uint64_t (*registryProducerClock)()=&::GetTickCount64;
@@ -1430,7 +1431,7 @@ namespace OW {
                 resolver.status==EntityRegistry::ResolveStatus::Ambiguous ||
                 resolver.status==EntityRegistry::ResolveStatus::EmptyUnconfirmed;
             if(!resolver.Matches(epoch,module) || (terminal && now-resetAt>5000)) {
-                const auto ranges=V2::Memory::WritableSections(module,Cn154504::imageSize,
+                const auto ranges=V2::Memory::WritableSections(module,Cn154905::imageSize,
                     [&](uint64_t at,void* dst,size_t n){return contextCurrent() && mem.ReadFreshExact(at,dst,n);});
                 std::vector<EntityRegistry::SearchRange> input;
                 for(auto r:ranges)input.push_back({r.begin,r.end});
@@ -1441,7 +1442,7 @@ namespace OW {
             if(rangesReady) {
                 error=resolver.Step([&](uint64_t at,void* dst,size_t n){return mem.ReadFreshExact(at,dst,n);},
                     contextCurrent,[&](uint64_t parent,const EntityRegistry::Snapshot& table) {
-                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,Cn154504::imageSize))return false;
+                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,Cn154905::imageSize))return false;
                         // 候选必须具有当前 CN parent 的实读身份及组件位图，非零地址不算语义通过。
                         uint32_t match=0;std::array<uint64_t,2> components{};
                         return contextCurrent() && mem.ReadFreshExact(parent+offset::Entity_MatchId,&match,sizeof(match)) &&
@@ -1663,10 +1664,24 @@ namespace OW {
         const bool linkIdRead=link && SDK->read_range(link+offset::Link_TargetId,linkIds.data(),sizeof(linkIds));
         const bool targetIdRead=linkIdRead;
         const uint32_t targetId=linkIds[0],linkId=linkIds[1];
-        if(linkIdRead && targetIdRead)
-            for(const auto& [component,id]:topology.member_ids)if(id && (id==linkId || id==targetId) && component!=parent)
-                components.push_back(component);
         bool allBindingsResolved=topology.member_ids_complete && linkIdRead && targetIdRead;
+        std::vector<std::pair<uint64_t,uint64_t>> contextBindings;
+        if(linkIdRead && targetIdRead)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
+            const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
+            if(!id || (idOffset==offset::Link_UniqueId && id==targetId))continue;
+            std::vector<uint64_t> matches;
+            for(const auto& [component,memberId]:topology.member_ids)
+                if(memberId==id && component!=parent)matches.push_back(component);
+            // A UID can exist in more than one world/context. Only this controller's
+            // map identifies which address it owns; equal UIDs are not a replacement proof.
+            if(matches.size()>1) {
+                uint32_t resolvedId=0;
+                const auto target=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId);
+                if(resolvedId==id && std::find(matches.begin(),matches.end(),target)!=matches.end()) {
+                    components.push_back(target);contextBindings.emplace_back(idOffset,target);
+                } else allBindingsResolved=false;
+            } else if(!matches.empty())components.push_back(matches.front());
+        }
         if(link)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
             const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
             if(id && std::any_of(topology.member_ids.begin(),topology.member_ids.end(),[&](const auto& pair){return pair.second==id;}))continue;
@@ -1749,6 +1764,10 @@ namespace OW {
                 SDK->read_range(link+offset::Link_UniqueId,&currentLinkId,sizeof(currentLinkId)) && currentLinkId==linkId &&
                 SDK->read_range(link+offset::Link_TargetId,&currentTargetId,sizeof(currentTargetId)) && currentTargetId==targetId;
             if(link && !idsStable){trace(8);return {};}
+            for(const auto& [idOffset,target]:contextBindings)
+                if(ResolveCnLinkTargetMapBase(link,idOffset)!=target){
+                    if(discoveries)discoveries->clear();trace(8);return {};
+                }
             allBindingsResolved=allBindingsResolved && idsStable;
             if(allBindingsResolved && bindingMembers)
                 for(auto component:resolvedComponents)bindingMembers->emplace_back(component,parent);

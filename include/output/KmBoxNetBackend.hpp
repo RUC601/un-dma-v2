@@ -46,6 +46,7 @@ public:
     bool monitorStartResolved = false;
     int monitorStartStatus = err_creat_socket;
     std::atomic<unsigned long long> inputPacketCount{ 0 };
+    uint64_t inputSampledAtMs = 0; // guarded by monitorMutex
     std::atomic<unsigned char> lastLoggedMouseButtons{ 0 };
     std::atomic<DWORD> listenerThreadId{ 0 };
 public:
@@ -57,6 +58,7 @@ public:
     int StartMonitor(WORD Port);
     void EndMonitor();
     unsigned long long InputPacketCount() const;
+    V2::Output::PhysicalInputSnapshot PhysicalInput();
 public:
     bool IsMouseButtonPressed(int vkButton);
     bool GetKeyState(WORD vKey);

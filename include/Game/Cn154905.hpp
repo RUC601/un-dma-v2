@@ -2,17 +2,17 @@
 #include <bit>
 #include <cstdint>
 
-// 2.25.0.1.154504N: IDA owners and read-only samples are archived in
-// 03_DOWNP/2.25.0.1.154504N/ne/offset_work_2026-10-21.
-namespace OW::Cn154504 {
-inline constexpr uint32_t timestamp = 1791423210, imageSize = 0x5A52000;
-inline constexpr uint64_t keyByteA = 0x4A61535, keyByteB = 0x4A61A41;
-inline constexpr uint64_t entityRoot = 0x4C33BF8, entityState = 0x4C33BE0;
-inline constexpr uint64_t entityLock = 0x537A160;
+// 2.25.1.0.154905N: IDA owners and read-only samples are archived in
+// 03_DOWNP/2.25.1.0.154905N/cn/offset_work_2026-11-04.
+namespace OW::Cn154905 {
+inline constexpr uint32_t timestamp = 1792635532, imageSize = 0x5A98000;
+inline constexpr uint64_t keyByteA = 0x4A9D525, keyByteB = 0x4A9DA31;
+inline constexpr uint64_t entityRoot = 0x4C71748, entityState = 0x4C71730;
+inline constexpr uint64_t entityLock = 0x53BB9E0;
 // 0x800 slots is the initial allocation, not a permanent scan bound.
 inline constexpr uint64_t entityInitialBytes = 0x8000;
-inline constexpr uint64_t viewRoot = 0x4BCBCE8, globalAdmin = 0x4D98760;
-inline constexpr uint64_t mouseScaleX = 0x4A6857C, mouseScaleY = 0x4A68594;
+inline constexpr uint64_t viewRoot = 0x4C08E78, globalAdmin = 0x4DD7160;
+inline constexpr uint64_t mouseScaleX = 0x4AA456C, mouseScaleY = 0x4AA4584;
 inline constexpr uint64_t pointerXor = 0xD9B0DF0D8532B5A0ULL;
 inline constexpr uint64_t pointerAdd = 0x488A1F0DC13B6040ULL;
 
@@ -24,7 +24,8 @@ constexpr uint64_t Substitute(uint64_t value) {
     return result;
 }
 
-// Scalar region 0x545A06..0x545E48 and helper 0x5475E0 are byte-identical to 154461N.
+// 154905N scalar starts at 0x547C96; relocation-normalized effective blocks
+// and helper 0x549870 preserve the two-LUT transform. Obfuscation bytes changed.
 constexpr uint64_t Component(uint64_t value, uint8_t a, uint8_t b) {
     value = std::rotr((value + 0x0D030666FEB038CEULL) ^ a, 40) ^ 0x357B5A44DBADDD24ULL;
     value = std::rotr(Substitute(value) + 0x33696B953606C040ULL, 26) ^ b ^ 0x2CEFECC4CAD54C5EULL;

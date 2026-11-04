@@ -49,6 +49,7 @@ using namespace UI::ValueFormat;
 
 #include "ui/EditorSupport.hpp"
 #include "ui/AimPlanEditor.hpp"
+#include "ui/BehaviorTuningEditor.hpp"
 using namespace UI::Theme;
 
 void DrawMiscGeneralPage();
@@ -239,6 +240,17 @@ void DrawMiscGeneralPage() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", T(UiText::TooltipMinimizeOverlay));
 
+        SettingRow(L("Overlay frame limit"));
+        PushControlWidth();
+        UISlider("##overlayFrameLimit", &OW::Config::overlayFrameLimit, 0, 2000,
+                 AtOrBelow(L("Unlimited"), 0, Number(0, " FPS")));
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("0 = unlimited. Changes apply immediately. Only limits canvas drawing; data acquisition stays at 300 Hz and the menu at about 60 FPS."));
+
+        SettingRow(L("Actual overlay FPS"));
+        ImGui::Text("%.0f FPS", Diagnostics::RenderFps());
+
         SettingRow(T(UiText::RuntimeVersion));
         const auto layout = V2::Profiles::Snapshot();
         if (OW::ProcessConnection::IsConnected() && layout.detection.selected >= 0)
@@ -374,244 +386,58 @@ void DrawMiscDiagnosticsPage() {
 }
 
 void DrawMiscBehaviorPage() {
-    UIGroupBox(T(UiText::GroupBehavior));
-    {
-        static int selectedBehavior = 0;
-        static int selectedBehaviorPresetId = -1;
-        static int lastBehaviorPresetId = -2;
-        static char behaviorPresetName[64] = "Behavior Preset";
-        selectedBehavior = OW::Config::ClampAimBehaviorIndex(selectedBehavior);
-
-        SettingRow(T(UiText::SubBehavior));
-        PushControlWidth();
-        if (UISelect("##miscBehaviorSelector", &selectedBehavior,
-                     kAimBehavior, IM_ARRAYSIZE(kAimBehavior))) {
-            if (const OW::Config::AimBehaviorPreset* selectedPreset =
-                    OW::Config::FindAimBehaviorPreset(selectedBehaviorPresetId)) {
-                if (OW::Config::ClampAimBehaviorIndex(selectedPreset->behavior) != selectedBehavior)
-                    selectedBehaviorPresetId = -1;
-            }
+    using namespace OW::Config;
+    static int selectedId=View_aimBehaviorPresets().empty()?-1:View_aimBehaviorPresets().front().id,lastId=-2;
+    static AimBehaviorPreset draft{};
+    static char name[64]="Behavior Preset";
+    bool changed=false;
+    UIGroupBox("Behavior modes");
+    SettingRow("Behavior mode");PushControlWidth();
+    if(UISelectAimBehaviorPreset("##modeDefinition",&selectedId,-1,"New mode")) lastId=-2;
+    ImGui::PopItemWidth();
+    auto* selected=FindMutableAimBehaviorPreset(selectedId);
+    if(lastId!=selectedId) {
+        draft=selected?*selected:AimBehaviorPreset{};
+        CopyPresetNameToBuffer(draft.name,name);lastId=selectedId;
+    }
+    auto& mode=selected?*selected:draft;
+    SettingRow("Preset Name");PushControlWidth();
+    if(ImGui::InputText("##modeName",name,IM_ARRAYSIZE(name))) {mode.name=NormalizeUiPresetName(name,"Behavior Preset",-1);changed=true;}
+    ImGui::PopItemWidth();
+    SettingRow("Aim Behavior");PushControlWidth();
+    changed|=UISelect("##modeBehavior",&mode.behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior));ImGui::PopItemWidth();
+    ImGui::TextWrapped("%s",L("Edit mode structure and defaults here. Existing Slot parameters stay independent."));
+    changed|=UI::BehaviorTuningEditor(mode,mode.behavior);
+    changed|=UI::AimPlanEditor::Motion(mode.motion);
+    mode.method=mode.motion.method;mode.methodPresetId=-1;
+    ImGui::BeginDisabled(View_aimBehaviorPresets().size()>=64);
+    if(UIActionButton(L("Save as new mode"),140.f)) {
+        auto created=CaptureBehaviorPresetFromCurrent(mode.behavior,mode.method,-1,mode.baseSpeed,
+            mode.startLimiter,mode.moveSplitEnabled,mode.moveSplitMaxPixels,mode.moveSplitDelayUs,name);
+        static_cast<AimBehaviorTuning&>(created)=mode;created.motion=mode.motion;
+        View_aimBehaviorPresets().push_back(created);selectedId=created.id;lastId=-2;changed=true;
+    }
+    ImGui::EndDisabled();
+    if(View_aimBehaviorPresets().size()>=64) ImGui::TextWrapped("%s",L("The mode list is full (64). Delete an unused mode to add another."));
+    if(selectedId>=0) {
+        const bool used=AimBehaviorPresetInUse(selectedId);
+        ImGui::SameLine();ImGui::BeginDisabled(used);
+        if(UIActionButton(L("Delete mode"),110.f)) {
+            std::erase_if(View_aimBehaviorPresets(),[&](const auto& p){return p.id==selectedId;});
+            selectedId=-1;lastId=-2;changed=true;
         }
-        ImGui::PopItemWidth();
-
-        SettingRow(T(UiText::Preset));
-        PushControlWidth();
-        if (UISelectAimBehaviorPreset("##miscBehaviorPreset", &selectedBehaviorPresetId, selectedBehavior)) {
-            if (const OW::Config::AimBehaviorPreset* selectedPreset =
-                    OW::Config::FindAimBehaviorPreset(selectedBehaviorPresetId)) {
-                selectedBehavior = OW::Config::ClampAimBehaviorIndex(selectedPreset->behavior);
-                CopyPresetNameToBuffer(selectedPreset->name, behaviorPresetName);
-            }
-        }
-        ImGui::PopItemWidth();
-
-        selectedBehavior = OW::Config::ClampAimBehaviorIndex(selectedBehavior);
-        const int behaviorIndex = selectedBehavior;
-        OW::Config::AimBehaviorPreset* selectedPreset =
-            OW::Config::FindMutableAimBehaviorPreset(selectedBehaviorPresetId);
-        if (selectedPreset &&
-            OW::Config::ClampAimBehaviorIndex(selectedPreset->behavior) != behaviorIndex) {
-            selectedBehaviorPresetId = -1;
-            selectedPreset = nullptr;
-        }
-        if (lastBehaviorPresetId != selectedBehaviorPresetId) {
-            if (selectedPreset)
-                CopyPresetNameToBuffer(selectedPreset->name, behaviorPresetName);
-            else
-                CopyPresetNameToBuffer("Behavior Preset", behaviorPresetName);
-            lastBehaviorPresetId = selectedBehaviorPresetId;
-        }
-
-        SettingRow(T(UiText::PresetName));
-        PushControlWidth();
-        if (ImGui::InputText("##miscBehaviorPresetName", behaviorPresetName, IM_ARRAYSIZE(behaviorPresetName))) {
-            if (selectedPreset)
-                selectedPreset->name = NormalizeUiPresetName(behaviorPresetName, "Behavior Preset", -1);
-        }
-        ImGui::PopItemWidth();
-
-        int& behaviorMethod = selectedPreset
-            ? selectedPreset->method
-            : OW::Config::View_aimBehaviorMethod()[static_cast<size_t>(behaviorIndex)];
-        int& behaviorMethodPresetId = selectedPreset
-            ? selectedPreset->methodPresetId
-            : OW::Config::View_aimBehaviorMethodPreset()[static_cast<size_t>(behaviorIndex)];
-        float& behaviorBaseSpeed = selectedPreset
-            ? selectedPreset->baseSpeed
-            : OW::Config::aimBehaviorBaseSpeed[static_cast<size_t>(behaviorIndex)];
-        OW::AimStartLimiterProfile& behaviorStartLimiter = selectedPreset
-            ? selectedPreset->startLimiter
-            : OW::Config::aimBehaviorStartLimiterProfiles[static_cast<size_t>(behaviorIndex)];
-        bool& behaviorMoveSplitEnabled = selectedPreset
-            ? selectedPreset->moveSplitEnabled
-            : OW::Config::aimBehaviorMoveSplitEnabled[static_cast<size_t>(behaviorIndex)];
-        int& behaviorMoveSplitMaxPixels = selectedPreset
-            ? selectedPreset->moveSplitMaxPixels
-            : OW::Config::aimBehaviorMoveSplitMaxPixels[static_cast<size_t>(behaviorIndex)];
-        int& behaviorMoveSplitDelayUs = selectedPreset
-            ? selectedPreset->moveSplitDelayUs
-            : OW::Config::aimBehaviorMoveSplitDelayUs[static_cast<size_t>(behaviorIndex)];
-        behaviorMethod = OW::Config::ClampAimMethodIndex(behaviorMethod);
-        behaviorMethodPresetId = OW::Config::ClampAimMethodPresetId(behaviorMethodPresetId);
-        if (const OW::Config::AimMethodPreset* methodPreset =
-                OW::Config::FindAimMethodPreset(behaviorMethodPresetId)) {
-            behaviorMethod = OW::Config::ClampAimMethodIndex(methodPreset->method);
-        }
-        behaviorMoveSplitMaxPixels = OW::Config::ClampMoveSplitMaxPixels(behaviorMoveSplitMaxPixels);
-        behaviorMoveSplitDelayUs = OW::Config::ClampMoveSplitDelayUs(behaviorMoveSplitDelayUs);
-        behaviorStartLimiter = OW::ValidateAimStartLimiterProfile(behaviorStartLimiter);
-        OW::Config::View_aimMethod() = behaviorMethod;
-
-        SettingRow(T(UiText::SubMethod));
-        PushControlWidth();
-        if (UISelect("##miscBehaviorMethod", &behaviorMethod,
-                     kAimMethod, IM_ARRAYSIZE(kAimMethod))) {
-            behaviorMethod = OW::Config::ClampAimMethodIndex(behaviorMethod);
-            if (const OW::Config::AimMethodPreset* methodPreset =
-                    OW::Config::FindAimMethodPreset(behaviorMethodPresetId)) {
-                if (OW::Config::ClampAimMethodIndex(methodPreset->method) != behaviorMethod)
-                    behaviorMethodPresetId = -1;
-            }
-            OW::Config::View_aimMethod() = behaviorMethod;
-        }
-        ImGui::PopItemWidth();
-
-        SettingRow(T(UiText::MethodPreset));
-        PushControlWidth();
-        if (UISelectAimMethodPreset("##miscBehaviorMethodPreset", &behaviorMethodPresetId, behaviorMethod)) {
-            if (const OW::Config::AimMethodPreset* methodPreset =
-                    OW::Config::FindAimMethodPreset(behaviorMethodPresetId)) {
-                behaviorMethod = OW::Config::ClampAimMethodIndex(methodPreset->method);
-                OW::Config::View_aimMethod() = behaviorMethod;
-            }
-        }
-        ImGui::PopItemWidth();
-
-        SettingRow(T(UiText::BaseAngularSpeed));
-        PushControlWidth();
-        UISlider("##miscBaseAngularSpeed", &behaviorBaseSpeed, 0.0f, 100.0f, Number(0, " %"));
-        ImGui::PopItemWidth();
-
-        if (OW::Config::IsTrackingBehavior(behaviorIndex)) {
-            SettingRow(T(UiText::StartSpeedLimit));
-            UICheckbox("##miscBehaviorStartSpeedLimit", &behaviorStartLimiter.enabled);
-
-            if (behaviorStartLimiter.enabled) {
-                SettingRow(T(UiText::InitialSpeedCap));
-                PushControlWidth();
-                UISlider(
-                    "##miscBehaviorStartInitialCap",
-                    &behaviorStartLimiter.initialCapDegPerSec,
-                    0.0f,
-                    OW::kAimStartLimiterMaxCapDegPerSec, Number(0, " deg/s"));
-                ImGui::PopItemWidth();
-
-                SettingRow(T(UiText::CapRise));
-                PushControlWidth();
-                UISlider(
-                    "##miscBehaviorStartCapRise",
-                    &behaviorStartLimiter.capRiseDegPerSec2,
-                    0.0f,
-                    10000.0f, Number(0, " deg/s^2"));
-                ImGui::PopItemWidth();
-
-                SettingRow(T(UiText::RestartOnTargetChange));
-                UICheckbox(
-                    "##miscBehaviorStartRestartOnTargetChange",
-                    &behaviorStartLimiter.restartOnTargetChange);
-            }
-        }
-
-        if (behaviorIndex == OW::Config::kAimBehaviorFlick) {
-            SettingRow("连续 Flick 移动窗口（全局）");
-            PushControlWidth();
-            UISlider("##miscFlickRepeatWindow", &OW::Config::flickRepeatWindowMs,
-                1.0f, 1000.0f, Number(0, " ms"));
-            ImGui::PopItemWidth();
-            SettingRow("连续 Flick 速度上限（全局）");
-            PushControlWidth();
-            UISlider("##miscFlickRepeatMaxSpeed", &OW::Config::flickRepeatMaxSpeedDegPerSec,
-                1.0f, 3600.0f, Number(0, " deg/s"));
-            ImGui::PopItemWidth();
-            ImGui::TextDisabled("普通 Flick 命中后开枪；延时和故意打偏设置不强制开枪。");
-        }
-
-        SettingRow(T(UiText::MoveSplit));
-        UICheckbox("##miscBehaviorMoveSplit", &behaviorMoveSplitEnabled);
-
-        if (behaviorMoveSplitEnabled) {
-            SettingRow(T(UiText::SplitChunk));
-            PushControlWidth();
-            UISlider("##miscBehaviorMoveSplitMax", &behaviorMoveSplitMaxPixels, 1.0f, 50.0f, Number(0, " px"));
-            ImGui::PopItemWidth();
-
-            SettingRow(T(UiText::SplitDelay));
-            PushControlWidth();
-            UISlider("##miscBehaviorMoveSplitDelay", &behaviorMoveSplitDelayUs, 0.0f, 10000.0f, Number(0, " us"));
-            ImGui::PopItemWidth();
-        }
-
-        if (selectedPreset) {
-            selectedPreset->behavior = behaviorIndex;
-            selectedPreset->name = NormalizeUiPresetName(behaviorPresetName, "Behavior Preset", -1);
-        }
-
-        ImGui::Spacing();
-        if (UIActionButton(T(UiText::SaveNew), 92.0f)) {
-            OW::Config::AimBehaviorPreset preset = CaptureBehaviorPresetFromCurrent(
-                behaviorIndex,
-                behaviorMethod,
-                behaviorMethodPresetId,
-                behaviorBaseSpeed,
-                behaviorStartLimiter,
-                behaviorMoveSplitEnabled,
-                behaviorMoveSplitMaxPixels,
-                behaviorMoveSplitDelayUs,
-                behaviorPresetName);
-            OW::Config::View_aimBehaviorPresets().push_back(preset);
-            selectedBehaviorPresetId = preset.id;
-            lastBehaviorPresetId = -2;
-            selectedPreset = nullptr;
-        }
-        if (selectedPreset) {
-            ImGui::SameLine(0.0f, 8.0f);
-            if (UIActionButton(T(UiText::Delete), 72.0f)) {
-                const int deletedId = selectedBehaviorPresetId;
-                OW::Config::View_aimBehaviorPresets().erase(
-                    std::remove_if(OW::Config::View_aimBehaviorPresets().begin(),
-                                   OW::Config::View_aimBehaviorPresets().end(),
-                                   [deletedId](const OW::Config::AimBehaviorPreset& preset) {
-                                       return preset.id == deletedId;
-                                   }),
-                    OW::Config::View_aimBehaviorPresets().end());
-                if (OW::Config::View_aimBehaviorPresetId() == deletedId)
-                    OW::Config::View_aimBehaviorPresetId() = -1;
-                selectedBehaviorPresetId = -1;
-                lastBehaviorPresetId = -2;
-            }
-        }
-
-        SettingRow(T(UiText::PitchScale));
-        PushControlWidth();
-        UISlider("##miscPitchScale", &OW::Config::View_aimbotPitchScale(), 0.1f, 3.0f, Number(2, ""));
-        ImGui::PopItemWidth();
-
-        SettingRow(T(UiText::OvershootCurve));
-        UICheckbox("##miscOvershootCurve", &OW::Config::aimOvershootCurve);
-
-        if (OW::Config::aimOvershootCurve) {
-            SettingRow(T(UiText::OvershootGain));
-            PushControlWidth();
-            UISlider("##miscOvershootGain", &OW::Config::aimOvershootGain, 0.0f, 1.0f, Number(2, ""));
-            ImGui::PopItemWidth();
-
-            SettingRow(T(UiText::OvershootReset));
-            PushControlWidth();
-            UISlider("##miscOvershootReset", &OW::Config::aimOvershootResetPixels, 1.0f, 250.0f, Number(0, " px"));
-            ImGui::PopItemWidth();
-        }
+        ImGui::EndDisabled();
+        if(used) ImGui::TextWrapped("%s",L("This mode is in use. Choose another mode in its Slots before deleting it."));
     }
     CloseGroupBox();
+    UIGroupBox("Output shaping");
+    SettingRow(T(UiText::OvershootCurve));UICheckbox("##miscOvershootCurve",&aimOvershootCurve);
+    if(aimOvershootCurve) {
+        UI::AimPlanEditor::Float("Overshoot Gain","##overshootGain",aimOvershootGain,0,1);
+        UI::AimPlanEditor::Float("Overshoot Reset","##overshootReset",aimOvershootResetPixels,1,250," px");
+    }
+    CloseGroupBox();
+    if(changed) RefreshBehaviorModeSlots();
 }
 
 void DrawMiscMethodPage() {
@@ -849,6 +675,14 @@ void DrawMiscMethodPage() {
             UI::AimPlanEditor::Shuwu(selectedPreset ? selectedPreset->shuwu : defaults);
             ImGui::EndDisabled();
             break;
+        }
+        case 8: {
+            drawAngularSpeed("##methodResponseAngularSpeed");
+            OW::AimResponseCurve::Points defaults;
+            if(!selectedPreset) ImGui::TextWrapped("%s",L("Save a new method preset to edit response curve parameters."));
+            ImGui::BeginDisabled(!selectedPreset);
+            UI::ResponseCurveEditor(selectedPreset?selectedPreset->responseCurve:defaults);
+            ImGui::EndDisabled();break;
         }
         default:
             break;

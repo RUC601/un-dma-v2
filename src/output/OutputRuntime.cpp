@@ -138,7 +138,9 @@ namespace V2::Output
     }
     PhysicalInputSnapshot ActivePhysicalInput() {
         const auto active=ActiveRuntimeSnapshot();
-        if(!CanDispatchRuntimeGeneration(active.generation)) return {};
+        if(active.generation==0) return {};
+        if(active.descriptor.backend==OutputRuntimeBackend::Mock) return MockHardwareMgr.PhysicalInput();
+        if(active.descriptor.backend==OutputRuntimeBackend::Network) return KmBoxNetMgr.KeyBoard.PhysicalInput();
         if(active.descriptor.backend==OutputRuntimeBackend::Serial) return SerialMgr.PhysicalInput();
         if(active.descriptor.backend==OutputRuntimeBackend::CatBox) return CatBoxMgr.PhysicalInput();
         return {};

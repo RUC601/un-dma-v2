@@ -3,13 +3,13 @@
 #include <Windows.h>
 #include <cstdint>
 #include <limits>
-#include "Game/Cn154504.hpp"
+#include "Game/Cn154905.hpp"
 
 namespace OW::ProductImageIdentity {
 
-// Accepted CN 154504N image headers; this identifies the profile, not a file hash.
-inline constexpr uint32_t kTimestamp = Cn154504::timestamp;
-inline constexpr uint32_t kImageSize = Cn154504::imageSize;
+// Accepted CN 154905N image headers; this identifies the profile, not a file hash.
+inline constexpr uint32_t kTimestamp = Cn154905::timestamp;
+inline constexpr uint32_t kImageSize = Cn154905::imageSize;
 
 enum class Result { Accepted, Unreadable, InvalidHeaders, UnsupportedVersion };
 

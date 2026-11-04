@@ -529,7 +529,8 @@ client_data KmBoxNetBackend::BuildPacket(unsigned int Cmd, unsigned int RandValu
     client_data packet{};
     std::lock_guard<std::mutex> lock(dataMutex);
     packet.head.mac = PostData.head.mac;
-    packet.head.rand = RandValue;
+    // The SDK uses this field as the mask value; unmask-all requires zero.
+    packet.head.rand = Cmd == cmd_unmask_all ? 0u : RandValue;
     packet.head.indexpts = 0;
     packet.head.cmd = Cmd;
     return packet;
@@ -2193,6 +2194,7 @@ void KmBoxNetKeyboard::ListenThread()
             previousKeyboard = this->hw_Keyboard;
             memcpy(&this->hw_Mouse, Buffer, sizeof(this->hw_Mouse));
             memcpy(&this->hw_Keyboard, &Buffer[sizeof(this->hw_Mouse)], sizeof(this->hw_Keyboard));
+            this->inputSampledAtMs = GetTickCount64();
             currentButtons = this->hw_Mouse.buttons;
             currentKeyboard = this->hw_Keyboard;
 
@@ -2251,6 +2253,7 @@ int KmBoxNetKeyboard::StartMonitor(WORD Port)
         std::lock_guard<std::mutex> lock(this->monitorMutex);
         this->hw_Mouse = {};
         this->hw_Keyboard = {};
+        this->inputSampledAtMs = 0;
         this->monitorStartStatus = err_creat_socket;
         this->monitorStartResolved = false;
     }
@@ -2311,6 +2314,16 @@ void KmBoxNetKeyboard::EndMonitor()
 unsigned long long KmBoxNetKeyboard::InputPacketCount() const
 {
     return this->inputPacketCount.load(std::memory_order_acquire);
+}
+
+V2::Output::PhysicalInputSnapshot KmBoxNetKeyboard::PhysicalInput()
+{
+    std::lock_guard<std::mutex> lock(monitorMutex);
+    V2::Output::PhysicalInputSnapshot result{};
+    result.available = ListenerRuned.load(std::memory_order_acquire) && inputSampledAtMs != 0;
+    result.buttons = hw_Mouse.buttons;
+    result.sampledAtMs = inputSampledAtMs;
+    return result;
 }
 
 KmBoxNetKeyboard::~KmBoxNetKeyboard()

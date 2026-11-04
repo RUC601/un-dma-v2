@@ -84,7 +84,7 @@ inline const char* kHeroSkillTargetBones[] = {
     "Chest", "Head", "Neck", "Closest"
 };
 inline const char* kAimBehavior[]  = { "Tracking", "Flick", "Flick2nd", "Reacquire", "MagneticTrigger" };
-inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID", "Shuwu" };
+inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID", "Shuwu", "Error response curve" };
 inline const char* kAimSmoothType[] = { "Constant Speed", "Linear", "Bezier" };
 inline const char* kPredictionMode[] = { "Auto", "Force On", "Force Off" };
 inline const char* kFirePolicy[] = {
@@ -251,7 +251,7 @@ OW::Config::AimBehaviorPreset CaptureBehaviorPresetFromCurrent(int behavior,
                                                                       int moveSplitDelayUs,
                                                                       const char* name);
 bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod);
-bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior);
+bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior, const char* noneText="Class Default");
 bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone);
 void ApplyAimBehaviorToHeroPreset(OW::Config::HeroPreset& preset, int behavior);
 void UIDisabledSelect(const char* label, const char* previewText = nullptr);

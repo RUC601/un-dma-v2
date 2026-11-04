@@ -2,27 +2,18 @@
 
 #include <atomic>
 #include <cstdint>
-#include "Game/Cn154504.hpp"
+#include "Game/Cn154905.hpp"
 
 // =============================================================================
-// Overwatch Offsets - BZ 2.23.11.151722 / CN 2.25.0.1.154504N
+// Overwatch Offsets - BZ 2.23.11.151722 / CN 2.25.1.0.154905N
 //
-// BZ dump: D:\Desktop\SenseZen\ECS_O\03_DOWNP\2.23.11.151722\bz\_dump.exe
-// Diaphora export: D:\Desktop\SenseZen\ECS_O\03_DOWNP\2.23.11.151722\bz\_dump.exe.sqlite
-// CN dump: D:\Desktop\SenseZen\ECS_O\03_DOWNP\2.25.0.1.154504N\_dump.exe
-// Diaphora export: D:\Desktop\SenseZen\ECS_O\03_DOWNP\2.25.0.1.154504N\_dump.exe.sqlite
-//
-// BZ 151722 changes from 151752:
-//   - Entity, component key, GlobalAdmin, ViewMatrix and input RVAs moved.
-//   - Component transform and singleton-list decrypt formulas changed.
-//   - ViewMatrix root inverse is XOR/add and the render parent moved to +0x6D0.
-//   - Payload ids and rotation fields are unchanged by live semantic checks.
-//   - Visibility component +0x98 now uses bit 31 (set means visible).
-// CN 154504 changes from 154461:
-//   - Entity/state, registry lock, GlobalAdmin and ViewMatrix RVAs moved.
-//   - Input/key RVAs, component/parent/visibility/singleton transforms and
-//     payload layouts are unchanged by static and read-only semantic checks.
-//   - Evidence: 03_DOWNP/2.25.0.1.154504N/ne/offset_work_2026-10-21.
+// BZ evidence remains 03_DOWNP/2.23.11.151722/bz.
+// CN dump: 03_DOWNP/2.25.1.0.154905N/Overwatch.exe_x64_memdump.exe
+// CN IDA/Diaphora and read-only proof: same version's cn/offset_work_2026-11-04.
+// CN entity/state/lock, view/admin, key-byte and input RVAs moved; effective
+// component/parent/singleton/visibility transforms and payload layouts retained.
+// Camera/primary projection processing is unchanged; physical/visual/endurance
+// acceptance is separate from the bounded read-only evidence.
 // =============================================================================
 
 namespace OW {
@@ -45,7 +36,7 @@ namespace OW {
             World151293,
             World151722,
             Identity,
-            Cn154504,
+            Cn154905,
         };
 
         enum class SingletonListMode {
@@ -54,7 +45,7 @@ namespace OW {
             EncryptedWorldBz151722,
             LiveGameAdminWorldBz,
             Plain,
-            Cn154504,
+            Cn154905,
         };
 
         enum class ViewMatrixMode {
@@ -374,25 +365,25 @@ namespace OW {
         };
 
         inline constexpr RuntimeOffsetProfile kCnRuntimeProfile{
-            "cn 154504N",
-            ComponentTransformMode::Cn154504,
+            "cn 154905N",
+            ComponentTransformMode::Cn154905,
             0x20, 0x42, 0x2E, 0x33, 0x3A, 0x53,
-            Cn154504::entityRoot, // initializer RVA 0x20E5420
-            Cn154504::mouseScaleX, // input registration RVA 0x6693C0
-            Cn154504::mouseScaleY,
+            Cn154905::entityRoot, // initializer RVA 0x210E0D0
+            Cn154905::mouseScaleX, // input registration RVA 0x66B020
+            Cn154905::mouseScaleY,
             0, 0, // host viewport remains explicit configuration
-            0x98, // encrypted predicate RVA 0x77B800
-            Cn154504::viewRoot, // initializer RVA 0x21E0F40
-            Cn154504::pointerXor,
-            Cn154504::pointerAdd,
+            0x98, // encrypted predicate RVA 0x77D430
+            Cn154905::viewRoot, // initializer RVA 0x2209820
+            Cn154905::pointerXor,
+            Cn154905::pointerAdd,
             0,
             0x20, 0x48,
-            0x6D0, // render writer RVA 0x23BFE30; +0x6C8 is a different buffer
+            0x6D0, // render writer RVA 0x2414040; +0x6C8 is a different buffer
             0x8, 0xC0,
             0x140, // P2 camera view
             0xB0, // P2 primary projection; ComposeCameraProjection normalizes its m14 sentinel
-            Cn154504::globalAdmin,
-            SingletonListMode::Cn154504,
+            Cn154905::globalAdmin,
+            SingletonListMode::Cn154905,
             ViewMatrixMode::EncryptedChainXorAdd,
             0,
             ViewMatrixChainMode::LegacyLong,

@@ -160,7 +160,7 @@ constexpr std::array<WeaponSpec, 77> kWeaponSpecs = {
     W(eHero::HERO_ECHO, "Echo", "echo_tri_shot", "Tri-Shot", 0, 1, AC::ProjectileSingle, Projectile(75.0f, 0.175f), AB::FlickDelay, FP::ReleaseAfterDelay),
     W(eHero::HERO_BAPTISTE, "Baptiste", "baptiste_biotic_launcher", "Biotic Launcher", 0, 1, AC::HitscanBurst, Hitscan(0.07f), AB::FlickClamp, FP::TapOnHitWindow),
     W(eHero::HERO_BAPTISTE, "Baptiste", "baptiste_biotic_launcher_alt", "Biotic Launcher Alt Fire", 1, 2, AC::ProjectileExplosive, Projectile(60.0f, 0.20f, true), AB::FlickDelay, FP::ReleaseAfterDelay, 0.60f, kTemporaryProjectileFallbackNote),
-    W(eHero::HERO_KIRIKO, "Kiriko", "kiriko_healing_ofuda", "Healing Ofuda", 0, 1, AC::Targeted, Projectile(30.0f, 0.0f, true), AB::Tracking, FP::ManualOnly),
+    W(eHero::HERO_KIRIKO, "Kiriko", "kiriko_healing_ofuda", "Healing Ofuda", 0, 1, AC::Targeted, Projectile(30.0f, 0.0f), AB::Tracking, FP::ManualOnly),
     W(eHero::HERO_KIRIKO, "Kiriko", "kiriko_kunai", "Kunai", 1, 2, AC::ProjectileSingle, Projectile(90.0f, 0.195f), AB::FlickDelay, FP::ReleaseAfterDelay),
     W(eHero::HERO_JUNKERQUEEN, "Junker Queen", "junkerqueen_scattergun", "Scattergun", 0, 1, AC::Shotgun, Hitscan(0.04f), AB::FlickClamp, FP::TapOnHitWindow),
     W(eHero::HERO_SIGMA, "Sigma", "sigma_hyperspheres", "Hyperspheres", 0, 1, AC::ProjectileExplosive, Projectile(48.0f, 0.32f, true), AB::FlickDelay, FP::ReleaseAfterDelay),

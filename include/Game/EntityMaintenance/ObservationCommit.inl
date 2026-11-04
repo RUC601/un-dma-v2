@@ -5,10 +5,19 @@
             } else {
 // Shared lexical step of entity_thread; requires its surrounding cycle state.
             if (ComponentParent && LinkParent && name != "Unknown" && hasRenderablePosition) {
+                auto rejectAdmission=[&](size_t reason) {
+                    const DWORD now=entityAdmissionNow();
+                    if(admissionDiagnosticTicks[reason] && uint32_t(now-admissionDiagnosticTicks[reason])<1000)return;
+                    admissionDiagnosticTicks[reason]=now;
+                    Diagnostics::Warn("[V2-ADMISSION] reason=%zu actor=0x%llX link=0x%llX match=%u roster=0x%llX life=%llu hp=%.1f healthDue=%d healthValid=%d healthTick=%u cycleTick=%u fence=%llu absence=%llu",
+                        reason,entity.address,entity.LinkParent,entity.match_id,entity.roster_key,entity.actor_generation,
+                        entity.PlayerHealth,int(refreshHealth),int(componentCache.healthValid),componentCache.healthUpdateTick,
+                        processLoopTick,entity.body_observation_fence,entity.body_absence_revision);
+                };
                 const auto* discovery=cycleDiscoveries.Find(ComponentParent,LinkParent,entityAdmissionNow());
                 if(!discovery || discovery->match!=entity.match_id || discovery->hero!=entity.HeroID ||
                     (completeActorMembershipKnown && std::find(cycleMemberPairs.begin(),cycleMemberPairs.end(),
-                        std::make_pair(ComponentParent,LinkParent))==cycleMemberPairs.end())) continue;
+                        std::make_pair(ComponentParent,LinkParent))==cycleMemberPairs.end())) {rejectAdmission(0);continue;}
                 entity.scene_generation=processSceneGeneration;
                 entity.last_discovered_tick_ms=discovery->tick;
                 entity.body_valid=entity.Alive;
@@ -65,7 +74,8 @@
                         existingRosterIt->second->participantControllerUid==cacheIt->second->participantControllerUid;
                     uint32_t pairedUid=0;
                     const bool incomingPaired=sameController && entity.LinkBase &&
-                        SDK->read_range(entity.LinkBase+offset::Link_UniqueId,&pairedUid,sizeof(pairedUid)) && pairedUid==entity.match_id;
+                        OW::ResolveCnLinkTargetMapBase(entity.LinkBase,offset::Link_UniqueId,&pairedUid)==entity.address &&
+                        pairedUid==entity.match_id;
                     switch (OW::EntityRosterPolicy::ResolveSameParticipantObservation(
                         existingRosterIt->second->seenThisCycle || existingFresh,
                         false,
@@ -75,6 +85,7 @@
                         latestCompleteActorMembers.contains(existingRosterIt->second->entity.address),
                         latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired)) {
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::KeepExisting:
+                        rejectAdmission(1);
                         continue;
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::ReplaceExisting:
                     default:
@@ -87,7 +98,7 @@
                     if(!OW::EntityRosterPolicy::CanReturnRetiredActor(
                         retiredIt->second.matchId==entity.match_id && retiredIt->second.link==entity.LinkParent,
                         retiredIt->second.absent || OW::EntityBodyAbsenceRevision(entity.address)>retiredIt->second.absenceRevision,
-                        latestCompleteActorMembers.contains(entity.address)))continue;
+                        latestCompleteActorMembers.contains(entity.address))){rejectAdmission(2);continue;}
                     retiredActors.erase(retiredIt);
                 }
                 entity.connection_epoch=connectionEpoch;
@@ -104,7 +115,7 @@
                     processSceneGeneration,processRegistry,{entity.body_observation_fence,entity.body_absence_revision},
                     entity.Alive,(refreshHealth || hotReads.HealthRead()) && componentCache.healthValid &&
                         componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow());
-                if(!entity.body_authority_revision)continue;
+                if(!entity.body_authority_revision){rejectAdmission(3);continue;}
                 if(!entity.Alive)OW::TargetingDetail::InvalidateTargetBody(entity.address,entity.roster_key,entity.actor_generation);
                 if(old && !sameLifetime) {
                     const auto oldAddress=old->address,oldGeneration=old->actor_generation;

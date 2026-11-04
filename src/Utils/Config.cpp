@@ -5,6 +5,7 @@
 #include "Utils/Config.hpp"
 #include "config/FileTransaction.hpp"
 #include "config/AimPlanJson.hpp"
+#include "config/AimModeJson.hpp"
 #include "config/SlotStorageInternal.hpp"
 
 #include "Game/HeroSkills.hpp"
@@ -299,7 +300,7 @@ namespace OW { namespace Config {
         constexpr int kAimBehaviorSemanticsVersion = 6;
         constexpr int kVisualOverlayCleanupVersion = 8;
         constexpr int kDefaultAimPolicyVersion = 14;
-        constexpr int kCurrentHeroConfigVersion = 16;
+        constexpr int kCurrentHeroConfigVersion = 18;
         constexpr int kHeroFovAnglesStoredAsHalfAnglesVersion = 2;
         constexpr int kHeroAimBehaviorSemanticsVersion = 3;
         constexpr int kRoadhogChainHookFullHealthDefaultVersion = 5;
@@ -522,6 +523,8 @@ namespace OW { namespace Config {
             preset.startLimiter = ValidateAimStartLimiterProfile(preset.startLimiter);
             preset.moveSplitMaxPixels = ClampMoveSplitMaxPixels(preset.moveSplitMaxPixels);
             preset.moveSplitDelayUs = ClampMoveSplitDelayUs(preset.moveSplitDelayUs);
+            NormalizeBehaviorTuning(preset);
+            preset.motion.method=preset.method;AimPlan::NormalizeMotion(preset.motion);
             return preset;
         }
 
@@ -622,6 +625,7 @@ namespace OW { namespace Config {
         HeroPreset MakeHeroTriggerPresetFromCurrentUnlocked();
         TriggerPreset ValidateTriggerPresetValue(TriggerPreset preset);
         HeroPreset ValidateHeroPresetValue(HeroPreset preset);
+
         HeroPreset ValidateHeroPresetValueForHero(uint64_t heroId, HeroPreset preset);
         bool gLastHeroConfigNeedsSave = false;
         int gLoadedHeroConfigVersion = kCurrentHeroConfigVersion;
@@ -1873,8 +1877,6 @@ namespace OW { namespace Config {
                 preset.aimBehavior = kAimBehaviorFlick;
             preset.aimBehavior = ClampAimBehaviorIndex(preset.aimBehavior);
             preset.aimBehaviorPresetId = ClampAimBehaviorPresetId(preset.aimBehaviorPresetId);
-            if (const AimBehaviorPreset* behaviorPreset = FindAimBehaviorPreset(preset.aimBehaviorPresetId))
-                preset.aimBehavior = ClampAimBehaviorIndex(behaviorPreset->behavior);
             preset.aimMode = IsTrackingBehavior(preset.aimBehavior) ? 0 : 1;
             preset.aimMethod = ClampAimMethodIndex(preset.aimMethod);
             preset.smoothType = std::clamp(preset.smoothType, 0, 2);
@@ -1927,15 +1929,32 @@ namespace OW { namespace Config {
             preset.flick2ndBoxPadding = std::clamp(preset.flick2ndBoxPadding, 0.0f, 80.0f);
             preset.flick2ndInnerRadius = std::clamp(preset.flick2ndInnerRadius, 0.0f, 250.0f);
             preset.flick2ndInnerSmoothScale = std::clamp(preset.flick2ndInnerSmoothScale, 0.1f, 1.0f);
-            preset.flick2ndInnerMethod = ClampAimMethodIndex(preset.flick2ndInnerMethod);
+            preset.flick2ndInnerMethod = ClampAimMethodOverride(preset.flick2ndInnerMethod);
             preset.trigger = ValidateTriggerPresetValue(preset.trigger);
+            ResolveHeroBehaviorMode(preset);
             return preset;
         }
 
         HeroPreset ValidateHeroPresetValueForHero(uint64_t heroId, HeroPreset preset)
         {
+            const bool migrate=preset.releaseConfigVersion==0;
             preset = ValidateHeroPresetValue(preset);
+            preset.releaseConfigVersion=1;
+            if(migrate && heroId==eHero::HERO_HANJO && UsesFlickFireControls(preset.aimBehavior)) {
+                preset.releaseToFire=true;preset.autoCharge=true;
+                preset.releaseExecution=1;
+                preset.minCharge=(std::max)(preset.minCharge,65.f);
+                preset.chargeFallbackMs=(std::clamp)(200.f+preset.minCharge*8.f,250.f,1000.f);
+                StoreHeroBehaviorMode(preset);
+            }
             preset.trigger.action = NormalizeHeroWeaponAction(heroId, preset.trigger.action);
+            if(migrate && heroId!=eHero::HERO_HANJO && UsesFlickFireControls(preset.aimBehavior)) {
+                const auto* weapon=OW::ResolveWeaponSpec(heroId,preset.trigger.action);
+                if(weapon && weapon->firePolicy.type==OW::FirePolicyType::ChargeRelease) {
+                    preset.releaseToFire=true;preset.autoCharge=false;preset.chargeFallbackMs=0;
+                    StoreHeroBehaviorMode(preset);
+                }
+            }
             if (OW::MouseButtonForAttackAction(preset.trigger.action) < 0)
                 preset.requireActionHeld = false;
             preset.key = std::clamp(preset.key, 0, MaxActivationKeyIndex());
@@ -1951,6 +1970,7 @@ namespace OW { namespace Config {
             if (!std::isfinite(settings.distance)) settings.distance = 30.0f;
             if (!std::isfinite(settings.cooldown)) settings.cooldown = 0.0f;
             if (!std::isfinite(settings.radius)) settings.radius = 0.0f;
+            if (!std::isfinite(settings.meleeRadius)) settings.meleeRadius = 0.35f;
             if (!std::isfinite(settings.tracking.smooth)) settings.tracking.smooth = 0.0f;
             if (!std::isfinite(settings.tracking.speedScale)) settings.tracking.speedScale = 100.0f;
             if (!std::isfinite(settings.tracking.fov)) settings.tracking.fov = 0.0f;
@@ -1968,6 +1988,11 @@ namespace OW { namespace Config {
             if (!std::isfinite(settings.projectileRadius)) settings.projectileRadius = 0.0f;
             if (!std::isfinite(settings.preFireDelayMs)) settings.preFireDelayMs = 0.0f;
             if (!std::isfinite(settings.maxAimTimeMs)) settings.maxAimTimeMs = 650.0f;
+            if (!std::isfinite(settings.punchMaxHeightAbove)) settings.punchMaxHeightAbove = 2.0f;
+            if (!std::isfinite(settings.punchMaxHeightBelow)) settings.punchMaxHeightBelow = 2.0f;
+            if (!std::isfinite(settings.punchFullChargeMs)) settings.punchFullChargeMs = 1000.0f;
+            if (!std::isfinite(settings.punchMaxHoldMs)) settings.punchMaxHoldMs = 2000.0f;
+            if (!std::isfinite(settings.punchReleaseLeadMs)) settings.punchReleaseLeadMs = 80.0f;
 
             settings.key = std::clamp(settings.key, 0, MaxActivationKeyIndex());
             settings.skillKey = settings.skillKey < 0
@@ -2019,6 +2044,12 @@ namespace OW { namespace Config {
             settings.projectileRadius = std::clamp(settings.projectileRadius, 0.0f, 2.0f);
             settings.preFireDelayMs = std::clamp(settings.preFireDelayMs, 0.0f, 1000.0f);
             settings.maxAimTimeMs = std::clamp(settings.maxAimTimeMs, 0.0f, 5000.0f);
+            settings.meleeRadius = std::clamp(settings.meleeRadius, 0.0f, 2.0f);
+            settings.punchMaxHeightAbove = std::clamp(settings.punchMaxHeightAbove, 0.0f, 5.0f);
+            settings.punchMaxHeightBelow = std::clamp(settings.punchMaxHeightBelow, 0.0f, 5.0f);
+            settings.punchFullChargeMs = std::clamp(settings.punchFullChargeMs, 200.0f, 2000.0f);
+            settings.punchMaxHoldMs = std::clamp(settings.punchMaxHoldMs, settings.punchFullChargeMs + 100.0f, 5000.0f);
+            settings.punchReleaseLeadMs = std::clamp(settings.punchReleaseLeadMs, 20.0f, settings.punchMaxHoldMs - 50.0f);
             return settings;
         }
 
@@ -2190,7 +2221,7 @@ namespace OW { namespace Config {
         bool SameHeroPresetForDefaultMigration(const HeroPreset& lhs,
                                                const HeroPreset& rhs)
         {
-            return lhs.aimPlan == rhs.aimPlan && SameFloatForDefaultMigration(lhs.fov, rhs.fov) &&
+            return lhs.behaviorConfigs==rhs.behaviorConfigs && static_cast<const AimBehaviorTuning&>(lhs)==static_cast<const AimBehaviorTuning&>(rhs) && lhs.aimPlan == rhs.aimPlan && SameFloatForDefaultMigration(lhs.fov, rhs.fov) &&
                 lhs.fovMode == rhs.fovMode &&
                 lhs.dynamicFovPresetId == rhs.dynamicFovPresetId &&
                 SameFloatForDefaultMigration(lhs.smooth, rhs.smooth) &&
@@ -2580,6 +2611,7 @@ namespace OW { namespace Config {
             for (size_t index = 0; index < aimBehaviorPresets.size(); ++index) {
                 if (aimBehaviorPresets[index].id < 0 || idUsed(aimBehaviorPresets, aimBehaviorPresets[index].id, index))
                     aimBehaviorPresets[index].id = nextBehaviorId++;
+                nextAimBehaviorPresetId=(std::max)(nextAimBehaviorPresetId,aimBehaviorPresets[index].id+1);
                 aimBehaviorPresets[index] = ValidateAimBehaviorPresetValue(
                     aimBehaviorPresets[index],
                     static_cast<int>(index));
@@ -2738,6 +2770,7 @@ namespace OW { namespace Config {
             aimbotTeam = 0;
             aimbotPriority = 0;
             aimPlan = {};
+            aimModeState = {};
             aimbotTrackingDeadzone = 0.0f;
             aimbotFlickShotClampMs = 0.0f;
             aimbotFlickPostFireDelayMs = 0.0f;
@@ -2798,7 +2831,7 @@ namespace OW { namespace Config {
             aimBehaviorMoveSplitEnabled = { true, false, false, true, true };
             aimBehaviorMoveSplitMaxPixels = { 4, 50, 50, 4, 4 };
             aimBehaviorMoveSplitDelayUs = { 800, 0, 0, 800, 800 };
-            aimMethodAngularSpeedScale = { 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f };
+            aimMethodAngularSpeedScale.fill(100.0f);
             secondaryAimMethodOverride = { -1, -1 };
             aimPidP = 0.5f;
             aimPidI = 0.01f;
@@ -2899,6 +2932,7 @@ namespace OW { namespace Config {
 
             manualScreenWidth = 1920;      // default: 1920 px
             manualScreenHeight = 1080;     // default: 1080 px
+            overlayFrameLimit = 0;
 
             locx = 0;                     // default: 0
             locy = 0;                     // default: 0
@@ -2929,6 +2963,12 @@ namespace OW { namespace Config {
         HeroPreset MakeHeroPresetFromCurrentUnlocked()
         {
             HeroPreset preset{};
+            if(aimModeState.enabled) {
+                static_cast<AimBehaviorTuning&>(preset)=aimModeState.tuning;
+                preset.modeConfigVersion=1;preset.resolvedModeId=aimBehaviorPresetId;
+                preset.behaviorConfigs=aimModeState.configs;
+            }
+
             preset.fov = Fov;
             preset.fovMode = ClampFovMode(aimbotFovMode);
             preset.dynamicFovPresetId = preset.fovMode == kFovModeDynamicPreset
@@ -3028,6 +3068,7 @@ namespace OW { namespace Config {
         void ApplyHeroAimPresetUnlocked(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            aimModeState={true,static_cast<const AimBehaviorTuning&>(preset),preset.aimPlan.motion,preset.behaviorConfigs};
             Fov = preset.fov;
             minFov1 = preset.fov;
             aimbotFovMode = preset.fovMode;
@@ -3132,6 +3173,7 @@ namespace OW { namespace Config {
                                                      bool legacyAimBehaviorValues)
         {
             HeroSlotPreset slot = defaults;
+            slot.preset.releaseConfigVersion=0;
             slot.name = NormalizeHeroSlotName(
                 ReadString(ini, section, "name", DefaultHeroSlotName(slotIndex).c_str()),
                 slotIndex);
@@ -3514,6 +3556,7 @@ namespace OW { namespace Config {
             AddJsonInt(value, "aimMode", preset.aimMode, allocator);
             AddJsonInt(value, "aimBehavior", preset.aimBehavior, allocator);
             AddJsonInt(value, "aimBehaviorPresetId", preset.aimBehaviorPresetId, allocator);
+            AddJsonInt(value,"aimMethod",preset.aimMethod,allocator);
             AddJsonInt(value, "key", preset.key, allocator);
             AddJsonBool(value, "autoshot", preset.autoshot, allocator);
             AddJsonBool(value, "keepFiring", preset.keepFiring, allocator);
@@ -3529,6 +3572,10 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "pitchScale", preset.pitchScale, allocator);
             AddJsonInt(value, "priority", preset.priority, allocator);
             value.AddMember("aimPlan", AimPlan::Json::PlanJson(preset.aimPlan,allocator),allocator);
+            AddJsonInt(value,"modeConfigVersion",1,allocator);
+            AddJsonInt(value,"releaseConfigVersion",preset.releaseConfigVersion,allocator);
+            value.AddMember("modeTuning",ModeJson::TuningJson(preset,allocator),allocator);
+            value.AddMember("behaviorConfigs",ModeJson::ConfigsJson(preset.behaviorConfigs,allocator),allocator);
             AddJsonInt(value, "targetTeam", preset.targetTeam, allocator);
             AddJsonFloat(value, "maxAimTime", preset.maxAimTime, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
@@ -3666,6 +3713,7 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "trackingFov", settings.tracking.fov, allocator);
             AddJsonInt(value, "trackingBone", settings.tracking.bone, allocator);
             AddJsonFloat(value, "trackingHitboxScale", settings.tracking.hitbox, allocator);
+            AddJsonFloat(value, "meleeRadius", settings.meleeRadius, allocator);
             AddJsonBool(value, "sequencePhaseAwareTracking", settings.sequencePhaseAwareTracking, allocator);
             AddJsonFloat(value, "sequencePostFirePauseMs", settings.sequencePostFirePauseMs, allocator);
             AddJsonFloat(value, "sequenceRecoveryMs", settings.sequenceRecoveryMs, allocator);
@@ -3686,6 +3734,11 @@ namespace OW { namespace Config {
             AddJsonBool(value, "projectileGravity", settings.projectileGravity, allocator);
             AddJsonFloat(value, "preFireDelayMs", settings.preFireDelayMs, allocator);
             AddJsonFloat(value, "maxAimTimeMs", settings.maxAimTimeMs, allocator);
+            AddJsonFloat(value, "punchMaxHeightAbove", settings.punchMaxHeightAbove, allocator);
+            AddJsonFloat(value, "punchMaxHeightBelow", settings.punchMaxHeightBelow, allocator);
+            AddJsonFloat(value, "punchFullChargeMs", settings.punchFullChargeMs, allocator);
+            AddJsonFloat(value, "punchMaxHoldMs", settings.punchMaxHoldMs, allocator);
+            AddJsonFloat(value, "punchReleaseLeadMs", settings.punchReleaseLeadMs, allocator);
             return value;
         }
 
@@ -4136,6 +4189,7 @@ namespace OW { namespace Config {
                 defaults.tracking.fov,
                 legacyFovApertureValues);
             defaults.tracking.bone = ReadJsonInt(value, "trackingBone", defaults.tracking.bone);
+            defaults.meleeRadius = ReadJsonFloat(value, "meleeRadius", defaults.meleeRadius);
             defaults.tracking.hitbox = ReadJsonHitboxScaleCompat(
                 value,
                 "trackingHitboxScale",
@@ -4168,6 +4222,11 @@ namespace OW { namespace Config {
             defaults.projectileGravity = ReadJsonBool(value, "projectileGravity", defaults.projectileGravity);
             defaults.preFireDelayMs = ReadJsonFloat(value, "preFireDelayMs", defaults.preFireDelayMs);
             defaults.maxAimTimeMs = ReadJsonFloat(value, "maxAimTimeMs", defaults.maxAimTimeMs);
+            defaults.punchMaxHeightAbove = ReadJsonFloat(value, "punchMaxHeightAbove", defaults.punchMaxHeightAbove);
+            defaults.punchMaxHeightBelow = ReadJsonFloat(value, "punchMaxHeightBelow", defaults.punchMaxHeightBelow);
+            defaults.punchFullChargeMs = ReadJsonFloat(value, "punchFullChargeMs", defaults.punchFullChargeMs);
+            defaults.punchMaxHoldMs = ReadJsonFloat(value, "punchMaxHoldMs", defaults.punchMaxHoldMs);
+            defaults.punchReleaseLeadMs = ReadJsonFloat(value, "punchReleaseLeadMs", defaults.punchReleaseLeadMs);
             return ValidateHeroSkillSettingsValue(defaults);
         }
 
@@ -4621,7 +4680,13 @@ namespace OW { namespace Config {
             const auto trigger = value.FindMember("trigger");
             if (trigger != value.MemberEnd())
                 defaults.trigger = ReadTriggerPresetJson(trigger->value, defaults.trigger);
-            return ValidateHeroPresetValue(defaults);
+            defaults.modeConfigVersion=ReadJsonInt(value,"modeConfigVersion",0);
+            defaults.releaseConfigVersion=ReadJsonInt(value,"releaseConfigVersion",0);
+            defaults.resolvedModeId=defaults.modeConfigVersion?defaults.aimBehaviorPresetId:-2;
+            if(defaults.modeConfigVersion&&!value.HasMember("aimMethod")) defaults.aimMethod=defaults.aimPlan.motion.method;
+            defaults.behaviorConfigs=value.HasMember("behaviorConfigs")?ModeJson::ReadConfigs(value["behaviorConfigs"]):std::vector<SlotBehaviorConfig>{};
+            if(value.HasMember("modeTuning")) static_cast<AimBehaviorTuning&>(defaults)=ModeJson::ReadTuning(value["modeTuning"],defaults);
+            return defaults;
         }
 
         HeroSlotPreset ReadHeroSlotJson(const rapidjson::Value& value,
@@ -4725,6 +4790,12 @@ namespace OW { namespace Config {
                         skill->value,
                         HeroSkillSettings{},
                         legacyFovApertureValues);
+                    if (heroId == static_cast<uint64_t>(OW::eHero::HERO_DOOMFIST) &&
+                        skillId == "rocket-punch" && skill->value.IsObject() &&
+                        !skill->value.HasMember("punchFullChargeMs")) {
+                        // The old entry generated its own charge; the new one assists manual charge.
+                        settings = MakeDoomfistRocketPunchDefaults();
+                    }
                     if (!hasSkillKey &&
                         heroId == static_cast<uint64_t>(OW::eHero::HERO_ZARYA) &&
                         skillId == "propel-jump") {
@@ -5244,6 +5315,8 @@ namespace OW { namespace Config {
             aimbotTeam = ReadInt(ini, section, "aimbotTeam", aimbotTeam);
             aimbotPriority = ReadInt(ini, section, "aimbotPriority", aimbotPriority);
             aimPlan = AimPlan::Json::Decode(ReadString(ini,section,"aimPlanJson","{}"));
+            rapidjson::Document modeState;modeState.Parse(ReadString(ini,section,"modeStateJson","{}").c_str());
+            aimModeState=ModeJson::ReadState(modeState);
             aimbotTrackingDeadzone = ReadFixedFloat(ini, section, "aimbotTrackingDeadzone", aimbotTrackingDeadzone);
             aimbotBoneMask = static_cast<SkeletonBoneMask>(
                 ReadInt(ini, section, "aimbotBoneMask", static_cast<int>(aimbotBoneMask)));
@@ -5357,8 +5430,9 @@ namespace OW { namespace Config {
             preset.hybridTargetMotionGain = ReadFixedFloat(ini, section, "hybridTargetMotionGain", preset.hybridTargetMotionGain);
             preset.hybridSuddenMotionBoost = ReadFixedFloat(ini, section, "hybridSuddenMotionBoost", preset.hybridSuddenMotionBoost);
             preset.hybridDeadzoneDeg = ReadFixedFloat(ini, section, "hybridDeadzoneDeg", preset.hybridDeadzoneDeg);
-            const auto extra=AimPlan::Json::Decode(ReadString(ini,section,"motionJson","{}"));
-            if(preset.method==7) preset.shuwu=extra.motion.shuwu;
+            rapidjson::Document motion;motion.Parse(ReadString(ini,section,"motionJson","{}").c_str());
+            if(motion.IsObject()) static_cast<AimPlan::Motion&>(preset)=AimPlan::Json::ReadMotion(
+                motion.HasMember("motion")?motion["motion"]:static_cast<const rapidjson::Value&>(motion),preset);
             return ValidateAimMethodPresetValue(preset, fallbackIndex);
         }
 
@@ -5382,6 +5456,13 @@ namespace OW { namespace Config {
             preset.moveSplitEnabled = ReadBool(ini, section, "moveSplitEnabled", preset.moveSplitEnabled);
             preset.moveSplitMaxPixels = ReadInt(ini, section, "moveSplitMaxPixels", preset.moveSplitMaxPixels);
             preset.moveSplitDelayUs = ReadInt(ini, section, "moveSplitDelayUs", preset.moveSplitDelayUs);
+            if(const auto* method=FindAimMethodPreset(preset.methodPresetId)) preset.motion=*method;
+            else preset.motion=CaptureBehaviorMotion(preset.behavior);
+            rapidjson::Document mode;mode.Parse(ReadString(ini,section,"modeDefaultsJson","{}").c_str());
+            if(mode.IsObject()) {
+                if(mode.HasMember("tuning")) static_cast<AimBehaviorTuning&>(preset)=ModeJson::ReadTuning(mode["tuning"],preset);
+                if(mode.HasMember("motion")) preset.motion=AimPlan::Json::ReadMotion(mode["motion"],preset.motion);
+            }
             return ValidateAimBehaviorPresetValue(preset, fallbackIndex);
         }
 
@@ -5427,6 +5508,7 @@ namespace OW { namespace Config {
                 ReadInt(ini, section, "behaviorPresetCount", 0),
                 0,
                 kMaxAimCustomPresets);
+            nextAimBehaviorPresetId=(std::max)(1,ReadInt(ini,section,"nextBehaviorPresetId",1));
             aimBehaviorPresets.clear();
             aimBehaviorPresets.reserve(static_cast<size_t>(behaviorPresetCount));
             for (int index = 0; index < behaviorPresetCount; ++index) {
@@ -5567,7 +5649,8 @@ namespace OW { namespace Config {
                 "accelLimitedAngularSpeedScale",
                 "constantAngularSpeedScale",
                 "hybridPidAngularSpeedScale",
-                "shuwuAngularSpeedScale"
+                "shuwuAngularSpeedScale",
+                "errorResponseCurveAngularSpeedScale"
             };
             static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
@@ -5703,6 +5786,8 @@ namespace OW { namespace Config {
             WriteIntValue(path, section, "aimbotTeam", aimbotTeam);
             WriteIntValue(path, section, "aimbotPriority", aimbotPriority);
             WriteStringValue(path,section,"aimPlanJson",AimPlan::Json::Encode(aimPlan).c_str());
+            rapidjson::Document modeState;auto stateValue=ModeJson::StateJson(aimModeState,modeState.GetAllocator());
+            WriteStringValue(path,section,"modeStateJson",ModeJson::Encode(stateValue).c_str());
             WriteFixedFloatValue(path, section, "aimbotTrackingDeadzone", aimbotTrackingDeadzone);
             WriteIntValue(path, section, "aimbotBoneMask", static_cast<int>(aimbotBoneMask));
             WriteIntValue(path, section, "aimbotBoneMask2", static_cast<int>(aimbotBoneMask2));
@@ -5722,7 +5807,7 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotFlick2ndBoxPadding", aimbotFlick2ndBoxPadding);
             WriteFixedFloatValue(path, section, "aimbotFlick2ndInnerRadius", aimbotFlick2ndInnerRadius);
             WriteFixedFloatValue(path, section, "aimbotFlick2ndInnerSmoothScale", aimbotFlick2ndInnerSmoothScale);
-            WriteIntValue(path, section, "aimbotFlick2ndInnerMethod", ClampAimMethodIndex(aimbotFlick2ndInnerMethod));
+            WriteIntValue(path, section, "aimbotFlick2ndInnerMethod", ClampAimMethodOverride(aimbotFlick2ndInnerMethod));
             WriteBoolValue(path, section, "aimbotTwoStage", aimbotTwoStage);
             WriteBoolValue(path, section, "aimbotTwoStageTriggerGate", aimbotTwoStageTriggerGate);
             WriteFixedFloatValue(path, section, "aimbotTwoStageBoxPadding", aimbotTwoStageBoxPadding);
@@ -5798,6 +5883,10 @@ namespace OW { namespace Config {
                                            int fallbackIndex)
         {
             const AimBehaviorPreset preset = ValidateAimBehaviorPresetValue(rawPreset, fallbackIndex);
+            rapidjson::Document mode(rapidjson::kObjectType);auto& allocator=mode.GetAllocator();
+            mode.AddMember("tuning",ModeJson::TuningJson(preset,allocator),allocator);
+            mode.AddMember("motion",AimPlan::Json::MotionJson(preset.motion,allocator),allocator);
+            WriteStringValue(path,section,"modeDefaultsJson",ModeJson::Encode(mode).c_str());
             WriteIntValue(path, section, "id", preset.id);
             WriteStringValue(path, section, "name", preset.name.c_str());
             WriteIntValue(path, section, "behavior", preset.behavior);
@@ -5852,6 +5941,7 @@ namespace OW { namespace Config {
                 WriteAimMethodPresetSection(path, presetSection, aimMethodPresets[index], static_cast<int>(index));
             }
 
+            WriteIntValue(path,section,"nextBehaviorPresetId",nextAimBehaviorPresetId);
             WriteIntValue(path, section, "behaviorPresetCount", static_cast<int>(aimBehaviorPresets.size()));
             for (size_t index = 0; index < aimBehaviorPresets.size(); ++index) {
                 char presetSection[64] = {};
@@ -5955,7 +6045,8 @@ namespace OW { namespace Config {
                 "accelLimitedAngularSpeedScale",
                 "constantAngularSpeedScale",
                 "hybridPidAngularSpeedScale",
-                "shuwuAngularSpeedScale"
+                "shuwuAngularSpeedScale",
+                "errorResponseCurveAngularSpeedScale"
             };
             static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
@@ -6053,6 +6144,7 @@ namespace OW { namespace Config {
             MenuToggleKey = ReadInt(ini, section, "MenuToggleKey", MenuToggleKey);
             lastConfigProfile = ReadString(ini, section, "lastConfigProfile", lastConfigProfile.c_str());
             uiLanguage = ReadInt(ini, section, "uiLanguage", uiLanguage);
+            overlayFrameLimit = ReadInt(ini, section, "overlayFrameLimit", overlayFrameLimit);
             manualScreenWidth = ReadInt(ini, section, "manualScreenWidth", manualScreenWidth);
             manualScreenHeight = ReadInt(ini, section, "manualScreenHeight", manualScreenHeight);
 
@@ -6317,7 +6409,7 @@ namespace OW { namespace Config {
             ClampFloatSetting("aimbotFlick2ndBoxPadding", aimbotFlick2ndBoxPadding, 0.0f, 80.0f, 8.0f);
             ClampFloatSetting("aimbotFlick2ndInnerRadius", aimbotFlick2ndInnerRadius, 0.0f, 250.0f, 34.0f);
             ClampFloatSetting("aimbotFlick2ndInnerSmoothScale", aimbotFlick2ndInnerSmoothScale, 0.1f, 1.0f, 0.55f);
-            aimbotFlick2ndInnerMethod = ClampAimMethodIndex(aimbotFlick2ndInnerMethod);
+            aimbotFlick2ndInnerMethod = ClampAimMethodOverride(aimbotFlick2ndInnerMethod);
             ClampFloatSetting("aimbotTwoStageBoxPadding", aimbotTwoStageBoxPadding, 0.0f, 80.0f, 8.0f);
             ClampFloatSetting("aimbotTwoStageInnerRadius", aimbotTwoStageInnerRadius, 0.0f, 250.0f, 34.0f);
             ClampFloatSetting("aimbotTwoStageInnerSmoothScale", aimbotTwoStageInnerSmoothScale, 0.1f, 1.0f, 0.55f);
@@ -6433,6 +6525,7 @@ namespace OW { namespace Config {
             ClampSetting("aimbotPriority", aimbotPriority, 0, 3, 0);
             AimPlan::Normalize(aimPlan);
             ClampSetting("uiLanguage", uiLanguage, 0, kUiLanguageCount - 1, kUiLanguageEnglish);
+            ClampSetting("overlayFrameLimit", overlayFrameLimit, 0, 2000, 0);
             ClampSetting("catBoxPort",catBoxPort,0,65535,0);
             ClampSetting("catBoxMonitorPort",catBoxMonitorPort,0,65535,0);
             ClampSetting("kmboxDeviceType", outputDeviceType, 0, 6, 0);
@@ -6687,21 +6780,21 @@ namespace OW { namespace Config {
     HeroPreset MakeHeroPresetFromCurrent()
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return MakeHeroPresetFromCurrentUnlocked();
     }
 
     HeroPreset MakeHeroAimPresetFromCurrent()
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return MakeHeroAimPresetFromCurrentUnlocked();
     }
 
     HeroPreset MakeHeroTriggerPresetFromCurrent()
     {
         std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
+        ScopedConfigAuthority authority(false);
         return MakeHeroTriggerPresetFromCurrentUnlocked();
     }
 
@@ -6786,6 +6879,7 @@ namespace OW { namespace Config {
             WriteIntValue(path, "Global", "MenuToggleKey", MenuToggleKey);
             WriteStringValue(path, "Global", "lastConfigProfile", lastConfigProfile.c_str());
             WriteIntValue(path, "Global", "uiLanguage", ClampUiLanguage(uiLanguage));
+            WriteIntValue(path, "Global", "overlayFrameLimit", std::clamp(overlayFrameLimit, 0, 2000));
             WriteIntValue(path, "Global", "manualScreenWidth", manualScreenWidth);
             WriteIntValue(path, "Global", "manualScreenHeight", manualScreenHeight);
             WriteColor(path, "Global", "EnemyCol", EnemyCol);
@@ -7316,6 +7410,22 @@ namespace OW { namespace Config {
         return true;
     }
 
+    bool AimBehaviorPresetInUse(int id) {
+        std::lock_guard<std::mutex> lock(mutex);ScopedConfigAuthority authority(false);
+        if(aimBehaviorPresetId==id || gSystemHeroFallback.aimBehaviorPresetId==id) return true;
+        for(const auto& [hero,slots]:heroAimPresets) for(const auto& slot:slots)
+            if(slot.present && slot.preset.aimBehaviorPresetId==id) return true;
+        for(const auto& [hero,skills]:heroSkillPresets) for(const auto& [key,skill]:skills)
+            if(skill.tracking.aimBehaviorPresetId==id) return true;
+        return false;
+    }
+    void RefreshBehaviorModeSlots() {
+        std::lock_guard<std::mutex> lock(mutex);ScopedConfigAuthority authority;
+        for(auto& [hero,slots]:heroAimPresets) for(auto& slot:slots)
+            if(slot.present) slot.preset=ValidateHeroPresetValueForHero(hero,slot.preset);
+        ResolveHeroBehaviorMode(gSystemHeroFallback);
+    }
+
     void NormalizeOutputPorts()
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -7341,6 +7451,7 @@ namespace OW { namespace Config {
         void ApplyLocalHeroAimPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            View_aimModeState()={true,static_cast<const AimBehaviorTuning&>(preset),preset.aimPlan.motion,preset.behaviorConfigs};
             View_Fov() = preset.fov;
             View_minFov1() = preset.fov;
             View_aimbotFovMode() = preset.fovMode;

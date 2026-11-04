@@ -452,6 +452,14 @@ namespace V2::Output
         return RecordKeyboardReport(0, { hidCode });
     }
 
+    void MockHardware::SetPhysicalMouseButtons(uint32_t buttons) {
+        std::lock_guard<std::mutex> lock(mutex_);physicalButtons_=buttons&0x7fu;
+    }
+    PhysicalInputSnapshot MockHardware::PhysicalInput() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return {initialized_,physicalButtons_,initialized_?GetTickCount64():0};
+    }
+
     MockHardwareSnapshot MockHardware::Snapshot() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -541,6 +549,7 @@ namespace V2::Output
         keyboardUsages_.fill(0);
         outputMouseButtons_ = 0;
         maskedButtons_ = 0;
+        physicalButtons_ = 0;
         totalEvents_ = 0;
         moveEvents_ = 0;
         buttonEvents_ = 0;

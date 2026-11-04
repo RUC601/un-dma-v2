@@ -177,7 +177,7 @@ namespace OW {
     // Normalize a local copy after the complete read; shared BZ fields retain
     // their old layout. CN Health blocks grew from 0x140 to 0x180 bytes.
     inline void NormalizeHealthPayload(health_compo_t& health) {
-        if (offset::Active().componentTransform != offset::ComponentTransformMode::Cn154504)
+        if (offset::Active().componentTransform != offset::ComponentTransformMode::Cn154905)
             return;
         const Vector2 extra = health.cn154461_health_ext;
         health.armor_max = health.cn154461_armor_max;
@@ -231,7 +231,7 @@ namespace OW {
         result = {};
         std::memcpy(&result.health_max, raw.vital.data(), 4);
         std::memcpy(&result.health, raw.vital.data() + 4, 4);
-        const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504;
+        const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
         std::memcpy(&result.health_ext, raw.vital.data() + (cn ? 24 : 20), 8);
         result.armor_max = raw.armor.X; result.armor = raw.armor.Y;
         result.barrier_max = raw.barrier.X; result.barrier = raw.barrier.Y;

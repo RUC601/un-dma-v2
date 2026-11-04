@@ -212,6 +212,8 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
+    if (membershipKnown && existingMember && incomingMember)
+        return SameParticipantObservationAction::KeepExisting;
     if (incomingFresh && !existingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
     // Ambiguous simultaneous bodies cannot create another seat for a confirmed player.

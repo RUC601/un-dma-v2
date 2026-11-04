@@ -27,7 +27,7 @@
                 record.respawnWatchStartedTick=tick;record.respawnFirstScanRequested=false;record.respawnLastScanRequestTick=0;
                 record.cachedSkeletonValid=false;record.skeletonCache={};record.lastRawObservation={};
             }
-            if(record.entity.address==localCycleSnapshot.address && OW::TryCommitLocalEntity(record.entity,tick))
+            if(OW::TryCommitLocalEntity(record.entity,tick))
                 localCycleSnapshot=record.entity;
             return true;
         };

@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include "Game/Cn154905.hpp"
 
 namespace V2::Profiles {
 enum class Region { CN, KR, BZ, Unclassified };
@@ -12,11 +13,12 @@ struct Profile {
     uint64_t addBefore, xorValue, addAfter;
     bool encoded, candidate;
 };
-// 来源：Pure/research/20261028-offset-profiles/profiles.json；
+// CN 来源：03_DOWNP/2.25.1.0.154905N/cn/offset_work_2026-11-04。
+// 其余候选来源：Pure/research/20261028-offset-profiles/profiles.json；
 // 探测控制流：evidence/12aca0.c。仅证明布局兼容，不推断渠道身份。
 inline constexpr std::array<Profile,4> profiles{{
-    {"cn-154504n",Region::CN,0x4BCBCE8,0x4C33BF8,0x4D98760,
-     0,0xD9B0DF0D8532B5A0ULL,0x488A1F0DC13B6040ULL,true,false},
+    {"cn-154905n",Region::CN,OW::Cn154905::viewRoot,OW::Cn154905::entityRoot,OW::Cn154905::globalAdmin,
+     0,OW::Cn154905::pointerXor,OW::Cn154905::pointerAdd,true,false},
     {"kr-nexon-152688",Region::KR,0x3CD33B0,0x35E8568,0,0,0,0,false,true},
     {"bz-battlenet-152690",Region::BZ,0x3930050,0x398F358,0x3AF6A70,
      0x7821C8A55B94CFA0ULL,0xB5B70DFEBEFA4BB5ULL,0x6E6C0E878F0FE669ULL,true,true},

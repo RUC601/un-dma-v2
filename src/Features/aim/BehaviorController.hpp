@@ -2,6 +2,8 @@
 #include "Game/Target.hpp"
 #include "Game/FlickRepeat.hpp"
 #include "Game/AimStartLimiter.hpp"
+#include "Game/AimHoldWindow.hpp"
+#include "Game/AimReleaseFire.hpp"
 
 // UN Behavior 控制器：worker 独占 RuntimeState；技能只使用下列计算/输出接口。
 // 输入为已发布实体/矩阵和当前配置视图；输出仍经代次、身份和释放门控。
@@ -21,13 +23,20 @@ namespace AimbotDetail {
         OW::FlickRepeat::State ordinaryFlick{};
         uint64_t trajectoryWaitEntityKey = 0;
         DWORD trajectoryWaitStartedTick = 0;
-        bool hanzoCustomCharging = false;
-        bool hanzoCustomLeftDown = false;
-        DWORD hanzoCustomChargeStartedTick = 0;
-        DWORD hanzoCustomLastLogTick = 0;
+        std::array<OW::AimReleaseFire::PhysicalPress,3> releasePresses{};
+        OW::FlickRepeat::SessionIdentity releaseSession{};
+        int releaseMode=-2,releaseBehavior=-1,releaseMethod=-1;
+        bool releaseConfigured=false,releaseAutomatic=false,releaseIdentified=false;
+        bool releaseOwnedDown=false,releaseShotLatched=false,releaseNeedsActivationUp=false;
+        bool releaseAfterKeyUp=false,releaseActivationDown=false,releasePending=false;
+        DWORD releaseActionStarted=0;
+        DWORD releaseAimReportTick=0;
+        bool releaseChargeWaitLogged=false;
+        int releaseOwnedButton=-1;
+        DWORD releaseChargeStarted=0;
+        std::uint64_t releaseOutputGeneration=0;
         bool trackingSessionActive = false;
-        bool trackingSessionTimedOut = false;
-        DWORD trackingSessionStartedTick = 0;
+        std::array<OW::AimHoldWindow::State, std::size(OW::Labels::kAimActivationKeyVks)> aimHoldWindows{};
         uint64_t trackingSessionHeroId = 0;
         int trackingSessionSlotIndex = -1;
         uint64_t trackingSessionSlotId = 0;

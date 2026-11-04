@@ -108,27 +108,39 @@ namespace OW {
     }
 
     inline bool TryCommitLocalEntity(const c_entity& entity,uint32_t now) {
-        if(!entity.address || !entity.AngleBase || !entity.actor_generation || !entity.body_authority_revision || !entity.HasFreshLifeState(now) ||
-            !GameData::IsKnownHeroId(entity.HeroID) || !c_entity::IsPlausibleSpatialAnchor(entity.pos) ||
+        const bool observedDeath=entity.death_known && entity.is_dead && !entity.Alive && !entity.body_valid &&
+            entity.roster_state==EntityRosterState::Dead && entity.death_sample_tick_ms &&
+            uint32_t(now-entity.death_sample_tick_ms)<=100;
+        if(!entity.address || !entity.actor_generation || !entity.body_authority_revision ||
+            !GameData::IsKnownHeroId(entity.HeroID))return false;
+        if(!observedDeath && (!entity.AngleBase || !entity.HasFreshLifeState(now) ||
+            !c_entity::IsPlausibleSpatialAnchor(entity.pos) ||
             !EntityRosterPolicy::BodyUsable(entity.body_valid,entity.Alive,
                 entity.roster_state==EntityRosterState::Fresh,entity.anchor_sample_tick_ms,now,
-                entity.scene_generation,EntitySceneGeneration()))return false;
+                entity.scene_generation,EntitySceneGeneration())))return false;
         std::lock_guard<std::mutex> lock(::g_mutex);
+        // Death can update only the already verified local lifetime; it cannot select a player.
+        if(observedDeath && (local_entity.address!=entity.address || local_entity.LinkParent!=entity.LinkParent ||
+            local_entity.match_id!=entity.match_id || local_entity.actor_generation!=entity.actor_generation ||
+            local_entity.connection_epoch!=entity.connection_epoch || local_entity.scene_generation!=entity.scene_generation))return false;
         std::lock_guard<std::mutex> registryLock(entityRegistryMonitor.mutex);
         std::lock_guard<std::mutex> bodyLock(entityBodyValidityMutex);
         const auto authority=entityBodyAuthorities.find(entity.address);
         if(!RuntimeWorkersRunning() || !ProcessConnection::IsConnected() ||
             ProcessConnection::ConnectionEpoch()!=entity.connection_epoch ||
             entity.scene_generation!=EntitySceneGeneration() || !entityRegistryMonitor.state.available ||
-            authority==entityBodyAuthorities.end() || !authority->second.alive ||
+            authority==entityBodyAuthorities.end() || authority->second.alive!=entity.Alive ||
             authority->second.registry!=entityRegistryMonitor.state.snapshot.generation ||
             !EntityBodyEvidenceCurrentLocked({entity.address,entity.LinkParent,entity.HeroID,entity.match_id,entity.last_discovered_tick_ms},
                 entity.scene_generation,now,entity.body_absence_revision) ||
             !EntityBodyAuthorityMatchesLocked({entity.address,entity.LinkParent,entity.HeroID,entity.match_id,entity.last_discovered_tick_ms},
                 entity.actor_generation,entity.body_authority_revision,entity.connection_epoch,
                 entity.scene_generation,entity.body_absence_revision))return false;
+        const bool retainTeam=observedDeath && !entity.team_known && local_entity.team_known;
+        const auto confirmedTeam=local_entity.team_key;
         local_entity=entity;
-        SDK->g_player_controller=entity.AngleBase;
+        if(retainTeam) { local_entity.team_known=true;local_entity.team_key=confirmedTeam; }
+        if(!observedDeath)SDK->g_player_controller=entity.AngleBase;
         return true;
     }
 

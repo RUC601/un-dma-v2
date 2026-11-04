@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "Game/ShuwuCore.hpp"
+#include "Game/AimResponseCurve.hpp"
 
 namespace OW::AimPlan {
 inline constexpr int kMaxGroups = 12;
@@ -40,6 +41,7 @@ struct Motion {
         float hybridTargetMotionGain = 0.35f;
         float hybridSuddenMotionBoost = 2.5f;
         float hybridDeadzoneDeg = 0.10f;
+    AimResponseCurve::Points responseCurve{};
     koi::ShuwuConfig shuwu{};
     bool operator==(const Motion&) const = default;
 };
@@ -135,7 +137,8 @@ inline bool Better(bool preferred,float score,uint64_t key,bool bestPreferred,fl
 }
 inline void NormalizeMotion(Motion& m) {
     const Motion d;
-    m.method=(std::clamp)(m.method,0,7);
+    AimResponseCurve::Normalize(m.responseCurve);
+    m.method=(std::clamp)(m.method,0,8);
     m.angularSpeedScale=Finite(m.angularSpeedScale,100,0,200);
     m.pidP=Finite(m.pidP,d.pidP,0,10); m.pidI=Finite(m.pidI,d.pidI,0,10);
     m.pidD=Finite(m.pidD,d.pidD,0,10); m.pidMaxIntegral=Finite(m.pidMaxIntegral,10,0,1000);

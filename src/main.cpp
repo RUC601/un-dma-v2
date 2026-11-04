@@ -1,3 +1,7 @@
+#ifdef UNLEASHED_SELF_TESTS
+namespace AimbotDetail {int RunAimReleaseOutputSelfTest();}
+namespace OW {int RunSkillModeScopeSelfTest();}
+#endif
 #include "features/visuals/EntityVisuals.hpp"
 // =============================================================================
 // Unleashed DMA -- Overwatch 2 External Cheat
@@ -418,6 +422,7 @@ static int RunConfigCheckCli()
 #ifdef UNLEASHED_SELF_TESTS
 #include "OverlayStatusSelfTest.inl"
 #include "RuntimeControlSelfTest.inl"
+#include "OverlayFrameRateProbe.inl"
 #endif
 
 int main(int argc, char** argv)
@@ -459,9 +464,10 @@ int main(int argc, char** argv)
             argument == "--test-server-cors" || argument == "--box-perf-mode" || argument == "--canvas-only")
             continue;
 #ifdef UNLEASHED_SELF_TESTS
-        if (argument == "--config-concurrency-selftest" || argument == "--config-persistence-selftest" ||
+        if (argument == "--skill-mode-scope-selftest" || argument == "--aim-release-output-selftest" || argument == "--config-concurrency-selftest" || argument == "--config-persistence-selftest" ||
             argument == "--test-server-lifecycle-selftest" ||
-            argument == "--overlay-status-selftest" || argument == "--runtime-control-selftest")
+            argument == "--overlay-status-selftest" || argument == "--runtime-control-selftest" ||
+            argument == "--overlay-frame-rate-probe")
             continue;
 #endif
         std::fprintf(stderr, "[FATAL] Unknown or retired option: %s\n", argument.c_str());
@@ -471,12 +477,18 @@ int main(int argc, char** argv)
     // ---- Config ----
 
 #ifdef UNLEASHED_SELF_TESTS
+    if (HasCommandLineFlag(argc, argv, "--overlay-frame-rate-probe"))
+        return RunOverlayFrameRateProbe();
     if (HasCommandLineFlag(argc, argv, "--runtime-control-selftest"))
         return RunRuntimeControlSelfTest();
     if (HasCommandLineFlag(argc, argv, "--overlay-status-selftest"))
         return RunOverlayStatusSelfTest();
     if (HasCommandLineFlag(argc, argv, "--config-concurrency-selftest"))
         return OW::Config::RunConfigConcurrencySelfTest();
+    if (HasCommandLineFlag(argc, argv, "--skill-mode-scope-selftest"))
+        return OW::RunSkillModeScopeSelfTest();
+    if (HasCommandLineFlag(argc, argv, "--aim-release-output-selftest"))
+        return AimbotDetail::RunAimReleaseOutputSelfTest();
     if (HasCommandLineFlag(argc, argv, "--config-persistence-selftest"))
         return OW::Config::RunPersistenceSelfTest();
     if (HasCommandLineFlag(argc, argv, "--test-server-lifecycle-selftest"))

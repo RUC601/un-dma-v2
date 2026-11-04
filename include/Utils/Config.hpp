@@ -17,6 +17,7 @@
 
 #include "Game/AimStartLimiter.hpp"
 #include "Game/AimPlan.hpp"
+#include "Game/AimBehaviorMode.hpp"
 #include "Game/GameData.hpp"
 #include "Game/TriggerBoneSelection.hpp"
 
@@ -145,6 +146,7 @@ namespace OW { namespace Config {
     inline constexpr int kUiLanguageChineseSimplified = 1;
     inline constexpr int kUiLanguageCount = 2;
     inline int uiLanguage = kUiLanguageEnglish;
+    inline int overlayFrameLimit = 0; // 0 = unlimited; canvas only, menu stays at ~60 Hz.
     inline int ClampUiLanguage(int value)
     {
         return std::clamp(value, 0, kUiLanguageCount - 1);
@@ -327,10 +329,10 @@ namespace OW { namespace Config {
     inline float aimbotMaxHead = 100.0f;
     inline decltype(aimbotMaxHead)& View_aimbotMaxHead();
     inline int   aimMethod = 0;
-    inline decltype(aimMethod)& View_aimMethod(); // 0=Linear, 1=PID, 2=Bezier, 3=Piecewise, 4=AccelLimited, 5=Constant, 6=HybridPID, 7=Shuwu
+    inline decltype(aimMethod)& View_aimMethod(); // 0=Linear, 1=PID, 2=Bezier, 3=Piecewise, 4=AccelLimited, 5=Constant, 6=HybridPID, 7=Shuwu, 8=ErrorResponseCurve
     inline int   aimbotSmoothType = 0;
     inline decltype(aimbotSmoothType)& View_aimbotSmoothType(); // 0=Constant Speed, 1=Linear, 2=Bezier
-    inline constexpr int kAimMethodCount = 8;
+    inline constexpr int kAimMethodCount = 9;
     inline constexpr float kAimConstantAngularSpeedMaxDeg = 3600.0f;
     inline std::array<int, kAimBehaviorCount> aimBehaviorMethod = { 0, 0, 0, 0, 0 };
     inline decltype(aimBehaviorMethod)& View_aimBehaviorMethod();
@@ -345,9 +347,9 @@ namespace OW { namespace Config {
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitMaxPixels = { 4, 50, 50, 4, 4 };
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitDelayUs = { 800, 0, 0, 800, 800 };
     inline std::array<float, kAimMethodCount> aimMethodAngularSpeedScale = {
-        100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f
+        100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f
     };
-    inline std::array<int, 2> secondaryAimMethodOverride = { -1, -1 }; // -1=inherit, 0-7=kAimMethod
+    inline std::array<int, 2> secondaryAimMethodOverride = { -1, -1 }; // -1=inherit, 0-8=kAimMethod
     inline float aimPidP = 0.5f;
     inline decltype(aimPidP)& View_aimPidP();
     inline float aimPidI = 0.01f;
@@ -391,18 +393,19 @@ namespace OW { namespace Config {
         std::string name = "Method Preset";
     };
 
-    struct AimBehaviorPreset {
+    struct AimBehaviorPreset : AimBehaviorTuning {
         int id = -1;
         std::string name = "Behavior Preset";
         int behavior = kAimBehaviorTracking;
         int method = 0;
-        int methodPresetId = -1;
-        float baseSpeed = 100.0f;
-        AimStartLimiterProfile startLimiter{};
-        bool moveSplitEnabled = true;
-        int moveSplitMaxPixels = 4;
-        int moveSplitDelayUs = 800;
+        int methodPresetId = -1; // Legacy defaults source; Slot values are independent.
+        AimPlan::Motion motion{};
     };
+    inline int nextAimBehaviorPresetId = 1;
+    inline int& View_nextAimBehaviorPresetId();
+    inline AimModeRuntime aimModeState{};
+    inline AimModeRuntime& View_aimModeState();
+    const AimBehaviorTuning* ActiveSlotBehaviorTuning();
 
     struct DynamicFovPoint {
         float distanceM = 0.0f;
@@ -460,6 +463,7 @@ namespace OW { namespace Config {
     inline decltype(aimbotAttack)& View_aimbotAttack(); // action profile: primary/secondary/scoped/unscoped/ability/ultimate
     inline int   aimbotTeam = 0;
     inline decltype(aimbotTeam)& View_aimbotTeam(); // 0=Enemies, 1=Allies, 2=All
+    inline thread_local float selectedAimFovDeg = 0;
     inline AimPlan::Plan aimPlan{};
     inline AimPlan::Plan& View_aimPlan();
     // Worker-local selection result; never part of persistent/shared config.
@@ -838,6 +842,7 @@ namespace OW { namespace Config {
     inline int AimBehaviorMethod(int behavior)
     {
         if (targetAimPlanEnabled && selectedAimPlan.overrideMotion) return ClampAimMethodIndex(selectedAimMethod.method);
+        if (View_aimModeState().enabled && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return ClampAimMethodIndex(View_aimModeState().motion.method);
         ScopedConfigRead configRead;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimMethodPreset* methodPreset = AimMethodPresetForBehavior(normalized))
@@ -856,6 +861,7 @@ namespace OW { namespace Config {
 
     inline float AimBehaviorBaseSpeed(int behavior)
     {
+        if (const auto* tuning=ActiveSlotBehaviorTuning(); tuning && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return tuning->baseSpeed;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimBehaviorPreset* preset = ActiveAimBehaviorPreset(normalized)) {
             const float value = preset->baseSpeed;
@@ -867,6 +873,7 @@ namespace OW { namespace Config {
 
     inline AimStartLimiterProfile ResolveAimStartLimiterProfile(int behavior)
     {
+        if (const auto* tuning=ActiveSlotBehaviorTuning(); tuning && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return tuning->startLimiter;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimBehaviorPreset* preset = ActiveAimBehaviorPreset(normalized))
             return ValidateAimStartLimiterProfile(preset->startLimiter);
@@ -886,6 +893,7 @@ namespace OW { namespace Config {
 
     inline bool AimBehaviorMoveSplitEnabled(int behavior)
     {
+        if (const auto* tuning=ActiveSlotBehaviorTuning(); tuning && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return tuning->moveSplitEnabled;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimBehaviorPreset* preset = ActiveAimBehaviorPreset(normalized))
             return preset->moveSplitEnabled;
@@ -894,6 +902,7 @@ namespace OW { namespace Config {
 
     inline int AimBehaviorMoveSplitMaxPixels(int behavior)
     {
+        if (const auto* tuning=ActiveSlotBehaviorTuning(); tuning && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return tuning->moveSplitMaxPixels;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimBehaviorPreset* preset = ActiveAimBehaviorPreset(normalized))
             return ClampMoveSplitMaxPixels(preset->moveSplitMaxPixels);
@@ -903,6 +912,7 @@ namespace OW { namespace Config {
 
     inline int AimBehaviorMoveSplitDelayUs(int behavior)
     {
+        if (const auto* tuning=ActiveSlotBehaviorTuning(); tuning && ClampAimBehaviorIndex(behavior)==ClampAimBehaviorIndex(View_aimBehavior())) return tuning->moveSplitDelayUs;
         const int normalized = ClampAimBehaviorIndex(behavior);
         if (const AimBehaviorPreset* preset = ActiveAimBehaviorPreset(normalized))
             return ClampMoveSplitDelayUs(preset->moveSplitDelayUs);
@@ -920,6 +930,14 @@ namespace OW { namespace Config {
     {
         const int normalizedMethod = ClampAimMethodIndex(method);
         if (targetAimPlanEnabled && selectedAimPlan.overrideMotion && selectedAimMethod.method == normalizedMethod) return &selectedAimMethod;
+        if (View_aimModeState().enabled) {
+            thread_local AimMethodPreset slotMotion;
+            const AimPlan::Motion* resolved=nullptr;
+            if(View_aimModeState().motion.method==normalizedMethod) resolved=&View_aimModeState().motion;
+            else for(const auto& c:View_aimModeState().configs) if(c.presetId==View_aimBehaviorPresetId())
+                for(const auto& m:c.motions) if(m.method==normalizedMethod) resolved=&m;
+            if(resolved) {static_cast<AimPlan::Motion&>(slotMotion)=*resolved;return &slotMotion;}
+        }
         const int normalizedBehavior = ClampAimBehaviorIndex(View_aimBehavior());
         const AimMethodPreset* preset = AimMethodPresetForBehavior(normalizedBehavior);
         if (!preset || ClampAimMethodIndex(preset->method) != normalizedMethod)
@@ -1356,12 +1374,15 @@ namespace OW { namespace Config {
         return disableWhileReloading && reloading;
     }
 
-    struct HeroPreset {
+    struct HeroPreset : AimBehaviorTuning {
+        int modeConfigVersion = 0;
+        int releaseConfigVersion = 1;
+        int resolvedModeId = -2;
+        std::vector<SlotBehaviorConfig> behaviorConfigs;
         AimPlan::Plan aimPlan{};
         float fov = kDefaultFovDeg; // angular separation from current view direction, in degrees
         int fovMode = kFovModeFixed; // 0=fixed fov, 1=dynamic preset by distance
         int dynamicFovPresetId = -1;
-        float smooth = 20.0f;    // aim smoothing, 0-100
         int bone = kAimBoneHead;  // aim-bone choice: 0=chest, 1=head, 2=neck
         bool autoBone = false;    // true = choose closest visible skeleton bone at runtime
         SkeletonBoneMask aimBoneMask = kDefaultAimBoneMask;
@@ -1380,49 +1401,113 @@ namespace OW { namespace Config {
         float bezierCurvature = 0.5f;
         float bezierSpeed = 50.0f;
         int key = 1;             // aim activation key index (reuses activation key VK list)
-        bool autoshot = false;
-        bool keepFiring = false;
         bool requireActionHeld = false; // require the physical weapon/skill action before aim activation
         bool prediction = false; // movement prediction
         int predictionMode = 0;   // 0=Auto, 1=Force On, 2=Force Off
         bool predictFovEntry = false;
         float fovEntryPredictionMs = 60.0f;
         float fovEntryMaxOutsideDeg = 1.5f;
-        int firePolicy = 0;       // 0=Manual, 1=Hold, 2=Tap, 3=ReleaseDelay, 4=Burst, 5=ChargeRelease
         float maxHeadDistance = 100.0f;
         float stickiness = 100.0f;
-        float pitchScale = 1.0f;
         int priority = 0;        // 0=FOV, 1=HP, 2=Distance
         int targetTeam = 0;      // 0=Enemies, 1=Allies, 2=All
-        float maxAimTime = 100.0f;
-        float minCharge = 5.0f;
-        float maxCharge = 100.0f;
         bool ignoreInvisible = true;
         int traceCondition = 0;   // 0=Strict, 1=Relaxed, 2=Off
         int unlockCondition = 0;  // 0=Anytime, 1=On Release, 2=Never
         float lockTime = 20.0f;
         float maxDistance = 100.0f;
         float minDistance = 0.0f;
-        float trackingDeadzone = 0.0f;
-        float flickShotClampMs = 0.0f;
-        float flickPostFireDelayMs = 0.0f;
-        float magneticShotIntervalMs = 0.0f;
-        float magneticPostFirePauseMs = 35.0f;
-        float magneticRecoveryMs = 90.0f;
-        float magneticPostFireYawScale = 0.35f;
-        float magneticPostFirePitchScale = 0.0f;
-        float magneticPreFireBoostWindowMs = 45.0f;
-        float magneticPreFireBoostScale = 1.35f;
-        bool flickTrajectoryWait = false;
-        float flickTrajectoryWaitMs = 120.0f;
-        float flickTrajectoryApexWindowMs = 60.0f;
-        bool flick2ndTriggerGate = true;
-        float flick2ndBoxPadding = 8.0f;
-        float flick2ndInnerRadius = 34.0f;
-        float flick2ndInnerSmoothScale = 0.55f;
-        int flick2ndInnerMethod = 2;
         TriggerPreset trigger{};
     };
+
+    inline AimPlan::Motion CaptureBehaviorMotion(int behavior) {
+        ScopedConfigRead configRead;
+        AimPlan::Motion m;
+        const auto* definition=ActiveAimBehaviorPreset(behavior);
+        const int methodId=definition?definition->methodPresetId:View_aimBehaviorMethodPreset()[ClampAimBehaviorIndex(behavior)];
+        if(const auto* method=FindAimMethodPreset(methodId)) return *method;
+        m.method=definition?definition->method:View_aimBehaviorMethod()[ClampAimBehaviorIndex(behavior)];
+        m.angularSpeedScale=AimMethodAngularSpeedScale(m.method)*100;
+        m.pidP=View_aimPidP();
+        m.pidI=View_aimPidI();
+        m.pidD=View_aimPidD();
+        m.pidMaxIntegral=View_aimPidMaxIntegral();
+        m.pidDeadzone=View_aimPidDeadzone();
+        m.bezierCurvature=View_aimBezierCurvature();
+        m.bezierSpeed=View_aimBezierSpeed();
+        m.piecewiseNearDegrees=aimPiecewiseNearDegrees;
+        m.piecewiseMidDegrees=aimPiecewiseMidDegrees;
+        m.piecewiseFarDegrees=aimPiecewiseFarDegrees;
+        m.piecewiseNearScale=aimPiecewiseNearScale;
+        m.piecewiseMidScale=aimPiecewiseMidScale;
+        m.piecewiseFarScale=aimPiecewiseFarScale;
+        m.accelLimitedAcceleration=aimAccelLimitedAcceleration;
+        m.constantAngularSpeedDeg=aimConstantAngularSpeedDeg;
+        m.hybridConstantSpeedDeg=aimHybridConstantSpeedDeg;
+        m.hybridMaxSpeedDeg=aimHybridMaxSpeedDeg;
+        m.hybridAccelerationDeg=aimHybridAccelerationDeg;
+        m.hybridDecelerationDeg=aimHybridDecelerationDeg;
+        m.hybridNearRadiusDeg=aimHybridNearRadiusDeg;
+        m.hybridTargetMotionGain=aimHybridTargetMotionGain;
+        m.hybridSuddenMotionBoost=aimHybridSuddenMotionBoost;
+        m.hybridDeadzoneDeg=aimHybridDeadzoneDeg;
+        m.bezierControlPoints=View_aimBezierControlPoints();
+        AimPlan::NormalizeMotion(m); return m;
+    }
+    inline SlotBehaviorConfig& EnsureSlotBehaviorConfig(HeroPreset& p,int id) {
+        auto it=std::find_if(p.behaviorConfigs.begin(),p.behaviorConfigs.end(),[&](const auto& c){return c.presetId==id;});
+        if(it==p.behaviorConfigs.end()) {p.behaviorConfigs.push_back({id}); return p.behaviorConfigs.back();}
+        return *it;
+    }
+    inline void StoreHeroBehaviorMode(HeroPreset& p) {
+        if(p.modeConfigVersion==0 || p.resolvedModeId< -1) return;
+        auto& c=EnsureSlotBehaviorConfig(p,p.resolvedModeId);
+        auto b=std::find_if(c.behaviors.begin(),c.behaviors.end(),[&](const auto& v){return v.behavior==p.aimBehavior;});
+        AimBehaviorTuning t=p; NormalizeBehaviorTuning(t);
+        if(b==c.behaviors.end()) c.behaviors.push_back({p.aimBehavior,t}); else b->tuning=t;
+        auto motion=p.aimPlan.motion; motion.method=ClampAimMethodIndex(p.aimMethod); AimPlan::NormalizeMotion(motion);
+        auto m=std::find_if(c.motions.begin(),c.motions.end(),[&](const auto& v){return v.method==motion.method;});
+        if(m==c.motions.end()) c.motions.push_back(motion); else *m=motion;
+    }
+    inline void ResolveHeroBehaviorMode(HeroPreset& p,bool reset=false) {
+        ScopedConfigRead configRead;
+        const bool legacy=p.modeConfigVersion==0;
+        std::erase_if(p.behaviorConfigs,[](const auto& c){return c.presetId>=0&&!FindAimBehaviorPreset(c.presetId);});
+        if(p.aimBehaviorPresetId<0 && p.aimPlan.overrideMotion) p.aimMethod=ClampAimMethodIndex(p.aimPlan.motion.method);
+        const auto* legacyDefinition=FindAimBehaviorPreset(p.aimBehaviorPresetId);
+        if(legacy && legacyDefinition && p.aimPlan.overrideMotion && p.aimPlan.motion.method!=legacyDefinition->method) {
+            p.aimBehavior=legacyDefinition->behavior;p.aimBehaviorPresetId=-1;
+        }
+        StoreHeroBehaviorMode(p);
+        const auto* def=FindAimBehaviorPreset(p.aimBehaviorPresetId);
+        const int id=def?def->id:-1;
+        const int behavior=ClampAimBehaviorIndex(def?def->behavior:p.aimBehavior);
+        AimPlan::Motion defaults=def?def->motion:CaptureBehaviorMotion(behavior);
+        defaults.method=ClampAimMethodIndex(def?def->method:(p.aimPlan.overrideMotion?p.aimPlan.motion.method:defaults.method));
+        if(legacy && p.aimPlan.overrideMotion) defaults=p.aimPlan.motion;
+        AimBehaviorTuning tuning=def?static_cast<const AimBehaviorTuning&>(*def):static_cast<const AimBehaviorTuning&>(p);
+        if(legacy) {
+            tuning=p;
+            tuning.baseSpeed=def?def->baseSpeed:aimBehaviorBaseSpeed[behavior];
+            tuning.startLimiter=def?def->startLimiter:aimBehaviorStartLimiterProfiles[behavior];
+            tuning.moveSplitEnabled=def?def->moveSplitEnabled:aimBehaviorMoveSplitEnabled[behavior];
+            tuning.moveSplitMaxPixels=def?def->moveSplitMaxPixels:aimBehaviorMoveSplitMaxPixels[behavior];
+            tuning.moveSplitDelayUs=def?def->moveSplitDelayUs:aimBehaviorMoveSplitDelayUs[behavior];
+        }
+        auto& c=EnsureSlotBehaviorConfig(p,id);
+        auto b=std::find_if(c.behaviors.begin(),c.behaviors.end(),[&](const auto& v){return v.behavior==behavior;});
+        if(b==c.behaviors.end()) {c.behaviors.push_back({behavior,tuning});b=std::prev(c.behaviors.end());}
+        if(reset) b->tuning=tuning;
+        auto m=std::find_if(c.motions.begin(),c.motions.end(),[&](const auto& v){return v.method==defaults.method;});
+        if(m==c.motions.end()) {c.motions.push_back(defaults);m=std::prev(c.motions.end());}
+        if(reset) *m=defaults;
+        NormalizeBehaviorTuning(b->tuning);AimPlan::NormalizeMotion(*m);
+        static_cast<AimBehaviorTuning&>(p)=b->tuning;
+        NormalizeBehaviorTuning(p);
+        p.aimBehaviorPresetId=id;p.resolvedModeId=id;p.modeConfigVersion=1;
+        p.aimBehavior=behavior;p.aimMode=(behavior==0?0:1);
+        p.aimMethod=defaults.method;p.aimPlan.overrideMotion=true;p.aimPlan.motion=*m;
+    }
 
     inline float ResolveHeroPresetFovForDistance(const HeroPreset& preset, float distanceM)
     {
@@ -1542,6 +1627,7 @@ namespace OW { namespace Config {
         bool prediction = false;
         int minTargets = 1;
         float radius = 0.0f;
+        float meleeRadius = 0.35f; // extra world-space tolerance around every melee bone
         std::vector<HeroSkillSequenceStep> sequenceSteps{};
         HeroSkillTrackingParams tracking{};
         bool sequencePhaseAwareTracking = false;
@@ -1565,6 +1651,11 @@ namespace OW { namespace Config {
         bool projectileGravity = false;
         float preFireDelayMs = 0.0f; // skill wind-up added to lead prediction
         float maxAimTimeMs = 650.0f; // 0 disables the acquisition-session timeout
+        float punchMaxHeightAbove = 2.0f;
+        float punchMaxHeightBelow = 2.0f;
+        float punchFullChargeMs = 1000.0f;
+        float punchMaxHoldMs = 2000.0f; // estimated total hold until automatic release; calibrate in game
+        float punchReleaseLeadMs = 80.0f;
     };
 
     using HeroSkillPresetStore = std::unordered_map<uint64_t, std::unordered_map<std::string, HeroSkillSettings>>;
@@ -1682,6 +1773,8 @@ namespace OW { namespace Config {
     // Authority is written only under Config::mutex. Published versions own all data.
     struct ConfigValues {
         std::uint64_t version = 0;
+        AimModeRuntime aimModeState{};
+        int nextAimBehaviorPresetId=1;
         decltype(Config::Bone) Bone;
         decltype(Config::BoneName) BoneName;
         decltype(Config::Flick) Flick;
@@ -1803,6 +1896,8 @@ namespace OW { namespace Config {
         value.aimBezierControlPoints = aimBezierControlPoints;
         value.aimBezierCurvature = aimBezierCurvature;
         value.aimBezierSpeed = aimBezierSpeed;
+        value.nextAimBehaviorPresetId=nextAimBehaviorPresetId;
+        value.aimModeState = aimModeState;
         value.aimMethod = aimMethod;
         value.aimMethodPresets = aimMethodPresets;
         value.aimPidD = aimPidD;
@@ -2002,6 +2097,11 @@ namespace OW { namespace Config {
     inline decltype(triggerbotMinCharge)& View_triggerbotMinCharge() { return configAuthority ? triggerbotMinCharge : CurrentConfigValues().triggerbotMinCharge; }
     inline decltype(triggerbotMode)& View_triggerbotMode() { return configAuthority ? triggerbotMode : CurrentConfigValues().triggerbotMode; }
     inline decltype(triggerbotShotInterval)& View_triggerbotShotInterval() { return configAuthority ? triggerbotShotInterval : CurrentConfigValues().triggerbotShotInterval; }
+    inline int& View_nextAimBehaviorPresetId() {return configAuthority?nextAimBehaviorPresetId:CurrentConfigValues().nextAimBehaviorPresetId;}
+    inline AimModeRuntime& View_aimModeState() { return configAuthority ? aimModeState : CurrentConfigValues().aimModeState; }
+    inline const AimBehaviorTuning* ActiveSlotBehaviorTuning() { return View_aimModeState().enabled ? &View_aimModeState().tuning : nullptr; }
+    bool AimBehaviorPresetInUse(int id);
+    void RefreshBehaviorModeSlots();
     inline ScopedConfigRead::ScopedConfigRead() : previous(configView) {
         if (!previous && !configAuthority) { value = std::make_unique<ConfigValues>(*SnapshotConfigValues()); configView = value.get(); }
     }
@@ -2048,9 +2148,9 @@ namespace OW { namespace Config {
 
     inline bool ConfigEqual(const DynamicFovPoint& a, const DynamicFovPoint& b) { return ConfigEqual(a.distanceM, b.distanceM) && ConfigEqual(a.fovDeg, b.fovDeg); }
     inline bool ConfigEqual(const DynamicFovPreset& a, const DynamicFovPreset& b) { return ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.smooth, b.smooth) && ConfigEqual(a.pointCount, b.pointCount) && ConfigEqual(a.points, b.points); }
-    inline bool ConfigEqual(const AimMethodPreset& a, const AimMethodPreset& b) { return a.shuwu == b.shuwu && ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.method, b.method) && ConfigEqual(a.angularSpeedScale, b.angularSpeedScale) && ConfigEqual(a.pidP, b.pidP) && ConfigEqual(a.pidI, b.pidI) && ConfigEqual(a.pidD, b.pidD) && ConfigEqual(a.pidMaxIntegral, b.pidMaxIntegral) && ConfigEqual(a.pidDeadzone, b.pidDeadzone) && ConfigEqual(a.bezierControlPoints, b.bezierControlPoints) && ConfigEqual(a.bezierCurvature, b.bezierCurvature) && ConfigEqual(a.bezierSpeed, b.bezierSpeed) && ConfigEqual(a.piecewiseNearDegrees, b.piecewiseNearDegrees) && ConfigEqual(a.piecewiseMidDegrees, b.piecewiseMidDegrees) && ConfigEqual(a.piecewiseFarDegrees, b.piecewiseFarDegrees) && ConfigEqual(a.piecewiseNearScale, b.piecewiseNearScale) && ConfigEqual(a.piecewiseMidScale, b.piecewiseMidScale) && ConfigEqual(a.piecewiseFarScale, b.piecewiseFarScale) && ConfigEqual(a.accelLimitedAcceleration, b.accelLimitedAcceleration) && ConfigEqual(a.constantAngularSpeedDeg, b.constantAngularSpeedDeg) && ConfigEqual(a.hybridConstantSpeedDeg, b.hybridConstantSpeedDeg) && ConfigEqual(a.hybridMaxSpeedDeg, b.hybridMaxSpeedDeg) && ConfigEqual(a.hybridAccelerationDeg, b.hybridAccelerationDeg) && ConfigEqual(a.hybridDecelerationDeg, b.hybridDecelerationDeg) && ConfigEqual(a.hybridNearRadiusDeg, b.hybridNearRadiusDeg) && ConfigEqual(a.hybridTargetMotionGain, b.hybridTargetMotionGain) && ConfigEqual(a.hybridSuddenMotionBoost, b.hybridSuddenMotionBoost) && ConfigEqual(a.hybridDeadzoneDeg, b.hybridDeadzoneDeg); }
+    inline bool ConfigEqual(const AimMethodPreset& a, const AimMethodPreset& b) { return static_cast<const AimPlan::Motion&>(a) == static_cast<const AimPlan::Motion&>(b) && ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.method, b.method) && ConfigEqual(a.angularSpeedScale, b.angularSpeedScale) && ConfigEqual(a.pidP, b.pidP) && ConfigEqual(a.pidI, b.pidI) && ConfigEqual(a.pidD, b.pidD) && ConfigEqual(a.pidMaxIntegral, b.pidMaxIntegral) && ConfigEqual(a.pidDeadzone, b.pidDeadzone) && ConfigEqual(a.bezierControlPoints, b.bezierControlPoints) && ConfigEqual(a.bezierCurvature, b.bezierCurvature) && ConfigEqual(a.bezierSpeed, b.bezierSpeed) && ConfigEqual(a.piecewiseNearDegrees, b.piecewiseNearDegrees) && ConfigEqual(a.piecewiseMidDegrees, b.piecewiseMidDegrees) && ConfigEqual(a.piecewiseFarDegrees, b.piecewiseFarDegrees) && ConfigEqual(a.piecewiseNearScale, b.piecewiseNearScale) && ConfigEqual(a.piecewiseMidScale, b.piecewiseMidScale) && ConfigEqual(a.piecewiseFarScale, b.piecewiseFarScale) && ConfigEqual(a.accelLimitedAcceleration, b.accelLimitedAcceleration) && ConfigEqual(a.constantAngularSpeedDeg, b.constantAngularSpeedDeg) && ConfigEqual(a.hybridConstantSpeedDeg, b.hybridConstantSpeedDeg) && ConfigEqual(a.hybridMaxSpeedDeg, b.hybridMaxSpeedDeg) && ConfigEqual(a.hybridAccelerationDeg, b.hybridAccelerationDeg) && ConfigEqual(a.hybridDecelerationDeg, b.hybridDecelerationDeg) && ConfigEqual(a.hybridNearRadiusDeg, b.hybridNearRadiusDeg) && ConfigEqual(a.hybridTargetMotionGain, b.hybridTargetMotionGain) && ConfigEqual(a.hybridSuddenMotionBoost, b.hybridSuddenMotionBoost) && ConfigEqual(a.hybridDeadzoneDeg, b.hybridDeadzoneDeg); }
     inline bool ConfigEqual(const AimStartLimiterProfile& a, const AimStartLimiterProfile& b) { return a.enabled == b.enabled && a.initialCapDegPerSec == b.initialCapDegPerSec && a.capRiseDegPerSec2 == b.capRiseDegPerSec2 && a.restartOnTargetChange == b.restartOnTargetChange; }
-    inline bool ConfigEqual(const AimBehaviorPreset& a, const AimBehaviorPreset& b) { return ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.behavior, b.behavior) && ConfigEqual(a.method, b.method) && ConfigEqual(a.methodPresetId, b.methodPresetId) && ConfigEqual(a.baseSpeed, b.baseSpeed) && ConfigEqual(a.startLimiter, b.startLimiter) && ConfigEqual(a.moveSplitEnabled, b.moveSplitEnabled) && ConfigEqual(a.moveSplitMaxPixels, b.moveSplitMaxPixels) && ConfigEqual(a.moveSplitDelayUs, b.moveSplitDelayUs); }
+    inline bool ConfigEqual(const AimBehaviorPreset& a, const AimBehaviorPreset& b) { return static_cast<const AimBehaviorTuning&>(a)==static_cast<const AimBehaviorTuning&>(b) && a.motion==b.motion && ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.behavior, b.behavior) && ConfigEqual(a.method, b.method) && ConfigEqual(a.methodPresetId, b.methodPresetId) && ConfigEqual(a.baseSpeed, b.baseSpeed) && ConfigEqual(a.startLimiter, b.startLimiter) && ConfigEqual(a.moveSplitEnabled, b.moveSplitEnabled) && ConfigEqual(a.moveSplitMaxPixels, b.moveSplitMaxPixels) && ConfigEqual(a.moveSplitDelayUs, b.moveSplitDelayUs); }
 
     template<class T, size_t N> inline bool ConfigEqual(const std::array<T,N>& a, const std::array<T,N>& b) {
         for (size_t i=0;i<N;++i) if (!ConfigEqual(a[i],b[i])) return false; return true;
@@ -2101,6 +2201,8 @@ namespace OW { namespace Config {
         assign(before.aimBezierControlPoints, after.aimBezierControlPoints, aimBezierControlPoints);
         assign(before.aimBezierCurvature, after.aimBezierCurvature, aimBezierCurvature);
         assign(before.aimBezierSpeed, after.aimBezierSpeed, aimBezierSpeed);
+        nextAimBehaviorPresetId=(std::max)(nextAimBehaviorPresetId,after.nextAimBehaviorPresetId);
+        assign(before.aimModeState, after.aimModeState, aimModeState);
         assign(before.aimMethod, after.aimMethod, aimMethod);
         changed |= MergeConfigPresets(before.aimMethodPresets, after.aimMethodPresets, aimMethodPresets);
         assign(before.aimPidD, after.aimPidD, aimPidD);

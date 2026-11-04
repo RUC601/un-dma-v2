@@ -22,6 +22,7 @@ struct AimStartLimiterProfile {
     float initialCapDegPerSec = kAimStartLimiterDefaultInitialCapDegPerSec;
     float capRiseDegPerSec2 = kAimStartLimiterDefaultCapRiseDegPerSec2;
     bool restartOnTargetChange = true;
+    bool operator==(const AimStartLimiterProfile&) const = default;
 };
 
 struct AimStartLimiterState {

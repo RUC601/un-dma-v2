@@ -1091,6 +1091,7 @@ void SetEntityPipelineScanStats(const EntityPipelineScanStats& stats);
 void SetEntityPipelineProcessStats(const EntityPipelineProcessStats& stats);
 
 StatusSnapshot Snapshot();
+double RenderFps();
 void DumpStatus();
 
 const char* ToString(LogLevel level);

@@ -1780,6 +1780,8 @@ void SetLocalEntityStats(const LocalEntityStats& stats)
     g_localCameraZCm.store(stats.cameraZCm, std::memory_order_relaxed);
 }
 
+double RenderFps() { return UpdateFps(); }
+
 StatusSnapshot Snapshot()
 {
     const double currentFps = UpdateFps();

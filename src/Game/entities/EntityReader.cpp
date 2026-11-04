@@ -832,6 +832,10 @@ void entity_thread() {
         if(OW::Config::View_autobone())neededBones|=OW::Config::View_aimbotBoneMask();
         if(OW::Config::autobone2)neededBones|=OW::Config::aimbotBoneMask2;
         neededBones|=OW::Config::View_triggerbotBoneMask()|OW::Config::triggerbotBoneMask2;
+        OW::Config::HeroSkillSettings meleeSettings;
+        if (OW::Config::TryGetHeroSkillSettings(localCycleSnapshot.HeroID, "auto-melee", meleeSettings) &&
+            meleeSettings.enabled)
+            neededBones |= OW::kSkeletonBoneAllMask;
         if(OW::Config::IsFlick2ndBehavior(OW::Config::View_aimBehavior()) || OW::Config::Flick2)
             neededBones|=OW::kSkeletonBoneShoulders|OW::kSkeletonBonePelvis;
         const auto& heroSlots=OW::Config::View_heroAimPresets();
@@ -1677,8 +1681,8 @@ void entity_thread() {
                     }
                     if (heroRead) {
                         const uint64_t newHeroId = heroId;
-                        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154504 &&
-                            !Cn154504::HeroId(newHeroId)) {
+                        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905 &&
+                            !Cn154905::HeroId(newHeroId)) {
                             requestTopologyRescan(processLoopTick);
 
                             OW::RevokeEntityBodyObservation(cacheIt->second->entity.address,

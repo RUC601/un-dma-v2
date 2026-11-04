@@ -157,9 +157,11 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     const bool hasHealthThreshold = hasControl(OW::HeroSkillControls::HealthThreshold);
     const bool hasAbsoluteHealth = hasControl(OW::HeroSkillControls::HealthAbsolute);
     const bool hasAbsoluteEnemyHealth = hasControl(OW::HeroSkillControls::EnemyHealthAbsolute);
-    const bool hasSkillOutputKey = !hasSequenceControls && !hasComboAction &&
+    const bool hasPunchAssist = hasControl(OW::HeroSkillControls::PunchAssist);
+    const bool hasSkillOutputKey = !hasSequenceControls && !hasComboAction && !hasPunchAssist &&
         (hasControl(OW::HeroSkillControls::Key) || hasPitchControls ||
-         hasPhaseTiming || hasHealthThreshold || hasAbsoluteHealth);
+         hasPhaseTiming || hasHealthThreshold || hasAbsoluteHealth ||
+         hasControl(OW::HeroSkillControls::MeleeRange));
 
     if (hasControl(OW::HeroSkillControls::Key)) {
         SettingRow("Activation Key", kAimbotRightLabelWidth);
@@ -237,7 +239,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     if (hasControl(OW::HeroSkillControls::Distance)) {
         SettingRow(hasAbsoluteEnemyHealth ? "Max Distance" : "Distance", kAimbotRightLabelWidth);
         PushControlWidth();
-        changed |= UISlider("##skillDistance", &settings.distance, 0.0f, 100.0f,
+        changed |= UISlider("##skillDistance", &settings.distance, 0.0f, hasPunchAssist ? 20.0f : 100.0f,
                             Number(1, " m"));
         ImGui::PopItemWidth();
     }
@@ -291,6 +293,14 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         changed |= UISelect("##skillTargetBone", &settings.tracking.bone,
                             kHeroSkillTargetBones, IM_ARRAYSIZE(kHeroSkillTargetBones));
         ImGui::PopItemWidth();
+    }
+
+    if (hasControl(OW::HeroSkillControls::MeleeRange)) {
+        SettingRow("Melee Range Expansion", kAimbotRightLabelWidth);
+        PushControlWidth();
+        changed |= UISlider("##skillMeleeRadius", &settings.meleeRadius, 0.0f, 2.0f, Number(2, " m"));
+        ImGui::PopItemWidth();
+        ImGui::TextWrapped("%s", L("Checks the whole body. Larger values allow more crosshair offset; Max Distance still limits reach. Sends the Skill Key when enemy HP is at or below Max Health."));
     }
 
     if (hasControl(OW::HeroSkillControls::Hitbox)) {
@@ -471,6 +481,22 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::PopItemWidth();
     };
 
+    if (hasPunchAssist) {
+        ImGui::TextWrapped("%s", L("Hold RMB to charge; press the activation key to aim horizontally and release. Release RMB before the next attempt."));
+        ImGui::TextWrapped("%s", L("Charge timing is estimated from input. Height limits do not check stairs or obstacles."));
+        drawFloatSlider("Max Height Above", "##punchAbove", settings.punchMaxHeightAbove, 0.0f, 5.0f, Number(1, " m"));
+        drawFloatSlider("Max Height Below", "##punchBelow", settings.punchMaxHeightBelow, 0.0f, 5.0f, Number(1, " m"));
+        drawFloatSlider("Full Charge Time", "##punchCharge", settings.punchFullChargeMs, 200.0f, 2000.0f, Number(0, " ms"));
+        drawFloatSlider("Auto-release Total Time", "##punchMaxHold", settings.punchMaxHoldMs, settings.punchFullChargeMs + 100.0f, 5000.0f, Number(0, " ms"));
+        drawFloatSlider("Release Lead", "##punchLead", settings.punchReleaseLeadMs, 20.0f, settings.punchMaxHoldMs - 50.0f, Number(0, " ms"));
+        ImGui::TextWrapped("%s", L("Full charge sets punch strength. Total time includes charging and holding before automatic release; both times are estimates."));
+        drawFloatSlider("FOV (deg)", "##punchFov", settings.tracking.fov, OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
+        drawFloatSlider("Speed Scale", "##punchSpeed", settings.tracking.speedScale, 0.0f, 100.0f, Number(0, " %"));
+        drawFloatSlider("Hitbox Scale", "##punchHitbox", settings.tracking.hitbox, OW::Config::kMinHitboxScalePercent, OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
+        if (!V2::Output::SupportsMouseMask(V2::Output::ActiveRuntimeSnapshot().descriptor))
+            ImGui::TextWrapped("%s", L("Rocket Punch assist needs mouse masking from the output device."));
+    }
+
     if (hasPitchControls) {
         ImGui::Spacing();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Pitch Down"));
@@ -534,6 +560,7 @@ void UI::SkillsPage() {
     ImGui::TextDisabled("%s", L("Shared settings"));
     UIGroupBox("Auto Alt-Fire");
     {
+        ImGui::TextWrapped("%s", L("Tap RMB when the selected enemy is below the health and distance limits."));
         SettingRow("Enabled", kDefaultLabelWidth);
         UICheckbox("##autoRmbEnable", &OW::Config::AutoRMB);
 
@@ -551,6 +578,7 @@ void UI::SkillsPage() {
 
     UIGroupBox("Auto Skill");
     {
+        ImGui::TextWrapped("%s", L("Use a supported hero's defensive ability at low self health."));
         SettingRow("Enabled", kDefaultLabelWidth);
         UICheckbox("##autoSkillEnable", &OW::Config::AutoSkill);
 
@@ -563,6 +591,7 @@ void UI::SkillsPage() {
 
     UIGroupBox("Auto Shoot");
     {
+        ImGui::TextWrapped("%s", L("Legacy repeat-fire timer; this does not enable an individual hero skill."));
         SettingRow("Enabled", kDefaultLabelWidth);
         UICheckbox("##autoShootEnable", &OW::Config::AutoShoot);
 

@@ -9,6 +9,7 @@
     std::unordered_map<uint64_t,RetiredActor> retiredActors;
     std::unordered_set<uint64_t> latestCompleteActorMembers;
     bool completeActorMembershipKnown=false;
+    std::array<DWORD,4> admissionDiagnosticTicks{};
 
 
     constexpr uint64_t kRosterMatchPrefix = 0x1000000000000000ull;

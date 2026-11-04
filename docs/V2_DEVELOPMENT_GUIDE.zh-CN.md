@@ -4,6 +4,8 @@
 
 本手册只维护 V2。此前 UN 开发文档归 V1/继承历史，不作为当前 V2 的实现说明；不移动或改写 V1 材料。实现以本仓库代码为准，验证以对应版本、日期的证据为准。
 
+2026-11-04 当前 CN 为 `2.25.1.0.154905N`，偏移与版本身份由 `include/Game/Cn154905.hpp` 维护，`src/Game/profiles/LayoutProbe.hpp` 的 CN 相机候选也引用同一组常量。静态与只读现场证据见 `../../../03_DOWNP/2.25.1.0.154905N/cn/offset_work_2026-11-04/handoff_latest.md`；视觉、死亡切换与长跑范围见对应进度记录。
+
 ## 目录与维护责任
 
 | 范围 | 当前位置（相对 ECS_O） | 责任 |
@@ -18,6 +20,8 @@
 根目录为 `D:\Desktop\SenseZen\ECS_O`。V1/V2 已于 2026-11-02 拆为独立仓库，旧说明中的共享 worktree/Git 数据库仅是历史。不得把 ECS_O 建为总仓库，也不得连接两版的活动配置、build 或 logs。
 
 阅读顺序：本手册 → [代码阅读地图](V2_CODE_MAP.zh-CN.md) → 对应模块源码及 Scenario 测试 → [实施进度](V2_PROGRESS.zh-CN.md) 中的实际证据。[改造总纲](V2_REFACTOR_PLAN.zh-CN.md) 说明目标，[能力表](V2_CAPABILITIES.zh-CN.md) 记录来源和边界；旧日期的状态不能覆盖较新的实现。
+
+2026-11-04 行为模式：`AimBehaviorMode.hpp` 定义命名模式默认值和 Slot 按模式/行为/算法保存的参数缓存；`Config.hpp/.cpp` 解析结构、迁移与持久化。`AimResponseCurve.hpp` 是误差响应曲线图形及运行的共用求值器；算法编号追加为 8。`BehaviorController.cpp` 统一三个 Flick 类行为的按下/手动释放/自动蓄力动作，辅助键松开后执行保留原 Slot，支持无目标直接出手。`BehaviorTuningEditor.hpp` 和 `ResponseCurveEditor.hpp` 在模式管理及 Slot 页复用。英雄配置 schema 18 的独立 `releaseConfigVersion` 避免模式缓存归一化提前吞掉旧 Hanzo 迁移标记；新配置默认显式关闭松开发射。详见 [行为与曲线说明](V2_AIM_PLANS.zh-CN.md)。
 
 ## 完整业务流程
 
@@ -39,6 +43,8 @@ flowchart TD
 ```
 
 这是进程内模块划分。300Hz 是采集调度目标，不代表成功 DMA 读取、每个实体的慢字段、绘制或物理输出均达到 300Hz。
+
+画布由 `Renderer/Overlay.cpp` 独立消费已发布数据，使用不透明黑底和 `Present(0,0)`。系统→配置→应用的“绘制帧率上限”对应 `Global.overlayFrameLimit`（0=不限帧，1–2000为目标上限），即时生效并自动保存；“实际绘制帧率”使用诊断帧计数。`Renderer/FrameSchedule.hpp` 保持画布截止时间，Win32高精度计时器负责等待；低画布帧率不会拖低约60Hz菜单或阻塞恢复热键。收起整层时仍暂停绘制。绘制吞吐与显示刷新率、300Hz采集和最新数据频率分开解释，设为2000不保证实际达到2000。
 
 ### 启动、会话和停止
 
@@ -81,15 +87,33 @@ flowchart TD
 
 持续动作循环也有刷新消费帧的路径，不能只看外层作用域就推断一直使用首帧。`PresentationWorker` 和 `features/visuals` 管插值与画面，不应以显示插值延长动作身体权限。模型形状加载成功不证明像素对齐或伤害碰撞意义。
 
+### Overlay 与桌面切换（2026-11-04）
+
+画布与设置菜单是两个独立 Win32 窗口。菜单失焦不再最小化整层：切到外部进程时取消两窗口的置顶并将其放到其他窗口后面，保持可见状态及后台运行；回到设置菜单时先抬起画布、再抬起菜单。主循环也检查前台窗口，覆盖菜单已被 Home 隐藏的情况。画布和菜单的尺寸刷新必须带 `SWP_NOZORDER`，防止外部应用正在前台时重新抢占显示层级。
+
+启动显示修正：正式 Release 使用 Windows GUI 子系统及现有 `main` 入口，不再创建日志控制台；文件诊断保留，自测构建仍使用控制台。黑色全屏画布接收点击与激活，不再把空白点击传给桌面；Home 关闭设置时将焦点留给画布。启动/返回 UN 时重新抬起画布和菜单，并使用 Windows `ITaskbarList2::MarkFullscreenWindow` 标记当前展示为全屏，使任务栏在 UN 活跃时让出前台。切出和显式最小化时解除该标记；不修改系统任务栏设置。
+
+Home 仍只切换菜单；显式 Minimize Overlay 才隐藏画布并最小化菜单，之后 Home 或任务栏恢复两层。正式窗口状态实现为 `src/Renderer/OverlayWindow.cpp`，消息与循环在 `Overlay.cpp`，原生窗口回归位于 Scenario 的 `src/OverlayWindowSelfTest.cpp`。隔离桌面检查不等于真实 Win/Alt+Tab 或游戏场景验收。
+
 ### UN Behavior、技能和 Slot
 
 `src/Features/aim/BehaviorController.cpp` 管激活、方案选择、目标连续性和各 Behavior；`SessionState` 保存运行状态；`Smoothing`/`Target.hpp` 提供 UN 选择和运动算法。技能位于 `HeroSkills`，通过统一动作/所有权系统输出。
 
+Skills 页顶部三个共享旧功能并非英雄占位项：Auto Alt-Fire 按目标血量与距离点一次右键；Auto Skill 只对代码中列出的英雄执行低自身血量动作，未包含铁拳的出拳；Auto Shoot 控制旧 `shooted` 状态的重复开火间隔。英雄专属技能在下方独立配置。
+
+2026-11-04 铁拳 Rocket Punch：`include/Game/DoomfistPunch.hpp` 保存单次物理右键蓄力窗口；`src/Game/HeroSkills.cpp` 的 `EvaluateRocketPunch` 串联原始物理输入、候选筛选、水平瞄准与释放。默认停用；在技能页选末日铁拳并启用 Rocket Punch 后，先松开一次右键，再手动按住右键蓄力，按下 Mouse4 请求本次辅助。默认距离 15 米、脚下位置高差上/下各 2 米、FOV 30 度、预计满蓄力 1000ms、预计自动出拳总持有时长 2000ms、提前 80ms 截止；在截止前观察到已对准才屏蔽物理右键并输出释放，持续持有不重复执行。蓄力/辅助输入读取 DMA KeyState；原始物理报告仅用于释放后的恢复，无报告时屏蔽 80ms 后恢复，有效物理按住报告最多保留 2 秒。恢复后等待 100ms，并在右键及辅助键都松开后重新激活；停止、换英雄/场景/设备或异常均清理。辅助请求期间暂停普通 Aim/Trigger 的竞争输出。
+
+该流程需要输出设备提供鼠标屏蔽能力和有效 DMA 按键样本，不再将设备原始鼠标报告的新鲜度设为启动门槛；KMBox Net 已接入统一输入快照。上下高差使用实体 `pos.Y`，水平距离使用 X/Z；仅改 yaw，不改 pitch。满蓄力仅影响拳速/距离估算，截止按自动出拳总持有时长计算，蓄满后的保持阶段仍允许辅助。2000ms 是可调整的试验估值，不声称已测得当前游戏的自动出拳时刻。蓄力计时来自按键输入而非已验证的游戏蓄力字段；普通拳的 20 米满蓄力范围及 15–35m/s 速度沿用本地候选模型，按蓄力比例保守限制可达距离，强化拳和楼梯/墙体通行未建模。日志前缀 `doomfist.punch`。旧自动蓄力配置首次加载迁为停用的新默认设置，需重新启用；普通 Aim 的武器 `ManualOnly` 约束保留。离线自测不证明实机出拳效果。
+
 Behavior 决定动作规则，Method 决定运动方式。Tracking、Flick、Flick2nd、Reacquire、Magnetic Trigger 的含义及参数关系仍属于 UN，不按其他产品分类改写。英雄局部 override 不应改变全局持久化参数。
+
+2026-11-04：Tracking / Magnetic Trigger 的瞄准时限由 `AimHoldWindow` 按实际激活键保存，首次选中并观察到按住时固定起点和预算。换目标、丢目标、同键 Slot 切换或运动清理不续时；有效按键样本确认松开后才重新激活，缺失样本不当作松开。普通 Flick 的连发时间线保持原语义。
 
 Slot 显示下标与稳定 ID 分开：重排不变身份；新增复制参数、清绑定、默认停用并分配新 ID；删除/替换使旧运行引用失效。同一武器冷却不能靠换 Slot 清零。UI 选中方案不等于业务已激活。
 
 ## 输出所有权与恢复
+
+2026-11-04：KMBox Net 的 `cmd_unmask_all` 使用 `head.rand=0` 表示清除屏蔽；`KmBoxNetBackend::BuildPacket` 统一保证该字段为零，不能将其当作普通命令的随机字段。正常恢复、超时清理及退出安全释放共用这条约束；OutputLifecycleSelfTest 检查实际输出包。铁拳解除屏蔽失败时保留待恢复状态，常规日志 `doomfist.punch restore accepted=...` 可追踪恢复结果。
 
 | 所有者 | 入口 | 责任 |
 |---|---|---|

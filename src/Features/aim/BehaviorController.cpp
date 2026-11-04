@@ -1,3 +1,8 @@
+#ifdef UNLEASHED_SELF_TESTS
+#include "output/MockBackend.hpp"
+#endif
+#include "Game/WeaponCharge.hpp"
+#include <optional>
 #include "BehaviorController.hpp"
 #include "Game/Overwatch.hpp"
 
@@ -56,8 +61,9 @@ bool RefreshAutoGameMouseSensitivity(bool force) {
 } // namespace OW
 
 namespace AimbotDetail {
-
-
+    inline thread_local RuntimeState* activeAimShotState=nullptr;
+    inline bool ResetAimCharge(RuntimeState& state,bool requireSubmission=false);
+    inline void CancelConfiguredAimShot(RuntimeState& state);
 
     inline OW::c_entity LocalEntity();
     inline bool IsConfiguredActivationKeyPressedForSelection(int keySetting,
@@ -96,6 +102,14 @@ namespace AimbotDetail {
             OW::Config::AimScopeRequirement::All;
         bool rmbHeld = false;
     };
+    // The selection contains vectors; keep it outside the SEH worker's POD state.
+    inline thread_local std::optional<RuntimePresetSelection> chargedAimPreset;
+
+    inline bool UsesReleaseKeyUpExecution() {
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        return tuning && tuning->releaseToFire && tuning->autoCharge &&
+            tuning->releaseExecution==1 && OW::Config::UsesFlickFireControls(OW::Config::View_aimBehavior());
+    }
 
     inline TrackingSessionIdentity CurrentTrackingSessionIdentity() {
         TrackingSessionIdentity identity{};
@@ -166,8 +180,6 @@ namespace AimbotDetail {
             return;
 
         state.trackingSessionActive = true;
-        state.trackingSessionTimedOut = false;
-        state.trackingSessionStartedTick = GetTickCount();
         ++state.trackingSessionGeneration;
         if (state.trackingSessionGeneration == 0)
             ++state.trackingSessionGeneration;
@@ -601,16 +613,48 @@ namespace AimbotDetail {
         return true;
     }
 
+    inline bool SelectAimPresetForActivation(RuntimeState& state,uint64_t heroId,RuntimePresetSelection& selection) {
+        if(chargedAimPreset) {
+            OW::Config::HeroSlotPreset current;
+            bool valid=heroId==state.releaseSession.heroId &&
+                OW::Config::TryGetHeroAimSlot(heroId,chargedAimPreset->slotIndex,current) &&
+                current.enabled && current.stableId==state.releaseSession.slotId;
+            if(valid) {
+                OW::Config::ResolveHeroBehaviorMode(current.preset);
+                const auto& captured=chargedAimPreset->preset;
+                valid=current.preset.aimBehavior==captured.aimBehavior &&
+                    current.preset.aimMethod==captured.aimMethod &&
+                    current.preset.aimBehaviorPresetId==captured.aimBehaviorPresetId &&
+                    current.preset.key==captured.key && current.preset.trigger.action==captured.trigger.action &&
+                    current.preset.releaseToFire && current.preset.autoCharge && current.preset.releaseExecution==1;
+            }
+            if(valid) selection=*chargedAimPreset;
+            else {
+                CancelConfiguredAimShot(state);
+                if(chargedAimPreset) selection=*chargedAimPreset;
+            }
+        }
+        if(!chargedAimPreset && (!heroId || !TrySelectRuntimeAimPreset(heroId, selection))) {
+            return false;
+        }
+        if(!chargedAimPreset && selection.matchedInput && selection.preset.releaseToFire &&
+            selection.preset.autoCharge && selection.preset.releaseExecution==1 &&
+            OW::Config::UsesFlickFireControls(selection.preset.aimBehavior)) chargedAimPreset=selection;
+        return true;
+    }
+
     struct ScopedHeroPresetOverride {
         bool previousPlanEnabled=OW::Config::targetAimPlanEnabled;
         struct PlanGuard { bool previous; ~PlanGuard() { OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
         OW::Config::ScopedLocalConfigOverride configOverride;
         OW::Config::RuntimeDrawFovState originalDraw = OW::Config::SnapshotRuntimeDrawFov();
-        ScopedHeroPresetOverride() {
+        ScopedHeroPresetOverride(RuntimeState& state) {
             OW::Config::targetAimPlanEnabled=false; OW::Config::selectedAimPlan={}; OW::Config::selectedAimHero=0;
             const auto local = LocalEntity();
             RuntimePresetSelection selection{};
-            if (!local.HeroID || !TrySelectRuntimeAimPreset(local.HeroID, selection)) { OW::Config::targetAimPlanEnabled=true; return; }
+            if(!SelectAimPresetForActivation(state,local.HeroID,selection)) {
+                OW::Config::targetAimPlanEnabled=true;return;
+            }
             OW::Config::ApplyLocalHeroAimPreset(selection.preset);
             OW::Config::targetAimPlanEnabled=true;
             if (selection.activationKeyOverride >= 0) OW::Config::View_aim_key() = selection.activationKeyOverride;
@@ -783,7 +827,7 @@ namespace AimbotDetail {
         return IsInputVkDown(vk, keySetting);
     }
 
-    inline bool IsAimKeyPressed() {
+    inline bool IsAimActivationKeyDown() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return false;
         const bool activationHotkeyDown = IsConfiguredAimKeyPressed(OW::Config::View_aim_key());
@@ -793,6 +837,13 @@ namespace AimbotDetail {
             activationHotkeyDown,
             OW::Config::View_aimbotRequireActionHeld(),
             actionButtonDown);
+    }
+
+    inline bool IsAimKeyPressed() {
+        if(UsesReleaseKeyUpExecution())
+            return activeAimShotState && activeAimShotState->releasePending &&
+                !activeAimShotState->releaseShotLatched && OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices();
+        return IsAimActivationKeyDown();
     }
 
     inline bool IsSecondAimKeyPressed() {
@@ -892,8 +943,6 @@ namespace AimbotDetail {
         "overwatch.trigger.generated_fire";
     inline constexpr const char* kTriggerCloseRangeOwnerKey =
         "overwatch.trigger.close_range";
-    inline constexpr const char* kTriggerHanzoCustomOwnerKey =
-        "overwatch.trigger.hanzo_custom_charge";
 
     inline bool ClickMouseButton(
         int button,
@@ -1203,6 +1252,164 @@ namespace AimbotDetail {
             LogInvalidGeneratedFireKey("charge_release", key);
             return false;
         }
+    }
+
+    inline FlickRepeat::SessionIdentity CurrentOrdinaryFlickIdentity();
+    inline const char* ReleaseMaskOwner(int button) {
+        static const char* keys[]={"aim.release.physical.left","aim.release.physical.right","aim.release.physical.middle"};
+        return keys[(std::clamp)(button,0,2)];
+    }
+    inline bool ResetAimCharge(RuntimeState& state,bool requireSubmission) {
+        if(!state.releaseOwnedDown) return true;
+        const auto status=OW::ReleaseMouseButtonActionStateOrPhysicalFallback(state.releaseOwnedButton,
+            OW::OutputOwnerSource::GlobalAim,kGlobalAimGeneratedFireOwnerKey,state.releaseOutputGeneration);
+        if(!OW::ActionOutputSucceeded(status) &&
+            V2::Output::ActiveRuntimeSnapshot().generation==state.releaseOutputGeneration) return false;
+        state.releaseOwnedDown=false;state.releaseOwnedButton=-1;state.releaseChargeStarted=0;return !requireSubmission||OW::ActionOutputSucceeded(status);
+    }
+    inline void CancelConfiguredAimShot(RuntimeState& state) {
+        state.releasePending=false;state.releaseNeedsActivationUp=true;
+        if(ResetAimCharge(state)) chargedAimPreset.reset();
+    }
+    inline void ObserveReleaseFireInput(RuntimeState& state,bool cleanup=false) {
+        const auto generation=V2::Output::ActiveRuntimeSnapshot().generation;
+        const auto physical=V2::Output::ActivePhysicalInput();
+        for(int button=0;button<3;++button) {
+            auto& press=state.releasePresses[button];
+            const bool down=physical.available ? (physical.buttons&PhysicalMouseMaskForButton(button))!=0 : press.down;
+            if(press.masked && (!down||!press.consumed||cleanup||press.generation!=generation)) {
+                if(OW::ReleasePhysicalMouseMaskLease(ReleaseMaskOwner(button),OW::OutputOwnerSource::GlobalAim,press.generation)
+                    || press.generation!=generation) press.masked=false;
+            }
+            if(physical.available) press.Observe(down,GetTickCount());
+        }
+        if(cleanup) CancelConfiguredAimShot(state);
+    }
+    inline bool AimModeStructureCurrent() {
+        const int id=OW::Config::View_aimBehaviorPresetId();if(id<0) return true;
+        const auto latest=OW::Config::SnapshotConfigValues();
+        for(const auto& mode:latest->aimBehaviorPresets) if(mode.id==id)
+            return mode.behavior==OW::Config::View_aimBehavior() && mode.method==OW::Config::View_aimModeState().motion.method;
+        return false;
+    }
+    inline void MaintainConfiguredAimShot(RuntimeState& state) {
+        ObserveReleaseFireInput(state);
+        const auto session=CurrentOrdinaryFlickIdentity();
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        const int mode=OW::Config::View_aimBehaviorPresetId(),behavior=OW::Config::View_aimBehavior();
+        const int method=OW::Config::View_aimModeState().motion.method;
+        const bool release=tuning&&tuning->releaseToFire,automatic=tuning&&tuning->autoCharge;
+        const bool afterKeyUp=UsesReleaseKeyUpExecution();
+        const bool rawDown=IsAimActivationKeyDown();
+        const bool changed=state.releaseIdentified && (state.releaseSession!=session||state.releaseMode!=mode||
+            state.releaseBehavior!=behavior||state.releaseMethod!=method||state.releaseConfigured!=release||
+            state.releaseAutomatic!=automatic||state.releaseAfterKeyUp!=afterKeyUp||
+            (state.releaseOwnedDown&&state.releaseOutputGeneration!=V2::Output::ActiveRuntimeSnapshot().generation));
+        if(changed) {
+            CancelConfiguredAimShot(state);state.releaseShotLatched=false;
+        }
+        const bool keySampleAvailable=KeyState::SampleVk(OW::get_bind_id(OW::Config::View_aim_key())).available;
+        if(!keySampleAvailable) {
+            CancelConfiguredAimShot(state);
+        } else if(!rawDown && !state.releasePending) {
+            if(afterKeyUp && state.releaseActivationDown && state.releaseOwnedDown &&
+                !changed && !state.releaseNeedsActivationUp) {
+                state.releasePending=true;state.releaseActionStarted=GetTickCount();
+                state.releaseAimReportTick=0;state.releaseChargeWaitLogged=false;
+                state.releaseShotLatched=false;OW::Config::shooted=false;
+                OW::ResetAimSmoothingState();
+                Diagnostics::Info("[V2 shot] release.execute mode=%d slot=%d charge=%.2f chargeMs=%lu",mode,session.slotIndex,
+                    OW::ReadWeaponChargePercent(LocalEntity(),OW::Config::View_aimbotAttack()),
+                    static_cast<unsigned long>(GetTickCount()-state.releaseChargeStarted));
+            } else {
+                if(ResetAimCharge(state)) chargedAimPreset.reset();
+                state.releaseShotLatched=false;state.releaseNeedsActivationUp=false;
+            }
+        } else if(rawDown && !state.releaseActivationDown && !state.releasePending) {
+            state.releaseShotLatched=false;
+        }
+        if(keySampleAvailable) state.releaseActivationDown=rawDown;
+        state.releaseIdentified=true;state.releaseSession=session;state.releaseMode=mode;
+        state.releaseBehavior=behavior;state.releaseMethod=method;state.releaseConfigured=release;
+        state.releaseAutomatic=automatic;state.releaseAfterKeyUp=afterKeyUp;
+    }
+    inline bool PrepareAimCharge(RuntimeState& state) {
+        ObserveReleaseFireInput(state);
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        if(!tuning||!tuning->releaseToFire||!tuning->autoCharge) return true;
+        const auto runtime=V2::Output::ActiveRuntimeSnapshot();
+        if(OW::Config::aimDryRun||!OW::CurrentOutputRuntimeState().outputGateOpen||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
+           (!IsAimActivationKeyDown()&&!state.releasePending)||!GlobalAimFirePolicyAllowsGeneratedFire()||OW::Config::reloading||
+           state.releaseNeedsActivationUp||!AimModeStructureCurrent()||
+           OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {ResetAimCharge(state);return false;}
+        if(state.releaseShotLatched&&(UsesReleaseKeyUpExecution()||!OW::Config::View_aimbotKeepFiring())) return false;
+        if(state.releasePending&&!state.releaseOwnedDown) return false;
+        const auto local=LocalEntity();const auto* weapon=OW::ResolveWeaponSpec(local.HeroID,OW::Config::View_aimbotAttack());
+        const int button=OW::ResolveGeneratedFireMouseButton(weapon,OW::Config::View_aimbotAttack());
+        const auto physical=V2::Output::ActivePhysicalInput();
+        const bool physicallyHeld=physical.available ? (physical.buttons&PhysicalMouseMaskForButton(button))!=0 :
+            (!state.releaseOwnedDown && IsInputVkDownQuiet(VkForMouseButton(button)));
+        if(button<0||button>2||OW::get_bind_id(OW::Config::View_aim_key())==VkForMouseButton(button)) return false;
+        if(physicallyHeld) {ResetAimCharge(state);state.releaseNeedsActivationUp=true;return false;}
+        if(state.releaseOwnedDown) return state.releaseOwnedButton==button&&state.releaseOutputGeneration==runtime.generation;
+        const auto status=OW::SendMouseButtonActionState(button,true,OW::OutputOwnerSource::GlobalAim,
+            kGlobalAimGeneratedFireOwnerKey,runtime.generation);
+        if(!OW::ActionOutputSucceeded(status)) return false;
+        state.releaseOwnedDown=true;state.releaseOwnedButton=button;
+        state.releaseChargeStarted=GetTickCount();state.releaseOutputGeneration=runtime.generation;
+        Diagnostics::Info("[V2 shot] charge.begin button=%d mode=%d",button,state.releaseMode);return true;
+    }
+    inline bool SubmitConfiguredAimShot(OW::OutputOwnerSource source,const char* owner,bool requireNewPress,DWORD* submittedAt,
+                                        bool releaseAtCrosshair=false) {
+        if(!activeAimShotState||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
+           OW::Config::aimDryRun||!GeneratedFireAllowedForSource(source)||!AimModeStructureCurrent()) return false;
+        auto& state=*activeAimShotState;ObserveReleaseFireInput(state);
+        if(state.releaseNeedsActivationUp) return false;
+        const auto local=LocalEntity();const auto* weapon=OW::ResolveWeaponSpec(local.HeroID,OW::Config::View_aimbotAttack());
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        const auto key=OW::ResolveGeneratedFireKeyMask(weapon,OW::Config::View_aimbotAttack());
+        const int behavior=OW::Config::View_aimBehavior();
+        if(!tuning||!tuning->releaseToFire || (behavior!=1&&behavior!=2&&behavior!=4))
+            return ClickDmaMouseKey(key,10,source,owner,requireNewPress,submittedAt);
+        const int button=OW::ResolveGeneratedFireMouseButton(weapon,OW::Config::View_aimbotAttack());
+        if(button<0||button>2) return false;
+        const auto runtime=V2::Output::ActiveRuntimeSnapshot();bool accepted=false;
+        if(tuning->autoCharge) {
+            if(UsesReleaseKeyUpExecution()&&!state.releasePending) return false;
+            if(!PrepareAimCharge(state)) return false;
+            const float charge=OW::ReadWeaponChargePercent(local,OW::Config::View_aimbotAttack());
+            if(!releaseAtCrosshair && !OW::AimReleaseFire::ChargeReady(charge,
+                tuning->minCharge,GetTickCount()-state.releaseChargeStarted,tuning->chargeFallbackMs)) {
+                if(state.releasePending&&!state.releaseChargeWaitLogged) {
+                    state.releaseChargeWaitLogged=true;
+                    Diagnostics::Info("[V2 shot] release.wait_charge value=%.2f minimum=%.2f chargeMs=%lu fallbackMs=%.0f",
+                        charge,tuning->minCharge,static_cast<unsigned long>(GetTickCount()-state.releaseChargeStarted),tuning->chargeFallbackMs);
+                }
+                return false;
+            }
+            accepted=ResetAimCharge(state,true);
+        } else {
+            auto& press=state.releasePresses[button];
+            if(!press.Ready()||!V2::Output::ActivePhysicalInput().available||!V2::Output::SupportsMouseMask(runtime.descriptor)||
+               !OW::AimReleaseFire::ChargeReady(OW::ReadWeaponChargePercent(local,OW::Config::View_aimbotAttack()),
+                  tuning->minCharge,GetTickCount()-press.started,tuning->chargeFallbackMs)) return false;
+            if(!OW::AcquirePhysicalMouseMaskLease(ReleaseMaskOwner(button),source,PhysicalMouseMaskForButton(button),runtime.generation)) return false;
+            press.masked=true;press.generation=runtime.generation;
+            OW::RuntimeWorkerSleep(1);
+            const auto result=ReleaseMouseOwnerAfterPhysicalMask(button,source,owner,runtime.generation,true,true);
+            accepted=OW::ActionOutputSucceeded(result.ownerReleaseStatus)||result.physicalFallbackReleased;
+            press.Submitted(accepted);
+            if(!accepted && OW::ReleasePhysicalMouseMaskLease(ReleaseMaskOwner(button),source,runtime.generation)) press.masked=false;
+        }
+        if(accepted) {
+            state.releaseShotLatched=true;if(submittedAt) *submittedAt=GetTickCount();
+            if(state.releasePending) {
+                state.releasePending=false;chargedAimPreset.reset();
+                state.releaseNeedsActivationUp=IsAimActivationKeyDown();
+            }
+            Diagnostics::Info("[V2 shot] submitted action=release automatic=%d button=%d mode=%d",tuning->autoCharge?1:0,button,state.releaseMode);
+        }
+        return accepted;
     }
 
     inline bool ShouldReleaseChargedFire(const OW::c_entity& local, const OW::WeaponSpec* weapon) {
@@ -1649,7 +1856,7 @@ namespace AimbotDetail {
         plan.triggerOpen = !OW::Config::View_aimbotFlick2ndTriggerGate() || state.torsoReached;
         plan.innerStage = innerStage;
         plan.methodOverride = innerStage
-            ? OW::Config::ClampAimMethodIndex(OW::Config::View_aimbotFlick2ndInnerMethod())
+            ? OW::Config::ClampAimMethodOverride(OW::Config::View_aimbotFlick2ndInnerMethod())
             : -1;
         plan.smoothScale = innerStage
             ? std::clamp(OW::Config::View_aimbotFlick2ndInnerSmoothScale(), 0.1f, 1.0f)
@@ -2204,47 +2411,35 @@ namespace AimbotDetail {
         const char* ownerKey = kGlobalAimGeneratedFireOwnerKey,
         bool requireNewPress = false, DWORD* submittedAt = nullptr,
         const FlickRepeat::SessionIdentity* expectedSession = nullptr) {
-        if (expectedSession && CurrentOrdinaryFlickIdentity() != *expectedSession)
-            return false;
-        if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
-            return false;
-        if (!GeneratedFireAllowedForSource(ownerSource))
-            return false;
-        const c_entity local = LocalEntity();
-        if (local.HeroID == OW::eHero::HERO_HANJO) {
-            return FireHanzo(ownerSource, ownerKey, requireNewPress, submittedAt);
-        }
+        if(expectedSession && CurrentOrdinaryFlickIdentity()!=*expectedSession) return false;
+        return SubmitConfiguredAimShot(ownerSource,ownerKey,requireNewPress,submittedAt);
+    }
 
-        const OW::WeaponSpec* weapon = OW::ResolveWeaponSpec(local.HeroID, OW::Config::View_aimbotAttack());
-        const uint32_t fireKey = OW::ResolveGeneratedFireKeyMask(weapon, OW::Config::View_aimbotAttack());
-        if (fireKey == 0)
-            return false;
-
-        if (ShouldReleaseChargedFire(local, weapon)) {
-            if (ShouldSkipChargeReleaseForHeldActivation(local, weapon, fireKey, "primary"))
-                return false;
-            Diagnostics::Aim("fire.primary mode=charge_release hero=0x%llX action=%d weapon=%s keyMask=0x%X",
-                static_cast<unsigned long long>(local.HeroID),
-                OW::Config::View_aimbotAttack(),
-                weapon ? weapon->weaponId.data() : "none",
-                fireKey);
-            return ReleaseDmaMouseKey(
-                fireKey, 10, true, ownerSource, ownerKey, 0, submittedAt);
+    inline bool CompleteReleasedAimAtCrosshair(RuntimeState& state,bool noTarget) {
+        if(!state.releasePending) return false;
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        if(!tuning || (!noTarget && GetTickCount()-state.releaseActionStarted<
+            static_cast<DWORD>(tuning->releaseAimTimeoutMs))) return false;
+        DWORD submittedAt=0;
+        if(SubmitConfiguredAimShot(OW::OutputOwnerSource::GlobalAim,kGlobalAimGeneratedFireOwnerKey,
+                                   false,&submittedAt,true)) {
+            StampFlickFire(state,submittedAt);OW::Config::shooted=true;++g_flickFires;
+            Diagnostics::Info("[V2 shot] release.crosshair reason=%s",noTarget?"no_target":"aim_limit");
         }
+        // A rejected submission retains the owned press for cleanup/retry and records no shot.
+        return true;
+    }
 
-        if (fireKey == 0x1u &&
-            (local.HeroID == OW::eHero::HERO_ANA ||
-             local.HeroID == OW::eHero::HERO_WIDOWMAKER ||
-             local.HeroID == OW::eHero::HERO_ASHE) && IsInputVkDown(VK_RBUTTON)) {
-            return ClickMouseButton(
-                0,
-                30,
-                ownerSource,
-                ownerKey,
-                requireNewPress, submittedAt);
-        } else {
-            return ClickDmaMouseKey(fireKey, 10, ownerSource, ownerKey, requireNewPress, submittedAt);
-        }
+    inline void ReportReleasedAimProgress(RuntimeState& state,const AimData& aim,
+                                          const Vector3& target,float radius,bool hit) {
+        const DWORD now=GetTickCount();
+        if(!state.releasePending || (state.releaseAimReportTick && now-state.releaseAimReportTick<100)) return;
+        state.releaseAimReportTick=now;
+        const float distance=aim.local_pos.DistTo(target);
+        Diagnostics::Info("[V2 shot] release.aim elapsedMs=%lu hit=%d errorDeg=%.4f windowDeg=%.4f charge=%.2f",
+            static_cast<unsigned long>(now-state.releaseActionStarted),hit?1:0,
+            RAD2DEG((aim.target_angle-aim.local_angle).Size()),distance>0?RAD2DEG(radius/distance):0,
+            OW::ReadWeaponChargePercent(LocalEntity(),OW::Config::View_aimbotAttack()));
     }
 
     inline bool FireHanzo(
@@ -2586,6 +2781,43 @@ namespace AimbotDetail {
         return true;
     }
 
+    inline void ObserveAimHoldWindows(RuntimeState& state) {
+        const int selectedKey = OW::Config::View_aim_key();
+        const bool timedBehavior = OW::Config::View_Tracking() ||
+            (OW::Config::View_Flick() &&
+             OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior()));
+        const DWORD now = GetTickCount();
+        const DWORD timeoutMs = OW::TargetingDetail::ResolveAimSessionTimeoutMs();
+        for (size_t key = 0; key < state.aimHoldWindows.size(); ++key) {
+            if (!state.aimHoldWindows[key].active &&
+                !(timedBehavior && selectedKey == static_cast<int>(key)))
+                continue;
+            const auto sample = KeyState::SampleVk(OW::get_bind_id(static_cast<int>(key)));
+            OW::AimHoldWindow::Observe(state.aimHoldWindows[key], sample.available,
+                sample.down, now, timeoutMs, timedBehavior && selectedKey == static_cast<int>(key));
+        }
+    }
+
+    inline bool TrackingHoldTimedOut(RuntimeState& state) {
+        if(UsesReleaseKeyUpExecution()) return false; // this action has its own bounded release window
+        const int key = OW::Config::View_aim_key();
+        if (key < 0 || key >= static_cast<int>(state.aimHoldWindows.size()))
+            return true;
+        auto& hold = state.aimHoldWindows[static_cast<size_t>(key)];
+        if (!hold.active)
+            return true;
+        const bool wasTimedOut = hold.timedOut;
+        if (!OW::AimHoldWindow::Expired(hold, GetTickCount()))
+            return false;
+        if (!wasTimedOut) {
+            Diagnostics::Aim("aim_hold timeout key=%d elapsedMs=%lu timeoutMs=%lu blockedUntilRelease=1",
+                key, static_cast<unsigned long>(GetTickCount() - hold.startedAt),
+                static_cast<unsigned long>(hold.timeoutMs));
+        }
+        OW::TargetingDetail::ResetTargetLockRuntime();
+        return true;
+    }
+
     inline void RunTracking(RuntimeState& state, float origin_sens) {
         const std::uint64_t connectionEpoch =
             OW::ProcessConnection::ConnectionEpoch();
@@ -2612,7 +2844,7 @@ namespace AimbotDetail {
         }
         const TrackingSessionIdentity sessionIdentity = CurrentTrackingSessionIdentity();
         EnsureTrackingSession(state, sessionIdentity);
-        if (state.trackingSessionTimedOut) {
+        if (TrackingHoldTimedOut(state)) {
             static DWORD lastHeldTimeoutLogTick = 0;
             const DWORD now = GetTickCount();
             if (lastHeldTimeoutLogTick == 0 || now - lastHeldTimeoutLogTick >= 250) {
@@ -2710,9 +2942,6 @@ namespace AimbotDetail {
         const OW::c_entity localForWeapon = LocalEntity();
         const OW::WeaponSpec* trackingWeapon = OW::ResolveWeaponSpec(localForWeapon.HeroID, OW::Config::View_aimbotAttack());
         const int holdFireButton = OW::ResolveTrackingHoldMouseButton(trackingWeapon, OW::Config::View_aimbotAttack());
-        const DWORD sessionStartedTick = state.trackingSessionStartedTick != 0
-            ? state.trackingSessionStartedTick
-            : GetTickCount();
         auto synchronizeHeldFireState = [&]() {
             if (fireHeld &&
                 !OW::RuntimeOutputScheduler().IsActive(
@@ -2758,8 +2987,7 @@ namespace AimbotDetail {
             const float startLimiterDeltaTime = startLimiterProfile.enabled
                 ? OW::ObserveAimStartLimiterLoop(state.trackingStartLimiter)
                 : OW::kAimStartLimiterDefaultDeltaTimeSeconds;
-            if (AimSessionTimedOut(sessionStartedTick, "tracking")) {
-                state.trackingSessionTimedOut = true;
+            if (TrackingHoldTimedOut(state)) {
                 break;
             }
             bool holdThisTick = false;
@@ -2936,352 +3164,6 @@ namespace AimbotDetail {
             ResetTrackingTargetContinuity(state, "tracking_loop_exit");
     }
 
-    inline void ResetHanzoCustomFlickState(RuntimeState& state, const char* reason) {
-        if (state.hanzoCustomLeftDown) {
-            Diagnostics::Aim("hanzo.custom reset reason=%s release_left=1",
-                reason ? reason : "unknown");
-            const OW::ActionOutputStatus releaseStatus =
-                OW::SendMouseButtonActionState(
-                    0,
-                    false,
-                    OW::OutputOwnerSource::Trigger,
-                    kTriggerHanzoCustomOwnerKey);
-            if (!OW::ActionOutputSucceeded(releaseStatus) &&
-                OW::RuntimeOutputScheduler().IsActive(
-                    kTriggerHanzoCustomOwnerKey)) {
-                return;
-            }
-        } else if (state.hanzoCustomCharging) {
-            Diagnostics::Aim("hanzo.custom reset reason=%s release_left=0",
-                reason ? reason : "unknown");
-        }
-
-        state.hanzoCustomCharging = false;
-        state.hanzoCustomLeftDown = false;
-        state.hanzoCustomChargeStartedTick = 0;
-        state.hanzoCustomLastLogTick = 0;
-    }
-
-    inline void MaintainHanzoCustomFlickState(RuntimeState& state) {
-        if (state.hanzoCustomLeftDown &&
-            !OW::RuntimeOutputScheduler().IsActive(
-                kTriggerHanzoCustomOwnerKey)) {
-            Diagnostics::Aim(
-                "hanzo.custom reset reason=output_owner_inactive release_left=0");
-            state.hanzoCustomCharging = false;
-            state.hanzoCustomLeftDown = false;
-            state.hanzoCustomChargeStartedTick = 0;
-            state.hanzoCustomLastLogTick = 0;
-            return;
-        }
-
-        if (!state.hanzoCustomCharging && !state.hanzoCustomLeftDown)
-            return;
-
-        const c_entity local = LocalEntity();
-        if (local.HeroID != OW::eHero::HERO_HANJO) {
-            ResetHanzoCustomFlickState(state, "hero_changed");
-            return;
-        }
-
-        if (local.skill2act) {
-            ResetHanzoCustomFlickState(state, "storm_arrow_active");
-            return;
-        }
-
-        if (!IsAimKeyPressed()) {
-            ResetHanzoCustomFlickState(state, "aim_key_released");
-            return;
-        }
-
-        if (OW::Config::shooted) {
-            ResetHanzoCustomFlickState(state, "shot_state_active");
-            return;
-        }
-
-        if (OW::Config::reloading)
-            ResetHanzoCustomFlickState(state, "reloading");
-    }
-
-    inline float ReadHanzoStormBowChargePercent(const c_entity& local) {
-        if (local.SkillBase == 0)
-            return -1.0f;
-
-        const float charge = OW::readult(local.SkillBase + 0x40, 0xB, 0x2A5) * 100.0f;
-        if (!std::isfinite(charge))
-            return -1.0f;
-        return std::clamp(charge, 0.0f, 100.0f);
-    }
-
-    inline float ResolveHanzoCustomMinChargePercent() {
-        return std::clamp((std::max)(OW::Config::View_aimbotMinCharge(), 65.0f), 0.0f, 100.0f);
-    }
-
-    inline DWORD ResolveHanzoCustomFallbackChargeMs(float minChargePercent) {
-        const float normalized = std::clamp(minChargePercent / 100.0f, 0.0f, 1.0f);
-        const float fallbackMs = 200.0f + normalized * 800.0f;
-        return static_cast<DWORD>(std::clamp(fallbackMs, 250.0f, 1000.0f));
-    }
-
-    inline bool HanzoCustomChargeReady(RuntimeState& state,
-                                       const c_entity& local,
-                                       float& outChargePercent,
-                                       DWORD& outElapsedMs,
-                                       DWORD& outFallbackMs,
-                                       float& outMinChargePercent) {
-        const DWORD now = GetTickCount();
-        outElapsedMs = state.hanzoCustomChargeStartedTick == 0
-            ? 0
-            : now - state.hanzoCustomChargeStartedTick;
-        outMinChargePercent = ResolveHanzoCustomMinChargePercent();
-        outFallbackMs = ResolveHanzoCustomFallbackChargeMs(outMinChargePercent);
-        outChargePercent = ReadHanzoStormBowChargePercent(local);
-
-        return (outChargePercent >= 0.0f && outChargePercent >= outMinChargePercent) ||
-            outElapsedMs >= outFallbackMs;
-    }
-
-    inline bool BeginHanzoCustomCharge(RuntimeState& state) {
-        if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
-            return false;
-        const int aimVk = OW::get_bind_id(OW::Config::View_aim_key());
-        if (aimVk == VK_LBUTTON) {
-            static DWORD lastLeftKeyWarnTick = 0;
-            const DWORD now = GetTickCount();
-            if (lastLeftKeyWarnTick == 0 || now - lastLeftKeyWarnTick >= 1000) {
-                Diagnostics::Aim("hanzo.custom early_return reason=aim_key_is_left_mouse keySetting=%d",
-                    OW::Config::View_aim_key());
-                lastLeftKeyWarnTick = now;
-            }
-            return false;
-        }
-
-        if (IsInputVkDownQuiet(VK_LBUTTON)) {
-            static DWORD lastPhysicalWarnTick = 0;
-            const DWORD now = GetTickCount();
-            if (lastPhysicalWarnTick == 0 || now - lastPhysicalWarnTick >= 1000) {
-                Diagnostics::Aim("hanzo.custom early_return reason=physical_left_held use_side_key_only=1");
-                lastPhysicalWarnTick = now;
-            }
-            return false;
-        }
-
-        state.hanzoCustomCharging = true;
-        state.hanzoCustomLeftDown = true;
-        state.hanzoCustomChargeStartedTick = GetTickCount();
-        state.hanzoCustomLastLogTick = 0;
-        Diagnostics::Aim("hanzo.custom charge_begin keySetting=%d keyVk=0x%X minCharge=%.1f fallbackMs=%lu",
-            OW::Config::View_aim_key(),
-            aimVk,
-            ResolveHanzoCustomMinChargePercent(),
-            static_cast<unsigned long>(ResolveHanzoCustomFallbackChargeMs(ResolveHanzoCustomMinChargePercent())));
-        const OW::ActionOutputStatus pressStatus =
-            OW::SendMouseButtonActionState(
-                0,
-                true,
-                OW::OutputOwnerSource::Trigger,
-                kTriggerHanzoCustomOwnerKey);
-        if (!OW::ActionOutputSucceeded(pressStatus)) {
-            state.hanzoCustomCharging = false;
-            state.hanzoCustomLeftDown = false;
-            state.hanzoCustomChargeStartedTick = 0;
-            state.hanzoCustomLastLogTick = 0;
-            return false;
-        }
-        return true;
-    }
-
-    inline bool FireHanzoCustomChargedShot(RuntimeState& state) {
-        Diagnostics::Aim("hanzo.custom release_left");
-        const OW::ActionOutputStatus releaseStatus =
-            OW::SendMouseButtonActionState(
-                0,
-                false,
-                OW::OutputOwnerSource::Trigger,
-                kTriggerHanzoCustomOwnerKey);
-        if (!OW::ActionOutputSucceeded(releaseStatus) &&
-            OW::RuntimeOutputScheduler().IsActive(
-                kTriggerHanzoCustomOwnerKey)) {
-            return false;
-        }
-        state.hanzoCustomLeftDown = false;
-        state.hanzoCustomCharging = false;
-        state.hanzoCustomChargeStartedTick = 0;
-        state.hanzoCustomLastLogTick = 0;
-        return true;
-    }
-
-    inline void RunHanzoCustomFlick(RuntimeState& state, float origin_sens) {
-        const std::uint64_t connectionEpoch =
-            OW::ProcessConnection::ConnectionEpoch();
-        const std::uint64_t outputTransitionEpoch =
-            OW::RuntimeOutputTransitionEpoch();
-        if (connectionEpoch == 0 || !OW::ProcessConnection::IsConnected())
-            return;
-        if (!GlobalAimFirePolicyAllowsGeneratedFire()) {
-            ResetHanzoCustomFlickState(state, "manual_fire_policy");
-            return;
-        }
-        if (!state.hanzoCustomCharging && !BeginHanzoCustomCharge(state))
-            return;
-
-        const int behavior = OW::Config::ClampAimBehaviorIndex(OW::Config::View_aimBehavior());
-        const DWORD sessionStartedTick = state.hanzoCustomChargeStartedTick != 0
-            ? state.hanzoCustomChargeStartedTick
-            : GetTickCount();
-
-        while (OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
-               OW::ProcessConnection::IsConnected() &&
-               OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
-               OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
-               !OW::Config::shooted &&
-               !OW::Config::reloading &&
-               !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
-            OW::consumerFrame=OW::SnapshotFrame();
-            if (AimSessionTimedOut(sessionStartedTick, "hanzo_custom_flick")) {
-                ResetHanzoCustomFlickState(state, "session_timeout");
-                break;
-            }
-
-            const c_entity local = LocalEntity();
-            if (local.HeroID != OW::eHero::HERO_HANJO || local.skill2act) {
-                ResetHanzoCustomFlickState(state, "hero_state_changed");
-                break;
-            }
-
-            float chargePercent = -1.0f;
-            float minChargePercent = 0.0f;
-            DWORD elapsedMs = 0;
-            DWORD fallbackMs = 0;
-            const bool chargeReady = HanzoCustomChargeReady(
-                state,
-                local,
-                chargePercent,
-                elapsedMs,
-                fallbackMs,
-                minChargePercent);
-
-            if (!chargeReady) {
-                const DWORD now = GetTickCount();
-                if (state.hanzoCustomLastLogTick == 0 ||
-                    now - state.hanzoCustomLastLogTick >= 100) {
-                    Diagnostics::Aim("hanzo.custom charge_wait charge=%.1f min=%.1f elapsedMs=%lu fallbackMs=%lu",
-                        chargePercent,
-                        minChargePercent,
-                        static_cast<unsigned long>(elapsedMs),
-                        static_cast<unsigned long>(fallbackMs));
-                    state.hanzoCustomLastLogTick = now;
-                }
-                OW::RuntimeWorkerSleep(1);
-                RunAutoScaleFov();
-                continue;
-            }
-
-            const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
-            OW::AimCandidateConfig selectedSettings2(OW::Config::selectedAimHero);
-            if (IsZeroVector(vec)) {
-                Diagnostics::Aim("hanzo.custom no_move reason=no_target_vector targetIndex=%d entities=%zu",
-                    OW::Config::Targetenemyi,
-                    OW::TargetingDetail::SnapshotEntities().size());
-                OW::RuntimeWorkerSleep(1);
-                RunAutoScaleFov();
-                continue;
-            }
-
-            c_entity target{};
-            if (!IsPrimaryTargetActionable(target)) {
-                Diagnostics::Aim("hanzo.custom no_move reason=target_not_actionable targetIndex=%d vec=(%.9f,%.9f,%.9f)",
-                    OW::Config::Targetenemyi,
-                    vec.X,
-                    vec.Y,
-                    vec.Z);
-                OW::RuntimeWorkerSleep(1);
-                RunAutoScaleFov();
-                continue;
-            }
-
-            if (!TargetDelayReady(&state, true, true))
-                continue;
-            if (!FlickTrajectoryWaitReady(state, target)) {
-                OW::RuntimeWorkerSleep(1);
-                continue;
-            }
-
-            const Vector3 aimTarget = vec;
-            const float smoothInput = OW::Config::AimBehaviorSmoothInput(
-                behavior,
-                OW::Config::View_Flick_smooth());
-            AimData aim = BuildAimData(
-                aimTarget,
-                true,
-                smoothInput,
-                OW::Config::AimBehaviorAcceleration(behavior));
-            ApplyAiAimNoise(aim.smoothed_angle, 300.f, false);
-
-            const float hitWindow = OW::Config::aimbotEffectiveHitWindow;
-            const bool hitBeforeMove = OW::in_range(
-                aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
-            bool hitAfterMove = hitBeforeMove;
-
-            if (!IsZeroVector(aim.smoothed_angle)) {
-                MoveAimDelta(aim.local_angle, aim.smoothed_angle);
-                hitAfterMove = OW::in_range(
-                    aim.smoothed_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
-                if (OW::Config::aimVerboseLog) {
-                    const float deltaDegX = RAD2DEG(aim.target_angle.X - aim.local_angle.X);
-                    const float deltaDegY = RAD2DEG(aim.target_angle.Y - aim.local_angle.Y);
-                    Diagnostics::Aim("hanzo.custom tick delta_deg=(%.4f,%.4f) hitbox=%.4f charge=%.1f elapsedMs=%lu",
-                        deltaDegX,
-                        deltaDegY,
-                        hitWindow,
-                        chargePercent,
-                        static_cast<unsigned long>(elapsedMs));
-                }
-            } else if (OW::Config::aimVerboseLog) {
-                Diagnostics::Aim("hanzo.custom no_move reason=smoothed_angle_zero hitBefore=%d",
-                    hitBeforeMove ? 1 : 0);
-            }
-
-            // Mouse-button state is latency-prioritized ahead of queued movement. Firing on a
-            // predicted post-move hit can therefore put the shot on the wire first. Require
-            // an observed hit at the start of a later sample; hitAfterMove remains telemetry.
-            if (hitBeforeMove && GlobalAimFirePolicyAllowsGeneratedFire()) {
-                Diagnostics::Aim("hanzo.custom fire hitbox_check=passed before=%d after=%d charge=%.1f elapsedMs=%lu",
-                    hitBeforeMove ? 1 : 0,
-                    hitAfterMove ? 1 : 0,
-                    chargePercent,
-                    static_cast<unsigned long>(elapsedMs));
-                SetSensitivityLocked(true, origin_sens);
-                const bool released = FireHanzoCustomChargedShot(state);
-                SetSensitivityLocked(false, origin_sens);
-                if (!released) {
-                    OW::RuntimeWorkerSleep(1);
-                    continue;
-                }
-                StampFlickFire(state);
-                ++g_flickFires;
-                OW::Config::shooted = true;
-                if (OW::Config::dontshot)
-                    OW::Config::shotcount++;
-                break;
-            }
-
-            OW::RuntimeWorkerSleep(1);
-            RunAutoScaleFov();
-            if (ShouldYieldToSecondaryAim()) {
-                ResetHanzoCustomFlickState(state, "yield_secondary_aim");
-                break;
-            }
-        }
-
-        if (!IsAimKeyPressed())
-            ResetHanzoCustomFlickState(state, "aim_key_released_after_loop");
-        else if (OW::Config::reloading)
-            ResetHanzoCustomFlickState(state, "reloading_after_loop");
-        else if (OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim))
-            ResetHanzoCustomFlickState(state, "sequence_block_after_loop");
-    }
-
     inline void RunMagneticTrigger(RuntimeState& state, float origin_sens) {
         const std::uint64_t connectionEpoch =
             OW::ProcessConnection::ConnectionEpoch();
@@ -3295,7 +3177,7 @@ namespace AimbotDetail {
             ResetMagneticTriggerQuantization(state, "sequence_preempted");
             return;
         }
-        MaintainHanzoCustomFlickState(state);
+        ObserveReleaseFireInput(state);
         UpdateFlickShotCooldown(state);
         if (!IsAimKeyPressed()) {
             ResetTrackingSession(state);
@@ -3308,7 +3190,7 @@ namespace AimbotDetail {
 
         const TrackingSessionIdentity sessionIdentity = CurrentTrackingSessionIdentity();
         EnsureTrackingSession(state, sessionIdentity);
-        if (state.trackingSessionTimedOut) {
+        if (TrackingHoldTimedOut(state)) {
             ResetMagneticTriggerQuantization(state, "session_timeout_held");
             static DWORD lastAssistTimeoutLogTick = 0;
             const DWORD now = GetTickCount();
@@ -3337,15 +3219,7 @@ namespace AimbotDetail {
             OW::Config::View_Prediction() ? 1 : 0,
             OW::Config::targetdelay ? 1 : 0);
 
-        if (!OW::Config::aimDryRun &&
-            GlobalAimFirePolicyAllowsGeneratedFire() &&
-            localAtEntry.HeroID == OW::eHero::HERO_HANJO &&
-            !localAtEntry.skill2act) {
-            ResetMagneticTriggerQuantization(state, "hanzo_custom_route");
-            Diagnostics::Aim("hanzo.custom route=magnetic_trigger");
-            RunHanzoCustomFlick(state, origin_sens);
-            return;
-        }
+
 
         if (OW::Config::aimDryRun) {
             ResetMagneticTriggerQuantization(state, "dry_run");
@@ -3358,7 +3232,8 @@ namespace AimbotDetail {
                 if (!IsZeroVector(vec)) {
                     float deadzoneDistance = 0.0f;
                     const float deadzoneDampingScale = TrackingDeadzoneDampingScale(vec, &deadzoneDistance);
-                    AimData aim = BuildAimData(
+                    PrepareAimCharge(state);
+            AimData aim = BuildAimData(
                         vec,
                         false,
                         OW::Config::AimBehaviorSmoothInput(behavior, OW::Config::View_Tracking_smooth(), deadzoneDampingScale),
@@ -3416,21 +3291,18 @@ namespace AimbotDetail {
 
         if (!OW::Config::shooted && GlobalAimFirePolicyAllowsGeneratedFire())
             ArmDelayedShot(state);
-        const DWORD sessionStartedTick = state.trackingSessionStartedTick != 0
-            ? state.trackingSessionStartedTick
-            : GetTickCount();
 
-        while (OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
+        while (AimModeStructureCurrent() && OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
                OW::ProcessConnection::IsConnected() &&
                OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
                OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
                !OW::Config::reloading &&
                !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
             OW::consumerFrame=OW::SnapshotFrame();
+            if(CompleteReleasedAimAtCrosshair(state,false)) break;
             UpdateFlickShotCooldown(state);
             const AimFirePhase::Phase firePhase = ResolveMagneticFirePhase(state);
-            if (AimSessionTimedOut(sessionStartedTick, "magnetic_trigger")) {
-                state.trackingSessionTimedOut = true;
+            if (TrackingHoldTimedOut(state)) {
                 ResetMagneticTriggerQuantization(state, "session_timeout");
                 break;
             }
@@ -3438,6 +3310,7 @@ namespace AimbotDetail {
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
             OW::AimCandidateConfig selectedSettings4(OW::Config::selectedAimHero);
             if (IsZeroVector(vec)) {
+                if(CompleteReleasedAimAtCrosshair(state,true)) break;
                 ResetMagneticTriggerQuantization(state, "no_target");
                 Diagnostics::Aim("magnetic_trigger no_move reason=no_target_vector targetIndex=%d entities=%zu",
                     OW::Config::Targetenemyi,
@@ -3450,6 +3323,7 @@ namespace AimbotDetail {
 
             c_entity target{};
             if (!IsPrimaryTargetActionable(target)) {
+                if(CompleteReleasedAimAtCrosshair(state,true)) break;
                 ResetMagneticTriggerQuantization(state, "target_not_actionable");
                 Diagnostics::Aim("magnetic_trigger no_move reason=target_not_actionable targetIndex=%d vec=(%.9f,%.9f,%.9f)",
                     OW::Config::Targetenemyi,
@@ -3484,6 +3358,7 @@ namespace AimbotDetail {
                 behavior,
                 OW::Config::View_Tracking_smooth() * firePhase.trackingScale,
                 deadzoneDampingScale);
+            PrepareAimCharge(state);
             AimData aim = BuildAimData(
                 aimTarget,
                 false,
@@ -3499,6 +3374,7 @@ namespace AimbotDetail {
             const float hitWindow = OW::Config::aimbotEffectiveHitWindow;
             const bool hitBeforeMove = OW::in_range(
                 aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
+            ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);
             bool hitAfterMove = hitBeforeMove;
 
             if (!OW::Config::shooted &&
@@ -3509,11 +3385,7 @@ namespace AimbotDetail {
                 Diagnostics::Aim("magnetic_trigger delayed_shot timeout target=%d localHero=0x%llX",
                     OW::Config::Targetenemyi,
                     static_cast<unsigned long long>(local.HeroID));
-                if (local.HeroID == OW::eHero::HERO_HANJO) {
-                    FireHanzo();
-                } else {
-                    ClickConfiguredFire();
-                }
+                if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                 StampFlickFire(state);
                 OW::Config::shooted = true;
                 continue;
@@ -3638,7 +3510,9 @@ namespace AimbotDetail {
                         hitAfterMove ? 1 : 0);
                 }
                 SetSensitivityLocked(true, origin_sens);
-                FirePrimaryNormal();
+                const bool submitted=FirePrimaryNormal();
+                SetSensitivityLocked(false, origin_sens);
+                if(!submitted) {OW::RuntimeWorkerSleep(1);continue;}
                 StampFlickFire(state);
                 ++g_flickFires;
                 SetSensitivityLocked(false, origin_sens);
@@ -3654,18 +3528,14 @@ namespace AimbotDetail {
                 OW::Config::shotcount >= OW::Config::shotmanydont &&
                 OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, OW::Config::missbox)) {
                 const int previousShotCount = OW::Config::shotcount;
-                OW::Config::shotcount = 0;
                 const c_entity local = LocalEntity();
                 ResetMagneticTriggerQuantization(state, "dontshot_forced_fire");
                 Diagnostics::Aim("magnetic_trigger dontshot forced_fire target=%d previousShotCount=%d missbox=%.6f",
                     OW::Config::Targetenemyi,
                     previousShotCount,
                     OW::Config::missbox);
-                if (local.HeroID == OW::eHero::HERO_HANJO) {
-                    FireHanzo();
-                } else {
-                    ClickConfiguredFire();
-                }
+                if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
+                OW::Config::shotcount = 0;
                 StampFlickFire(state);
                 OW::Config::shooted = true;
                 continue;
@@ -3695,7 +3565,7 @@ namespace AimbotDetail {
                 exitReason = "sequence_preempted";
             } else if (ShouldYieldToSecondaryAim()) {
                 exitReason = "secondary_aim_preempted";
-            } else if (state.trackingSessionTimedOut) {
+            } else if (TrackingHoldTimedOut(state)) {
                 exitReason = "session_timeout";
             }
             ResetMagneticTriggerQuantization(state, exitReason);
@@ -3737,8 +3607,7 @@ namespace AimbotDetail {
             return;
         const int behavior = OW::Config::ClampAimBehaviorIndex(OW::Config::View_aimBehavior());
         const c_entity localAtEntry = LocalEntity();
-        const bool ordinaryFlick = behavior == OW::Config::kAimBehaviorFlick &&
-            !(localAtEntry.HeroID == OW::eHero::HERO_HANJO && !localAtEntry.skill2act);
+        const bool ordinaryFlick = behavior == OW::Config::kAimBehaviorFlick;
         const auto ordinaryIdentityAtEntry = ordinaryFlick
             ? CurrentOrdinaryFlickIdentity() : FlickRepeat::SessionIdentity{};
         const DWORD cadence = ordinaryFlick ? ResolveCurrentWeaponCadenceIntervalMs() : 0;
@@ -3754,7 +3623,7 @@ namespace AimbotDetail {
             }
             OW::Config::shooted = false;
         }
-        MaintainHanzoCustomFlickState(state);
+        ObserveReleaseFireInput(state);
         if (!ordinaryFlick) UpdateFlickShotCooldown(state);
         if (!ordinaryFlick && FlickPostFireLockoutActive(state))
             return;
@@ -3772,14 +3641,7 @@ namespace AimbotDetail {
             OW::Config::AimBehaviorAcceleration(behavior),
             OW::Config::View_Prediction() ? 1 : 0);
 
-        if (!OW::Config::aimDryRun &&
-            GlobalAimFirePolicyAllowsGeneratedFire() &&
-            localAtEntry.HeroID == OW::eHero::HERO_HANJO &&
-            !localAtEntry.skill2act) {
-            Diagnostics::Aim("hanzo.custom route=primary_flick");
-            RunHanzoCustomFlick(state, origin_sens);
-            return;
-        }
+
 
         // ---- Dry-run mode: log diagnostic info, don't move cursor ----
         if (OW::Config::aimDryRun) {
@@ -3790,7 +3652,8 @@ namespace AimbotDetail {
                 const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
             OW::AimCandidateConfig selectedSettings5(OW::Config::selectedAimHero);
                 if (!IsZeroVector(vec)) {
-                    AimData aim = BuildAimData(
+                    PrepareAimCharge(state);
+            AimData aim = BuildAimData(
                         vec,
                         true,
                         OW::Config::AimBehaviorSmoothInput(behavior, OW::Config::View_Flick_smooth()),
@@ -3818,7 +3681,7 @@ namespace AimbotDetail {
             ArmDelayedShot(state);
         const DWORD sessionStartedTick = GetTickCount();
 
-        while (OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
+        while (AimModeStructureCurrent() && OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
                OW::ProcessConnection::IsConnected() &&
                OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
                OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
@@ -3826,6 +3689,7 @@ namespace AimbotDetail {
                !OW::Config::reloading &&
                !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
             OW::consumerFrame=OW::SnapshotFrame();
+            if(CompleteReleasedAimAtCrosshair(state,false)) break;
             const FlickRepeat::Phase repeatPhase = ordinaryFlick
                 ? OrdinaryFlickPhase(state) : FlickRepeat::Phase{};
             if (ordinaryFlick && !repeatPhase.movementAllowed) {
@@ -3846,6 +3710,7 @@ namespace AimbotDetail {
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
             OW::AimCandidateConfig selectedSettings6(OW::Config::selectedAimHero);
             if (IsZeroVector(vec)) {
+                CompleteReleasedAimAtCrosshair(state,true);
                 Diagnostics::Aim("flick break reason=no_target_vector targetIndex=%d entities=%zu",
                     OW::Config::Targetenemyi,
                     OW::TargetingDetail::SnapshotEntities().size());
@@ -3876,7 +3741,8 @@ namespace AimbotDetail {
                 if (ordinaryFlick && FlickRepeat::PrepareTarget(state.ordinaryFlick,
                     TwoStageEntityKey(target)))
                     OW::ResetAimSmoothingState();
-                AimData aim = BuildAimData(
+                PrepareAimCharge(state);
+            AimData aim = BuildAimData(
                     aimTarget,
                     true,
                     smoothInput,
@@ -3909,11 +3775,7 @@ namespace AimbotDetail {
                         Diagnostics::Aim("flick delayed_shot timeout target=%d localHero=0x%llX",
                             OW::Config::Targetenemyi,
                             static_cast<unsigned long long>(local.HeroID));
-                        if (local.HeroID == OW::eHero::HERO_HANJO) {
-                            FireHanzo();
-                        } else {
-                            ClickConfiguredFire();
-                        }
+                        if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                         StampFlickFire(state);
                         OW::Config::shooted = true;
                         continue;
@@ -3935,6 +3797,7 @@ namespace AimbotDetail {
                         aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
                     const bool hitAfterMove = OW::in_range(
                         aim.smoothed_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
+                    ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);
                     if (!hitBeforeMove && hitAfterMove) {
                         Diagnostics::Aim("flick.fire predicted_post_move_hit target=%d hitbox=%.6f",
                             OW::Config::Targetenemyi,
@@ -3962,8 +3825,8 @@ namespace AimbotDetail {
                             kGlobalAimGeneratedFireOwnerKey, ordinaryFlick, &submittedAt,
                             ordinaryFlick ? &state.ordinaryFlick.identity : nullptr);
                         SetSensitivityLocked(false, origin_sens);
-                        if (ordinaryFlick && !submitted) {
-                            PauseOrdinaryFlickMovement(state);
+                        if (!submitted) {
+                            if(ordinaryFlick) PauseOrdinaryFlickMovement(state);
                             break;
                         }
                         if (ordinaryFlick) {
@@ -3993,11 +3856,7 @@ namespace AimbotDetail {
                             OW::Config::Targetenemyi,
                             previousShotCount,
                             OW::Config::missbox);
-                        if (local.HeroID == OW::eHero::HERO_HANJO) {
-                            FireHanzo();
-                        } else {
-                            ClickConfiguredFire();
-                        }
+                        if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                         StampFlickFire(state);
                         OW::Config::shooted = true;
                         continue;
@@ -4012,6 +3871,7 @@ namespace AimbotDetail {
                         aim.target_angle.Z);
                 }
             } else {
+                if(CompleteReleasedAimAtCrosshair(state,true)) break;
                 if (ordinaryFlick) PauseOrdinaryFlickMovement(state);
                 Diagnostics::Aim("flick no_move reason=target_not_actionable targetIndex=%d vec=(%.9f,%.9f,%.9f)",
                     OW::Config::Targetenemyi,
@@ -4358,23 +4218,37 @@ namespace AimbotDetail {
             OW::Config::shooted2 = false;
     }
 
-    inline void RunAimbotTick(RuntimeState& state, float& origin_sens) {
-        OW::ScopedConsumptionFrame frame;
+    inline bool RefreshAimScene(RuntimeState& state) {
         const auto scene=OW::EntitySceneGeneration();
         if(state.entityScene!=scene) {
+            const bool requireNewActivation=state.releaseActivationDown||state.releaseOwnedDown||state.releasePending;
             ResetTrackingSession(state);EndOrdinaryFlickActivation(state);
-            ResetHanzoCustomFlickState(state,"entity_scene_changed");
+            if(!ResetAimCharge(state)) return false;
+            chargedAimPreset.reset();
+            // Scene/motion state can restart while the physical key is still held.
+            const auto heldKeys = state.aimHoldWindows;
+            const auto physicalPresses=state.releasePresses;
             state=RuntimeState{};state.entityScene=scene;
+            state.aimHoldWindows = heldKeys;
+            state.releasePresses=physicalPresses;
+            state.releaseNeedsActivationUp=requireNewActivation;
+            state.releaseActivationDown=requireNewActivation;
         }
-        if(!OW::SnapshotLocalEntity().HasUsableBody(GetTickCount(),scene)) {
+        return true;
+    }
+
+    inline void RunAimbotTick(RuntimeState& state, float& origin_sens) {
+        OW::ScopedConsumptionFrame frame;
+        if(!RefreshAimScene(state)) return;
+        if(!OW::SnapshotLocalEntity().HasUsableBody(GetTickCount(),OW::EntitySceneGeneration())) {
             ResetTrackingTargetContinuity(state,"local_body_unavailable");
-            EndOrdinaryFlickActivation(state);ResetHanzoCustomFlickState(state,"local_body_unavailable");
+            EndOrdinaryFlickActivation(state);CancelConfiguredAimShot(state);
             OW::RuntimeOutputScheduler().CancelSource(OW::OutputOwnerSource::GlobalAim);
             OW::RuntimeOutputScheduler().CancelSource(OW::OutputOwnerSource::Trigger);
             return;
         }
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
-            MaintainHanzoCustomFlickState(state);
+            ObserveReleaseFireInput(state);
             ResetShootStateOnRelease(state);
             return;
         }
@@ -4429,13 +4303,13 @@ namespace AimbotDetail {
         }
 
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
-            MaintainHanzoCustomFlickState(state);
+            ObserveReleaseFireInput(state);
             ResetShootStateOnRelease(state);
             return;
         }
         RunGenjiBlade();
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
-            MaintainHanzoCustomFlickState(state);
+            ObserveReleaseFireInput(state);
             ResetShootStateOnRelease(state);
             return;
         }
@@ -4451,15 +4325,23 @@ namespace AimbotDetail {
     }
 
     inline void RunAimbotTickWithHeroPreset(RuntimeState& state, float& origin_sens) {
-        if (InputSequenceBlocksAim("aimbot_preset") ||
-            (OW::Config::configLoadGeneration.load(std::memory_order_acquire) & 1u)) {
+        if (OW::Config::configLoadGeneration.load(std::memory_order_acquire) & 1u) {
+            EndOrdinaryFlickActivation(state);CancelConfiguredAimShot(state);
+            return;
+        }
+        if(!RefreshAimScene(state)) return;
+        ScopedHeroPresetOverride heroPresetOverride(state);
+        activeAimShotState=&state;
+        MaintainConfiguredAimShot(state);
+        ObserveAimHoldWindows(state);
+        if(state.releaseNeedsActivationUp) return;
+        if (InputSequenceBlocksAim("aimbot_preset")) {
+            CancelConfiguredAimShot(state);
             EndOrdinaryFlickActivation(state);
             return;
         }
 
-        ScopedHeroPresetOverride heroPresetOverride;
         // Observe the effective per-hero configuration here, after the override.
-        // This never synthesizes input or relaxes any activation gate.
         static DWORD lastGateReport = 0;
         const DWORD gateNow = GetTickCount();
         if (lastGateReport == 0 || gateNow - lastGateReport >= 5000) {
@@ -4476,8 +4358,34 @@ namespace AimbotDetail {
         if (OW::Config::View_aimBehavior() != OW::Config::kAimBehaviorFlick || !IsAimKeyPressed() ||
             OW::Config::reloading)
             EndOrdinaryFlickActivation(state);
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        if(tuning && tuning->releaseToFire && tuning->autoCharge &&
+            OW::Config::View_Flick() && OW::Config::UsesFlickFireControls(OW::Config::View_aimBehavior())) {
+            if(!LocalEntity().HasUsableBody(GetTickCount(),OW::EntitySceneGeneration()) ||
+                !OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices() || OW::Config::reloading ||
+                !AimModeStructureCurrent()) {
+                CancelConfiguredAimShot(state);return;
+            }
+            if(!IsAimActivationKeyDown()&&!state.releasePending) {
+                ResetShootStateOnRelease(state);return;
+            }
+            if(!PrepareAimCharge(state) && (UsesReleaseKeyUpExecution()||!state.releaseShotLatched)) return;
+            if(UsesReleaseKeyUpExecution()) {
+                if(!state.releasePending) return; // holding charges anywhere and never moves the view
+                const auto target=OW::GetVector3(OW::Config::View_Prediction());
+                if(CompleteReleasedAimAtCrosshair(state,IsZeroVector(target))) return;
+            }
+        }
         RunAimbotTick(state, origin_sens);
+        if(!IsAimKeyPressed()||OW::Config::reloading||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
+           !AimModeStructureCurrent()||
+           (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior())&&TrackingHoldTimedOut(state))||
+           OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) CancelConfiguredAimShot(state);
     }
+#ifdef UNLEASHED_SELF_TESTS
+#include "AimReleaseOutputSelfTest.inl"
+#endif
+
 }
 
 void aimbot_thread() {
@@ -4491,6 +4399,7 @@ void aimbot_thread() {
         while (OW::RuntimeWorkersRunning()) {
             if (!OW::ProcessConnection::IsConnected()) {
                 AimbotDetail::EndOrdinaryFlickActivation(state);
+                AimbotDetail::ObserveReleaseFireInput(state,true);
                 OW::RuntimeWorkerSleep(100);
                 continue;
             }
@@ -4514,6 +4423,7 @@ void aimbot_thread() {
             AimbotDetail::RunAimbotTickWithHeroPreset(state, origin_sens);
             OW::RuntimeWorkerSleep(2);
         }
+        AimbotDetail::ObserveReleaseFireInput(state,true);
     } __except (1) {
         OW::SetRuntimeOutputSessionEnabled(false);
         OW::SetRuntimeWorkersRunning(false);

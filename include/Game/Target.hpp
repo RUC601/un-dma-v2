@@ -688,11 +688,11 @@ namespace OW {
                 for(const auto& entity:nextEntities)sampleUs=(std::max)(sampleUs,entity.sample_time_us);
                 frame->sampledAt=sampleUs ? std::chrono::steady_clock::time_point(std::chrono::microseconds(sampleUs)) : std::chrono::steady_clock::now();
                 frame->local=local_entity;
-                const bool localTeamKnown=local_entity.team_known && local_entity.connection_epoch==ProcessConnection::ConnectionEpoch() &&
-                    local_entity.scene_generation==EntitySceneGeneration() &&
-                    EntityBodyAuthorityMatchesLocked({local_entity.address,local_entity.LinkParent,local_entity.HeroID,
-                        local_entity.match_id,local_entity.last_discovered_tick_ms},local_entity.actor_generation,
-                        local_entity.body_authority_revision,local_entity.connection_epoch,local_entity.scene_generation,local_entity.body_absence_revision);
+                // Only verified local observations populate local_entity. Its confirmed affiliation
+                // belongs to this scene, not to the current body's life/death authority revision.
+                const bool localTeamKnown=local_entity.team_known && local_entity.address && local_entity.actor_generation &&
+                    local_entity.connection_epoch==ProcessConnection::ConnectionEpoch() &&
+                    local_entity.scene_generation==EntitySceneGeneration();
                 frame->local.team_known=localTeamKnown;
                 for(auto& value:nextEntities) {
                     value.team_known=value.team_known && localTeamKnown;
@@ -1667,6 +1667,7 @@ namespace OW {
         }
     };
     inline void PublishSelectedAimPlan(const TargetCandidate& candidate) {
+        Config::selectedAimFovDeg=candidate.valid?candidate.effectiveFovDeg:0;
         Config::selectedAimPlan=Config::targetAimPlanEnabled && candidate.valid ? candidate.plan : AimPlan::Effective{};
         Config::selectedAimPlanTarget=candidate.valid?candidate.entityKey:0;
         Config::selectedAimHero=candidate.valid?candidate.entitySnapshot.HeroID:0;
@@ -1989,7 +1990,7 @@ namespace OW {
         }
         if (best.valid) {
             AimCandidateConfig selectedConfig(best.entitySnapshot.HeroID);
-            best.effectiveFovDeg = Config::ResolveDynamicAimFovForDistance(Config::View_Fov(), best.distance);
+            if(best.effectiveFovDeg<=0) best.effectiveFovDeg = Config::ResolveDynamicAimFovForDistance(Config::View_Fov(), best.distance);
             best.dynamicFov = Config::IsDynamicAimFovActive();
             best.dynamicFovPresetId = best.dynamicFov ? Config::View_aimbotDynamicFovPresetId() : -1;
             const Config::RuntimeDrawFovState drawState = Config::SnapshotRuntimeDrawFov();

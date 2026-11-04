@@ -1452,7 +1452,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             ? local_snapshot.pos
             : local_snapshot.head_pos;
     const bool localDistanceOriginValid =
-        OverlayRenderDetail::IsFiniteVector(localDistanceOrigin) &&
+        local_snapshot.HasUsableBody(renderTick,scene) && OverlayRenderDetail::IsFiniteVector(localDistanceOrigin) &&
         OverlayRenderDetail::IsNonZeroVector(localDistanceOrigin);
 
     auto publishStats = [&]() {
@@ -1675,12 +1675,11 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             renderStats.skippedDead++;
             continue;
         }
-        if (local_snapshot.PlayerHealth <= 0.f) {
-            RuntimeTrace::Emit(RuntimeTrace::RenderSkip,3,entity.address,local_snapshot.address);
-            renderStats.skippedLocalHealth++;
-            continue;
-        }
-        if (entity.address == local_snapshot.address) {
+        // Other live bodies remain drawable during local death/spectating. Their own freshness
+        // and confirmed team relation above are independent of the local body's health.
+        if (entity.address == local_snapshot.address || (entity.participant_key &&
+            entity.participant_key==local_snapshot.participant_key && entity.connection_epoch==local_snapshot.connection_epoch &&
+            entity.scene_generation==local_snapshot.scene_generation)) {
             RuntimeTrace::Emit(RuntimeTrace::RenderSkip,6,entity.address);
             renderStats.skippedLocalEntity++;
             continue;

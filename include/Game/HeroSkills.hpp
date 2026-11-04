@@ -128,6 +128,8 @@ namespace HeroSkillControls {
     inline constexpr HeroSkillControlFlags Hitbox = 1u << 19;
     inline constexpr HeroSkillControlFlags HealthAbsolute = 1u << 20;
     inline constexpr HeroSkillControlFlags ComboAction = 1u << 21;
+    inline constexpr HeroSkillControlFlags PunchAssist = 1u << 22;
+    inline constexpr HeroSkillControlFlags MeleeRange = 1u << 23;
 }
 
 namespace HeroSkillHotkey {
@@ -236,6 +238,23 @@ ExecutionToken ActiveInputSequenceToken();
 bool ShouldBlockForActiveSequence(ExecutionSource requester);
 void CancelActiveSkill();
 void ProcessHeroSkills();
+
+inline Config::HeroSkillSettings MakeDoomfistRocketPunchDefaults()
+{
+    Config::HeroSkillSettings settings{};
+    settings.key = HeroSkillHotkey::Mouse4;
+    settings.skillKey = HeroSkillHotkey::RightMouse;
+    settings.enemyHealthThreshold = 100.0f;
+    settings.distance = 15.0f;
+    settings.prediction = true;
+    settings.cooldownGuard = false;
+    settings.tracking.aimBehavior = Config::kAimBehaviorFlick;
+    settings.tracking.speedScale = 100.0f;
+    settings.tracking.fov = 30.0f;
+    settings.tracking.bone = Config::kAimBoneChest;
+    settings.tracking.hitbox = Config::kDefaultHitboxScalePercent;
+    return settings;
+}
 
 inline Config::HeroSkillSettings MakeAsheComboSequenceDefaults()
 {
@@ -862,9 +881,8 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillCategory::Skill,
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
-            HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
-            HeroSkillControls::Prediction,
-        { false, HeroSkillHotkey::RightMouse, 50.0f, 65.0f, 50.0f, 20.0f, 0, 4.0f, true, true, 1, 0.0f }
+            HeroSkillControls::Prediction | HeroSkillControls::PunchAssist,
+        MakeDoomfistRocketPunchDefaults()
     },
     {
         OW::eHero::HERO_REAPER,
@@ -1040,8 +1058,7 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
                 HeroSkillControls::Enabled |
                     HeroSkillControls::EnemyHealthAbsolute |
                     HeroSkillControls::Distance |
-                    HeroSkillControls::Bone |
-                    HeroSkillControls::Hitbox,
+                    HeroSkillControls::MeleeRange,
                 MakeAutoMeleeDefaults()
             });
         }
