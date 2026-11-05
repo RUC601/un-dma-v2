@@ -128,7 +128,6 @@ set(UNLEASHED_SOURCES
     src/features/visuals/SceneRenderer.cpp
     src/Game/camera/CameraWorker.cpp
     src/Game/snapshots/PresentationWorker.cpp
-    src/Game/profiles/CandidateSession.cpp
     src/Game/entities/EntityDiscovery.cpp
     src/Game/entities/EntityReader.cpp
     src/Game/HeroGeometrySpec.cpp

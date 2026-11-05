@@ -1,4 +1,5 @@
 #include "Alerts/Settings.hpp"
+#include "Game/GameData.hpp"
 #include <Windows.h>
 #include <mutex>
 #include <atomic>
@@ -8,8 +9,22 @@ namespace {
 std::mutex settingsMutex;
 Settings currentSettings;
 std::atomic<uint64_t> observedRules{0};
+std::atomic<uint64_t> observedUltimates{0};
 static_assert(kDefinitions.size() <= 64);
+// Playable heroes are listed before the training bot entries.
+constexpr size_t kPlayableHeroCount = [] {
+    size_t i = 0;
+    while (i < std::size(OW::GameData::kHeroIds) && OW::GameData::kHeroIds[i].value != OW::GameData::MakeHeroId(0x33C)) ++i;
+    return i;
+}();
+static_assert(kPlayableHeroCount <= 64);
+uint64_t UltimateHeroBit(uint64_t hero) {
+    for (size_t i = 0; i < kPlayableHeroCount; ++i)
+        if (OW::GameData::kHeroIds[i].value == hero) return uint64_t{1} << i;
+    return 0;
 }
+}
+bool UltimateHeroSupported(uint64_t hero) { return UltimateHeroBit(hero) != 0; }
 Settings Normalize(Settings settings) {
     settings.voice = std::clamp(settings.voice, 0, 1);
     settings.volume = std::clamp(settings.volume, 0, 100);
@@ -20,11 +35,11 @@ Settings Normalize(Settings settings) {
     };
     if (!validText(settings.outputDevice, 512)) {
         settings.outputDevice.clear();
-        settings.enabled = false; // A corrupt explicit route must not redirect automatic speech to speakers.
+        settings.skillEnabled = settings.ultimateEnabled = false;
     }
     std::vector<RuleSettings> rules;
     for (const auto& definition : kDefinitions) {
-        RuleSettings rule{definition.id, true, definition.defaultMessage};
+        RuleSettings rule{definition.id, definition.enabledByDefault, definition.defaultMessage};
         const auto found = std::find_if(settings.rules.begin(), settings.rules.end(),
             [&](const auto& candidate) { return candidate.id == definition.id; });
         if (found != settings.rules.end()) rule = *found;
@@ -33,6 +48,19 @@ Settings Normalize(Settings settings) {
         rules.push_back(std::move(rule));
     }
     settings.rules = std::move(rules);
+    if (settings.ultimateMessage.empty() || !validText(settings.ultimateMessage, kMaxMessageBytes))
+        settings.ultimateMessage = kDefaultUltimateMessage;
+    std::vector<UltimateRule> ultimates;
+    for (const auto& item : OW::GameData::kHeroIds) {
+        if (!UltimateHeroSupported(item.value)) continue;
+        const auto* rule = UltimateForHero(settings, item.value);
+        if (!rule) continue;
+        auto normalized = *rule;
+        normalized.mode = std::clamp(normalized.mode, -1, 1);
+        if (!validText(normalized.message, kMaxMessageBytes)) normalized.message.clear();
+        if (normalized.mode >= 0 || !normalized.message.empty()) ultimates.push_back(std::move(normalized));
+    }
+    settings.ultimates = std::move(ultimates);
     return settings;
 }
 Settings GetSettings() { std::lock_guard lock(settingsMutex); return currentSettings; }
@@ -41,15 +69,24 @@ void SetSettings(Settings settings) {
     std::lock_guard lock(settingsMutex);
     currentSettings = std::move(settings);
     uint64_t mask = 0;
-    if (currentSettings.enabled)
+    if (currentSettings.skillEnabled)
         for (size_t index = 0; index < currentSettings.rules.size(); ++index)
             if (currentSettings.rules[index].enabled) mask |= uint64_t{1} << index;
     observedRules.store(mask, std::memory_order_release);
+    mask = 0;
+    if (currentSettings.ultimateEnabled)
+        for (size_t i = 0; i < kPlayableHeroCount; ++i)
+            if (UltimateHeroEnabled(currentSettings, OW::GameData::kHeroIds[i].value)) mask |= uint64_t{1} << i;
+    observedUltimates.store(mask, std::memory_order_release);
 }
 bool ObserveSkillHero(uint64_t hero) {
     const auto mask = observedRules.load(std::memory_order_acquire);
     for (size_t index = 0; index < kDefinitions.size(); ++index)
         if (kDefinitions[index].hero == hero && (mask & (uint64_t{1} << index))) return true;
     return false;
+}
+bool ObserveUltimateHero(uint64_t hero) {
+    const auto mask = observedUltimates.load(std::memory_order_acquire);
+    return mask && (mask & UltimateHeroBit(hero));
 }
 }

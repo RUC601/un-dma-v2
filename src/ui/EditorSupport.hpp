@@ -199,6 +199,7 @@ void ApplySelectedTypePreset();
 bool UIGroupBox(const char* title, float minHeightPx = 0.0f, float bottomGapPx = kGroupDefaultBottomGap);
 void CloseGroupBox();
 bool UICheckbox(const char* label, bool* value);
+bool UIAlertHeroSelect(const char* id, uint64_t& heroId, const std::function<bool(uint64_t)>& enabled);
 void PushControlWidth(float rightPaddingPx = kControlRightPadding);
 bool UISlider(const char* label, float* value, float v_min, float v_max,
                      const Spec& format, bool integralValue = false);

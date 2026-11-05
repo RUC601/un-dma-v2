@@ -10,7 +10,12 @@ inline Settings DecodeSettings(const std::string& json) {
     rapidjson::Document root;
     root.Parse<rapidjson::kParseValidateEncodingFlag>(json.c_str());
     if (root.HasParseError() || !root.IsObject()) return result;
-    if (root.HasMember("enabled") && root["enabled"].IsBool()) result.enabled = root["enabled"].GetBool();
+    if (root.HasMember("enabled") && root["enabled"].IsBool()) result.skillEnabled = root["enabled"].GetBool();
+    if (root.HasMember("skillEnabled") && root["skillEnabled"].IsBool()) result.skillEnabled = root["skillEnabled"].GetBool();
+    if (root.HasMember("ultimateEnabled") && root["ultimateEnabled"].IsBool()) result.ultimateEnabled = root["ultimateEnabled"].GetBool();
+    if (root.HasMember("ultimateAll") && root["ultimateAll"].IsBool()) result.ultimateAll = root["ultimateAll"].GetBool();
+    if (root.HasMember("ultimateMessage") && root["ultimateMessage"].IsString())
+        result.ultimateMessage.assign(root["ultimateMessage"].GetString(), root["ultimateMessage"].GetStringLength());
     if (root.HasMember("voice") && root["voice"].IsInt()) result.voice = root["voice"].GetInt();
     if (root.HasMember("volume") && root["volume"].IsInt()) result.volume = root["volume"].GetInt();
     if (root.HasMember("outputDevice") && root["outputDevice"].IsString())
@@ -22,10 +27,22 @@ inline Settings DecodeSettings(const std::string& json) {
             RuleSettings rule;
             rule.message.clear(); // Missing text inherits this rule's catalog default.
             rule.id.assign(entry["id"].GetString(), entry["id"].GetStringLength());
+            for (const auto& definition : kDefinitions)
+                if (definition.id == rule.id) rule.enabled = definition.enabledByDefault;
             if (entry.HasMember("enabled") && entry["enabled"].IsBool()) rule.enabled = entry["enabled"].GetBool();
             if (entry.HasMember("message") && entry["message"].IsString())
                 rule.message.assign(entry["message"].GetString(), entry["message"].GetStringLength());
             result.rules.push_back(std::move(rule));
+        }
+    }
+    if (root.HasMember("ultimates") && root["ultimates"].IsArray()) {
+        for (const auto& entry : root["ultimates"].GetArray()) {
+            if (!entry.IsObject() || !entry.HasMember("hero") || !entry["hero"].IsUint64()) continue;
+            UltimateRule rule{entry["hero"].GetUint64()};
+            if (entry.HasMember("mode") && entry["mode"].IsInt()) rule.mode = entry["mode"].GetInt();
+            if (entry.HasMember("message") && entry["message"].IsString())
+                rule.message.assign(entry["message"].GetString(), entry["message"].GetStringLength());
+            result.ultimates.push_back(std::move(rule));
         }
     }
     return Normalize(std::move(result));
@@ -36,8 +53,11 @@ inline std::string EncodeSettings(const Settings& raw) {
     // ASCII escaping preserves Chinese text through the existing ANSI INI writer.
     rapidjson::Writer<rapidjson::StringBuffer, rapidjson::UTF8<>, rapidjson::ASCII<>> writer(buffer);
     writer.StartObject();
-    writer.Key("version"); writer.Int(1);
-    writer.Key("enabled"); writer.Bool(settings.enabled);
+    writer.Key("version"); writer.Int(2);
+    writer.Key("skillEnabled"); writer.Bool(settings.skillEnabled);
+    writer.Key("ultimateEnabled"); writer.Bool(settings.ultimateEnabled);
+    writer.Key("ultimateAll"); writer.Bool(settings.ultimateAll);
+    writer.Key("ultimateMessage"); writer.String(settings.ultimateMessage.c_str());
     writer.Key("voice"); writer.Int(settings.voice);
     writer.Key("volume"); writer.Int(settings.volume);
     writer.Key("outputDevice"); writer.String(settings.outputDevice.c_str());
@@ -46,6 +66,15 @@ inline std::string EncodeSettings(const Settings& raw) {
         writer.StartObject();
         writer.Key("id"); writer.String(rule.id.c_str());
         writer.Key("enabled"); writer.Bool(rule.enabled);
+        writer.Key("message"); writer.String(rule.message.c_str());
+        writer.EndObject();
+    }
+    writer.EndArray();
+    writer.Key("ultimates"); writer.StartArray();
+    for (const auto& rule : settings.ultimates) {
+        writer.StartObject();
+        writer.Key("hero"); writer.Uint64(rule.hero);
+        writer.Key("mode"); writer.Int(rule.mode);
         writer.Key("message"); writer.String(rule.message.c_str());
         writer.EndObject();
     }

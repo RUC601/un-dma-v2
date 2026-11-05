@@ -1195,7 +1195,7 @@ static void DrawPresetSummary(const HeroOption& hero,
 
 // Shared avatar browser for the editing hero and target-hero sets.
 static bool HeroBrowserTile(const HeroOption& hero, const ImVec2& size,
-                            bool selected, const char* assignedTo = nullptr) {
+                            bool selected, const char* assignedTo = nullptr, const bool* alertEnabled = nullptr) {
     ImGui::BeginDisabled(assignedTo != nullptr);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const bool pressed = ImGui::InvisibleButton(HeroScopeName(hero), size, ImGuiButtonFlags_EnableNav);
@@ -1208,7 +1208,8 @@ static bool HeroBrowserTile(const HeroOption& hero, const ImVec2& size,
     const ImVec2 iconMin(pos.x + (size.x - iconSize) * .5f, pos.y + 7.0f);
     if (auto* avatar = HeroAvatarForOption(hero))
         draw->AddImage(reinterpret_cast<ImTextureID>(avatar), iconMin,
-            ImVec2(iconMin.x + iconSize, iconMin.y + iconSize), ImVec2(0,0), ImVec2(1,1), ImGui::GetColorU32(ImGuiCol_Text));
+            ImVec2(iconMin.x + iconSize, iconMin.y + iconSize), ImVec2(0,0), ImVec2(1,1),
+            alertEnabled && !*alertEnabled ? ImGui::GetColorU32(ImVec4(.72f,.72f,.72f,.43f)) : ImGui::GetColorU32(ImGuiCol_Text));
     else
         draw->AddText(ImVec2(iconMin.x + 12, iconMin.y + 10), ImGui::GetColorU32(kColText), hero.heroId ? "?" : L("All"));
     const auto textSize = ImGui::CalcTextSize(HeroScopeName(hero), nullptr, false, size.x - 8.0f);
@@ -1220,6 +1221,7 @@ static bool HeroBrowserTile(const HeroOption& hero, const ImVec2& size,
     ImGui::RenderNavCursor(ImRect(pos, end), ImGui::GetItemID());
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused()) {
         if (assignedTo) ImGui::SetTooltip("%s\n%s: %s", HeroScopeName(hero), L("Assigned to"), assignedTo);
+        else if (alertEnabled) ImGui::SetTooltip("%s\n%s", HeroScopeName(hero), L(*alertEnabled ? "On" : "Off"));
         else ImGui::SetTooltip("%s", HeroScopeName(hero));
     }
     ImGui::EndDisabled();
@@ -1229,7 +1231,8 @@ static bool HeroBrowserTile(const HeroOption& hero, const ImVec2& size,
 static bool HeroBrowserGrid(const char* search, bool includeCurrent, float footerHeight,
                             const std::function<bool(const HeroOption&)>& selected,
                             const std::function<const char*(const HeroOption&)>& assigned,
-                            const std::function<void(int)>& activate) {
+                            const std::function<void(int)>& activate,
+                            const std::function<bool(uint64_t)>& alertEnabled = {}) {
     bool changed = false;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
     const float itemW = (std::max)(82.0f, ImGui::GetFontSize() * 5.5f);
@@ -1252,7 +1255,8 @@ static bool HeroBrowserGrid(const char* search, bool includeCurrent, float foote
                 if (!heading) { ImGui::TextDisabled("%s", L(category)); heading = true; }
                 if (column) ImGui::SameLine();
                 ImGui::PushID(i);
-                if (HeroBrowserTile(hero, ImVec2(itemW, itemH), selected(hero), assigned(hero))) {
+                const bool enabled = alertEnabled && alertEnabled(hero.heroId);
+                if (HeroBrowserTile(hero, ImVec2(itemW, itemH), selected(hero), assigned(hero), alertEnabled ? &enabled : nullptr)) {
                     activate(i);
                     changed = true;
                 }
@@ -1281,6 +1285,36 @@ static void HeroBrowserSearch(char (&search)[128]) {
     ImGui::TextUnformatted(L("Search heroes"));
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##heroSearch", search, sizeof(search));
+}
+
+bool UIAlertHeroSelect(const char* id, uint64_t& heroId, const std::function<bool(uint64_t)>& enabled) {
+    const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
+    const auto* hero = FindHeroOptionById(heroId);
+    auto* avatar = hero ? HeroAvatarForOption(*hero) : nullptr;
+    if (avatar) {
+        const float size = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeight();
+        ImGui::Image(reinterpret_cast<ImTextureID>(avatar), ImVec2(size, size));
+        ImGui::SameLine();
+    }
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted(hero ? HeroScopeName(*hero) : (zh ? "选择英雄" : "Choose a hero"));
+    const auto label = std::string(zh ? "显示所有英雄###" : "Show all heroes###") + id;
+    if (ImGui::Button(label.c_str()))
+        ImGui::OpenPopup("##alertHeroBrowser");
+    ImGui::EndGroup();
+    HeroBrowserSize();
+    if (!ImGui::BeginPopup("##alertHeroBrowser")) return false;
+    static char search[128]{};
+    ImGui::TextWrapped("%s", zh ? "亮色：已开启预警规则　淡色：未开启" : "Bright: alerts enabled   Dim: alerts off");
+    HeroBrowserSearch(search);
+    const bool changed = HeroBrowserGrid(search, false, ControlHeight() + 8,
+        [&](const HeroOption& item) { return item.heroId == heroId; },
+        [](const HeroOption&) -> const char* { return nullptr; },
+        [&](int index) { heroId = kHeroOptions[index].heroId; ImGui::CloseCurrentPopup(); },
+        enabled);
+    if (ImGui::Button(L("Done"))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return changed;
 }
 
 static bool TypePickerPanel() {
@@ -2796,8 +2830,9 @@ static void DrawRuntimeStatusStrip(ImDrawList* dl, const ImVec2& pos, float widt
         const float diagnosticWidth = (std::max)(98.0f, ImGui::CalcTextSize(T(UiText::SubDiagnostics)).x+20.0f);
         ImGui::PushClipRect(pos, ImVec2(pos.x + width - diagnosticWidth - 20.0f, pos.y + ImGui::GetFontSize()+16.0f), true);
         ImGui::SetCursorScreenPos(ImVec2(pos.x + 12.0f, pos.y + 6.0f));
-        const int requestedProfile = V2::Profiles::requestedProfile.load();
-        const char* region = requestedProfile == 1 ? "KR candidate" : requestedProfile == 2 ? "BZ candidate" : "CN";
+        const auto layout = V2::Profiles::Snapshot();
+        const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
+        const char* region = matched ? matched->region : "—";
         const char* connection = connected ? "Connected" : OW::ProcessConnection::IsConnecting() ? "Connecting" : "Disconnected";
         ImGui::TextColored(connected ? ImVec4(.55f,.84f,.66f,1) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
             "%s  %s", region, connection);

@@ -240,7 +240,7 @@ namespace OW {
     // Call only after a complete read. Invalid totals remain available for
     // diagnostics, but callers must check the result before updating state.
     inline bool TryParseHealthPayload(const health_compo_t& raw, HealthPayloadSummary& result) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905) {
+        if (offset::Active().pooledHealth) {
             const auto* bytes = reinterpret_cast<const uint8_t*>(&raw);
             return TryParseCnHealthPools(bytes + 0xD8, bytes + 0x258, bytes + 0x3D8,
                 bytes + 0x568, raw.death, result);
@@ -269,7 +269,7 @@ namespace OW {
     };
 
     inline bool TryParseHealthPayload(const health_fields_t& raw, HealthPayloadSummary& result) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
+        if (offset::Active().pooledHealth)
             return TryParseCnHealthPools(raw.cnPools[0].data(), raw.cnPools[1].data(),
                 raw.cnPools[2].data(), raw.flags.data(), raw.death, result);
         result = {};

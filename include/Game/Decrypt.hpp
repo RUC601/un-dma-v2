@@ -1,5 +1,6 @@
 #pragma once
 #include "game/entities/RegistryResolver.hpp"
+#include "Game/RegionalLayout.hpp"
 #include "memory/PeSections.hpp"
 #include "Utils/RegionEnvironment.hpp"
 #include <Windows.h>
@@ -380,15 +381,24 @@ namespace OW {
         uint64_t component_key_source = 0;
         uint64_t component_key_material_1 = 0;
         uint8_t component_key_byte = 0;
-        if (!SDK->GetCachedComponentKeyMaterial(
-                SDK->dwGameBase + offset::ComponentXorQword_RVA,
-                offset::ComponentXorQword_Off,
-                SDK->dwGameBase + offset::ComponentXorByte_RVA,
+        const bool bz154905 = activeOffsets.componentTransform == offset::ComponentTransformMode::Bz154905;
+        const auto keyRoot = bz154905 ? activeOffsets.componentKeyRootRva : offset::ComponentXorQword_RVA;
+        const auto keyOffset = bz154905 ? activeOffsets.componentKeyOffset : offset::ComponentXorQword_Off;
+        const auto keyByte = bz154905 ? activeOffsets.componentKeyByteRva : offset::ComponentXorByte_RVA;
+        if (!SDK->GetCachedComponentKeyMaterial(SDK->dwGameBase + keyRoot, keyOffset, SDK->dwGameBase + keyByte,
                 component_key_source,
                 component_key_material_1,
                 component_key_byte)) {
             Diagnostics::RecordDecryptFailure();
             return 0;
+        }
+
+        if (bz154905) {
+            if (!component_key_material_1)
+                return 0;
+            const auto decoded = present_mask & RegionalLayout::Bz154905::DecodeComponent(
+                component, component_key_material_1, component_key_byte);
+            return decoded > 0x10000 && decoded < 0x800000000000ULL ? decoded : 0;
         }
 
         if (activeOffsets.componentTransform == offset::ComponentTransformMode::World151177) {
@@ -479,6 +489,8 @@ namespace OW {
     inline uint64_t DecodeVisibilityRaw(uint64_t raw) {
         if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
             return Cn154905::Visibility(raw);
+        if (const auto mask = offset::Active().visibilityClearMask)
+            return (raw & mask) == 0 ? 1 : 0;
         return offset::IsCnProfile() ? raw : ((raw & offset::VisibilityBzVisibleMask) != 0 ? 1 : 0);
     }
 
@@ -488,19 +500,12 @@ namespace OW {
             return 0;
 
         const uint64_t raw = SDK->RPM<uint64_t>(visBase + activeOffsets.VisibilityValueOffset);
-        const bool worldBz = offset::ActiveProfile() == offset::RuntimeProfile::WorldBz;
         const bool visible = DecodeVisibilityRaw(raw) == 1;
 
         static bool loggedVisibility = false;
         if (!loggedVisibility) {
-            if (worldBz) {
-                Diagnostics::Info("[VISIBILITY] BZ 151722 component 0x34 +0x%llX uses visibility mask 0x%llX; set means visible.",
-                    static_cast<unsigned long long>(activeOffsets.VisibilityValueOffset),
-                    static_cast<unsigned long long>(offset::VisibilityBzVisibleMask));
-            } else {
-                Diagnostics::Info("[VISIBILITY] CN 154905N component 0x34 +0x%llX uses encrypted state; visible when decoded == 1.",
-                    static_cast<unsigned long long>(activeOffsets.VisibilityValueOffset));
-            }
+            Diagnostics::Info("[VISIBILITY] %s component 0x34 +0x%llX.", activeOffsets.name,
+                static_cast<unsigned long long>(activeOffsets.VisibilityValueOffset));
             loggedVisibility = true;
         }
 
@@ -750,11 +755,12 @@ namespace OW {
             return false;
 
         const auto& activeOffsets = offset::Active();
-        if (!activeOffsets.GlobalAdmin_RVA)
+        const auto clientGameRva = activeOffsets.clientGameRva ? activeOffsets.clientGameRva : activeOffsets.GlobalAdmin_RVA;
+        if (!clientGameRva)
             return false;
 
         const uint64_t clientGame = SDK->RPM<uint64_t>(
-            SDK->dwGameBase + activeOffsets.GlobalAdmin_RVA);
+            SDK->dwGameBase + clientGameRva);
         if (!IsPlausibleUserPointer(clientGame))
             return false;
 
@@ -763,7 +769,8 @@ namespace OW {
         if (!raw)
             return false;
 
-        gameAdmin = DecryptLiveGameAdmin(raw);
+        gameAdmin = activeOffsets.clientGameRva ? RegionalLayout::Bz154905::DecodeGameAdmin(raw)
+                                               : DecryptLiveGameAdmin(raw);
         return IsPlausibleUserPointer(gameAdmin);
     }
 
@@ -771,6 +778,8 @@ namespace OW {
         switch (offset::Active().singletonListMode) {
         case offset::SingletonListMode::Cn154905:
             return Cn154905::Singleton(raw);
+        case offset::SingletonListMode::Bz154905:
+            return RegionalLayout::Bz154905::DecodeGlobalAdmin(raw);
         case offset::SingletonListMode::Plain:
             return raw;
         case offset::SingletonListMode::LiveGameAdminWorldBz:
@@ -980,6 +989,9 @@ namespace OW {
         if (sourceObject)
             *sourceObject = 0;
 
+        if (offset::Active().capacityBoundRegistry)
+            return TryReadInputMouseScaleSensitivity(value, sourceObject);
+
         if (offset::Active().singletonListMode == offset::SingletonListMode::LiveGameAdminWorldBz)
             return TryReadLiveGameAdminSensitivity(value, sourceObject) ||
                 TryReadInputMouseScaleSensitivity(value, sourceObject);
@@ -1017,6 +1029,8 @@ namespace OW {
         cachedProfile = currentProfile;
 
         const auto& activeOffsets = offset::Active();
+        if (!activeOffsets.InputMouseScaleX_RVA)
+            return 0;
         const uintptr_t mouse_scale_x =
             SDK->dwGameBase + activeOffsets.InputMouseScaleX_RVA;
         if (IsPlausibleSensitivity(SDK->RPM<float>(mouse_scale_x))) {
@@ -1345,7 +1359,7 @@ namespace OW {
     // =========================================================================
 
     inline bool DynamicEntityRegistryEnabled() {
-        return offset::Active().componentTransform==offset::ComponentTransformMode::Cn154905;
+        return offset::IsCnProfile() || offset::Active().capacityBoundRegistry;
     }
 #ifdef UNLEASHED_REGISTRY_PRODUCER_TEST
     inline uint64_t (*registryProducerClock)()=&::GetTickCount64;
@@ -1411,17 +1425,27 @@ namespace OW {
             return RuntimeWorkersRunning() && ProcessConnection::IsConnected() &&
                 ProcessConnection::ConnectionEpoch()==epoch && SDK->dwGameBase==module;
         };
-        auto error=EntityRegistry::ReadSnapshotRetryBusy(epoch,module,[&](uint64_t address,void* output,size_t size) {
-            if(!contextCurrent())return false;
-            return mem.ReadFreshExact(address,output,size);
-        },[&] {
-            REGISTRY_PRODUCER_EVENT("pause_begin");
-            const bool running=RuntimeWorkerSleep(1);
-            REGISTRY_PRODUCER_EVENT("pause_end");
-            return running && contextCurrent();
-        },incoming);
+        const auto readCurrent = [&](uint64_t address, void* output, size_t size) {
+            return contextCurrent() && mem.ReadFreshExact(address, output, size);
+        };
+        const auto& offsets = offset::Active();
+        auto error = EntityRegistry::Error::ReadFailed;
+        if (offsets.capacityBoundRegistry) {
+            const auto header = RegionalLayout::ReadRegistry(module + offsets.Address_entity_base, readCurrent);
+            if (header.root) {
+                incoming = {.epoch = epoch, .module = module, .root = header.root, .capacity = header.capacity};
+                error = EntityRegistry::Error::None;
+            }
+        } else {
+            error = EntityRegistry::ReadSnapshotRetryBusy(epoch, module, readCurrent, [&] {
+                REGISTRY_PRODUCER_EVENT("pause_begin");
+                const bool running = RuntimeWorkerSleep(1);
+                REGISTRY_PRODUCER_EVENT("pause_end");
+                return running && contextCurrent();
+            }, incoming);
+        }
         // V2 恢复定位只运行在串行 reader lane；正式扫描仍消费原有代次快照。
-        if(error!=EntityRegistry::Error::None && error!=EntityRegistry::Error::Busy &&
+        if(offset::IsCnProfile() && error!=EntityRegistry::Error::None && error!=EntityRegistry::Error::Busy &&
            error!=EntityRegistry::Error::Unstable && contextCurrent()) {
             static EntityRegistry::RegistryResolver resolver;
             static uint64_t resetAt=0;
@@ -1636,6 +1660,44 @@ namespace OW {
         return guard.Check(true) && AcceptEntityRegistry(topology.registry) ? Audit::Empty : Audit::Unknown;
     }
 
+    inline std::vector<std::pair<uint64_t,uint64_t>> ProbeRegionalActor(
+        uint64_t parent, const EntityTopologySample& topology, const EntityHeaderSnapshot& header,
+        uint32_t parentId, uint64_t link, uint32_t tick,
+        std::vector<EntityRosterPolicy::Discovery>* discoveries)
+    {
+        if (!link)
+            return {};
+        uint32_t linkId = 0;
+        if (!SDK->read_range(link + offset::Link_UniqueId, &linkId, sizeof(linkId)))
+            return {};
+        const auto& offsets = offset::Active();
+        const auto linkHero = DecryptComponent(parent, offsets.typeHeroId, &header, true);
+        // Match the same IDs as the regional scanner, then re-read the actor's identity.
+        const std::array<uint32_t,3> ids{parentId + 1, linkId,
+            linkId && !(linkId & 0x80000000u) ? linkId | 0x80000000u : 0};
+        for (const uint32_t id : ids) {
+            if (!id)
+                continue;
+            for (const auto& [actor, match] : topology.member_ids) {
+                if (actor == parent || match != id)
+                    continue;
+                EntityHeaderSnapshot actorHeader{};
+                uint32_t currentMatch = 0;
+                if (!actorHeader.Read(actor) || !actorHeader.ReadParentOffset(offset::Entity_MatchId, currentMatch) ||
+                    currentMatch != match || !DecryptComponent(actor, offsets.typeHealth, &actorHeader, true))
+                    continue;
+                const auto heroBase = linkHero ? linkHero : DecryptComponent(actor, offsets.typeHeroId, &actorHeader, true);
+                uint64_t hero = 0;
+                if (!heroBase || !SDK->read_range(heroBase + 0xD0, &hero, sizeof(hero)) || !GameData::IsKnownHeroId(hero))
+                    continue;
+                if (discoveries)
+                    discoveries->push_back({actor, parent, hero, match, tick});
+                return {{actor, parent}};
+            }
+        }
+        return {};
+    }
+
     // Positive discovery only. Full audits retain responsibility for ambiguous
     // objects; an unresolved parent never removes an existing actor.
     inline std::vector<std::pair<uint64_t,uint64_t>> ProbePriorityActor(uint64_t parent,const EntityTopologySample& topology,bool knownLink,
@@ -1651,7 +1713,7 @@ namespace OW {
         const auto trace=[&](uint64_t reason,uint64_t component=0) {
             RuntimeTrace::Emit(RuntimeTrace::DiscoveryProbe,parent,reason,component,knownLink);
         };
-        if(!offset::IsCnProfile() || !topology.complete ||
+        if((!offset::IsCnProfile() && !offset::Active().capacityBoundRegistry) || !topology.complete ||
             !AcceptEntityRegistry(topology.registry) ||
             !std::binary_search(topology.members.begin(),topology.members.end(),parent))return result;
         EntityHeaderSnapshot header{};
@@ -1659,6 +1721,12 @@ namespace OW {
         else if(!header.Read(parent)){trace(1);return result;}
         uint32_t match=0;if(!header.ReadParentOffset(offset::Entity_MatchId,match) || !match){trace(2);return result;}
         const auto link=DecryptComponent(parent,offset::Active().typeLink,&header,true);
+        if (offset::Active().capacityBoundRegistry) {
+            result = ProbeRegionalActor(parent, topology, header, match, link, discoveryTick, discoveries);
+            if (bindingMembers) *bindingMembers = result;
+            if (bindingComplete) *bindingComplete = result.size() == 1;
+            return result;
+        }
         std::vector<uint64_t> components;
         std::array<uint32_t,2> linkIds{};
         const bool linkIdRead=link && SDK->read_range(link+offset::Link_TargetId,linkIds.data(),sizeof(linkIds));

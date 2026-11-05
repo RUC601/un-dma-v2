@@ -10,7 +10,6 @@ using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
 #include "game/profiles/ProfileState.hpp"
-#include "Game/profiles/CandidateSession.hpp"
 #include "Features/UiLabels.hpp"
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
@@ -277,9 +276,9 @@ void DrawMiscGeneralPage() {
 
         SettingRow(T(UiText::RuntimeVersion));
         const auto layout = V2::Profiles::Snapshot();
-        if (OW::ProcessConnection::IsConnected() && layout.detection.selected >= 0)
-            ImGui::TextWrapped("%s%s", V2::Profiles::profiles[layout.detection.selected].id,
-                layout.candidateSession ? " / candidate" : "");
+        const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
+        if (OW::ProcessConnection::IsConnected() && matched)
+            ImGui::TextWrapped("%s %s", matched->region, matched->build);
         else
             ImGui::TextWrapped("%s", L("No verified active layout. Open Diagnostics to choose or retry."));
 
@@ -302,29 +301,30 @@ void DrawMiscGeneralPage() {
 }
 
 void DrawMiscDiagnosticsPage() {
-    const auto profile=V2::Profiles::Snapshot();
+    const auto profile = V2::Profiles::Snapshot();
+    const auto* matched = V2::Profiles::MatchedProfile(profile.detection);
     UIGroupBox("版本与布局");
-    int selected=V2::Profiles::requestedProfile.load()+1;
-    const char* choices[]={"自动 / Auto (CN)","CN", "KR 候选 / Candidate", "BZ 候选 / Candidate"};
-    ImGui::SetNextItemWidth(-1);
-    if(ImGui::Combo("##RequestedProfile",&selected,choices,IM_ARRAYSIZE(choices))) {
-        V2::Profiles::requestedProfile.store(selected-1);
+    int selected = V2::Profiles::requestedProfile.load() + 1;
+    const char* choices[] = {"Auto", "CN", "BZ", "KR"};
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.44f);
+    if (ImGui::Combo("##RequestedProfile", &selected, choices, IM_ARRAYSIZE(choices))) {
+        V2::Profiles::requestedProfile.store(selected - 1);
         OW::ProcessConnection::RequestReconnect();
     }
-    ImGui::TextWrapped("选择用于本次运行，切换后重新核验。KR/BZ 仅运行候选读取，UN 业务与输出关闭。");
-    if(profile.candidateSession)
-        ImGui::TextWrapped("Candidate: status=%d slots=%u/%u parents=%u",profile.candidateStatus,
-            profile.candidateScanned,profile.candidateCapacity,profile.candidateCount);
-
-    ImGui::TextWrapped("%s", V2::Profiles::StatusText(profile.detection.status));
-    if(profile.detection.selected>=0)
-        ImGui::TextWrapped("%s", V2::Profiles::profiles[profile.detection.selected].id);
-    ImGui::TextWrapped("CN 映像：%s；相机兼容与实体可用分别检查。", profile.cnImage?"已核验":"未核验");
-    ImGui::TextWrapped("KR / BZ：相机、注册表分块扫描及解码候选已接入；实服未验证。实体字段到 UN 业务适配尚未完成。");
-    for (const auto& item : V2::Profiles::Catalog()) {
-        ImGui::TextWrapped("%s · camera=%d registry=%d decode=%d UN=%d output=%d %s",
-            item.id,item.camera,item.registry,item.componentDecode,item.unFields,item.output,
-            item.candidate ? "candidate / live unverified" : "CN implementation");
+    ImGui::SameLine();
+    if (matched)
+        ImGui::TextWrapped("已识别 %s · %s", matched->region, matched->build);
+    else
+        ImGui::TextWrapped("%s", V2::Profiles::StatusText(profile.detection.status));
+    if (matched && OW::ProcessConnection::IsConnected()) {
+        const auto runtime = Diagnostics::Snapshot();
+        ImGui::Text("已发布实体 %zu", runtime.entityCount);
+        if (runtime.entityCount == 0)
+            ImGui::TextWrapped("等待实体字段完成采集");
+        if (!matched->Offsets().VisibilityValueOffset)
+            ImGui::TextWrapped("该版本缺少可见性布局");
+        if (!matched->Offsets().InputMouseScaleX_RVA)
+            ImGui::TextWrapped("该版本缺少游戏鼠标缩放偏移");
     }
     CloseGroupBox();
 

@@ -2134,7 +2134,7 @@ void entity_thread() {
             bool refreshSkillStatus =
                 !slowCache.skillValid ||
                 slowNow - slowCache.skillUpdateTick >=
-                    (V2::Alerts::ObserveSkillHero(entity.HeroID)
+                    (V2::Alerts::ObserveSkillHero(entity.HeroID) || V2::Alerts::ObserveUltimateHero(entity.HeroID)
                         ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs);
             if (refreshSkillStatus && !consumeCycleBudget(skillRefreshBudget))
                 refreshSkillStatus = false;

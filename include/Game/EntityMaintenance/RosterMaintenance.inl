@@ -226,8 +226,8 @@
                 std::find(cycleMemberPairs.begin(),cycleMemberPairs.end(),std::make_pair(rosterEntity.address,rosterEntity.LinkParent))!=cycleMemberPairs.end();
             if(!actualMember || !rosterEntity.HasFreshLifeState(now) || !OW::PresentationTiming::Fresh(rosterEntity.anchor_sample_tick_ms,now))
                 rosterEntity.body_valid=false;
-            const bool keepFreshDuringCnGrace = actualMember && rosterEntity.body_valid &&
-                OW::offset::IsCnProfile() &&
+            const bool keepFreshBetweenReads = actualMember && rosterEntity.body_valid &&
+                OW::DynamicEntityRegistryEnabled() &&
                 !seen &&
                 rosterEntity.roster_state == OW::EntityRosterState::Fresh &&
                 rosterEntity.Alive &&
@@ -236,7 +236,7 @@
                 lastSeen != 0 &&
                 OW::PresentationTiming::Fresh(rosterEntity.anchor_sample_tick_ms, now);
 
-            if ((!actualMember || !rosterEntity.HasFreshLifeState(now) || (!seen && !keepFreshDuringCnGrace) ||
+            if ((!actualMember || !rosterEntity.HasFreshLifeState(now) || (!seen && !keepFreshBetweenReads) ||
                  !OW::PresentationTiming::Fresh(rosterEntity.anchor_sample_tick_ms, now)) &&
                 rosterEntity.roster_state != OW::EntityRosterState::Dead) {
                 if (rosterEntity.roster_state != OW::EntityRosterState::Missing &&

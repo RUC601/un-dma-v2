@@ -2,28 +2,20 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include "Game/Cn154905.hpp"
+#include "Game/Offsets.hpp"
 
 namespace V2::Profiles {
-enum class Region { CN, KR, BZ, Unclassified };
 struct Profile {
-    const char* id;
-    Region region;
-    uint64_t cameraRva, entityRva, adminRva;
-    uint64_t addBefore, xorValue, addAfter;
-    bool encoded, candidate;
+    const char* region;
+    const char* build;
+    OW::offset::RuntimeProfile runtime;
+
+    constexpr const auto& Offsets() const { return OW::offset::ForProfile(runtime); }
 };
-// CN 来源：03_DOWNP/2.25.1.0.154905N/cn/offset_work_2026-11-04。
-// 其余候选来源：Pure/research/20261028-offset-profiles/profiles.json；
-// 探测控制流：evidence/12aca0.c。仅证明布局兼容，不推断渠道身份。
-inline constexpr std::array<Profile,4> profiles{{
-    {"cn-154905n",Region::CN,OW::Cn154905::viewRoot,OW::Cn154905::entityRoot,OW::Cn154905::globalAdmin,
-     0,OW::Cn154905::pointerXor,OW::Cn154905::pointerAdd,true,false},
-    {"kr-nexon-152688",Region::KR,0x3CD33B0,0x35E8568,0,0,0,0,false,true},
-    {"bz-battlenet-152690",Region::BZ,0x3930050,0x398F358,0x3AF6A70,
-     0x7821C8A55B94CFA0ULL,0xB5B70DFEBEFA4BB5ULL,0x6E6C0E878F0FE669ULL,true,true},
-    {"normal-154504-unclassified",Region::Unclassified,0x39AEF28,0x3A16E28,0x3B7F410,
-     0xB2485AD1CF871D2CULL,0x89D3E0B8C0994ABFULL,0x820B88E340AB6EB0ULL,true,true}
+inline constexpr std::array<Profile,3> profiles{{
+    {"CN", "154905N", OW::offset::RuntimeProfile::Cn},
+    {"BZ", "154905", OW::offset::RuntimeProfile::Bz154905},
+    {"KR", "152688", OW::offset::RuntimeProfile::Kr152688},
 }};
 enum class ProbeStatus { Match, NotReady, ReadFailed, InvalidPointer, InvalidMatrix, Stale };
 enum class DetectionStatus { Matched, NotReady, NoMatch, Ambiguous, Stale };
@@ -38,9 +30,6 @@ struct Detection {
     std::array<Probe,profiles.size()> evidence{};
 };
 inline bool UserPointer(uint64_t p) { return p>0x10000 && p<0x800000000000ULL; }
-inline uint64_t DecodeCamera(const Profile& p,uint64_t value) {
-    return p.encoded?((value+p.addBefore)^p.xorValue)+p.addAfter:value;
-}
 template<class Read,class Current>
 Probe ProbeCamera(const Profile& profile,uint64_t module,Read&& read,Current&& current) {
     Probe result;
@@ -50,16 +39,17 @@ Probe ProbeCamera(const Profile& profile,uint64_t module,Read&& read,Current&& c
         return true;
     };
     uint64_t encoded=0,p2=0,p3=0;
-    if(!exact(module+profile.cameraRva,&encoded,8))return result;
+    const auto& offsets = profile.Offsets();
+    if(!exact(module+offsets.Address_viewmatrix_base,&encoded,8))return result;
     if(!encoded)return result;
-    const auto p1=DecodeCamera(profile,encoded);
+    const auto p1=OW::offset::DecodeCameraRoot(offsets, encoded);
     if(!UserPointer(p1)) {result.status=ProbeStatus::InvalidPointer;return result;}
-    if(!exact(p1+0x20,&p2,8))return result;
+    if(!exact(p1+offsets.VM_P1,&p2,8))return result;
     if(!UserPointer(p2)) {result.status=ProbeStatus::InvalidPointer;return result;}
-    if(!exact(p2+0x48,&p3,8))return result;
+    if(!exact(p2+offsets.VM_P2,&p3,8))return result;
     if(!UserPointer(p3)) {result.status=ProbeStatus::InvalidPointer;return result;}
     std::array<float,16> a{},b{};
-    if(!exact(p3+0x140,a.data(),64) || !exact(p3+0xb0,b.data(),64))return result;
+    if(!exact(p3+offsets.VM_ViewMatrix,a.data(),64) || !exact(p3+offsets.VM_ProjMatrix,b.data(),64))return result;
     b[3]=0;
     for(size_t row=0;row<4;++row)for(size_t col=0;col<4;++col)
         for(size_t k=0;k<4;++k)result.combined[row*4+col]+=a[row*4+k]*b[k*4+col];

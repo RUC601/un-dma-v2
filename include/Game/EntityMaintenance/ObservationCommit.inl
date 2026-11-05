@@ -130,8 +130,12 @@
                 entity.actual_scan_generation=rawScanSeenComponents.contains(entity.address) ? OW::last_consumed_raw_scan_generation : 0;
                 entity.actual_scan_source=rawScanSeenComponents.contains(entity.address) ? consumedScanSource : 0;
                 const OW::c_entity* old=existingRosterIt==entityRoster.end()?nullptr:&existingRosterIt->second->entity;
+                auto previousIdentity = old ? old->PresentationIdentity() : OW::PresentationTiming::ActorIdentity{};
+                // A stale frame is hidden by the roster, but only an observed death ends this lifetime.
+                if (old && old->roster_state == OW::EntityRosterState::Missing && old->death_known && !old->is_dead)
+                    previousIdentity.alive = true;
                 const bool sameLifetime=old && old->body_absence_revision==entity.body_absence_revision &&
-                    OW::PresentationTiming::SameLifetime(old->PresentationIdentity(),entity.PresentationIdentity());
+                    OW::PresentationTiming::SameLifetime(previousIdentity,entity.PresentationIdentity());
                 if(old && !rawScanSeenComponents.contains(entity.address)) {
                     entity.actual_scan_generation=old->actual_scan_generation;entity.actual_scan_source=old->actual_scan_source;
                 }

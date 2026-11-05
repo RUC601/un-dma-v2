@@ -13,7 +13,8 @@ void Start();
 void Stop();
 Status GetStatus();
 void RetrySpeech();
-void Preview(const char* ruleId);
+void Preview(std::string message);
 void Submit(const char* ruleId, std::function<bool()> stillCurrent);
+void SubmitUltimate(uint64_t hero, std::function<bool()> stillCurrent);
 void SkillWorker(); // Owned and drained by the process-session WorkerGroup.
 }

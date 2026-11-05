@@ -29,13 +29,7 @@ bool SampleAcquisitionCamera() {
     const auto& offsets=OW::offset::Active();
     if(!state.camera || epoch!=state.epoch || scene!=state.scene || now-state.resolvedAt>=500) {
         const uint64_t root=OW::SDK->RPM<uint64_t>(OW::SDK->dwGameBase+offsets.Address_viewmatrix_base);
-        const auto mode=offsets.viewMatrixMode;
-        const uint64_t decoded=mode==OW::offset::ViewMatrixMode::DirectChain ? root :
-            mode==OW::offset::ViewMatrixMode::EncryptedChainXorAdd ?
-                (root ^ offsets.offset_viewmatrix_xor_key)+offsets.offset_viewmatrix_xor_key2 :
-            mode==OW::offset::ViewMatrixMode::EncryptedChainSubXorSub ?
-                ((root-offsets.offset_viewmatrix_xor_key)^offsets.offset_viewmatrix_xor_key2)-offsets.offset_viewmatrix_xor_key3 :
-                ((root+offsets.offset_viewmatrix_xor_key)^offsets.offset_viewmatrix_xor_key2);
+        const uint64_t decoded=OW::offset::DecodeCameraRoot(offsets, root);
         const uint64_t p1=root ? OW::SDK->RPM<uint64_t>(decoded+offsets.VM_P1) : 0;
         const uint64_t p2=p1 ? OW::SDK->RPM<uint64_t>(p1+offsets.VM_P2) : 0;
         uint64_t projection=p2 ? p2+offsets.VM_ProjMatrix : 0;

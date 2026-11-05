@@ -10,5 +10,6 @@ struct AudioDevice { std::string id, name; uint32_t index = UINT32_MAX; };
 std::vector<AudioDevice> PlaybackDevices();
 AudioClip ReadClip(const std::filesystem::path& path);
 AudioClip PrepareSpeech(const Settings& settings, const RuleSettings& rule, const Cancel& cancelled);
+void RemoveSpeechCache(const std::string& message);
 bool PlaySpeech(const AudioClip& clip, const Settings& settings, const Cancel& cancelled);
 }

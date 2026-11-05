@@ -42,6 +42,34 @@ std::wstring Quote(const std::wstring& value) {
     result.append(slashes * 2, L'\\');
     return result + L'\"';
 }
+std::wstring Pronunciation(const std::string& text) {
+    auto upper = [](wchar_t ch) { return ch >= L'A' && ch <= L'Z'; };
+    auto letter = [&](wchar_t ch) { return upper(ch) || (ch >= L'a' && ch <= L'z'); };
+    const auto wide = Wide(text);
+    std::wstring result;
+    for (size_t i = 0; i < wide.size();) {
+        if (!letter(wide[i])) { result += wide[i++]; continue; }
+        const size_t start = i;
+        while (i < wide.size() && letter(wide[i])) ++i;
+        const auto word = std::wstring_view(wide).substr(start, i-start);
+        // Kokoro's lexicon skips unknown words. Speak uppercase initials using its letter entries.
+        if (word.size() > 1 && std::all_of(word.begin(), word.end(), upper)) {
+            result += L' ';
+            for (wchar_t ch : word) {
+                result += wchar_t(ch - L'A' + L'a');
+                result += L' ';
+            }
+        } else result += word;
+    }
+    return result;
+}
+std::wstring CacheName(const std::string& message, int voice, bool legacy = false) {
+    uint64_t hash = 14695981039346656037ull;
+    for (unsigned char ch : message) { hash ^= ch; hash *= 1099511628211ull; }
+    std::wostringstream name;
+    name << (legacy ? L"kokoro11-" : L"kokoro11-initials-") << voice << L"-" << std::hex << hash;
+    return name.str();
+}
 void Generate(const std::filesystem::path& root, const std::filesystem::path& output,
               const Settings& settings, const RuleSettings& rule, const Cancel& cancelled) {
     const auto bin = root / L"sherpa-onnx-v2.0.1-win-x64-shared-MD-Release" / L"bin";
@@ -56,7 +84,7 @@ void Generate(const std::filesystem::path& root, const std::filesystem::path& ou
         L"--kokoro-tokens=" + (model / L"tokens.txt").wstring(),
         L"--kokoro-lexicon=" + (model / L"lexicon-us-en.txt").wstring() + L"," + (model / L"lexicon-zh.txt").wstring(),
         L"--sid=" + std::to_wstring(settings.voice == 1 ? 58 : 3),
-        L"--output-filename=" + output.wstring(), Wide(rule.message)
+        L"--output-filename=" + output.wstring(), Pronunciation(rule.message)
     };
     std::wstring command;
     for (const auto& argument : arguments) { if (!command.empty()) command += L' '; command += Quote(argument); }
@@ -128,18 +156,19 @@ AudioClip ReadClip(const std::filesystem::path& path) {
 }
 AudioClip PrepareSpeech(const Settings& settings, const RuleSettings& rule, const Cancel& cancelled) {
     const auto root = VoiceRoot(), cache = root / L"cache";
-    std::filesystem::create_directories(cache);
-    uint64_t hash = 14695981039346656037ull;
-    for (unsigned char ch : rule.message) { hash ^= ch; hash *= 1099511628211ull; }
-    std::wostringstream name;
-    name << L"kokoro11-" << settings.voice << L"-" << std::hex << hash;
-    const auto wave = cache / (name.str()+L".wav"), text = cache / (name.str()+L".txt");
+    const auto name = CacheName(rule.message, settings.voice);
+    const auto wave = cache / (name+L".wav"), text = cache / (name+L".txt");
     std::ifstream signature(text, std::ios::binary);
     std::string previous((std::istreambuf_iterator<char>(signature)), {});
     if (previous == rule.message) {
         try { return ReadClip(wave); } catch (const std::exception&) { /* Regenerate a damaged cache file. */ }
     }
-    const auto temporary = cache / (name.str()+L"-"+std::to_wstring(GetCurrentProcessId())+L".tmp.wav");
+    const auto executable = root / L"sherpa-onnx-v2.0.1-win-x64-shared-MD-Release/bin/sherpa-onnx-offline-tts.exe";
+    if (!std::filesystem::is_regular_file(executable) ||
+        !std::filesystem::is_regular_file(root / L"kokoro-int8-multi-lang-v1_1/model.int8.onnx"))
+        throw std::runtime_error("voice_missing");
+    std::filesystem::create_directories(cache);
+    const auto temporary = cache / (name+L"-"+std::to_wstring(GetCurrentProcessId())+L".tmp.wav");
     try {
         Generate(root, temporary, settings, rule, cancelled);
         auto clip = ReadClip(temporary);
@@ -152,6 +181,22 @@ AudioClip PrepareSpeech(const Settings& settings, const RuleSettings& rule, cons
     } catch (...) {
         DeleteFileW(temporary.c_str());
         throw;
+    }
+}
+void RemoveSpeechCache(const std::string& message) {
+    const auto cache = VoiceRoot() / L"cache";
+    for (int voice = 0; voice < 2; ++voice) {
+        for (bool legacy : {false, true}) {
+            const auto name = CacheName(message, voice, legacy);
+            const auto signature = cache / (name+L".txt");
+            std::ifstream input(signature, std::ios::binary);
+            const std::string stored((std::istreambuf_iterator<char>(input)), {});
+            input.close();
+            if (stored != message) continue;
+            std::error_code ignored;
+            std::filesystem::remove(cache / (name+L".wav"), ignored);
+            if (!ignored) std::filesystem::remove(signature, ignored);
+        }
     }
 }
 bool PlaySpeech(const AudioClip& clip, const Settings& settings, const Cancel& cancelled) {

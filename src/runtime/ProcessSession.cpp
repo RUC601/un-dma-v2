@@ -6,9 +6,7 @@
 #include "Memory/KeyState.hpp"
 #include "Memory/DeviceRecovery.hpp"
 #include "Game/Overwatch.hpp"
-#include "Game/ProductImageIdentity.hpp"
 #include "Game/profiles/ProfileState.hpp"
-#include "Game/profiles/CandidateSession.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/ProcessConnection.hpp"
 #include <chrono>
@@ -18,7 +16,6 @@ using V2::Output::InitializeOutputFromConfig;
 using V2::Output::ReleaseOutputMouseStateForShutdown;
 namespace {
 constexpr const char* kTargetProcessName = "Overwatch.exe";
-constexpr const char* kProductVariantName = "un-dma-v2";
 constexpr DWORD kProcessScanIntervalMs = 1000;
 constexpr DWORD kHeroSkillRuntimeIntervalMs = 16;
 std::atomic<bool> g_ProcessConnectionThreadRunning{false};
@@ -89,48 +86,12 @@ std::mutex g_ProcessConnectionMutex;
 // Background thread launcher
 // =============================================================================
 
-// 候选路径只产生候选拓扑统计，不启动 UN feature、按键或外设输出。
-static void CandidateWorker() {
-    using namespace V2::Profiles;
-    const auto owner=Snapshot();
-    const auto epoch=OW::ProcessConnection::ConnectionEpoch();
-    const auto index=owner.detection.selected;
-    CandidateIo io{
-        [](uint64_t at,void* out,size_t size){return mem.ReadFreshExact(at,out,size);},
-        [=]{return OW::RuntimeWorkersRunning() && OW::ProcessConnection::IsConnected() &&
-            OW::ProcessConnection::ConnectionEpoch()==epoch && mem.GetCurrentProcessId()==owner.pid &&
-            OW::SDK->dwGameBase==owner.module;}
-    };
-    CandidateSession session;
-    while(io.current()) {
-        auto status=session.Begin(index,owner.module,io);
-        while(status==CandidateStatus::Ready && io.current()) {
-            status=session.Step();
-            auto report=owner;report.candidateSession=true;report.candidateStatus=int(status);
-            report.candidateScanned=session.Snapshot().scanned;report.candidateCapacity=session.Snapshot().capacity;
-            report.candidateCount=uint32_t(session.Snapshot().parents.size());
-            if(io.current())Publish(report);
-            if(session.Snapshot().complete)break;
-            OW::RuntimeWorkerSleep(1);
-        }
-        if(status!=CandidateStatus::Ready && io.current()) {
-            auto report=owner;report.candidateSession=true;report.candidateStatus=int(status);Publish(report);
-        }
-        OW::RuntimeWorkerSleep(250);
-    }
-}
-
 bool StartBackgroundThreads()
 {
     try {
         const bool committed = OW::TryCommitRuntimeOperation([] {
             if(g_Workers.Running())return;
             OW::SetRuntimeWorkersRunning(true);
-            if(V2::Profiles::Snapshot().candidateSession) {
-                const Worker entry{"regional candidate",CandidateWorker};
-                g_Workers.Start(std::span(&entry,1), []{OW::SetRuntimeWorkersRunning(false);});
-                return;
-            }
             std::vector<V2::Runtime::Worker> entries{
                 {"acquisition",entity_thread},
                 {"UN behaviors",aimbot_thread},{"configuration",configsavenloadthread},
@@ -325,14 +286,6 @@ static bool TryConnectTargetProcess(bool forceReconnect, bool manualRequest)
         kTargetProcessName,
         static_cast<unsigned long>(livePid));
 
-    OW::offset::SetActiveProfile(OW::offset::kProductRuntimeProfile);
-    Diagnostics::Info("UN feature offset baseline: %s variant=%s; layout routing is verified separately.",
-        OW::offset::ActiveProfileName(),
-        kProductVariantName);
-    std::printf("[MAIN] UN feature offset baseline: %s (%s); checking layout route.\n",
-        OW::offset::ActiveProfileName(),
-        kProductVariantName);
-
     ClearProcessRuntimeSnapshots();
     if (forceReconnect)
         mem.DetachProcess();
@@ -345,53 +298,39 @@ static bool TryConnectTargetProcess(bool forceReconnect, bool manualRequest)
         return false;
     }
 
-    uint32_t imageTimestamp = 0, imageSize = 0;
-    const auto identity = OW::ProductImageIdentity::Check(OW::SDK->dwGameBase,
-        [](uint64_t address, void* destination, size_t size) {
-            auto session = mem.AcquireSession();
-            DWORD actual = 0;
-            return session && mem.vHandle && VMMDLL_MemReadEx(mem.vHandle, mem.GetCurrentProcessId(),
-                address, static_cast<PBYTE>(destination), static_cast<DWORD>(size), &actual,
-                VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_NOPAGING) != FALSE && actual == size;
-        }, imageTimestamp, imageSize);
     V2::Profiles::State profileState;
-    profileState.module=OW::SDK->dwGameBase;
-    profileState.pid=mem.GetCurrentProcessId();
-    profileState.timestamp=imageTimestamp;profileState.imageSize=imageSize;
-    profileState.cnImage=identity==OW::ProductImageIdentity::Result::Accepted;
-    const int requested=V2::Profiles::requestedProfile.load();
-    profileState.detection=V2::Profiles::Detect(profileState.module,
-        [](uint64_t at,void* dst,size_t size){return mem.ReadFreshExact(at,dst,size);},
-        [&]{return !OW::RuntimeShutdownRequested() && mem.GetCurrentProcessId()==profileState.pid && OW::SDK->dwGameBase==profileState.module;},requested);
-    const auto route=V2::Profiles::ResolveRoute(profileState.cnImage,profileState.detection,requested);
-    profileState.candidateSession=route==V2::Profiles::Route::Candidate;
-    V2::Profiles::Publish(profileState);
-    Diagnostics::Info("V2 layout probe state=%d matches=%d selected=%d cnImage=%d.",
-        int(profileState.detection.status),profileState.detection.matches,profileState.detection.selected,profileState.cnImage);
-    if (route==V2::Profiles::Route::Rejected) {
-        Diagnostics::Warn("Profile route rejected: imageResult=%d timestamp=%lu imageSize=%lu; CN expected=%lu/%lu.",
-            static_cast<int>(identity), imageTimestamp, imageSize,
-            OW::ProductImageIdentity::kTimestamp, OW::ProductImageIdentity::kImageSize);
-        MarkProcessDisconnected("Profile not verified; check selected layout and game version; retrying");
-        // Preserve the failed probe for the diagnostics page. It carries no
-        // active-session or output authorization and will be replaced on retry.
+    profileState.module = OW::SDK->dwGameBase;
+    profileState.pid = mem.GetCurrentProcessId();
+    const int requested = V2::Profiles::requestedProfile.load();
+    profileState.detection = V2::Profiles::Detect(profileState.module,
+        [](uint64_t at, void* dst, size_t size) { return mem.ReadFreshExact(at, dst, size); },
+        [&] { return !OW::RuntimeShutdownRequested() && mem.GetCurrentProcessId() == profileState.pid &&
+            OW::SDK->dwGameBase == profileState.module; }, requested);
+    const auto* matched = V2::Profiles::MatchedProfile(profileState.detection);
+    if (!matched) {
+        const bool ambiguous = profileState.detection.status == V2::Profiles::DetectionStatus::Ambiguous;
+        MarkProcessDisconnected(ambiguous ? "Multiple region layouts matched; select a region"
+                                         : "Waiting for a matching region layout");
         V2::Profiles::Publish(profileState);
+        Diagnostics::Info("Region probe: request=%d state=%d matches=%d.", requested,
+            int(profileState.detection.status), profileState.detection.matches);
         return false;
     }
     const int attachedPid = mem.GetCurrentProcessId();
     // Shutdown and attach commit share a short lock; DMA resolution stays outside it.
     if (!OW::TryCommitRuntimeOperation([&] {
+        OW::offset::SetActiveProfile(matched->runtime);
+        V2::Profiles::Publish(profileState);
         Diagnostics::SetProcessAttached(true);
         OW::ProcessConnection::SetStatus(true, false, attachedPid, OW::SDK->dwGameBase,
-            profileState.candidateSession ? "Candidate layout session; UN fields/output unavailable" :
-                std::string("Connected to Overwatch.exe (") + OW::offset::ActiveProfileName() + ")");
-        OW::SetRuntimeOutputSessionEnabled(!profileState.candidateSession);
+            std::string("Connected to Overwatch.exe (") + matched->Offsets().name + ")");
+        OW::SetRuntimeOutputSessionEnabled(true);
     }))
         return false;
-    Diagnostics::Info("Process attached: %s pid=%d base=0x%llX.",
+    Diagnostics::Info("Process attached: %s pid=%d base=0x%llX. Region %s %s (request=%d).",
         kTargetProcessName,
         attachedPid,
-        static_cast<unsigned long long>(OW::SDK->dwGameBase));
+        static_cast<unsigned long long>(OW::SDK->dwGameBase), matched->region, matched->build, requested);
     std::printf("[MAIN] %s attached. PID=%d base=0x%llX\n",
         kTargetProcessName,
         attachedPid,

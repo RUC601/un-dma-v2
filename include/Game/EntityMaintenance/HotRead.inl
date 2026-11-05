@@ -29,8 +29,8 @@
             }
             if (readHealth && healthBase) {
                 reads.healthRequested = true;
-                const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
-                if (cn) {
+                const bool pooled = offset::Active().pooledHealth;
+                if (pooled) {
                     for (size_t pool = 0; pool < 3; ++pool)
                         request(healthBase + 0xD8 + pool * OW::kCnHealthPoolBytes,
                             reads.health.cnPools[pool].data(), OW::kCnHealthPoolBytes, reads.healthBytes[pool]);
@@ -39,7 +39,7 @@
                     request(healthBase + 0x21C, &reads.health.armor, 8, reads.healthBytes[1]);
                     request(healthBase + 0x35C, &reads.health.barrier, 8, reads.healthBytes[2]);
                 }
-                request(healthBase + (cn ? 0x568 : 0x4A8), reads.health.flags.data(), 2, reads.healthBytes[3]);
+                request(healthBase + (pooled ? 0x568 : 0x4A8), reads.health.flags.data(), 2, reads.healthBytes[3]);
             }
             if (readHero && heroBase) {
                 reads.heroRequested = true;
@@ -62,10 +62,10 @@
             };
             if (reads.velocityRequested) { field(reads.velocityBytes[0],12); field(reads.velocityBytes[1],12); field(reads.velocityBytes[2],8); }
             if (reads.healthRequested) {
-                const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
-                field(reads.healthBytes[0],cn ? OW::kCnHealthPoolBytes : 32);
-                field(reads.healthBytes[1],cn ? OW::kCnHealthPoolBytes : 8);
-                field(reads.healthBytes[2],cn ? OW::kCnHealthPoolBytes : 8);
+                const bool pooled = offset::Active().pooledHealth;
+                field(reads.healthBytes[0],pooled ? OW::kCnHealthPoolBytes : 32);
+                field(reads.healthBytes[1],pooled ? OW::kCnHealthPoolBytes : 8);
+                field(reads.healthBytes[2],pooled ? OW::kCnHealthPoolBytes : 8);
                 field(reads.healthBytes[3],2);
             }
             if (reads.deathRequested) field(reads.deathBytes,1);
@@ -89,8 +89,8 @@
             return reads;
         };
         auto readHealthFields = [&](uint64_t base, OW::health_fields_t& health) {
-            const bool cn = offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905;
-            const bool poolsRead = cn
+            const bool pooled = offset::Active().pooledHealth;
+            const bool poolsRead = pooled
                 ? SDK->read_range(base+0xD8,health.cnPools[0].data(),OW::kCnHealthPoolBytes) &&
                   SDK->read_range(base+0x258,health.cnPools[1].data(),OW::kCnHealthPoolBytes) &&
                   SDK->read_range(base+0x3D8,health.cnPools[2].data(),OW::kCnHealthPoolBytes)
@@ -98,6 +98,6 @@
                   SDK->read_range(base+0x21C,&health.armor,8) &&
                   SDK->read_range(base+0x35C,&health.barrier,8);
             return poolsRead &&
-                SDK->read_range(base+(cn?0x568:0x4A8),health.flags.data(),2) &&
+                SDK->read_range(base+(pooled?0x568:0x4A8),health.flags.data(),2) &&
                 SDK->read_range(base+OW::kHealthDeathOffset,&health.death,1) && health.death<=1;
         };

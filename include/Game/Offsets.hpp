@@ -22,11 +22,11 @@ namespace OW {
         enum class RuntimeProfile {
             WorldBz,
             Cn,
+            Bz154905,
+            Kr152688,
         };
 
-        // un-dma is a product-locked CN runtime. Keep the World/BZ
-        // profile available for shared behavior self-tests, but never select
-        // it as the production default or as a connection fallback.
+        // Initialization baseline for consumers outside an attached session.
         inline constexpr RuntimeProfile kProductRuntimeProfile = RuntimeProfile::Cn;
 
         enum class ComponentTransformMode {
@@ -37,6 +37,7 @@ namespace OW {
             World151722,
             Identity,
             Cn154905,
+            Bz154905,
         };
 
         enum class SingletonListMode {
@@ -46,6 +47,7 @@ namespace OW {
             LiveGameAdminWorldBz,
             Plain,
             Cn154905,
+            Bz154905,
         };
 
         enum class ViewMatrixMode {
@@ -101,6 +103,13 @@ namespace OW {
             ViewMatrixChainMode viewMatrixChain = ViewMatrixChainMode::LegacyLong;
             bool projectionFromRender = false;
             uint32_t typeSkill = 0x37;
+            uint64_t componentKeyRootRva = 0;
+            uint64_t componentKeyByteRva = 0;
+            uint64_t componentKeyOffset = 0;
+            uint64_t clientGameRva = 0;
+            bool capacityBoundRegistry = false;
+            bool pooledHealth = false;
+            uint64_t visibilityClearMask = 0;
         };
 
         // =========================================================================
@@ -365,31 +374,116 @@ namespace OW {
         };
 
         inline constexpr RuntimeOffsetProfile kCnRuntimeProfile{
-            "cn 154905N",
-            ComponentTransformMode::Cn154905,
-            0x20, 0x42, 0x2E, 0x33, 0x3A, 0x53,
-            Cn154905::entityRoot, // initializer RVA 0x210E0D0
-            Cn154905::mouseScaleX, // input registration RVA 0x66B020
-            Cn154905::mouseScaleY,
-            0, 0, // host viewport remains explicit configuration
-            0x98, // encrypted predicate RVA 0x77D430
-            Cn154905::viewRoot, // initializer RVA 0x2209820
-            Cn154905::pointerXor,
-            Cn154905::pointerAdd,
-            0,
-            0x20, 0x48,
-            0x6D0, // render writer RVA 0x2414040; +0x6C8 is a different buffer
-            0x8, 0xC0,
-            0x140, // P2 camera view
-            0xB0, // P2 primary projection; ComposeCameraProjection normalizes its m14 sentinel
-            Cn154905::globalAdmin,
-            SingletonListMode::Cn154905,
-            ViewMatrixMode::EncryptedChainXorAdd,
-            0,
-            ViewMatrixChainMode::LegacyLong,
-            false, // Use the primary input; render output temporarily selects a different projection
-            0x36, // StateScript: local bucket resolves 0x1E32/0x189C/0x1F89 live
+            .name = "CN 154905N",
+            .componentTransform = ComponentTransformMode::Cn154905,
+            .typeTeam = 0x20,
+            .typePlayerController = 0x42,
+            .typeRotation = 0x2E,
+            .typeLink = 0x33,
+            .typeHealth = 0x3A,
+            .typeHeroId = 0x53,
+            .Address_entity_base = Cn154905::entityRoot,
+            .InputMouseScaleX_RVA = Cn154905::mouseScaleX,
+            .InputMouseScaleY_RVA = Cn154905::mouseScaleY,
+            .VisibilityValueOffset = 0x98,
+            .Address_viewmatrix_base = Cn154905::viewRoot,
+            .offset_viewmatrix_xor_key = Cn154905::pointerXor,
+            .offset_viewmatrix_xor_key2 = Cn154905::pointerAdd,
+            .VM_P1 = 0x20,
+            .VM_P2 = 0x48,
+            .VM_ViewProjectionParent = 0x6D0,
+            .VM_ViewProjectionPtr = 0x8,
+            .VM_ViewProjectionMatrix = 0xC0,
+            .VM_ViewMatrix = 0x140,
+            .VM_ProjMatrix = 0xB0,
+            .GlobalAdmin_RVA = Cn154905::globalAdmin,
+            .singletonListMode = SingletonListMode::Cn154905,
+            .viewMatrixMode = ViewMatrixMode::EncryptedChainXorAdd,
+            .typeSkill = 0x36,
+            .pooledHealth = true,
         };
+
+        // 516727 p394#4850032. The camera, registry and component transform
+        // have read-only evidence on 154905. Input scale is still unresolved.
+        inline constexpr RuntimeOffsetProfile kBz154905RuntimeProfile{
+            .name = "BZ 154905",
+            .componentTransform = ComponentTransformMode::Bz154905,
+            .typeTeam = 0x20,
+            .typePlayerController = 0x42,
+            .typeRotation = 0x2E,
+            .typeLink = 0x33,
+            .typeHealth = 0x3A,
+            .typeHeroId = 0x53,
+            .Address_entity_base = 0x3BB39A8,
+            .VisibilityValueOffset = 0x98,
+            .Address_viewmatrix_base = 0x3B4B0E8,
+            .offset_viewmatrix_xor_key = 0x4FFB48E02CB5397CULL,
+            .offset_viewmatrix_xor_key2 = 0x0F26BE43E44F8A31ULL,
+            .VM_P1 = 0x20,
+            .VM_P2 = 0x48,
+            .VM_ViewMatrix = 0x140,
+            .VM_ProjMatrix = 0xB0,
+            .GlobalAdmin_RVA = 0x3D1CF10,
+            .singletonListMode = SingletonListMode::Bz154905,
+            .viewMatrixMode = ViewMatrixMode::EncryptedChainXorAdd,
+            .viewMatrixChain = ViewMatrixChainMode::CameraProjectionShort,
+            .typeSkill = 0x36,
+            .componentKeyRootRva = 0x3D17098,
+            .componentKeyByteRva = 0x39E3AE8,
+            .componentKeyOffset = 0x3A,
+            .clientGameRva = 0x3D171A0,
+            .capacityBoundRegistry = true,
+            .pooledHealth = true,
+            .visibilityClearMask = 0x200000000000ULL,
+        };
+
+        // Pure Korea/Nexon 152688 and forum p370. Shared entity IDs are
+        // provisional on KR. Admin, visibility and input scale are unknown.
+        inline constexpr RuntimeOffsetProfile kKr152688RuntimeProfile{
+            .name = "KR 152688",
+            .componentTransform = ComponentTransformMode::Identity,
+            .typeTeam = 0x20,
+            .typePlayerController = 0x42,
+            .typeRotation = 0x2E,
+            .typeLink = 0x33,
+            .typeHealth = 0x3A,
+            .typeHeroId = 0x53,
+            .Address_entity_base = 0x35E8568,
+            .Address_viewmatrix_base = 0x3CD33B0,
+            .VM_P1 = 0x20,
+            .VM_P2 = 0x48,
+            .VM_ViewMatrix = 0x140,
+            .VM_ProjMatrix = 0xB0,
+            .viewMatrixMode = ViewMatrixMode::DirectChain,
+            .viewMatrixChain = ViewMatrixChainMode::CameraProjectionShort,
+            .typeSkill = 0x36,
+            .capacityBoundRegistry = true,
+        };
+
+        constexpr const RuntimeOffsetProfile& ForProfile(RuntimeProfile profile)
+        {
+            switch (profile) {
+            case RuntimeProfile::Cn: return kCnRuntimeProfile;
+            case RuntimeProfile::Bz154905: return kBz154905RuntimeProfile;
+            case RuntimeProfile::Kr152688: return kKr152688RuntimeProfile;
+            case RuntimeProfile::WorldBz: return kWorldBzRuntimeProfile;
+            }
+            return kCnRuntimeProfile;
+        }
+
+        constexpr uint64_t DecodeCameraRoot(const RuntimeOffsetProfile& offsets, uint64_t root)
+        {
+            switch (offsets.viewMatrixMode) {
+            case ViewMatrixMode::DirectChain: return root;
+            case ViewMatrixMode::EncryptedChainXorAdd:
+                return (root ^ offsets.offset_viewmatrix_xor_key) + offsets.offset_viewmatrix_xor_key2;
+            case ViewMatrixMode::EncryptedChainSubXorSub:
+                return ((root - offsets.offset_viewmatrix_xor_key) ^ offsets.offset_viewmatrix_xor_key2) -
+                    offsets.offset_viewmatrix_xor_key3;
+            default:
+                return (root + offsets.offset_viewmatrix_xor_key) ^ offsets.offset_viewmatrix_xor_key2;
+            }
+        }
 
         inline std::atomic<RuntimeProfile>& ActiveProfileStorage()
         {
@@ -409,9 +503,7 @@ namespace OW {
 
         inline const RuntimeOffsetProfile& Active()
         {
-            return ActiveProfile() == RuntimeProfile::Cn
-                ? kCnRuntimeProfile
-                : kWorldBzRuntimeProfile;
+            return ForProfile(ActiveProfile());
         }
 
         inline const char* ActiveProfileName()
