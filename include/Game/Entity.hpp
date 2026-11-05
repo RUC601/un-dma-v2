@@ -121,6 +121,7 @@ namespace OW {
 
         bool   skill1act = false;
         bool   skill2act = false;
+        std::array<uint32_t, 2> skill_active_tick_ms{};
         float  ultimate  = 0.f;
         float  skillcd1  = 0.f;
         float  skillcd2  = 0.f;

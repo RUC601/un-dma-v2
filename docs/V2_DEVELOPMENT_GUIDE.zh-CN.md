@@ -8,6 +8,17 @@
 
 ## 目录与维护责任
 
+2026-11-05 Alert：左侧「预警 Alert」与 Aim、Trigger、Skills、Sequences 并列，配置跨本地英雄共享。
+本版实现敌方安娜睡眠针与回声飞行：默认勾选两条规则，内容分别为「安娜没睡针」「echo没飞」，总开关默认关闭。进入页面启用后，同一敌方身体有效的 inactive→active 才播报一次；回声按开始使用Shift触发，不等飞行结束。两项可独立勾选、选中行后编辑各自文案；旧安娜配置自动补齐回声，保留原有修改。绕后、被瞄准、大招播报只保留明确标注未实现的入口。
+
+- `include/Alerts/Settings.hpp` / `src/features/alerts/Settings.cpp`：规则目录、线程安全配置、启用状态；`src/config/AlertJson.hpp` 接入正常 INI 保存、自动保存和配置切换，中文以 ASCII JSON 转义保存于 `[Alert] settingsJson`。
+- `SkillDetector.hpp`：按目录中的英雄分发规则，共用纯状态边沿、去重和代次判断；`SkillWorker.cpp`只消费不可变实体帧，核验敌我、身体权限、连接/场景与读取时间。采集给原有active增加成功读取时间；仅启用相应英雄规则时，其既有技能刷新轮缩短到50ms，不依赖Overlay。首次active、断读、空缺、身体/英雄/连接/场景变化先建立基准。安娜/回声各自使用已存在的Shift active槽，回声没有复用CD倒计时的结束边沿。
+- `Service.cpp`：单独音频线程、最多4条待播请求，实战事件排队超过1秒丢弃；断线、源身体失效、关闭或更改配置会取消待播/在播内容。`Speech.cpp`：独立 sherpa-onnx 进程生成 Kokoro WAV 缓存，播放不阻塞采集/渲染/行为线程；设备以 Windows endpoint ID 保存，显式设备不可用时失败，不切回默认扬声器。音量只缩放本次语音，不更改系统音量。
+- 声音：Kokoro v1.1-zh INT8，女声 `zf_001 / sid 3`、男声 `zm_009 / sid 58`；运行时 sherpa-onnx v2.0.1。首次部署运行 `tools/setup-alert-voice.ps1`，固定下载地址并校验 SHA256，安装于各自运行目录 `alert-voice/`，许可证与来源同目录。不会安装驱动或修改 Oopz；短句生成完成后完全离线使用。
+- 传给 Oopz：副机 V2 的输出选虚拟音频线播放端，副机 Oopz 的输入选对应录音端；主机账号与队友在同一频道接收。系统默认播放设备只负责本机播放，并不会自动进入 Oopz 麦克风。
+
+新增规则应补目录定义、独立事件判定和对应验证；其他模块不能复用未证实的就绪/充能含义。测试在 Scenario：`AlertSelfTest`、真实 INI 持久化检查、`AlertSpeechCheck` 及实际菜单交互/截图；当前验证范围见 [本轮记录](../../../04_SCENARIO/un-dma-v2/reports/alert-ana-20261105/RESULT.zh-CN.md)。
+
 | 范围 | 当前位置（相对 ECS_O） | 责任 |
 |---|---|---|
 | V2 产品 | `01_PRODUCTS/un-dma-v2` | 产品源码、资源、构建入口、开发文档；独立 Git 仓库 |

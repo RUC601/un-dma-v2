@@ -6,6 +6,7 @@
 #include "config/FileTransaction.hpp"
 #include "config/AimPlanJson.hpp"
 #include "config/AimModeJson.hpp"
+#include "config/AlertJson.hpp"
 #include "config/SlotStorageInternal.hpp"
 
 #include "Game/HeroSkills.hpp"
@@ -2957,6 +2958,7 @@ namespace OW { namespace Config {
 
         void ResetGlobalDefaultsUnlocked()
         {
+            V2::Alerts::SetSettings({});
             // Defaults match Config.hpp inline initializers for global visual/UI settings.
             draw_info = true;             // default: true
             drawbattletag = false;        // default: false
@@ -6984,6 +6986,7 @@ namespace OW { namespace Config {
 
         void SaveSystemConfigContentsUnlocked(const std::string& path)
         {
+            WriteStringValue(path, "Alert", "settingsJson", V2::Alerts::EncodeSettings(V2::Alerts::GetSettings()).c_str());
             WriteIntValue(path, kMetaSection, kVersionKey, kCurrentConfigVersion);
             SaveAimbotSettingsUnlocked(path);
             SaveAimMethodSettingsUnlocked(path);
@@ -7122,6 +7125,7 @@ namespace OW { namespace Config {
 
         void LoadSystemConfigUnlocked(const IniFile& ini)
         {
+            V2::Alerts::SetSettings(V2::Alerts::DecodeSettings(ReadString(ini, "Alert", "settingsJson", "{}")));
             LoadAimbotSettingsUnlocked(ini);
             LoadAimMethodSettingsUnlocked(ini);
             LoadGlobalSettingsUnlocked(ini);

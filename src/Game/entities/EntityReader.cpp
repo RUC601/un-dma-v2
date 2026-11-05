@@ -5,6 +5,7 @@
 #include "EntityWorkers.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/SkillCooldownTimers.hpp"
+#include "Alerts/Settings.hpp"
 
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
@@ -1701,6 +1702,7 @@ void entity_thread() {
                                 componentCache.localSkillUpdateTick = 0;
                                 componentCache.heroName = "Unknown";
                                 componentCache.skill1act = false;
+                                componentCache.skillActiveTick = {};
                                 componentCache.skill2act = false;
                                 componentCache.ultimate = 0.0f;
                                 componentCache.ultimateValid = false;
@@ -2131,7 +2133,9 @@ void entity_thread() {
                 refreshNameTeam = false;
             bool refreshSkillStatus =
                 !slowCache.skillValid ||
-                slowNow - slowCache.skillUpdateTick >= (OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs);
+                slowNow - slowCache.skillUpdateTick >=
+                    (V2::Alerts::ObserveSkillHero(entity.HeroID)
+                        ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs);
             if (refreshSkillStatus && !consumeCycleBudget(skillRefreshBudget))
                 refreshSkillStatus = false;
             const bool refreshLocalSkillStatus =
@@ -2293,12 +2297,14 @@ void entity_thread() {
                 slowCache.cooldownIdentity = cooldownIdentity;
                 slowCache.cooldownTimers = {};
                 slowCache.displayCooldowns = {};
+                slowCache.skillActiveTick = {};
             }
             auto observeSkill = [&](size_t activeSlot) {
                 bool readable = false;
                 const bool active = OW::IsSkillActive(entity.SkillBase + 0x40, 0,
                     activeSlot == 0 ? 0x28E3 : 0x28E9, &readable);
                 if (readable) (activeSlot == 0 ? slowCache.skill1act : slowCache.skill2act) = active;
+                slowCache.skillActiveTick[activeSlot] = readable ? slowNow : 0;
                 const double now = OW::OverlayStatus::MonotonicSeconds();
                 for (size_t slot = 0; slot < cooldownRules.size(); ++slot)
                     if (cooldownRules[slot].activeSlot == activeSlot)
@@ -2363,6 +2369,7 @@ void entity_thread() {
             }
             entity.skill1act = slowCache.skill1act;
             entity.skill2act = slowCache.skill2act;
+            entity.skill_active_tick_ms = entity.SkillBase ? slowCache.skillActiveTick : std::array<uint32_t, 2>{};
             applyCachedUltimateToEntity(entity, slowCache);
             publishCooldowns();
             entity.skillcd1 = slowCache.skillcd1;

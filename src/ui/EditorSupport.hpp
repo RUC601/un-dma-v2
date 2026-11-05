@@ -145,7 +145,7 @@ inline constexpr int kMiscSubTabCount = 7;
 inline constexpr int kVisualsPageKey = kAimingSubTabCount;
 inline constexpr int kThemePageKeyBase = kVisualsPageKey + 1;
 inline constexpr int kMiscPageKeyBase = kThemePageKeyBase + kThemeSubTabCount;
-inline constexpr int kMeasuredPageCount = kMiscPageKeyBase + kMiscSubTabCount;
+inline constexpr int kMeasuredPageCount = kMiscPageKeyBase + kMiscSubTabCount + 1;
 
 
 inline constexpr size_t kConfigProfileNameBufferSize = 64;

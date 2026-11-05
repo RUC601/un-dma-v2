@@ -2608,6 +2608,7 @@ static void DrawTopTabIcon(ImDrawList* drawList, int tabIndex, const ImVec2& min
 
 static int CurrentPageKey() {
     switch (UI::state.activeTab) {
+        case UI::TAB_ALERT: return kMeasuredPageCount - 1;
         case UI::TAB_AIMING:
             return ImClamp(UI::state.aimingSubTab, 0, kAimingSubTabCount - 1);
         case UI::TAB_VISUALS:
@@ -2964,15 +2965,17 @@ void UI::Render() {
     if (!OW::Config::Menu) return;
     int page = 0;
     if(state.activeTab==TAB_AIMING) page=ImClamp(state.aimingSubTab,0,3);
-    else if(state.activeTab==TAB_VISUALS) page=4;
-    else if(state.activeTab==TAB_THEME) page=5+ImClamp(state.themeSubTab,0,1);
-    else { const int mapping[]={12,13,7,8,9,10,11}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
+    else if(state.activeTab==TAB_ALERT) page=4;
+    else if(state.activeTab==TAB_VISUALS) page=5;
+    else if(state.activeTab==TAB_THEME) page=6+ImClamp(state.themeSubTab,0,1);
+    else { const int mapping[]={13,14,8,9,10,11,12}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
     const bool chinese=OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified;
     const Workspace::Page pages[] = {
         {chinese?"瞄准":"Aim", chinese?"英雄方案":"Hero schemes"},
         {chinese?"扳机":"Trigger", chinese?"英雄方案":"Hero schemes"},
         {chinese?"技能":"Skills", chinese?"英雄方案":"Hero schemes"},
         {chinese?"序列":"Sequences", chinese?"英雄方案":"Hero schemes"},
+        {chinese?"预警 Alert":"Alert", chinese?"英雄方案":"Hero schemes"},
         {chinese?"画面":"Visuals", chinese?"显示":"Display"},
         {chinese?"主题":"Theme", chinese?"显示":"Display"},
         {chinese?"范围圈":"FOV rings", chinese?"显示":"Display"},
@@ -2992,18 +2995,20 @@ void UI::Render() {
     }, [&](int selected) {
         page=selected;
         if (page<4) { state.activeTab=TAB_AIMING; state.aimingSubTab=page; }
-        else if (page==4) state.activeTab=TAB_VISUALS;
-        else if (page<7) { state.activeTab=TAB_THEME; state.themeSubTab=page-5; }
-        else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,0,1}; state.miscSubTab=mapping[page-7]; }
+        else if (page==4) state.activeTab=TAB_ALERT;
+        else if (page==5) state.activeTab=TAB_VISUALS;
+        else if (page<8) { state.activeTab=TAB_THEME; state.themeSubTab=page-6; }
+        else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,0,1}; state.miscSubTab=mapping[page-8]; }
         DrawEditingContext();
         switch(page) {
         case 0: AimbotPage(); break; case 1: TriggerPage(); break;
         case 2: SkillsPage(); break; case 3: SequencesPage(); break;
-        case 4: VisualsPage(); break; case 5: DrawThemeGeneralPage(); break;
-        case 6: DrawThemeFovRingsPage(); break; case 7: DrawMiscBehaviorPage(); break;
-        case 8: DrawMiscMethodPage(); break; case 9: DrawMiscDynamicFovPage(); break;
-        case 10: DrawMiscOutputPage(); break; case 11: DrawMiscScreenPage(); break;
-        case 12: DrawMiscGeneralPage(); break; case 13: DrawMiscDiagnosticsPage(); break;
+        case 4: AlertPage(); break;
+        case 5: VisualsPage(); break; case 6: DrawThemeGeneralPage(); break;
+        case 7: DrawThemeFovRingsPage(); break; case 8: DrawMiscBehaviorPage(); break;
+        case 9: DrawMiscMethodPage(); break; case 10: DrawMiscDynamicFovPage(); break;
+        case 11: DrawMiscOutputPage(); break; case 12: DrawMiscScreenPage(); break;
+        case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break;
         }
         CloseGroupBox();
     }, DrawRuntimeStatusStrip, DrawHeroContextToolbar);

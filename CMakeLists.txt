@@ -105,6 +105,7 @@ set(UNLEASHED_SOURCES
     src/ui/pages/AimPage.cpp
     src/ui/pages/TriggerPage.cpp
     src/ui/pages/SkillPages.cpp
+    src/ui/pages/AlertPage.cpp
     src/ui/pages/DisplayPages.cpp
     src/ui/pages/SettingsPages.cpp
     src/output/DeviceConnection.cpp
@@ -116,6 +117,10 @@ set(UNLEASHED_SOURCES
     src/output/MotionTelemetry.cpp
     src/features/aim/Smoothing.cpp
     src/features/aim/SessionState.cpp
+    src/features/alerts/Settings.cpp
+    src/features/alerts/Speech.cpp
+    src/features/alerts/Service.cpp
+    src/features/alerts/SkillWorker.cpp
     src/config/HeroProfileWorker.cpp
     src/config/FileTransaction.cpp
     src/config/HeroSlotStore.cpp

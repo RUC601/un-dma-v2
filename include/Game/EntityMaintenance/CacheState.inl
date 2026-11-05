@@ -94,6 +94,7 @@
         uint8_t localSkillRefreshCursor = 0;
         bool skill1act = false;
         bool skill2act = false;
+        std::array<uint32_t, 2> skillActiveTick{};
         float ultimate = 0.0f;
         bool ultimateValid = false;
         DWORD displayUltimateTick = 0;

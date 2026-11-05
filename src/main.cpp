@@ -281,6 +281,7 @@ static void LoadRuntimeConfigForDiagnostics()
         OW::Config::hostMouseDpiAutoDetected ? 1 : 0);
 }
 
+#include "Alerts/Service.hpp"
 using V2::Runtime::StartProcessConnectionThread;
 using V2::Runtime::StopProcessConnectionThread;
 using V2::Output::ShutdownOutputRuntime;
@@ -292,6 +293,7 @@ static void ShutdownHeadlessRuntime(const char* reason = "headless_shutdown")
     });
     mem.CancelPendingOperations();
     StopProcessConnectionThread();
+    V2::Alerts::Stop();
     V2::Runtime::DrainProcessRuntimeWorkers(reason);
     TestServer::Stop();
     KeyState::Stop();
@@ -631,6 +633,7 @@ int main(int argc, char** argv)
     Diagnostics::Info("Overlay ready.");
     PreloadHeroAvatars();
     PreloadAbilityIcons();
+    V2::Alerts::Start();
     StartProcessConnectionThread();
     Diagnostics::Info("Settings ready; hardware and process connection run in background.");
 

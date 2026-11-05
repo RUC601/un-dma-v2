@@ -1,5 +1,6 @@
 #include "ProcessSession.hpp"
 #include "WorkerGroup.hpp"
+#include "Alerts/Service.hpp"
 #include "output/DeviceConnection.hpp"
 #include "Memory/Memory.h"
 #include "Memory/KeyState.hpp"
@@ -133,7 +134,7 @@ bool StartBackgroundThreads()
             std::vector<V2::Runtime::Worker> entries{
                 {"acquisition",entity_thread},
                 {"UN behaviors",aimbot_thread},{"configuration",configsavenloadthread},
-                {"hero skills",HeroSkillRuntimeThread}
+                {"hero skills",HeroSkillRuntimeThread}, {"alerts",V2::Alerts::SkillWorker}
             };
             if(OW::PresentInterpolationEnabled())entries.push_back({"presentation",present_interp_thread});
             g_Workers.Start(entries, [] {
