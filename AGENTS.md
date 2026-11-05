@@ -1,5 +1,9 @@
 # UNDMA V2 Agent Context
 
+## 产品文档归属（2026-11-05）
+
+V2 产品文档统一放在 `../docs/un-dma-v2/`，跨产品共用的文档放在 `../docs/`。V2 产品目录内禁止存放产品文档。
+
 ## 用户指定保留的直接 CD 读取研究（2026-11-05）
 
 `include/Game/DirectCooldownResearch.hpp` 是用户明确要求长期保留、便于分享的完整注释代码档案，记录已跑通的 CN154905N 非本地技能 CD 读取实现、映射及证据。正式版采用 active 状态计时器；该档案不参与编译或运行。禁止 AI 以死代码、实验已退役、清理或精简为由自行删除、缩写或迁出。只有用户明确要求删除此研究成果时才能删除；维护工具或后续重构必须保留注释正文与溯源说明。
@@ -7,11 +11,11 @@
 2026-11-02 目录边界：V1/V2 已拆成独立 Git 仓库，各自提交，不再共用 Git 数据库。研究材料在 `../../02_RESEARCH/un-dma-research/v2-product-research`，自测、验证和预览工具在 `../../04_SCENARIO/un-dma-v2`。产品目录不得重新添加 research、测试源码或测试构建。正式程序保留 `build/Release`；`./build-release.ps1 -Tests` 的输出位于 Scenario 的 `build/selftests`。以下旧路径和 worktree 说明仅为历史记录，以本条为准。
 
 
-2026-10-30：当前主线已接入实验 C，统一采集固定 300Hz，无 240Hz 或频率切换入口。B/C 已归档至 ../../06_ARCHIVE/un-v2-experiments-20261030/；继续维护本目录。当前 Release 构建通过，本次 45 秒 CN 短跑启动被自动审批拒绝，现场未验；详见 docs/V2_PROGRESS.zh-CN.md。
+2026-10-30：当前主线已接入实验 C，统一采集固定 300Hz，无 240Hz 或频率切换入口。B/C 已归档至 ../../06_ARCHIVE/un-v2-experiments-20261030/；继续维护本目录。当前 Release 构建通过，本次 45 秒 CN 短跑启动被自动审批拒绝，现场未验；详见 ../docs/un-dma-v2/V2_PROGRESS.zh-CN.md。
 
-本目录为独立演进工作区 `D:\Desktop\SenseZen\ECS_O\01_PRODUCTS\un-dma-v2`，分支 `v2/framework`，从 V1 `00abf5b` 继承。先读 `docs/V2.md`、ECS_O 的 `00_META/UN_UNIFIED_REFACTOR_20261028.md` 和唯一进度 `UN_UNIFIED_PROGRESS_20261028.md`。
+本目录为独立演进工作区 `D:\Desktop\SenseZen\ECS_O\01_PRODUCTS\un-dma-v2`，分支 `v2/framework`，从 V1 `00abf5b` 继承。先读 `../docs/un-dma-v2/V2.md`、ECS_O 的 `00_META/UN_UNIFIED_REFACTOR_20261028.md` 和唯一进度 `UN_UNIFIED_PROGRESS_20261028.md`。
 
-此前“只建立工作区和验证隔离”的迁移阶段已经结束。后续 V2 实施以 `docs/V2_REFACTOR_PLAN.zh-CN.md` 为现行总纲、`../../02_RESEARCH/un-dma-research/v2-product-research/V2_RESEARCH_NOTES.zh-CN.md` 为研究索引，按用户在执行线程中确定的目标推进；当前已进入实现与现场核验，实际状态见 docs/V2_PROGRESS.zh-CN.md。本工作区不承担 V1 日常维护；V1 独立位于 `../un-dma-v1`，其分支 `v1/cn` 和现有可用程序不能被覆盖、切换或 reset。
+此前“只建立工作区和验证隔离”的迁移阶段已经结束。后续 V2 实施以 `../docs/un-dma-v2/V2_REFACTOR_PLAN.zh-CN.md` 为现行总纲、`../../02_RESEARCH/un-dma-research/v2-product-research/V2_RESEARCH_NOTES.zh-CN.md` 为研究索引，按用户在执行线程中确定的目标推进；当前已进入实现与现场核验，实际状态见 ../docs/un-dma-v2/V2_PROGRESS.zh-CN.md。本工作区不承担 V1 日常维护；V1 独立位于 `../un-dma-v1`，其分支 `v1/cn` 和现有可用程序不能被覆盖、切换或 reset。
 
 命名 CN=国服/NetEase、KR=Nexon、BZ=普通国际服。CN 为完整业务路径，KR/BZ 仅有显式只读候选路由，继承值和门控不因 V2 名字改变。后续本轮只跑通并验证 CN；KR/BZ 按已有 Pure 证据接入可编译的候选实现并标为实服未验证，不安排 KR/BZ 实服验证，也不以其缺席阻塞收口。不把相机可用当整体适配，不编造缺失资料。
 
