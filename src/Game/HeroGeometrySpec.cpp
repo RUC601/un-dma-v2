@@ -20,7 +20,7 @@ using DirectX::XMStoreFloat3;
 using DirectX::XMVector3Transform;
 
 constexpr std::string_view kGeometryDataNote =
-    "Runtime fallback geometry from aim_public_hero_geometry_0530.tsv; values are conservative non-public measurements.";
+    "Compiled fallback geometry; evidence: research/weapon-data-sources-20261104/legacy-v2-data; conservative non-public measurements.";
 
 constexpr std::array<BoneHitboxSpec, 18> kFallbackBones = {
     BoneHitboxSpec{ BONE_HEAD, "head", 0.16f, Vector3{}, "sphere", "", kGeometryDataNote, 0.20f },

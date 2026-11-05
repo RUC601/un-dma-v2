@@ -622,6 +622,7 @@ namespace OW { namespace Config {
             { OW::eHero::HERO_JUNO,         "Juno",         nullptr,          nullptr },
             { OW::eHero::HERO_WUYANG,       "Wuyang",       nullptr,          nullptr },
             { OW::eHero::HERO_JETPACKCAT,  "JetpackCat",   "Jetpack Cat",    nullptr },
+            { OW::eHero::HERO_DOCTRINE,     "Doctrine",     nullptr,          nullptr },
         };
 
         void ApplyAimMode(int mode);
@@ -2189,9 +2190,15 @@ namespace OW { namespace Config {
                                             uint64_t heroId,
                                             HeroPresetSlotKind kind)
         {
-            if (InitializeDocumentedHeroPresetSlots(slots, heroId, kind))
-                return;
-            InitializeWeaponGeneratedHeroPresetSlots(slots, heroId, kind);
+            if (!InitializeDocumentedHeroPresetSlots(slots, heroId, kind))
+                InitializeWeaponGeneratedHeroPresetSlots(slots, heroId, kind);
+            if (kind == HeroPresetSlotKind::Aim) {
+                for (HeroSlotPreset& slot : slots) {
+                    slot.preset.fov = kDefaultAimFovDeg;
+                    slot.preset.fovMode = kFovModeFixed;
+                    slot.preset.dynamicFovPresetId = -1;
+                }
+            }
         }
 
         int CountHeroPresetSlots(const std::array<HeroSlotPreset, kHeroPresetSlotCount>& slots)
@@ -2741,9 +2748,9 @@ namespace OW { namespace Config {
             aim_key2 = 1;                 // default: Left Mouse
             togglekey = 0;                // default: disabled
 
-            Fov = kDefaultFovDeg;         // default: 15 deg
+            Fov = kDefaultAimFovDeg;      // default: 5 deg
             Fov2 = kDefaultFovDeg;        // default: 15 deg
-            minFov1 = kDefaultFovDeg;     // default: 15 deg
+            minFov1 = kDefaultAimFovDeg;   // default: 5 deg
             minFov2 = kDefaultFovDeg;     // default: 15 deg
             Smooth = 20.0f;               // default: 20
             autoscalefov = false;         // default: false
@@ -2965,6 +2972,18 @@ namespace OW { namespace Config {
             draw_avatar = true;           // default: preserve box avatar overlay
             draw_hitbox = false;          // default: hitbox overlay is opt-in
             skillinfo = false;            // default: false
+            showOverlayInfo = true;
+            showSlotStatus = true;
+            heroStatusStyle = 1;
+            radarPosX = 1.0f;
+            radarPosY = 1.0f;
+            radarScale = 1.3f;
+            slotPosX = 0.0f;
+            slotPosY = 0.5f;
+            heroStatusPosX = 0.12f;
+            heroStatusPosY = 0.0f;
+            heroStatusScale = 0.7f;
+
             ultimateDisplayMode = 1;      // default: left side panel
             ultimateRosterFilter = 1;     // default: enemy roster
             skillDisplayMode = 0;         // default: Above head
@@ -2978,6 +2997,7 @@ namespace OW { namespace Config {
             crosscircle = false;          // default: false
             eyeray = false;               // default: false
             MenuToggleKey = VK_HOME;      // default: VK_HOME
+            CacheRefreshKey = VK_F8;
             lastConfigProfile = "config.ini";
 
             enargb = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);       // current box theme: visible fill red
@@ -6228,6 +6248,18 @@ namespace OW { namespace Config {
             ultimateDisplayMode = ReadInt(ini, section, "ultimateDisplayMode", ultimateDisplayMode);
             ultimateRosterFilter = ReadInt(ini, section, "ultimateRosterFilter", ultimateRosterFilter);
             skillDisplayMode = ReadInt(ini, section, "skillDisplayMode", skillDisplayMode);
+            showOverlayInfo = ReadBool(ini, section, "showOverlayInfo", showOverlayInfo);
+            showSlotStatus = ReadBool(ini, section, "showSlotStatus", showSlotStatus);
+            heroStatusStyle = ReadInt(ini, section, "heroStatusStyle", heroStatusStyle);
+            radarPosX = ReadFixedFloat(ini, section, "radarPosX", radarPosX);
+            radarPosY = ReadFixedFloat(ini, section, "radarPosY", radarPosY);
+            radarScale = ReadFixedFloat(ini, section, "radarScale", radarScale);
+            slotPosX = ReadFixedFloat(ini, section, "slotPosX", slotPosX);
+            slotPosY = ReadFixedFloat(ini, section, "slotPosY", slotPosY);
+            heroStatusPosX = ReadFixedFloat(ini, section, "heroStatusPosX", heroStatusPosX);
+            heroStatusPosY = ReadFixedFloat(ini, section, "heroStatusPosY", heroStatusPosY);
+            heroStatusScale = ReadFixedFloat(ini, section, "heroStatusScale", heroStatusScale);
+
             radarCorner = ReadInt(ini, section, "radarCorner", radarCorner);
             radar = ReadBool(ini, section, "radar", radar);
             radarline = ReadBool(ini, section, "radarline", radarline);
@@ -6238,6 +6270,7 @@ namespace OW { namespace Config {
             boxPerfFastRect = ReadBool(ini, section, "boxPerfFastRect", boxPerfFastRect);
             targetPriority = ReadInt(ini, section, "targetPriority", targetPriority);
             MenuToggleKey = ReadInt(ini, section, "MenuToggleKey", MenuToggleKey);
+            CacheRefreshKey = ReadInt(ini, section, "CacheRefreshKey", CacheRefreshKey);
             lastConfigProfile = ReadString(ini, section, "lastConfigProfile", lastConfigProfile.c_str());
             uiLanguage = ReadInt(ini, section, "uiLanguage", uiLanguage);
             overlayFrameLimit = ReadInt(ini, section, "overlayFrameLimit", overlayFrameLimit);
@@ -6435,6 +6468,9 @@ namespace OW { namespace Config {
             ClampSetting("aim_key2", aim_key2, 0, MaxActivationKeyIndex(), 1);
             ClampSetting("togglekey", togglekey, 0, 54, 0);
             ClampSetting("MenuToggleKey", MenuToggleKey, 1, 255, VK_HOME);
+            ClampSetting("CacheRefreshKey", CacheRefreshKey, 0, 255, VK_F8);
+            if (CacheRefreshKey == MenuToggleKey)
+                CacheRefreshKey = 0;
             ClampSetting("aimDryRunLogIntervalMs", aimDryRunLogIntervalMs, 50, 1000, 100);
             if (ultimateDisplayMode != 1) {
                 LogConfig(Diagnostics::LogLevel::Warn,
@@ -6444,6 +6480,16 @@ namespace OW { namespace Config {
             }
             ClampSetting("ultimateRosterFilter", ultimateRosterFilter, 0, 2, 1);
             ClampSetting("skillDisplayMode", skillDisplayMode, 0, 2, 0);
+            ClampSetting("heroStatusStyle", heroStatusStyle, 0, 1, 1);
+            ClampFloatSetting("radarPosX", radarPosX, 0.0f, 1.0f, 1.0f);
+            ClampFloatSetting("radarPosY", radarPosY, 0.0f, 1.0f, 1.0f);
+            ClampFloatSetting("radarScale", radarScale, 0.35f, 2.5f, 1.3f);
+            ClampFloatSetting("slotPosX", slotPosX, 0.0f, 1.0f, 0.0f);
+            ClampFloatSetting("slotPosY", slotPosY, 0.0f, 1.0f, 0.5f);
+            ClampFloatSetting("heroStatusPosX", heroStatusPosX, 0.0f, 1.0f, 0.12f);
+            ClampFloatSetting("heroStatusPosY", heroStatusPosY, 0.0f, 1.0f, 0.0f);
+            ClampFloatSetting("heroStatusScale", heroStatusScale, 0.35f, 2.5f, 0.7f);
+
             ClampSetting("radarCorner", radarCorner, 0, 3, 0);
 
             ClampFloatSetting("Fov", Fov, kMinFovDeg, kMaxFovDeg, kDefaultFovDeg);
@@ -6963,6 +7009,18 @@ namespace OW { namespace Config {
             WriteIntValue(path, "Global", "ultimateDisplayMode", 1);
             WriteIntValue(path, "Global", "ultimateRosterFilter", ultimateRosterFilter);
             WriteIntValue(path, "Global", "skillDisplayMode", skillDisplayMode);
+            WriteBoolValue(path, "Global", "showOverlayInfo", showOverlayInfo);
+            WriteBoolValue(path, "Global", "showSlotStatus", showSlotStatus);
+            WriteIntValue(path, "Global", "heroStatusStyle", heroStatusStyle);
+            WriteFixedFloatValue(path, "Global", "radarPosX", radarPosX);
+            WriteFixedFloatValue(path, "Global", "radarPosY", radarPosY);
+            WriteFixedFloatValue(path, "Global", "radarScale", radarScale);
+            WriteFixedFloatValue(path, "Global", "slotPosX", slotPosX);
+            WriteFixedFloatValue(path, "Global", "slotPosY", slotPosY);
+            WriteFixedFloatValue(path, "Global", "heroStatusPosX", heroStatusPosX);
+            WriteFixedFloatValue(path, "Global", "heroStatusPosY", heroStatusPosY);
+            WriteFixedFloatValue(path, "Global", "heroStatusScale", heroStatusScale);
+
             WriteIntValue(path, "Global", "radarCorner", radarCorner);
             WriteBoolValue(path, "Global", "radar", radar);
             WriteBoolValue(path, "Global", "radarline", radarline);
@@ -6973,6 +7031,7 @@ namespace OW { namespace Config {
             WriteBoolValue(path, "Global", "drawTrackingDeadzones", drawTrackingDeadzones);
             WriteIntValue(path, "Global", "targetPriority", targetPriority);
             WriteIntValue(path, "Global", "MenuToggleKey", MenuToggleKey);
+            WriteIntValue(path, "Global", "CacheRefreshKey", CacheRefreshKey);
             WriteStringValue(path, "Global", "lastConfigProfile", lastConfigProfile.c_str());
             WriteIntValue(path, "Global", "uiLanguage", ClampUiLanguage(uiLanguage));
             WriteIntValue(path, "Global", "overlayFrameLimit", std::clamp(overlayFrameLimit, 0, 2000));

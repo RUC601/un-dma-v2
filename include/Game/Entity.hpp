@@ -13,6 +13,7 @@ using namespace DirectX;
 #include "Game/Structs.hpp"
 #include "Game/PresentationTiming.hpp"
 #include "Game/EntityRosterPolicy.hpp"
+#include "Game/OverlayStatus.hpp"
 #include "Game/RuntimeState.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/SDK.hpp"
@@ -124,6 +125,8 @@ namespace OW {
         float  skillcd1  = 0.f;
         float  skillcd2  = 0.f;
         float  skillready = 0.f;
+        std::array<OverlayStatus::CooldownSample, 2> display_cooldowns{};
+        uint32_t display_ultimate_tick = 0;
 
         // --- Positions ---
         Vector3 head_pos{};

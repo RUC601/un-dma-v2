@@ -423,8 +423,11 @@ void StartProcessConnectionThread()
         DWORD lastAttemptTick = 0;
         DmaDeviceRecovery::HealthFailures healthFailures;
         while (g_ProcessConnectionThreadRunning.load(std::memory_order_acquire)) {
-            const bool manualRequest = OW::ProcessConnection::ConsumeReconnectRequest();
+            const bool cacheRefreshRequest = OW::ProcessConnection::ConsumeCacheRefreshRequest();
+            const bool manualRequest = OW::ProcessConnection::ConsumeReconnectRequest() || cacheRefreshRequest;
             const bool rebuildRequest = OW::ProcessConnection::ConsumeDmaRecoveryRequest();
+            if (cacheRefreshRequest)
+                Diagnostics::Info("Manual cache refresh requested; drain, clear snapshots, refresh VMM caches and reconnect.");
             const DWORD now = GetTickCount();
             const bool scanDue = lastAttemptTick == 0 || now - lastAttemptTick >= kProcessScanIntervalMs;
 

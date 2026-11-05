@@ -72,6 +72,7 @@ inline const HeroOption kHeroOptions[] = {
     { "Juno", OW::eHero::HERO_JUNO, "Support" },
     { "Wuyang", OW::eHero::HERO_WUYANG, "Support" },
     { "JetpackCat", OW::eHero::HERO_JETPACKCAT, "Support" },
+    { "Doctrine", OW::eHero::HERO_DOCTRINE, "Support" },
     { "Domina", OW::eHero::HERO_DOMINA, "Tank" },
     { "D.Mon", OW::eHero::HERO_DMON, "Tank" },
 };

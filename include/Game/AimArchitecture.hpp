@@ -98,6 +98,9 @@ struct ProjectileSpec {
     float chargeMinSpeed = 0.0f;
     float chargeMaxSpeed = 0.0f;
     bool directHitOnly = true;
+    float launchDirectionUpBias = 0.0f;
+    float gravityAcceleration = 9.8f;
+    float castDelayMs = 0.0f;
 };
 
 struct FirePolicy {

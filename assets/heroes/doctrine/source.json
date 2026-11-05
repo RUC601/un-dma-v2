@@ -1,0 +1,55 @@
+{
+  "hero": "Doctrine",
+  "chinese_name": "血律",
+  "hero_id": "0x02E0000000000570",
+  "identity_source": "05_SHARED_TOOLS/owlib/resources/ow-2.25.0.0-cn-20261028/heroes.json:000000000570.075",
+  "corroboration": "02_RESEARCH/forum-capture/grap/516727/387.txt:81",
+  "official_hero": "https://overwatch.blizzard.com/en-us/heroes/doctrine/",
+  "portrait_source": "0000000040C7.01C -> 00000007BEEC.004",
+  "live_verified": false,
+  "outputs": [
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/heroes/doctrine/avatar.png",
+      "sha256": "ae1ae3d5c6746078c203a21545536b2e03ec3622067ae9d7e53bbea800b78036",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/00000007BEEC.png",
+      "source_sha256": "d94392de66390d3d720902cbcb50512583a15efd98e66b16cf7d3d83eb9a7a50"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/heroes/doctrine/avatar-overlay.png",
+      "sha256": "b2db4cbc47d9132a6dcd6e218c714243a5ba171c53326f59ae955153dcd0d1a8",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/00000007BEEC.png",
+      "source_sha256": "d94392de66390d3d720902cbcb50512583a15efd98e66b16cf7d3d83eb9a7a50"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/ability-icons/doctrine/eternal-scepter.png",
+      "sha256": "a5d416353ffec9ddd99f834f50ba676c82d5bcc821c412940002b4fa36a87d87",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/Abilities/永生权杖.png",
+      "source_sha256": "7b4693d9d4ddd056e4a10d3bd7b63df4bea2d0c8236f098eccc4de34f78dd00b"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/ability-icons/doctrine/infuse.png",
+      "sha256": "ae5003d270359a13809106541550f9d445a35e03d57233e9cc11647b5246a5ae",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/Abilities/灌注.png",
+      "source_sha256": "8279c74ce0c4ec4e8405f921149aef41ae26a01a7e3d09028f61991dc14c8410"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/ability-icons/doctrine/shrouded-momentum.png",
+      "sha256": "3b30880850a04ed4bdd31509229ae0a659657b44a830c6ac503616f60f0391fb",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/Abilities/迅影疾行.png",
+      "source_sha256": "f6f5191785cebb468919123b6b2496d490b23923223472635e254767f082c79a"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/ability-icons/doctrine/invigorating-drones.png",
+      "sha256": "0518c37a93d4dafdb9bcd7702334d9d5e575d5ef254d6fb20004d53308864bad",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/Abilities/焕生无人机.png",
+      "source_sha256": "c4efca6d36ba6b61783c0dee3b904d89f532037eee7aed5ae0e5d5fc83afc9b3"
+    },
+    {
+      "path": "01_PRODUCTS/un-dma-v2/assets/ability-icons/doctrine/deliverance.png",
+      "sha256": "444758ad3ca66ec50ae7b318a7fb647c0d96999ee6db2a9de2475b7256157c4c",
+      "source": "02_RESEARCH/un-dma-research/owlib-assets-20261029/HeroIcons/血律/Abilities/救赎恩典.png",
+      "source_sha256": "43ea856f6e48e23cee727f97b426b447b3c0b4da86047cfb921ee78231d53758"
+    }
+  ],
+  "scope": "Identity, localized name, UI/overlay portraits, profile entry, ability artwork and shared auto-melee. Weapon physics and specialized skills remain unverified."
+}

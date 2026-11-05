@@ -1306,7 +1306,10 @@ namespace AimbotDetail {
             state.releaseAutomatic!=automatic||state.releaseAfterKeyUp!=afterKeyUp||
             (state.releaseOwnedDown&&state.releaseOutputGeneration!=V2::Output::ActiveRuntimeSnapshot().generation));
         if(changed) {
-            CancelConfiguredAimShot(state);state.releaseShotLatched=false;
+            // Ordinary Slot selection must not acquire the release-shot rearm latch.
+            if(state.releaseConfigured || release || state.releaseOwnedDown || state.releasePending || chargedAimPreset)
+                CancelConfiguredAimShot(state);
+            state.releaseShotLatched=false;
         }
         const bool keySampleAvailable=KeyState::SampleVk(OW::get_bind_id(OW::Config::View_aim_key())).available;
         if(!keySampleAvailable) {
@@ -2206,18 +2209,8 @@ namespace AimbotDetail {
         const WeaponCadenceTable& cadenceTable = RuntimeWeaponCadenceTable();
         static std::once_flag cadenceStatusLog;
         std::call_once(cadenceStatusLog, [&cadenceTable] {
-            if (cadenceTable.Loaded()) {
-                Diagnostics::Info(
-                    "Weapon cadence TSV loaded. path=%s sourceRows=%zu runtimeRows=%zu discreteIntervals=%zu",
-                    cadenceTable.LoadedPath().string().c_str(),
-                    cadenceTable.SourceRowCount(),
-                    cadenceTable.Size(),
-                    cadenceTable.DiscreteIntervalCount());
-            } else {
-                Diagnostics::Warn(
-                    "Weapon cadence TSV unavailable; runtime will use existing fallbacks. error=%s",
-                    cadenceTable.LastError().c_str());
-            }
+            Diagnostics::Info("Weapon cadence compiled catalog. runtimeRows=%zu discreteIntervals=%zu",
+                cadenceTable.Size(), cadenceTable.DiscreteIntervalCount());
         });
 
         const c_entity local = LocalEntity();

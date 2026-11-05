@@ -3626,7 +3626,8 @@ namespace OW {
         }
     }
 
-    inline bool IsSkillActive(uint64_t base, uint16_t index, uint16_t id) {
+    inline bool IsSkillActive(uint64_t base, uint16_t index, uint16_t id, bool* readable = nullptr) {
+        if (readable) *readable = false;
         if (id == 0) return false;
         uint64_t skillList = 0;
 
@@ -3659,7 +3660,10 @@ namespace OW {
         if (SDK->RPM<uint16_t>(skillEntry) == id) {
             uint64_t skill = SDK->RPM<uint64_t>(skillEntry + 0x8);
             if (!skill) return false;
-            return SDK->RPM<uint8_t>(skill + 0x48) == 1;
+            uint8_t state = 0;
+            const bool ok = SDK->read_range(skill + 0x48, &state, sizeof(state));
+            if (readable) *readable = ok;
+            return ok && state == 1;
         }
         return false;
     }
@@ -3732,17 +3736,9 @@ namespace OW {
         return SDK->RPM<float>(skill + offset);
     }
 
-    inline float readskillcd(uint64_t base, uint16_t skillIdx, uint16_t skillIdx2) {
-        __m128 skillStruct{};
-        uint16_t skillId[15] = { skillIdx, skillIdx2 };
-        skillStruct.m128_u64[1] = base + 0xD0;
-        uint64_t skill = FnSkillStruct(&skillStruct, skillId);
-        if (!skill) return false;
-        float ret = SDK->RPM<float>(skill + 0x48);
-        if (!ret) return ret;
-        ret = SDK->RPM<float>(skill + 0x60);
-        return (ret != 0) ? ret : 1.f;
-    }
+    // Formal V2 uses active-edge timers. The proven per-hero direct-CD reader is
+    // preserved, in full and intentionally non-executable, in DirectCooldownResearch.hpp.
+    // Do not restore the old fixed-index CD helpers or the ambiguous 1.f ready sentinel.
 
     inline bool TryReadUlt(uint64_t base, uint16_t skillIdx, uint16_t skillIdx2, float& ultimate) {
         __m128 skillStruct{};

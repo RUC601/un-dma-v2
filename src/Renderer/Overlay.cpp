@@ -4,6 +4,7 @@
 #include "Game/Offsets.hpp"
 #include "Game/SDK.hpp"
 #include "Game/Overwatch.hpp"
+#include "Memory/KeyState.hpp"
 #include "Utils/Config.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "resource.h"
@@ -474,6 +475,15 @@ void Overlay::Run(std::function<void()> renderCallback) {
         // 不得加 !m_minimizedToTaskbar 条件，否则用户收起后就无法再用 Home 找回菜单。
         if (IsMenuTogglePressed())
             ToggleMenu();
+
+        static OW::ProcessConnection::CacheRefreshHotkey cacheRefreshHotkey;
+        const int refreshKey = OW::Config::CacheRefreshKey;
+        const auto remoteKey = KeyState::SampleVk(refreshKey);
+        const bool localKeyDown = refreshKey > 0 && refreshKey < 256 &&
+            (GetAsyncKeyState(refreshKey) & 0x8000) != 0;
+        if (cacheRefreshHotkey.Update(refreshKey, localKeyDown, remoteKey.available,
+                remoteKey.down, OW::ProcessConnection::IsRecoveryBusy()))
+            OW::ProcessConnection::RequestCacheRefresh();
 
         UI::AutoSave();
         UpdateWindowVisibility();

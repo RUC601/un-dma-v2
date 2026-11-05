@@ -4,6 +4,7 @@
 #include "../../runtime/Acquisition.hpp"
 #include "EntityWorkers.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/SkillCooldownTimers.hpp"
 
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
@@ -169,22 +170,10 @@ void entity_thread() {
     };
 
     auto applyCachedUltimateToEntity =
-        [&](OW::c_entity& entity, const ComponentBaseCache& cache) {
-            if (cache.ultimateValid && std::isfinite(cache.ultimate)) {
-                entity.ultimate = cache.ultimate;
-                return;
-            }
-
-            if (entity.roster_key == 0)
-                return;
-
-            const auto rosterIt = entityRoster.find(entity.roster_key);
-            if (rosterIt == entityRoster.end())
-                return;
-
-            const OW::c_entity& previous = rosterIt->second->entity;
-            if (previous.HeroID == entity.HeroID && std::isfinite(previous.ultimate))
-                entity.ultimate = previous.ultimate;
+        [&](OW::c_entity& entity, const RosterEntry& cache) {
+            const bool valid = cache.ultimateValid && std::isfinite(cache.ultimate);
+            entity.display_ultimate_tick = valid ? cache.displayUltimateTick : 0;
+            entity.ultimate = valid ? cache.ultimate : 0;
         };
 
 #include "Game/EntityMaintenance/RecordAccess.inl"
@@ -1501,7 +1490,7 @@ void entity_thread() {
             lastentity = entity;
             }
 
-            ComponentBaseCache& componentCache = *cacheIt->second;
+            RosterEntry& componentCache = *cacheIt->second;
             const auto hotAppliedItem=hotFieldBatchIndex.find(ComponentParent);
             const bool hotAlreadyApplied=componentCacheHit && hotAppliedItem!=hotFieldBatchIndex.end() && hotFieldBatchItems[hotAppliedItem->second].applied &&
                 entity.roster_key==cacheIt->second->entity.roster_key && entity.participant_key==cacheIt->second->entity.participant_key;
@@ -1714,6 +1703,11 @@ void entity_thread() {
                                 componentCache.skill1act = false;
                                 componentCache.skill2act = false;
                                 componentCache.ultimate = 0.0f;
+                                componentCache.ultimateValid = false;
+                                componentCache.displayUltimateTick = 0;
+                                componentCache.displayCooldowns = {};
+                                componentCache.cooldownTimers = {};
+                                componentCache.skillRefreshCursor = 0;
                                 componentCache.skillcd1 = 0.0f;
                                 componentCache.skillcd2 = 0.0f;
                                 componentCache.skeletonCache = OW::c_entity::SkeletonBoneCache{};
@@ -2137,7 +2131,7 @@ void entity_thread() {
                 refreshNameTeam = false;
             bool refreshSkillStatus =
                 !slowCache.skillValid ||
-                slowNow - slowCache.skillUpdateTick >= OW::kEntitySkillStatusIntervalMs;
+                slowNow - slowCache.skillUpdateTick >= (OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs);
             if (refreshSkillStatus && !consumeCycleBudget(skillRefreshBudget))
                 refreshSkillStatus = false;
             const bool refreshLocalSkillStatus =
@@ -2283,6 +2277,46 @@ void entity_thread() {
             }
             }
 
+            const auto cooldownRules = OW::CooldownTimers::ForHero(entity.HeroID);
+            const std::array<uint64_t,3> ultimateIdentity{entity.HeroID,connectionEpoch,processSceneGeneration};
+            if (slowCache.ultimateIdentity != ultimateIdentity) {
+                slowCache.ultimateIdentity = ultimateIdentity;
+                slowCache.ultimateValid = false;
+                slowCache.displayUltimateTick = 0;
+                slowCache.ultimate = 0;
+            }
+            // A rebuilt temporary entity has not yet inherited the admitted body generation.
+            const std::array<uint64_t,4> cooldownIdentity{entity.HeroID, slowCache.entity.actor_generation,
+                connectionEpoch, processSceneGeneration};
+            if (slowCache.cooldownIdentity != cooldownIdentity ||
+                entity.roster_state == OW::EntityRosterState::Dead) {
+                slowCache.cooldownIdentity = cooldownIdentity;
+                slowCache.cooldownTimers = {};
+                slowCache.displayCooldowns = {};
+            }
+            auto observeSkill = [&](size_t activeSlot) {
+                bool readable = false;
+                const bool active = OW::IsSkillActive(entity.SkillBase + 0x40, 0,
+                    activeSlot == 0 ? 0x28E3 : 0x28E9, &readable);
+                if (readable) (activeSlot == 0 ? slowCache.skill1act : slowCache.skill2act) = active;
+                const double now = OW::OverlayStatus::MonotonicSeconds();
+                for (size_t slot = 0; slot < cooldownRules.size(); ++slot)
+                    if (cooldownRules[slot].activeSlot == activeSlot)
+                        slowCache.cooldownTimers[slot].Observe(active, readable, cooldownRules[slot], now, slowNow);
+            };
+            auto publishCooldowns = [&] {
+                const double now = OW::OverlayStatus::MonotonicSeconds();
+                for (size_t slot = 0; slot < cooldownRules.size(); ++slot)
+                    slowCache.displayCooldowns[slot] = entity.SkillBase
+                        ? slowCache.cooldownTimers[slot].Sample(now, slowNow, cooldownRules[slot])
+                        : OW::OverlayStatus::CooldownSample{};
+                entity.display_cooldowns = slowCache.displayCooldowns;
+                slowCache.skillcd1 = slowCache.skillcd2 = 0;
+                for (size_t slot = 0; slot < cooldownRules.size(); ++slot)
+                    if (entity.display_cooldowns[slot].valid)
+                        (cooldownRules[slot].activeSlot == 0 ? slowCache.skillcd1 : slowCache.skillcd2) =
+                            entity.display_cooldowns[slot].Remaining(now);
+            };
             // ---- Skills ----
             {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.skillMs);
@@ -2298,27 +2332,28 @@ void entity_thread() {
                 }
                 switch (slowCache.skillRefreshCursor % 3) {
                 case 0:
-                    slowCache.skill1act =
-                        OW::IsSkillActive(entity.SkillBase + 0x40, 0, 0x28E3);
+                    observeSkill(0);
                     break;
                 case 1:
-                    slowCache.skill2act =
-                        OW::IsSkillActive(entity.SkillBase + 0x40, 0, 0x28E9);
+                    observeSkill(1);
                     break;
-                default:
+                case 2:
                 {
                     float ultimate = 0.0f;
-                    if (OW::TryReadUlt(entity.SkillBase + 0x40, 0, 0x1e32, ultimate) &&
+                    if (entity.Alive && OW::TryReadUlt(entity.SkillBase + 0x40, 0, 0x1e32, ultimate) &&
                         std::isfinite(ultimate)) {
                         slowCache.ultimate = ultimate;
                         slowCache.ultimateValid = true;
+                        slowCache.displayUltimateTick = slowNow;
+                    } else {
+                        // Keep the last successful sample within its freshness window.
                     }
                     break;
                 }
                 }
-                ++slowCache.skillRefreshCursor;
+                slowCache.skillRefreshCursor = (slowCache.skillRefreshCursor + 1) % 3;
                 pipelineStats.skillReadCount++;
-                if (slowCache.skillRefreshCursor % 3 == 0) {
+                if (slowCache.skillRefreshCursor == 0) {
                     slowCache.skillUpdateTick = slowNow;
                     slowCache.skillValid = true;
                 }
@@ -2329,8 +2364,11 @@ void entity_thread() {
             entity.skill1act = slowCache.skill1act;
             entity.skill2act = slowCache.skill2act;
             applyCachedUltimateToEntity(entity, slowCache);
+            publishCooldowns();
             entity.skillcd1 = slowCache.skillcd1;
             entity.skillcd2 = slowCache.skillcd2;
+            entity.display_cooldowns = entity.SkillBase ? slowCache.displayCooldowns
+                : std::array<OW::OverlayStatus::CooldownSample, 2>{};
             }
 
             // Sombra stealth affects the effective visibility state, so keep it
@@ -2413,33 +2451,22 @@ void entity_thread() {
                     if (refreshLocalSkillStatus && entity.SkillBase) {
                         pipelineStats.skillDueCount++;
                         dmaFieldWindow.skillRefresh++;
-                        switch (slowCache.localSkillRefreshCursor % 6) {
+                        switch (slowCache.localSkillRefreshCursor % 4) {
                         case 0:
-                            slowCache.skillcd1 = OW::readskillcd(entity.SkillBase + 0x40, 0, 0x189c);
-                            break;
-                        case 1:
-                            slowCache.skillcd2 = OW::readskillcd(entity.SkillBase + 0x40, 0, 0x1f89);
-                            break;
-                        case 2:
                             slowCache.reloading = OW::IsSkillActivate1(entity.SkillBase + 0x40, 0, 0x4BF);
                             break;
-                        case 3:
-                            slowCache.skill1act = OW::IsSkillActive(entity.SkillBase + 0x40, 0, 0x28E3);
-                            slowCache.skillValid = true;
-                            slowCache.skillUpdateTick = slowNow;
-                            break;
-                        case 4:
-                            slowCache.skill2act = OW::IsSkillActive(entity.SkillBase + 0x40, 0, 0x28E9);
-                            slowCache.skillValid = true;
-                            slowCache.skillUpdateTick = slowNow;
-                            break;
+                        case 1: observeSkill(0); break;
+                        case 2: observeSkill(1); break;
                         default:
                         {
                             float ultimate = 0.0f;
-                            if (OW::TryReadUlt(entity.SkillBase + 0x40, 0, 0x1e32, ultimate) &&
+                            if (entity.Alive && OW::TryReadUlt(entity.SkillBase + 0x40, 0, 0x1e32, ultimate) &&
                                 std::isfinite(ultimate)) {
                                 slowCache.ultimate = ultimate;
                                 slowCache.ultimateValid = true;
+                                slowCache.displayUltimateTick = slowNow;
+                            } else {
+                                // Keep the last successful sample within its freshness window.
                             }
                             slowCache.skillValid = true;
                             slowCache.skillUpdateTick = slowNow;
@@ -2453,6 +2480,7 @@ void entity_thread() {
                     }
                     entity.skill1act = slowCache.skill1act;
                     entity.skill2act = slowCache.skill2act;
+                    publishCooldowns();
                     applyCachedUltimateToEntity(entity, slowCache);
                     if (detailedProcessLog) {
                         Diagnostics::Info("[PIPELINE] Stage 4 progress idx=%zu local_select skillcd1_start skill_base=0x%llX hero=%s.",

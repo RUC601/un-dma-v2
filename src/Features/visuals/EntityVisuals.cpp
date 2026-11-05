@@ -2,6 +2,7 @@
 #include "Game/Overwatch.hpp"
 #include "Game/TrainingBotDisplay.hpp"
 #include "Game/snapshots/Interpolation.hpp"
+#include <cfloat>
 namespace OverlayRenderDetail {
 
     inline ImU32 ToImU32(const ImVec4& color) {
@@ -632,6 +633,8 @@ namespace OverlayRenderDetail {
 
     inline std::string EntityHeroName(const OW::c_entity& entity) {
         const auto bot = OW::ResolveTrainingBotDisplay(entity.HeroID, entity.PlayerHealthMax);
+        // D.Va's legacy name helper probes the process; rendering consumes identity only.
+        if (entity.HeroID == OW::eHero::HERO_DVA) return OW::GameData::HeroName(entity.HeroID);
         return bot.name ? bot.name : OW::GetHeroEngNames(entity.HeroID, entity.LinkBase);
     }
 
@@ -672,13 +675,8 @@ namespace OverlayRenderDetail {
                                ImU32WithAlpha(255, 225, 60, opacity), text.c_str(), 12.0f);
     }
 
-    inline bool IsSkillReadyCooldownSentinel(float cooldown) {
-        return std::isfinite(cooldown) && std::fabs(cooldown - 1.0f) <= 0.001f;
-    }
-
     inline bool IsSkillOnCooldown(bool active, float cooldown) {
-        return !active && std::isfinite(cooldown) && cooldown > 0.05f &&
-               !IsSkillReadyCooldownSentinel(cooldown);
+        return !active && std::isfinite(cooldown) && cooldown > 0.05f;
     }
 
     inline std::string FormatCooldownLabel(const char* label, float cooldown) {
@@ -689,27 +687,17 @@ namespace OverlayRenderDetail {
 
     inline std::string CooldownSummary(const OW::c_entity& entity) {
         std::string text;
-        if (IsSkillOnCooldown(entity.skill1act, entity.skillcd1))
-            text = FormatCooldownLabel("S1", entity.skillcd1);
-        if (IsSkillOnCooldown(entity.skill2act, entity.skillcd2)) {
+        for (size_t slot=0; slot<entity.display_cooldowns.size(); ++slot) {
+            const auto& cd=entity.display_cooldowns[slot];
+            if (!cd.Fresh(GetTickCount()) || cd.Remaining() <= .05f) continue;
             if (!text.empty()) text += " ";
-            text += FormatCooldownLabel("S2", entity.skillcd2);
+            text += FormatCooldownLabel(slot==0 ? "S1" : "S2", cd.Remaining());
         }
         return text;
     }
-
     inline void DrawSkillTextCooldowns(const OW::c_entity& entity, float x, float y, float opacity) {
-        int line = 0;
-        const ImU32 cooldownColor = ImU32WithAlpha(255, 230, 120, opacity);
-        if (IsSkillOnCooldown(entity.skill1act, entity.skillcd1)) {
-            const std::string text = FormatCooldownLabel("S1", entity.skillcd1);
-            Render::DrawStrokeText(ImVec2(x, y + line * 13.0f), cooldownColor, text.c_str(), 12.0f);
-            ++line;
-        }
-        if (IsSkillOnCooldown(entity.skill2act, entity.skillcd2)) {
-            const std::string text = FormatCooldownLabel("S2", entity.skillcd2);
-            Render::DrawStrokeText(ImVec2(x, y + line * 13.0f), cooldownColor, text.c_str(), 12.0f);
-        }
+        const auto text = CooldownSummary(entity);
+        if (!text.empty()) Render::DrawStrokeText(ImVec2(x,y), ImU32WithAlpha(255,230,120,opacity),text.c_str(),12);
     }
 
     inline std::string FormatIconCooldown(float cooldown) {
@@ -795,13 +783,11 @@ namespace OverlayRenderDetail {
         const auto loaded = [&](const char* key) {
             return !key || !key[0] || iconManager->GetIcon(prefix + key);
         };
-        if (loaded(icons.ability1Icon) && loaded(icons.ability2Icon) && loaded(icons.ultimateIcon))
+        if (loaded(icons.ability1Icon) && loaded(icons.ability2Icon) && loaded(icons.ultimateIcon) && loaded(icons.ability3Icon))
             return;
-        iconManager->LoadAbilityIcons(icons.heroSlug, {
-            icons.ability1Icon,
-            icons.ability2Icon,
-            icons.ultimateIcon
-        });
+        std::vector<std::string> names{icons.ability1Icon, icons.ability2Icon, icons.ultimateIcon};
+        if (icons.ability3Icon && icons.ability3Icon[0]) names.emplace_back(icons.ability3Icon);
+        iconManager->LoadAbilityIcons(icons.heroSlug, names);
     }
 
     inline bool DrawAbilityIconSlot(IconManager* iconManager, const OW::HeroAbilityIcons& icons,
@@ -863,28 +849,22 @@ namespace OverlayRenderDetail {
                                    float x, float y, float opacity) {
         const OW::HeroAbilityIcons* icons = OW::GetAbilityIcons(heroName);
         IconManager* iconManager = Render::GetIconManager();
-        if (!icons || !iconManager) {
-            DrawSkillTextCooldowns(entity, x, y, opacity);
-            return;
+        if (icons && iconManager) EnsureAbilityIconsLoaded(iconManager, *icons);
+        for (size_t slot = 0; slot < entity.display_cooldowns.size(); ++slot) {
+            const auto& sample = entity.display_cooldowns[slot];
+            const bool known = sample.Fresh(GetTickCount());
+            const float remaining = sample.Remaining();
+            const float sx = x + float(slot) * 21.0f;
+            float cursor = sx;
+            if (icons && iconManager)
+                DrawAbilityIconSlot(iconManager, *icons, slot == 0 ? icons->ability1Icon : icons->ability2Icon,
+                    cursor, y, 18, 3, opacity * (known ? 1.0f : .25f),
+                    known && remaining > .05f, remaining, slot == 0 ? "S1" : "S2");
+            if (!known || !icons || !iconManager) {
+                const std::string text = known ? FormatIconCooldown(remaining) : "--";
+                Render::DrawStrokeText(ImVec2(sx, y), ImU32WithAlpha(255,230,120,opacity), text.c_str(), 12);
+            }
         }
-
-        EnsureAbilityIconsLoaded(iconManager, *icons);
-
-        constexpr float iconSize = 18.0f;
-        constexpr float gap = 3.0f;
-        float cursorX = x;
-        const bool includeUltimateIcon = false;
-        const bool drewFirst = DrawAbilityIconSlot(iconManager, *icons, icons->ability1Icon, cursorX, y,
-                                iconSize, gap, opacity,
-                                IsSkillOnCooldown(entity.skill1act, entity.skillcd1), entity.skillcd1, "S1");
-        const bool drewSecond = DrawAbilityIconSlot(iconManager, *icons, icons->ability2Icon, cursorX, y,
-                                iconSize, gap, opacity,
-                                IsSkillOnCooldown(entity.skill2act, entity.skillcd2), entity.skillcd2, "S2");
-        const bool drewUltimate = includeUltimateIcon && DrawUltimateIconSlot(iconManager, *icons, cursorX, y,
-                                                         iconSize, gap, opacity, entity.ultimate);
-
-        if (!drewFirst && !drewSecond && !drewUltimate)
-            DrawSkillTextCooldowns(entity, x, y, opacity);
     }
 
 #ifdef UNLEASHED_ASSET_PREVIEW
@@ -1187,219 +1167,7 @@ namespace OverlayRenderDetail {
         return heroName;
     }
 
-    std::vector<AimTriggerStatusRow> BuildAimTriggerStatusRowsForHero(uint64_t heroId) {
-        OW::Config::ScopedConfigRead configRead;
-        std::vector<AimTriggerStatusRow> rows;
-
-        rows.push_back({
-            "Hero: " + CurrentLocalHeroName(heroId),
-            ImU32WithAlpha(255, 255, 255, 0.96f),
-            13.5f
-        });
-
-        const OW::HeroPerkRuntime::Snapshot perkSnapshot = OW::HeroPerkRuntime::CurrentSnapshot();
-        if (perkSnapshot.supported && perkSnapshot.heroId == heroId) {
-            std::string perkLine = "Perk: ";
-            perkLine += perkSnapshot.effectivePerkOn ? "On" : "Off";
-            perkLine += " | ";
-            perkLine += OW::HeroPerkRuntime::EffectiveSourceName(perkSnapshot.source);
-            if (perkSnapshot.variantId && perkSnapshot.variantId[0] != '\0') {
-                perkLine += " | ";
-                perkLine += perkSnapshot.variantId;
-            }
-
-            rows.push_back({
-                perkLine,
-                perkSnapshot.effectivePerkOn
-                    ? ImU32WithAlpha(166, 255, 199, 0.96f)
-                    : ImU32WithAlpha(226, 232, 240, 0.72f),
-                11.5f
-            });
-        }
-
-        std::vector<std::pair<int, OW::Config::HeroSlotPreset>> aimSlots;
-        std::vector<std::pair<int, OW::Config::HeroSlotPreset>> triggerSlots;
-        aimSlots.reserve(OW::Config::kMaxHeroPresetSlots);
-        triggerSlots.reserve(OW::Config::kMaxHeroPresetSlots);
-
-        for (int slotIndex = 0; slotIndex < OW::Config::kMaxHeroPresetSlots; ++slotIndex) {
-            OW::Config::HeroSlotPreset slot{};
-            if (OW::Config::TryGetHeroAimSlot(heroId, slotIndex, slot))
-                aimSlots.emplace_back(slotIndex, slot);
-            if (OW::Config::TryGetHeroTriggerSlot(heroId, slotIndex, slot))
-                triggerSlots.emplace_back(slotIndex, slot);
-        }
-
-        auto firstEnabledSlot = [](const std::vector<std::pair<int, OW::Config::HeroSlotPreset>>& slots) {
-            for (const auto& item : slots) {
-                if (item.second.enabled)
-                    return item.first;
-            }
-            return -1;
-        };
-
-        const int activeAimSlot = firstEnabledSlot(aimSlots);
-        const int runtimeTriggerSlot = firstEnabledSlot(triggerSlots);
-
-        if (!aimSlots.empty()) {
-            rows.push_back({ "Aim active slots", ImU32WithAlpha(126, 220, 255, 0.94f), 11.5f });
-            for (const auto& item : aimSlots) {
-                const int slotIndex = item.first;
-                const OW::Config::HeroSlotPreset& slot = item.second;
-                const bool active = slot.enabled && slotIndex == activeAimSlot;
-                char line[240]{};
-                std::snprintf(line, sizeof(line),
-                              "#%d %s | %s | FOV %.0f deg | Hold | enabled:%s%s",
-                              slotIndex + 1,
-                              OW::Labels::AimModeName(slot.preset.aimMode),
-                              OW::Labels::AimActivationKeyName(slot.preset.key),
-                              slot.preset.fov,
-                              YesNo(slot.enabled),
-                              active ? " | active" : "");
-                rows.push_back({
-                    line,
-                    active
-                        ? ImU32WithAlpha(162, 255, 188, 0.96f)
-                        : ImU32WithAlpha(226, 232, 240, slot.enabled ? 0.90f : 0.58f),
-                    11.2f
-                });
-            }
-        }
-
-        if (!triggerSlots.empty()) {
-            rows.push_back({ "Trigger active slots", ImU32WithAlpha(255, 204, 118, 0.95f), 11.5f });
-            for (const auto& item : triggerSlots) {
-                const int slotIndex = item.first;
-                const OW::Config::HeroSlotPreset& slot = item.second;
-                const OW::Config::TriggerPreset& trigger = slot.preset.trigger;
-                const bool active = slot.enabled && trigger.enabled && slotIndex == runtimeTriggerSlot;
-                char line[320]{};
-                std::snprintf(line, sizeof(line),
-                              "#%d %s | %s | %s | reload-block:%s | charge:%s | invis:%s | slot:%s trig:%s%s",
-                              slotIndex + 1,
-                              OW::AttackActionCompactNameForHero(heroId, trigger.action),
-                              OW::Labels::TriggerbotModeName(trigger.mode),
-                              OW::Labels::AimActivationKeyName(trigger.key),
-                              YesNo(trigger.disableWhileReloading),
-                              YesNo(trigger.chargeAware),
-                              YesNo(trigger.ignoreInvisible),
-                              YesNo(slot.enabled),
-                              YesNo(trigger.enabled),
-                              active ? " | active" : "");
-                rows.push_back({
-                    line,
-                    active
-                        ? ImU32WithAlpha(255, 232, 161, 0.97f)
-                        : ImU32WithAlpha(226, 232, 240, (slot.enabled && trigger.enabled) ? 0.90f : 0.58f),
-                    10.8f
-                });
-            }
-        }
-
-        if (OW::Config::secondaim || OW::Config::View_triggerbot2()) {
-            rows.push_back({ "Secondary", ImU32WithAlpha(190, 168, 255, 0.95f), 11.5f });
-            if (OW::Config::secondaim) {
-                const int secondaryAimMode = OW::Config::Flick2 ? 1 : 0;
-                char line[192]{};
-                std::snprintf(line, sizeof(line),
-                              "Secondary Aim | %s | %s | Hold | enabled:Y",
-                              OW::Labels::AimModeName(secondaryAimMode),
-                              OW::Labels::AimActivationKeyName(OW::Config::aim_key2));
-                rows.push_back({ line, ImU32WithAlpha(204, 194, 255, 0.96f), 11.0f });
-            }
-            if (OW::Config::View_triggerbot2()) {
-                char line[256]{};
-                std::snprintf(line, sizeof(line),
-                              "Triggerbot2 | Primary | %s | %s | reload-block:%s | charge:%s | invis:%s | enabled:Y",
-                              OW::Labels::TriggerbotModeName(OW::Config::triggerbotMode2),
-                              OW::Labels::AimActivationKeyName(OW::Config::triggerbotKey2),
-                              YesNo(OW::Config::triggerbotDisableWhileReloading2),
-                              YesNo(OW::Config::triggerbotChargeAware2),
-                              YesNo(OW::Config::triggerbotIgnoreInvisible2));
-                rows.push_back({ line, ImU32WithAlpha(204, 194, 255, 0.96f), 10.8f });
-            }
-        }
-
-        if (rows.size() == 1)
-            rows.push_back({ heroId == 0 ? "Hero configuration unavailable" : "No hero Aim/Trigger slots",
-                ImU32WithAlpha(176, 184, 196, 0.78f), 11.0f });
-
-        return rows;
-    }
-
-    inline std::vector<AimTriggerStatusRow> BuildAimTriggerStatusRows() {
-        return BuildAimTriggerStatusRowsForHero(OW::SnapshotLocalHeroIdForStatus());
-    }
-
-    inline float ScaledTextWidth(const std::string& text, float fontSize) {
-        ImVec2 size = ImGui::CalcTextSize(text.c_str());
-        const float baseFontSize = ImGui::GetFontSize();
-        if (baseFontSize > 0.0f)
-            size.x *= fontSize / baseFontSize;
-        return size.x;
-    }
-
-    inline float AimTriggerStatusPanelWidth(const std::vector<AimTriggerStatusRow>& rows) {
-        float width = 0.0f;
-        for (const AimTriggerStatusRow& row : rows)
-            width = (std::max)(width, ScaledTextWidth(row.text, row.fontSize));
-        return std::clamp(width + 18.0f, 260.0f, 360.0f);
-    }
-
-    float AimTriggerStatusPanelHeight(const std::vector<AimTriggerStatusRow>& rows) {
-        if (rows.empty())
-            return 0.0f;
-
-        constexpr float paddingY = 7.0f;
-        constexpr float lineGap = 2.0f;
-        float height = paddingY * 2.0f;
-        for (const AimTriggerStatusRow& row : rows)
-            height += row.fontSize + lineGap;
-        return height - lineGap;
-    }
-
-    float AimTriggerStatusPanelHeight() {
-        return AimTriggerStatusPanelHeight(BuildAimTriggerStatusRows());
-    }
-
-    inline float AimTriggerStatusPanelReservedBottomY() {
-        const float height = AimTriggerStatusPanelHeight();
-        return height > 0.0f ? 10.0f + height + 8.0f : 10.0f;
-    }
-
-    inline float DrawAimTriggerStatusPanelRows(const std::vector<AimTriggerStatusRow>& rows) {
-        if (rows.empty())
-            return 0.0f;
-
-        constexpr float panelX = 10.0f;
-        constexpr float panelY = 10.0f;
-        constexpr float paddingX = 9.0f;
-        constexpr float paddingY = 7.0f;
-        constexpr float lineGap = 2.0f;
-        const float panelWidth = AimTriggerStatusPanelWidth(rows);
-        const float panelHeight = AimTriggerStatusPanelHeight(rows);
-
-        Render::DrawFilledRect(Vector2(panelX, panelY), panelWidth, panelHeight,
-                               ImColorWithAlpha(6, 9, 13, 0.74f));
-        Render::DrawFilledRect(Vector2(panelX, panelY), 3.0f, panelHeight,
-                               ImColorWithAlpha(80, 190, 255, 0.88f));
-        Render::DrawRect(Vector2(panelX, panelY), panelWidth, panelHeight,
-                         Render::Color(255, 255, 255, ToByte(0.14f)), 1.0f);
-
-        float textY = panelY + paddingY;
-        for (const AimTriggerStatusRow& row : rows) {
-            Render::DrawText(ImVec2(panelX + paddingX, textY), row.color,
-                             row.text.c_str(), row.fontSize);
-            textY += row.fontSize + lineGap;
-        }
-
-        return panelY + panelHeight;
-    }
-
-    float DrawAimTriggerStatusPanel() {
-        const std::vector<AimTriggerStatusRow> rows = BuildAimTriggerStatusRows();
-        return DrawAimTriggerStatusPanelRows(rows);
-    }
+    #include "SlotStatusHud.inl"
 
 } // namespace OverlayRenderDetail
 
@@ -1769,7 +1537,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         bool drewAny = false;
 
         std::string heroName;
-        const bool showAboveHeadSkillCooldowns = OW::Config::skillinfo && OW::Config::skillDisplayMode == 0;
+        const bool showAboveHeadSkillCooldowns = OW::Config::skillinfo;
         if (OW::Config::skillinfo || OW::Config::healthbar2 || OW::Config::draw_avatar || OW::Config::name)
             heroName = OverlayRenderDetail::EntityHeroName(entity);
 
@@ -1909,380 +1677,4 @@ void PlayerInfo(bool boxPerfMode) {
     PlayerInfoFromSnapshot(entity_snapshot, local_snapshot, boxPerfMode);
 }
 
-void skillinfo(const std::vector<OW::c_entity>& entity_snapshot) {
-    const bool showUltimateLeft = OW::Config::ult;
-    const bool showUltimateRight = false;
-    const bool showSkillLeft = OW::Config::skillinfo && OW::Config::skillDisplayMode == 1;
-    const bool showSkillRight = OW::Config::skillinfo && OW::Config::skillDisplayMode == 2;
-    if ((!showUltimateLeft && !showUltimateRight && !showSkillLeft && !showSkillRight) || entity_snapshot.empty())
-        return;
-
-    IconManager* iconManager = Render::GetIconManager();
-
-    std::vector<OW::c_entity> enemies;
-    std::vector<OW::c_entity> allies;
-    for (const OW::c_entity& entity : entity_snapshot) {
-        if(!entity.team_known || entity.scene_generation!=OW::EntitySceneGeneration() ||
-            OW::EntityRosterPolicy::Expired(entity.last_discovered_tick_ms,GetTickCount()))continue;
-        std::string heroname = OverlayRenderDetail::EntityHeroName(entity);
-        if (heroname == "Bot" || heroname == "Unknown")
-            continue;
-        if (entity.HeroID == 0x16dd || entity.HeroID == 0x16ee || entity.HeroID == 0x16bb)
-            continue;
-
-        if (entity.Team)
-            enemies.push_back(entity);
-        else
-            allies.push_back(entity);
-    }
-
-    if (enemies.empty() && allies.empty())
-        return;
-
-    auto renderEntitySkillRow = [&](const OW::c_entity& entity, float x, float y, float opacity,
-                                    bool includeUltimate, bool includeCooldowns) -> float {
-        if(entity.scene_generation!=OW::EntitySceneGeneration() ||
-            OW::EntityRosterPolicy::Expired(entity.last_discovered_tick_ms,GetTickCount()))return y;
-        const std::string heroname = OverlayRenderDetail::EntityHeroName(entity);
-        constexpr float rowHeight = 54.0f;
-        constexpr float cardWidth = 232.0f;
-        constexpr float avatarSize = 42.0f;
-        constexpr float barWidth = 4.0f;
-        constexpr float barHeight = 40.0f;
-        constexpr float gap = 7.0f;
-        constexpr float skillSlotSize = 28.0f;
-        constexpr float skillSlotGap = 6.0f;
-        constexpr float ultBarWidth = 62.0f;
-        constexpr float ultBarHeight = 14.0f;
-        constexpr float statusStackGap = 4.0f;
-
-        const bool rosterFresh = entity.roster_state == OW::EntityRosterState::Fresh;
-        const bool rosterDead = entity.roster_state == OW::EntityRosterState::Dead;
-        const bool rosterMissing = entity.roster_state == OW::EntityRosterState::Missing;
-        const float alpha = std::clamp(opacity * (rosterFresh ? 1.0f : 0.52f), 0.0f, 1.0f);
-        const float maskAlpha = std::clamp(opacity, 0.0f, 1.0f);
-        const bool isEnemy = entity.Team;
-        Render::DrawFilledRect(Vector2(x, y + 1.0f), cardWidth, rowHeight - 2.0f,
-                               OverlayRenderDetail::ImColorWithAlpha(8, 11, 15, alpha * 0.70f));
-        Render::DrawFilledRect(Vector2(x, y + 4.0f), 3.0f, rowHeight - 8.0f,
-                               isEnemy
-                                   ? OverlayRenderDetail::ImColorWithAlpha(255, 82, 92, alpha * 0.86f)
-                                   : OverlayRenderDetail::ImColorWithAlpha(72, 190, 255, alpha * 0.86f));
-        Render::DrawRect(Vector2(x, y + 1.0f), cardWidth, rowHeight - 2.0f,
-                         Render::Color(255, 255, 255, OverlayRenderDetail::ToByte(alpha * 0.14f)), 1.0f);
-
-        auto scaledTextSize = [](const std::string& text, float fontSize) {
-            ImVec2 textSize = ImGui::CalcTextSize(text.c_str());
-            const float baseFontSize = ImGui::GetFontSize();
-            if (baseFontSize > 0.0f) {
-                const float scale = fontSize / baseFontSize;
-                textSize.x *= scale;
-                textSize.y *= scale;
-            }
-            return textSize;
-        };
-
-        auto drawCenteredText = [&](float centerX, float centerY, const std::string& text,
-                                    float fontSize, ImU32 color) {
-            const ImVec2 textSize = scaledTextSize(text, fontSize);
-            Render::DrawText(ImVec2(centerX - textSize.x * 0.5f,
-                                    centerY - textSize.y * 0.5f),
-                             color, text.c_str(), fontSize);
-        };
-
-        auto heroInitials = [&]() {
-            std::string initials;
-            for (unsigned char ch : heroname) {
-                if (std::isalnum(ch)) {
-                    initials.push_back(static_cast<char>(std::toupper(ch)));
-                    if (initials.size() == 2)
-                        break;
-                }
-            }
-            return initials.empty() ? std::string("?") : initials;
-        };
-
-        const float avatarX = x + 6.0f;
-        const float avatarY = y + (rowHeight - avatarSize) * 0.5f;
-        if (ID3D11ShaderResourceView* avatar = OverlayRenderDetail::FindEntityHeroIcon(entity)) {
-            Render::DrawIcon(avatar, ImVec2(avatarX, avatarY), ImVec2(avatarSize, avatarSize),
-                             OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha));
-        } else {
-            const Render::Color fallbackColor = isEnemy
-                ? Render::Color(136, 42, 48, OverlayRenderDetail::ToByte(alpha * 0.88f))
-                : Render::Color(40, 112, 150, OverlayRenderDetail::ToByte(alpha * 0.88f));
-            Render::DrawFilledCircle(Vector2(avatarX + avatarSize * 0.5f,
-                                             avatarY + avatarSize * 0.5f),
-                                     avatarSize * 0.5f, fallbackColor, 40);
-            drawCenteredText(avatarX + avatarSize * 0.5f, avatarY + avatarSize * 0.5f,
-                             heroInitials(), 13.0f,
-                             OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha));
-        }
-
-        const float baseHealth = OverlayRenderDetail::PositiveFinite(entity.MinHealth);
-        const float armorHealth = OverlayRenderDetail::PositiveFinite(entity.MinArmorHealth);
-        const float shieldHealth = OverlayRenderDetail::PositiveFinite(entity.MinBarrierHealth);
-        const float liveCurrentHealth = OverlayRenderDetail::PositiveFinite(entity.PlayerHealth) > 0.0f
-            ? OverlayRenderDetail::PositiveFinite(entity.PlayerHealth)
-            : baseHealth + armorHealth + shieldHealth;
-        const float currentHealth = rosterFresh ? liveCurrentHealth : 0.0f;
-        float maxHealth = OverlayRenderDetail::PositiveFinite(entity.PlayerHealthMax);
-        if (maxHealth <= 0.0f) {
-            maxHealth = OverlayRenderDetail::PositiveFinite(entity.MaxHealth) +
-                        OverlayRenderDetail::PositiveFinite(entity.MaxArmorHealth) +
-                        OverlayRenderDetail::PositiveFinite(entity.MaxBarrierHealth);
-        }
-        const float healthRatio = maxHealth > 0.0f ? OverlayRenderDetail::Clamp01(currentHealth / maxHealth) : 0.0f;
-        const ImColor healthColor = !rosterFresh
-            ? OverlayRenderDetail::ImColorWithAlpha(132, 138, 148, alpha)
-            : (healthRatio > 0.60f
-            ? OverlayRenderDetail::ImColorWithAlpha(55, 230, 95, alpha)
-            : (healthRatio >= 0.30f
-                ? OverlayRenderDetail::ImColorWithAlpha(245, 210, 72, alpha)
-                : OverlayRenderDetail::ImColorWithAlpha(245, 76, 72, alpha)));
-
-        auto drawVerticalBar = [&](float barX, float barY, float ratio, const ImColor& fillColor) {
-            Render::DrawFilledRect(Vector2(barX, barY), barWidth, barHeight,
-                                   OverlayRenderDetail::ImColorWithAlpha(0, 0, 0, alpha * 0.48f));
-            const float fillHeight = barHeight * OverlayRenderDetail::Clamp01(ratio);
-            if (fillHeight > 0.0f) {
-                Render::DrawFilledRect(Vector2(barX, barY + barHeight - fillHeight),
-                                       barWidth, fillHeight, fillColor);
-            }
-            Render::DrawRect(Vector2(barX, barY), barWidth, barHeight,
-                             Render::Color(255, 255, 255, OverlayRenderDetail::ToByte(alpha * 0.18f)), 1.0f);
-        };
-
-        float cursorX = avatarX + avatarSize + 4.0f;
-        const float barY = y + (rowHeight - barHeight) * 0.5f;
-        drawVerticalBar(cursorX, barY, healthRatio, healthColor);
-        cursorX += barWidth + 3.0f;
-
-        const float resourceX = cursorX;
-        const float armorMax = OverlayRenderDetail::PositiveFinite(entity.MaxArmorHealth);
-        const float shieldMax = OverlayRenderDetail::PositiveFinite(entity.MaxBarrierHealth);
-        const float resourceCurrent = armorHealth + shieldHealth;
-        float resourceMax = armorMax + shieldMax;
-        if (resourceMax <= 0.0f)
-            resourceMax = resourceCurrent;
-        if (resourceMax > 0.0f || resourceCurrent > 0.0f) {
-            Render::DrawFilledRect(Vector2(resourceX, barY), barWidth, barHeight,
-                                   OverlayRenderDetail::ImColorWithAlpha(0, 0, 0, alpha * 0.48f));
-            float fillBottom = barY + barHeight;
-            const float clampedArmor = armorMax > 0.0f && armorHealth > armorMax ? armorMax : armorHealth;
-            const float clampedShield = shieldMax > 0.0f && shieldHealth > shieldMax ? shieldMax : shieldHealth;
-            const float armorHeight = barHeight * OverlayRenderDetail::Clamp01(clampedArmor / resourceMax);
-            const float shieldHeight = barHeight * OverlayRenderDetail::Clamp01(clampedShield / resourceMax);
-            if (armorHeight > 0.0f) {
-                fillBottom -= armorHeight;
-                Render::DrawFilledRect(Vector2(resourceX, fillBottom), barWidth, armorHeight,
-                                       OverlayRenderDetail::ImColorWithAlpha(255, 194, 58, alpha));
-            }
-            if (shieldHeight > 0.0f && fillBottom > barY) {
-                const float segmentHeight = (shieldHeight < fillBottom - barY) ? shieldHeight : (fillBottom - barY);
-                fillBottom -= segmentHeight;
-                Render::DrawFilledRect(Vector2(resourceX, fillBottom), barWidth, segmentHeight,
-                                       OverlayRenderDetail::ImColorWithAlpha(68, 220, 255, alpha));
-            }
-            Render::DrawRect(Vector2(resourceX, barY), barWidth, barHeight,
-                             Render::Color(255, 255, 255, OverlayRenderDetail::ToByte(alpha * 0.18f)), 1.0f);
-        }
-        cursorX += barWidth + gap;
-
-        const std::string hpText = rosterFresh
-            ? std::to_string(static_cast<int>(currentHealth + 0.5f))
-            : (rosterDead ? std::string("0") : std::string("--"));
-        Render::DrawText(ImVec2(cursorX, y + 17.0f),
-                         OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha),
-                         hpText.c_str(), 20.0f);
-        cursorX += 48.0f + gap;
-
-        const float statusBlockX = x + cardWidth - 7.0f - ultBarWidth;
-        const float statusBlockTop = y + (rowHeight - (includeCooldowns && includeUltimate
-            ? skillSlotSize + statusStackGap + ultBarHeight
-            : (includeCooldowns ? skillSlotSize : ultBarHeight))) * 0.5f;
-        const float skillRowY = statusBlockTop;
-        const float ultRowY = statusBlockTop + (includeCooldowns ? skillSlotSize + statusStackGap : 0.0f);
-
-        if (includeUltimate) {
-            const float ultimate = std::isfinite(entity.ultimate)
-                ? std::clamp(entity.ultimate, 0.0f, 100.0f)
-                : 0.0f;
-            const bool ultimateReady = ultimate >= 100.0f;
-            const float ultY = ultRowY;
-            Render::DrawFilledRect(Vector2(statusBlockX, ultY), ultBarWidth, ultBarHeight,
-                                   ultimateReady
-                                       ? OverlayRenderDetail::ImColorWithAlpha(116, 82, 16, alpha * 0.92f)
-                                       : OverlayRenderDetail::ImColorWithAlpha(56, 60, 68, alpha * 0.86f));
-            if (ultimate > 0.0f) {
-                Render::DrawFilledRect(Vector2(statusBlockX, ultY), ultBarWidth * (ultimate / 100.0f), ultBarHeight,
-                                       ultimateReady
-                                           ? OverlayRenderDetail::ImColorWithAlpha(255, 202, 42, alpha)
-                                           : OverlayRenderDetail::ImColorWithAlpha(66, 214, 255, alpha));
-            }
-            Render::DrawRect(Vector2(statusBlockX, ultY), ultBarWidth, ultBarHeight,
-                             ultimateReady
-                                 ? Render::Color(255, 238, 112, OverlayRenderDetail::ToByte(alpha))
-                                 : Render::Color(255, 255, 255, OverlayRenderDetail::ToByte(alpha * 0.24f)),
-                             1.0f);
-            drawCenteredText(statusBlockX + ultBarWidth * 0.5f, ultY + ultBarHeight * 0.5f,
-                             "Ult " + OverlayRenderDetail::FormatUltimatePercent(entity.ultimate),
-                             12.5f,
-                             ultimateReady
-                                 ? OverlayRenderDetail::ImU32WithAlpha(34, 21, 0, alpha)
-                                 : OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha));
-        }
-
-        if (includeCooldowns) {
-            const OW::HeroAbilityIcons* icons = OW::GetAbilityIcons(heroname);
-            if (icons && iconManager)
-                OverlayRenderDetail::EnsureAbilityIconsLoaded(iconManager, *icons);
-
-            auto skillTexture = [&](const char* abilityIcon) -> ID3D11ShaderResourceView* {
-                if (!icons || !iconManager || !abilityIcon || abilityIcon[0] == '\0')
-                    return nullptr;
-                return iconManager->GetIcon(std::string(icons->heroSlug) + "/" + abilityIcon);
-            };
-
-            auto drawSkillCooldownSlot = [&](const char* abilityIcon, const char* label,
-                                             bool active, float cooldown) {
-                const float slotX = cursorX;
-                const float slotY = skillRowY;
-                const bool onCooldown = OverlayRenderDetail::IsSkillOnCooldown(active, cooldown);
-                const bool readyCooldownSentinel = OverlayRenderDetail::IsSkillReadyCooldownSentinel(cooldown);
-                const bool ready = active || readyCooldownSentinel;
-                const ImColor readyFillColor = isEnemy
-                    ? OverlayRenderDetail::ImColorWithAlpha(74, 24, 18, alpha * 0.96f)
-                    : OverlayRenderDetail::ImColorWithAlpha(18, 58, 48, alpha * 0.94f);
-                const Render::Color readyBorderColor = isEnemy
-                    ? Render::Color(255, 178, 92, OverlayRenderDetail::ToByte(alpha))
-                    : Render::Color(172, 255, 226, OverlayRenderDetail::ToByte(alpha));
-
-                Render::DrawFilledRect(Vector2(slotX, slotY), skillSlotSize, skillSlotSize,
-                                       ready
-                                           ? readyFillColor
-                                           : OverlayRenderDetail::ImColorWithAlpha(12, 16, 22, alpha * 0.82f));
-                if (ID3D11ShaderResourceView* texture = skillTexture(abilityIcon)) {
-                    Render::DrawIcon(texture, ImVec2(slotX + 1.0f, slotY + 1.0f),
-                                     ImVec2(skillSlotSize - 2.0f, skillSlotSize - 2.0f),
-                                     OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, alpha));
-                } else {
-                    drawCenteredText(slotX + skillSlotSize * 0.5f, slotY + skillSlotSize * 0.5f,
-                                     label, 13.0f,
-                                     OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, ready ? alpha : alpha * 0.66f));
-                }
-
-                if (onCooldown) {
-                    Render::DrawFilledRect(Vector2(slotX, slotY), skillSlotSize, skillSlotSize,
-                                           OverlayRenderDetail::ImColorWithAlpha(0, 0, 0, alpha * 0.66f));
-                    drawCenteredText(slotX + skillSlotSize * 0.5f, slotY + skillSlotSize * 0.5f,
-                                     OverlayRenderDetail::FormatIconCooldown(cooldown), 13.0f,
-                                     OverlayRenderDetail::ImU32WithAlpha(255, 244, 128, alpha));
-                } else if (!ready) {
-                    Render::DrawFilledRect(Vector2(slotX, slotY), skillSlotSize, skillSlotSize,
-                                           OverlayRenderDetail::ImColorWithAlpha(0, 0, 0, alpha * 0.34f));
-                }
-
-                Render::DrawRect(Vector2(slotX, slotY), skillSlotSize, skillSlotSize,
-                                 ready
-                                     ? readyBorderColor
-                                     : Render::Color(255, 255, 255, OverlayRenderDetail::ToByte(alpha * 0.28f)),
-                                 ready ? 1.6f : 1.0f);
-                cursorX += skillSlotSize + skillSlotGap;
-            };
-
-            cursorX = statusBlockX + (ultBarWidth - (skillSlotSize * 2.0f + skillSlotGap)) * 0.5f;
-            drawSkillCooldownSlot(icons ? icons->ability1Icon : nullptr, "S1",
-                                  entity.skill1act, entity.skillcd1);
-            drawSkillCooldownSlot(icons ? icons->ability2Icon : nullptr, "S2",
-                                  entity.skill2act, entity.skillcd2);
-        }
-
-        if (rosterDead || rosterMissing) {
-            const char* statusText = rosterDead ? "DEAD" : "MISSING";
-            Render::DrawFilledRect(Vector2(x, y + 1.0f), cardWidth, rowHeight - 2.0f,
-                                   OverlayRenderDetail::ImColorWithAlpha(0, 0, 0, maskAlpha * 0.38f));
-            constexpr float badgeWidth = 74.0f;
-            constexpr float badgeHeight = 19.0f;
-            const float badgeX = x + cardWidth - badgeWidth - 9.0f;
-            const float badgeY = y + (rowHeight - badgeHeight) * 0.5f;
-            Render::DrawFilledRect(Vector2(badgeX, badgeY), badgeWidth, badgeHeight,
-                                   OverlayRenderDetail::ImColorWithAlpha(18, 21, 26, maskAlpha * 0.90f));
-            Render::DrawRect(Vector2(badgeX, badgeY), badgeWidth, badgeHeight,
-                             Render::Color(210, 218, 230, OverlayRenderDetail::ToByte(maskAlpha * 0.35f)), 1.0f);
-            drawCenteredText(badgeX + badgeWidth * 0.5f, badgeY + badgeHeight * 0.5f,
-                             statusText, 12.5f,
-                             OverlayRenderDetail::ImU32WithAlpha(235, 240, 248, maskAlpha));
-        }
-
-        return y + rowHeight;
-    };
-
-    auto renderSidePanel = [&](bool isRight, bool includeUltimate, bool includeCooldowns) {
-        constexpr float panelWidth = 236.0f;
-        const float panelX = isRight ? OW::WX - panelWidth - 10.0f : 10.0f;
-        constexpr float rowHeight = 54.0f;
-        constexpr float sectionGap = 34.0f;
-        constexpr float headerHeight = 26.0f;
-        constexpr float opacity = 1.0f;
-
-        const bool showEnemyRows = !includeUltimate ||
-            OW::EntityRosterPolicy::ShouldRenderUltimateRosterEntry(
-                OW::Config::ultimateRosterFilter, true);
-        const bool showAllyRows = !includeUltimate ||
-            OW::EntityRosterPolicy::ShouldRenderUltimateRosterEntry(
-                OW::Config::ultimateRosterFilter, false);
-        const int enemyCount = showEnemyRows ? static_cast<int>(enemies.size()) : 0;
-        const int allyCount = showAllyRows ? static_cast<int>(allies.size()) : 0;
-
-        float totalHeight = 0.0f;
-        if (enemyCount > 0)
-            totalHeight += headerHeight + enemyCount * rowHeight;
-        if (allyCount > 0)
-            totalHeight += headerHeight + allyCount * rowHeight;
-        if (enemyCount > 0 && allyCount > 0)
-            totalHeight += sectionGap;
-
-        float y = (OW::WY - totalHeight) * 0.5f;
-        if (y < 10.0f)
-            y = 10.0f;
-        if (!isRight)
-            y = (std::max)(y, OverlayRenderDetail::AimTriggerStatusPanelReservedBottomY());
-
-        auto renderRoster = [&](float startY, bool rowUltimate, bool rowCooldowns) {
-            float rowY = startY;
-            if (enemyCount > 0) {
-                Render::DrawText(ImVec2(panelX, rowY),
-                                 OverlayRenderDetail::ImU32WithAlpha(255, 106, 116, opacity),
-                                 "ENEMIES", 16.5f);
-                rowY += headerHeight;
-                for (const OW::c_entity& entity : enemies)
-                    rowY = renderEntitySkillRow(entity, panelX, rowY, opacity, rowUltimate, rowCooldowns);
-            }
-
-            if (allyCount > 0) {
-                if (enemyCount > 0)
-                    rowY += sectionGap;
-                Render::DrawText(ImVec2(panelX, rowY),
-                                 OverlayRenderDetail::ImU32WithAlpha(102, 204, 255, opacity),
-                                 "ALLIES", 16.5f);
-                rowY += headerHeight;
-                for (const OW::c_entity& entity : allies)
-                    rowY = renderEntitySkillRow(entity, panelX, rowY, opacity, rowUltimate, rowCooldowns);
-            }
-            return rowY;
-        };
-
-        renderRoster(y, includeUltimate, includeCooldowns);
-    };
-
-    if (showUltimateLeft || showSkillLeft)
-        renderSidePanel(false, showUltimateLeft, showSkillLeft);
-    if (showUltimateRight || showSkillRight)
-        renderSidePanel(true, showUltimateRight, showSkillRight);
-}
-
-void skillinfo() {
-    const auto entity_snapshot = OW::TargetingDetail::SnapshotEntities();
-    skillinfo(entity_snapshot);
-}
+#include "HeroStatusHud.inl"

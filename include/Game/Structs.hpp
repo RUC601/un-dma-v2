@@ -113,6 +113,7 @@ namespace OW {
         HERO_JETPACKCAT    = GameData::MakeHeroId(0x516),
         HERO_SHION         = GameData::MakeHeroId(0x52C),
         HERO_DMON          = GameData::MakeHeroId(0x542),
+        HERO_DOCTRINE      = GameData::MakeHeroId(0x570),
         HERO_TRAININGBOT1  = GameData::MakeHeroId(0x33C),
         HERO_TRAININGBOT2  = GameData::MakeHeroId(0x337),
         HERO_TRAININGBOT3  = GameData::MakeHeroId(0x35A),

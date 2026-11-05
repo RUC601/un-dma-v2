@@ -610,9 +610,9 @@ void UI::SkillsPage() {
             if (!OW::IsHeroSkillDefinitionActiveForRuntime(definition, selectedHero.heroId))
                 continue;
 
-            std::string title = selectedHero.label;
+            std::string title = L(selectedHero.label);
             title += " / ";
-            title += definition.displayName;
+            title += L(definition.displayName);
             UIGroupBox(title.c_str());
             DrawHeroSkillDefinition(definition, selectedHero.heroId);
             CloseGroupBox();
@@ -653,9 +653,9 @@ void UI::SequencesPage() {
                 continue;
             }
 
-            std::string title = selectedHero.label;
+            std::string title = L(selectedHero.label);
             title += " / ";
-            title += definition.displayName;
+            title += L(definition.displayName);
             UIGroupBox(title.c_str());
             if (sequenceCombo)
                 DrawHeroSkillSequenceDefinition(definition, selectedHero.heroId);

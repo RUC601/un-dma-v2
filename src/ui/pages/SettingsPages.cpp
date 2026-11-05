@@ -200,6 +200,21 @@ void DrawMiscGeneralPage() {
         if (UISelect("##menuToggleKey", &toggleKeyIndex, kMenuToggleKeys, IM_ARRAYSIZE(kMenuToggleKeys)))
             OW::Config::MenuToggleKey = kMenuToggleVk[toggleKeyIndex];
         ImGui::PopItemWidth();
+
+        SettingRow(L("Cache refresh key"));
+        PushControlWidth();
+        const char* refreshKeys[IM_ARRAYSIZE(kMenuToggleKeys) + 1]{};
+        refreshKeys[0] = L("None");
+        std::copy(std::begin(kMenuToggleKeys), std::end(kMenuToggleKeys), refreshKeys + 1);
+        int refreshKeyIndex = OW::Config::CacheRefreshKey == 0 ? 0 :
+            FindMenuToggleKeyIndex(OW::Config::CacheRefreshKey) + 1;
+        if (UISelect("##cacheRefreshKey", &refreshKeyIndex, refreshKeys, IM_ARRAYSIZE(refreshKeys)))
+            OW::Config::CacheRefreshKey = refreshKeyIndex == 0 ? 0 : kMenuToggleVk[refreshKeyIndex - 1];
+        if (OW::Config::CacheRefreshKey == OW::Config::MenuToggleKey)
+            OW::Config::CacheRefreshKey = 0;
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("Works on this PC or the game PC when DMA keys are available. Use a different key from the menu. Hold triggers once."));
     }
     CloseGroupBox();
 
@@ -209,10 +224,7 @@ void DrawMiscGeneralPage() {
         if (UIActionButton(T(UiText::CloseUn), 96.0f))
             g_Overlay.RequestExit();
         ImGui::SameLine();
-        const bool reconnectBusy =
-            OW::ProcessConnection::IsConnecting() ||
-            OW::ProcessConnection::IsReconnectRequested() ||
-            OW::ProcessConnection::IsDmaRecoveryRequested();
+        const bool reconnectBusy = OW::ProcessConnection::IsRecoveryBusy();
         if (reconnectBusy)
             ImGui::BeginDisabled();
         if (UIActionButton(T(UiText::ReconnectUn), 112.0f))
@@ -221,6 +233,18 @@ void DrawMiscGeneralPage() {
             ImGui::EndDisabled();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", T(UiText::TooltipReconnect));
+
+        SettingRow(L("Runtime cache"));
+        if (reconnectBusy)
+            ImGui::BeginDisabled();
+        if (UIActionButton(L("Refresh caches"), 144.0f)) {
+            StopFirePatternRecorder();
+            OW::ProcessConnection::RequestCacheRefresh();
+        }
+        if (reconnectBusy)
+            ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("Stops current actions and acquisition, clears entity, camera and VMM caches, then reconnects and collects fresh data."));
 
         SettingRow("DMA");
         if (reconnectBusy)

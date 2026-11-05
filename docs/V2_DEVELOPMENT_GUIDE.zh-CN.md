@@ -25,6 +25,8 @@
 
 ## 完整业务流程
 
+2026-11-05 Overlay：`src/Features/visuals/HeroStatusHud.inl` 绘制整组英雄状态，`SlotStatusHud.inl` 绘制精简 Slot，均由 `EntityVisuals.cpp` 持有；`SceneRenderer.cpp` 绘制 ED 信息与头像雷达。显示 → 画面 → Overlay 元素的样式由 Global.heroStatusStyle（0=ED，1=自定义）持久化，旧 ult 开关管整组状态；showOverlayInfo、showSlotStatus 管固定 ED 的两项开关。世界技能 CD 在头顶显示，旧 skillDisplayMode 配置键仅兼容保留。`OverlayStatus.hpp` 共用三格布局、连续生命分色和显示 CD 新鲜度；EntityReader 的 display_cooldowns、display_ultimate_tick 仅用于显示，不延长身体权限。第三技能数值缺源则显示 --，其他玩家前两项 CD 的现有键路径尚需逐英雄实机核对。实施与现场边界见 [Overlay 记录](../../../04_SCENARIO/un-dma-v2/reports/overlay-hud-20261105/RESULT.zh-CN.md)。
+
 2026-11-04 默认行为模式：system schema 16 / hero schema 19 为 Aim Slot 保留 `Default Tracking`、`Default Flick`、`Default Flick2nd`、`Default Reacquire`、`Default Magnetic Trigger`。Slot 仅选择命名模式，移除 Custom 入口；新增 Slot 一律选中 Default Tracking，默认停用、清空两类按键绑定。五个默认模式有持久化固定标识，改名后仍受保护，禁止删除和改变基础行为；算法及默认参数仍可编辑。模式库为五个默认项预留容量，不挤掉已有 64 个用户模式。旧未命名 Slot 按原行为/算法补齐引用，保留独立参数；先保存模式定义再保存 Slot 引用。
 
 ```mermaid
@@ -130,6 +132,14 @@ Slot 显示下标与稳定 ID 分开：重排不变身份；新增复制参数�
 入队接受、写入完成、设备实际执行是不同事实。断连关闭正常分发；旧 generation 不进入新会话；安全释放不能新增按下。串口使用 `SendCommandOrFailSession`：仅发送一次，失败关闭会话并结算待处理命令，不重放失败移动。Net 重发是否由固件去重仍需设备证据。
 
 当前 Net 在 Running 状态失去连接后，`EnsureConnected` 不重连，需 runtime 显式重建；设备应用或英雄切换可触发，网络恢复本身不会触发。历史日志“attempting reconnect”与此不符。是否恢复自动重建须先明确契约，并保留清队列/新 generation，不能仅移除门控。离线协议/Mock 测试不能证明各设备的物理效果、固件差异、时延和长跑。
+
+## 武器与技能基础数据（2026-11-04）
+
+基础游戏定义随程序编译。`WeaponSpec.cpp` 维护武器、弹速、蓄力与命中半径；`ProjectilePhysics.hpp` 用稳定武器／技能ID维护实际重力、世界向上方向偏置和施放延迟。`WeaponCadence.cpp` 的75条 `constexpr` 周期记录不再读外部TSV，不再接受 `UNLEASHED_WEAPON_CADENCE_TSV`，也不回退源码路径。未知周期保持未知，原有业务回退仍处理缺项。几何与技能目录原已在C++中。
+
+普通瞄准、Trigger与已有技能预测通过统一弹道计算使用数值重力；零重力解直线拦截，有重力取最早正实根，无解保留原始瞄点。求出的弹丸方向再反算视线方向，抵消 `normalize(view + delta * worldUp)`；原始瞄点与用户配置不被改写。技能保持已有参数覆盖规则，编译物理参数沿现有消费链传入，不新增技能执行器或自动施放策略。
+
+Pluz原始工作簿、公开整理版、完整源码与历史归 `02_RESEARCH/un-dma-research/v2-product-research/pluz-ballistics-20261104`；旧产品data资料归同级 `weapon-data-sources-20261104`，两处均从ECS_O定位。产品和构建不依赖研究目录。历史参考弹速不覆盖现行值，环境碰撞半径不替换英雄命中半径，未覆盖项保留原参数。托比昂补偿获用户反馈有效，其余旧物理值仍待当前CN现场验证。
 
 ## 配置：编辑、生效和落盘
 

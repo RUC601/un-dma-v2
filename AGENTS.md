@@ -1,5 +1,9 @@
 # UNDMA V2 Agent Context
 
+## 用户指定保留的直接 CD 读取研究（2026-11-05）
+
+`include/Game/DirectCooldownResearch.hpp` 是用户明确要求长期保留、便于分享的完整注释代码档案，记录已跑通的 CN154905N 非本地技能 CD 读取实现、映射及证据。正式版采用 active 状态计时器；该档案不参与编译或运行。禁止 AI 以死代码、实验已退役、清理或精简为由自行删除、缩写或迁出。只有用户明确要求删除此研究成果时才能删除；维护工具或后续重构必须保留注释正文与溯源说明。
+
 2026-11-02 目录边界：V1/V2 已拆成独立 Git 仓库，各自提交，不再共用 Git 数据库。研究材料在 `../../02_RESEARCH/un-dma-research/v2-product-research`，自测、验证和预览工具在 `../../04_SCENARIO/un-dma-v2`。产品目录不得重新添加 research、测试源码或测试构建。正式程序保留 `build/Release`；`./build-release.ps1 -Tests` 的输出位于 Scenario 的 `build/selftests`。以下旧路径和 worktree 说明仅为历史记录，以本条为准。
 
 

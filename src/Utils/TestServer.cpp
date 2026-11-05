@@ -3094,6 +3094,24 @@ std::string BuildEntitiesJson(const std::unordered_map<std::string, std::string>
         AppendHexOrNull(out, entity.BoneBase);
         out << ",\"skill_base\":";
         AppendHexOrNull(out, entity.SkillBase);
+        out << ",\"skill_active\":[" << (entity.skill1act ? "true" : "false") << ','
+            << (entity.skill2act ? "true" : "false") << ']';
+        out << ",\"display_ultimate\":{\"tick\":" << entity.display_ultimate_tick
+            << ",\"valid\":" << (entity.display_ultimate_tick && DWORD(GetTickCount()-entity.display_ultimate_tick)<=1500 ? "true" : "false")
+            << ",\"percent\":";
+        AppendNumberOrNull(out, entity.ultimate);
+        out << '}';
+        out << ",\"cooldown_timers\":[";
+        for (size_t slot = 0; slot < entity.display_cooldowns.size(); ++slot) {
+            if (slot) out << ',';
+            const auto& cd = entity.display_cooldowns[slot];
+            out << "{\"slot\":" << slot << ",\"valid\":" << (cd.Fresh(GetTickCount()) ? "true" : "false")
+                << ",\"estimated\":" << (cd.estimated ? "true" : "false")
+                << ",\"tick\":" << cd.tick << ",\"seconds\":";
+            AppendNumberOrNull(out, cd.Remaining());
+            out << '}';
+        }
+        out << ']';
         out << ",\"visibility_base\":";
         AppendHexOrNull(out, entity.VisBase);
         out << ",\"player_controller_base\":";

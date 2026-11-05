@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "Game/HeroPerkRuntime.hpp"
+#include "Game/ProjectilePhysics.hpp"
 #include "Game/Structs.hpp"
 #include "Utils/InputLabels.hpp"
 
@@ -19,7 +20,7 @@ constexpr std::string_view kReviewSource =
     "D:/Desktop/SenseZen/ECS_O/02_RESEARCH/un-dma-research/武器分类研究/weapon_backend_mapping_review_0530_zh.md";
 constexpr std::string_view kWikiBase = "https://overwatch.fandom.com/wiki/";
 constexpr std::string_view kTemporaryProjectileFallbackNote =
-    "Temporary radius fallback from data/aim_public_weapon_projectiles_0530.tsv; verify against live/source data later.";
+    "Radius source: research/weapon-data-sources-20261104/legacy-v2-data; live validation pending.";
 
 constexpr ProjectileSpec Hitscan(float radius)
 {
@@ -65,6 +66,12 @@ constexpr WeaponSpec W(uint64_t heroId,
                        std::string_view replacesWeaponId = {},
                        WeaponControlSpec control = {})
 {
+    if (const auto* physics = FindProjectilePhysicsProfile(weaponId)) {
+        projectile.gravityAcceleration = physics->gravityAcceleration;
+        projectile.gravity = physics->gravityAcceleration > 0.0f;
+        projectile.launchDirectionUpBias = physics->launchDirectionUpBias;
+        projectile.castDelayMs = physics->castDelayMs;
+    }
     return WeaponSpec{
         heroId,
         heroName,

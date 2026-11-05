@@ -39,6 +39,7 @@ namespace OW { namespace Config {
     inline constexpr float kMinFovDeg = 0.0f;
     inline constexpr float kMaxFovDeg = 180.0f;
     inline constexpr float kDefaultFovDeg = 15.0f;
+    inline constexpr float kDefaultAimFovDeg = 5.0f;
     inline constexpr float kLegacyDefaultHitboxRadius = 0.13f;
     inline constexpr float kMinHitboxScalePercent = 0.0f;
     inline constexpr float kMaxHitboxScalePercent = 150.0f;
@@ -239,13 +240,14 @@ namespace OW { namespace Config {
     inline int aim_key2    = 1;      // Left Mouse
     inline int togglekey   = 0;
     inline int MenuToggleKey = VK_HOME;
+    inline int CacheRefreshKey = VK_F8;
 
     // ---- General aim ----
-    inline float Fov        = kDefaultFovDeg;
+    inline float Fov        = kDefaultAimFovDeg;
     inline decltype(Fov)& View_Fov();
     inline float Fov2       = kDefaultFovDeg;
     inline decltype(Fov2)& View_Fov2();
-    inline float minFov1    = kDefaultFovDeg;
+    inline float minFov1    = kDefaultAimFovDeg;
     inline decltype(minFov1)& View_minFov1();
     inline float minFov2    = kDefaultFovDeg;
     inline decltype(minFov2)& View_minFov2();
@@ -1095,6 +1097,18 @@ namespace OW { namespace Config {
     inline bool draw_avatar     = true;
     inline bool draw_hitbox     = false;
     inline bool skillinfo       = false;
+    inline bool showOverlayInfo = true;
+    inline bool showSlotStatus = true;
+    // The legacy "ult" key now enables the complete hero status widget.
+    inline int heroStatusStyle = 1; // 0=ED compact, 1=custom portrait/skills/ring
+    inline float radarPosX = 1.0f;
+    inline float radarPosY = 1.0f;
+    inline float radarScale = 1.3f;
+    inline float slotPosX = 0.0f;
+    inline float slotPosY = 0.5f;
+    inline float heroStatusPosX = 0.12f;
+    inline float heroStatusPosY = 0.0f;
+    inline float heroStatusScale = 0.7f;
     // Ultimate / Skill display position
     // Ultimate is normalized to the left side panel; 0/2 are legacy config values.
     inline int ultimateDisplayMode = 1;

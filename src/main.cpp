@@ -171,7 +171,7 @@ namespace {
 
         static constexpr const char* kHeroAvatarNames[] = {
             "Ana", "Anran", "Ashe", "Baptiste", "Bastion", "Brigitte",
-            "Cassidy", "Domina", "Doomfist", "D.Va", "D.Mon", "Echo", "Emre",
+            "Cassidy", "Doctrine", "Domina", "Doomfist", "D.Va", "D.Mon", "Echo", "Emre",
             "Freja", "Genji", "Hanzo", "Hazard", "Illari", "Jetpack Cat",
             "Junker Queen", "Junkrat", "Juno", "Kiriko", "LifeWeaver",
             "Lucio", "Mauga", "Mei", "Mercy", "Mizuki", "Moira", "Orisa",
@@ -328,7 +328,7 @@ static int RunConfigCheckCli()
     const auto cassFlick = OW::Config::GetHeroAimPresetOrDefault(
         static_cast<uint64_t>(OW::eHero::HERO_MCCREE), 1);
     const auto* cassCadence = OW::RuntimeWeaponCadenceTable().Find("cassidy_peacekeeper");
-    std::printf("[CONFIG] cassMouse5 behavior=%d key=%d action=%d keepFiring=%d smoothPct=%.3f behaviorPresetId=%d shotClampMs=%.3f postFireDelayMs=%.3f cadenceMs=%.3f evidence=local_table_not_live\n",
+    std::printf("[CONFIG] cassMouse5 behavior=%d key=%d action=%d keepFiring=%d smoothPct=%.3f behaviorPresetId=%d shotClampMs=%.3f postFireDelayMs=%.3f cadenceMs=%.3f evidence=compiled_catalog_not_live\n",
         cassFlick.aimBehavior, cassFlick.key, cassFlick.trigger.action, cassFlick.keepFiring ? 1 : 0,
         cassFlick.smooth, cassFlick.aimBehaviorPresetId, cassFlick.flickShotClampMs, cassFlick.flickPostFireDelayMs,
         cassCadence && cassCadence->triggerCycleIntervalMs ? *cassCadence->triggerCycleIntervalMs : 0.0f);

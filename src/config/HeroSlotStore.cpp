@@ -403,6 +403,9 @@ using namespace Detail;
         slot.name = DefaultHeroSlotName(presentCount);
         slot.preset = ValidateHeroPresetValueForHero(heroId, seedPreset);
         if (kind == HeroPresetSlotKind::Aim) {
+            slot.preset.fov = kDefaultAimFovDeg;
+            slot.preset.fovMode = kFovModeFixed;
+            slot.preset.dynamicFovPresetId = -1;
             StoreHeroBehaviorMode(slot.preset);
             slot.preset.aimBehaviorPresetId = defaultMode;
             ResolveHeroBehaviorMode(slot.preset);

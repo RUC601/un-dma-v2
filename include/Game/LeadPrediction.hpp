@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "Utils/Types.hpp"
+#include "Game/BallisticSolver.hpp"
 
 namespace OW {
 
@@ -11,6 +12,9 @@ struct ProjectileRuntimeSpec {
     float projectileSpeed = 0.0f;
     bool gravity = false;
     bool fromWeaponSpec = false;
+    float launchDirectionUpBias = 0.0f;
+    float gravityAcceleration = 9.8f;
+    float castDelayMs = 0.0f;
 };
 
 struct LeadTimingEstimate {
@@ -53,6 +57,27 @@ inline constexpr float kLeadRadToDeg = 57.29577951308232f;
 inline bool IsFiniteLeadVector(const Vector3& value)
 {
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+}
+
+inline Vector3 CompensateProjectileLaunchBias(const Vector3& camera,
+                                             const Vector3& ballisticAimPoint,
+                                             float upBias)
+{
+    if (upBias == 0.0f || !std::isfinite(upBias) || std::fabs(upBias) >= 1.0f ||
+        !IsFiniteLeadVector(camera) || !IsFiniteLeadVector(ballisticAimPoint))
+        return ballisticAimPoint;
+
+    const Vector3 offset = ballisticAimPoint - camera;
+    const float distance = offset.Size();
+    if (!std::isfinite(distance) || distance <= 0.000001f)
+        return ballisticAimPoint;
+
+    const Vector3 launchDirection = offset / distance;
+    // Invert launch = normalize(view + upBias * worldUp), preserving aim distance.
+    const float scale = upBias * launchDirection.Y + std::sqrt(
+        1.0f - upBias * upBias * (1.0f - launchDirection.Y * launchDirection.Y));
+    const Vector3 viewDirection = launchDirection * scale - Vector3(0.0f, upBias, 0.0f);
+    return camera + viewDirection * distance;
 }
 
 inline Vector3 ClampVectorMagnitude(const Vector3& value, float maxLength)

@@ -366,112 +366,8 @@ namespace OW {
     // =========================================================================
 
     // =========================================================================
-    // Projectile prediction (quartic solver)
+    // Target selection and shared projectile prediction
     // =========================================================================
-
-    inline void SolveQuartic(const std::complex<float> coefficients[5], std::complex<float> roots[4]) {
-        const std::complex<float> a = coefficients[4];
-        const std::complex<float> b = coefficients[3] / a;
-        const std::complex<float> c = coefficients[2] / a;
-        const std::complex<float> d = coefficients[1] / a;
-        const std::complex<float> e = coefficients[0] / a;
-
-        const std::complex<float> Q1 = c * c - 3.f * b * d + 12.f * e;
-        const std::complex<float> Q2 = 2.f * c * c * c - 9.f * b * c * d + 27.f * d * d + 27.f * b * b * e - 72.f * c * e;
-        const std::complex<float> Q3 = 8.f * b * c - 16.f * d - 2.f * b * b * b;
-        const std::complex<float> Q4 = 3.f * b * b - 8.f * c;
-
-        const std::complex<float> Q5 = std::pow(Q2 / 2.f + std::sqrt(Q2 * Q2 / 4.f - Q1 * Q1 * Q1), 1.f / 3.f);
-        const std::complex<float> Q6 = (Q1 / Q5 + Q5) / 3.f;
-        const std::complex<float> Q7 = 2.f * std::sqrt(Q4 / 12.f + Q6);
-
-        roots[0] = (-b - Q7 - std::sqrt(4.f * Q4 / 6.f - 4.f * Q6 - Q3 / Q7)) / 4.f;
-        roots[1] = (-b - Q7 + std::sqrt(4.f * Q4 / 6.f - 4.f * Q6 - Q3 / Q7)) / 4.f;
-        roots[2] = (-b + Q7 - std::sqrt(4.f * Q4 / 6.f - 4.f * Q6 + Q3 / Q7)) / 4.f;
-        roots[3] = (-b + Q7 + std::sqrt(4.f * Q4 / 6.f - 4.f * Q6 + Q3 / Q7)) / 4.f;
-    }
-
-    inline void AimCorrection(Vector3* InVecArg, Vector3 currVelocity, float Distance, float Bulletspeed, bool gravityEnabled) {
-        double G = 9.8;
-        const Vector3 camera = SnapshotCameraPosition();
-        double A = camera.X;
-        double B = camera.Y;
-        double C = camera.Z;
-        double M = InVecArg->X;
-        double N = InVecArg->Y;
-        double O = InVecArg->Z;
-        double P = currVelocity.X;
-        double Q = currVelocity.Y;
-        double R = currVelocity.Z;
-        double S = Bulletspeed;
-        double H = M - A;
-        double J = O - C;
-        double K = N - B;
-        double L = -0.5 * G;
-        double c4 = L * L;
-        double c3 = -2.0 * Q * L;
-        double c2 = (Q * Q) - (2.0 * K * L) - (S * S) + (P * P) + (R * R);
-        double c1 = (2.0 * K * Q) + (2.0 * H * P) + (2.0 * J * R);
-        double c0 = (K * K) + (H * H) + (J * J);
-
-        std::complex<float> pOutRoots[4];
-        const std::complex<float> pInCoeffs[5] = { (float)c0, (float)c1, (float)c2, (float)c3, (float)c4 };
-        SolveQuartic(pInCoeffs, pOutRoots);
-        float fBestRoot = FLT_MAX;
-        for (int i = 0; i < 4; i++) {
-            if (pOutRoots[i].real() > 0.f && std::abs(pOutRoots[i].imag()) < 0.0001f && pOutRoots[i].real() < fBestRoot) {
-                fBestRoot = pOutRoots[i].real();
-            }
-        }
-        InVecArg->X = (float)(camera.X + (H + P * fBestRoot));
-        if (gravityEnabled) {
-            InVecArg->Y = (float)(camera.Y + (K + Q * fBestRoot - L * fBestRoot * fBestRoot));
-        } else {
-            InVecArg->Y += (float)(fBestRoot * currVelocity.Y);
-        }
-        InVecArg->Z = (float)(camera.Z + (J + R * fBestRoot));
-    }
-
-    inline void AimCorrection22(Vector3* InVecArg, Vector3 currVelocity, float Distance, float Bulletspeed, bool gravityEnabled) {
-        double G = 9.8;
-        const Vector3 camera = SnapshotCameraPosition();
-        double A = camera.X;
-        double B = camera.Y;
-        double C = camera.Z;
-        double M = InVecArg->X;
-        double N = InVecArg->Y;
-        double O = InVecArg->Z;
-        double P = currVelocity.X;
-        double Q = currVelocity.Y;
-        double R = currVelocity.Z;
-        double S = Bulletspeed;
-        double H = M - A;
-        double J = O - C;
-        double K = N - B;
-        double L = -0.5 * G;
-        double c4 = L * L;
-        double c3 = -2.0 * Q * L;
-        double c2 = (Q * Q) - (2.0 * K * L) - (S * S) + (P * P) + (R * R);
-        double c1 = (2.0 * K * Q) + (2.0 * H * P) + (2.0 * J * R);
-        double c0 = (K * K) + (H * H) + (J * J);
-
-        std::complex<float> pOutRoots[4];
-        const std::complex<float> pInCoeffs[5] = { (float)c0, (float)c1, (float)c2, (float)c3, (float)c4 };
-        SolveQuartic(pInCoeffs, pOutRoots);
-        float fBestRoot = FLT_MAX;
-        for (int i = 0; i < 4; i++) {
-            if (pOutRoots[i].real() > 0.f && std::abs(pOutRoots[i].imag()) < 0.0001f && pOutRoots[i].real() < fBestRoot) {
-                fBestRoot = pOutRoots[i].real();
-            }
-        }
-        InVecArg->X = (float)(camera.X + (H + P * fBestRoot));
-        if (gravityEnabled) {
-            InVecArg->Y = (float)(camera.Y + (K + Q * fBestRoot - L * fBestRoot * fBestRoot));
-        } else {
-            InVecArg->Y += (float)(fBestRoot * currVelocity.Y);
-        }
-        InVecArg->Z = (float)(camera.Z + (J + R * fBestRoot));
-    }
 
     namespace TargetingDetail {
 
@@ -1293,7 +1189,10 @@ namespace OW {
                 return ProjectileRuntimeSpec{
                     fallbackSpeed,
                     weapon ? weapon->projectile.gravity : true,
-                    weapon != nullptr
+                    weapon != nullptr,
+                    weapon ? weapon->projectile.launchDirectionUpBias : 0.0f,
+                    weapon ? weapon->projectile.gravityAcceleration : 9.8f,
+                    weapon ? weapon->projectile.castDelayMs : 0.0f
                 };
             }
 
@@ -1301,7 +1200,10 @@ namespace OW {
                 return ProjectileRuntimeSpec{
                     weapon->projectile.projectileSpeed,
                     weapon->projectile.gravity,
-                    true
+                    true,
+                    weapon->projectile.launchDirectionUpBias,
+                    weapon->projectile.gravityAcceleration,
+                    weapon->projectile.castDelayMs
                 };
             }
 
@@ -1428,9 +1330,9 @@ namespace OW {
             const Motion::EntityMotionEstimate motion = Motion::EstimateEntityMotion(entity);
             result.targetVelocity = AccelerationAwareVelocity(entity, result.distance, projectile.projectileSpeed);
             result.timing = EstimateLeadTimingForAimPoint(rawAimPoint, secondary);
-            const float preFireMaxMs = extraPreFireDelayMs > 0.0f ? 1000.0f : kLeadMaxPreFireDelayMs;
+            const float preFireMaxMs = (extraPreFireDelayMs > 0.0f || projectile.castDelayMs > 0.0f) ? 1000.0f : kLeadMaxPreFireDelayMs;
             result.timing.preFireDelayMs = ClampLeadDelayMs(
-                result.timing.preFireDelayMs + extraPreFireDelayMs,
+                result.timing.preFireDelayMs + extraPreFireDelayMs + projectile.castDelayMs,
                 preFireMaxMs);
             result.preFireAimPoint = ApplyTargetMotionPreFireDelay(
                 rawAimPoint,
@@ -1440,30 +1342,23 @@ namespace OW {
             result.finalAimPoint = result.preFireAimPoint;
 
             if (projectile.projectileSpeed > 0.0f) {
-                const float leadDistance = camera.DistTo(result.preFireAimPoint);
-                if (secondary) {
-                    AimCorrection22(
-                        &result.finalAimPoint,
-                        result.targetVelocity,
-                        leadDistance,
-                        projectile.projectileSpeed,
-                        projectile.gravity);
-                } else {
-                    AimCorrection(
-                        &result.finalAimPoint,
-                        result.targetVelocity,
-                        leadDistance,
-                        projectile.projectileSpeed,
-                        projectile.gravity);
-                }
+                const BallisticIntercept intercept = SolveBallisticIntercept(
+                    camera, result.preFireAimPoint, result.targetVelocity, projectile.projectileSpeed,
+                    projectile.gravity ? projectile.gravityAcceleration : 0.0f);
+                if (intercept.solved)
+                    result.finalAimPoint = CompensateProjectileLaunchBias(
+                        camera, intercept.aimPoint, projectile.launchDirectionUpBias);
             }
 
-            Diagnostics::Aim("lead.solve enabled=%d secondary=%d projectile(source=%s speed=%.3f gravity=%d) motion(source=%s confidence=%.3f velocity=(%.3f,%.3f,%.3f)) timing(settleMs=%.3f inputMs=%d extraPreFireMs=%.3f preFireMs=%.3f) raw=(%.3f,%.3f,%.3f) preFire=(%.3f,%.3f,%.3f) final=(%.3f,%.3f,%.3f)",
+            Diagnostics::Aim("lead.solve enabled=%d secondary=%d projectile(source=%s speed=%.3f gravity=%d acceleration=%.3f upBias=%.4f castMs=%.3f) motion(source=%s confidence=%.3f velocity=(%.3f,%.3f,%.3f)) timing(settleMs=%.3f inputMs=%d extraPreFireMs=%.3f preFireMs=%.3f) raw=(%.3f,%.3f,%.3f) preFire=(%.3f,%.3f,%.3f) final=(%.3f,%.3f,%.3f)",
                 predictionEnabled ? 1 : 0,
                 secondary ? 1 : 0,
                 projectile.fromWeaponSpec ? "weapon" : "legacy",
                 projectile.projectileSpeed,
                 projectile.gravity ? 1 : 0,
+                projectile.gravity ? projectile.gravityAcceleration : 0.0f,
+                projectile.launchDirectionUpBias,
+                projectile.castDelayMs,
                 MotionVelocitySourceName(motion.velocitySource),
                 motion.confidence,
                 result.targetVelocity.X,

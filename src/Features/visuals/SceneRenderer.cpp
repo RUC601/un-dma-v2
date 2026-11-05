@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cfloat>
 #include <vector>
 #include <string>
 
@@ -29,6 +30,49 @@ namespace {
             static_cast<int>(color.z * 255.0f),
             static_cast<int>(color.w * 255.0f)
         );
+    }
+
+    static void DrawOverlayInfo(const std::vector<OW::c_entity>& entities, size_t objects)
+    {
+        if (!OW::Config::showOverlayInfo) return;
+        static DWORD lastTick = 0;
+        static uint64_t lastReads = 0;
+        static double readsPerSecond = 0;
+        const DWORD now = GetTickCount();
+        if (lastTick == 0 || DWORD(now - lastTick) >= 1000) {
+            const auto snapshot = Diagnostics::Snapshot();
+            const uint64_t reads = snapshot.dmaReads.total;
+            if (lastTick && reads >= lastReads)
+                readsPerSecond = double(reads - lastReads) * 1000 / DWORD(now - lastTick);
+            lastTick = now; lastReads = reads;
+        }
+        constexpr float font = 12, lineHeight = 14;
+        ImGui::GetForegroundDrawList()->PushClipRect(ImVec2(10,0), ImVec2(222,196), true);
+        const char* title = "Unleashed ";
+
+        Render::DrawText(ImVec2(10,10), IM_COL32_WHITE, title, 13.5f);
+        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(13.5f, FLT_MAX, 0, title).x;
+        char text[96]{};
+        std::snprintf(text, sizeof(text), "[%.0f]", Diagnostics::RenderFps());
+        Render::DrawText(ImVec2(10 + titleWidth,10), IM_COL32(100,240,115,255), text, 13.5f);
+        float y = 28;
+        auto line = [&](const std::string& value) {
+            Render::DrawText(ImVec2(10,y), IM_COL32(225,230,239,240), value.c_str(), font);
+            y += lineHeight;
+        };
+        line("Players: " + std::to_string(entities.size()));
+        std::snprintf(text, sizeof(text), "Reads: %.0f/s", readsPerSecond);
+        line(text);
+        line("Config: " + OW::Config::lastConfigProfile);
+        line("Map: --");
+        line("Hero: " + OverlayRenderDetail::CurrentLocalHeroName(OW::SnapshotLocalHeroIdForStatus()));
+        line("Damage boost: --");
+        line("Nano boost: --");
+        line("Kitsune: --");
+        line("Orbital: --");
+        line("Actors: " + std::to_string(entities.size() + objects));
+        line("Objects: " + std::to_string(objects));
+        ImGui::GetForegroundDrawList()->PopClipRect();
     }
 
     static Render::Color EntityRadarColor(const OW::c_entity& entity, size_t index)
@@ -762,29 +806,12 @@ namespace {
         if (width <= 0.0f || height <= 0.0f)
             return;
 
-        const float radius = 88.0f;
-        const float padding = 24.0f;
-        float centerX = width - radius - padding;
-        float centerY = height - radius - padding;
-        switch (OW::Config::radarCorner) {
-            case 1: // Bottom Left
-                centerX = radius + padding;
-                centerY = height - radius - padding;
-                break;
-            case 2: // Top Right
-                centerX = width - radius - padding;
-                centerY = radius + padding;
-                break;
-            case 3: // Top Left
-                centerX = radius + padding;
-                centerY = radius + padding;
-                break;
-            default: // Bottom Right
-                break;
-        }
+        const float radius = (std::min)(126.0f * OW::Config::radarScale, (std::min)(width,height)*.5f-2);
+        const float centerX = radius + OW::OverlayStatus::Position(OW::Config::radarPosX,width,2*radius);
+        const float centerY = radius + OW::OverlayStatus::Position(OW::Config::radarPosY,height,2*radius);
         const OW::Vector2 center(centerX, centerY);
-        const Render::Color border(255, 255, 255, 170);
-        const Render::Color background(10, 12, 16, 95);
+        const Render::Color border(170, 180, 192, 110);
+        const Render::Color background(18, 20, 25, 180);
 
         Render::DrawFilledCircle(center, radius, background, 72);
         Render::DrawCircle(center, radius, border, 72, 1.0f);
@@ -798,7 +825,7 @@ namespace {
         const float yaw = static_cast<float>(std::atan2(forward.x, forward.z));
         const float cosYaw = std::cos(-yaw);
         const float sinYaw = std::sin(-yaw);
-        const float scale = 1.8f;
+        const float scale = 1.8f * OW::Config::radarScale;
 
         for (size_t index = 0; index < entitySnapshot.size(); ++index) {
             const OW::c_entity& entity = entitySnapshot[index];
@@ -812,7 +839,7 @@ namespace {
             float rz = (dx * sinYaw + dz * cosYaw) * scale;
 
             const float len = std::sqrt(rx * rx + rz * rz);
-            const float maxLen = radius - 7.0f;
+            const float maxLen = (std::max)(0.0f, radius - 9.0f * OW::Config::radarScale - 2.0f);
             if (len > maxLen && len > 0.001f) {
                 const float k = maxLen / len;
                 rx *= k;
@@ -823,7 +850,8 @@ namespace {
             const Render::Color entityColor = EntityRadarColor(entity, index);
             if (OW::Config::radarline)
                 Render::DrawLine(center, point, Render::Color(entityColor.R, entityColor.G, entityColor.B, 90), 1.0f);
-            Render::DrawFilledCircle(point, entity.Team ? 3.5f : 3.0f, entityColor, 20);
+            const ImU32 markerColor = entity.Team ? IM_COL32(240,90,95,235) : IM_COL32(105,225,140,235);
+            DrawHeroRadarMarker(entity, point.X, point.Y, markerColor, OW::Config::radarScale);
         }
     }
 
@@ -909,6 +937,7 @@ void V2::Visuals::DrawFrame()
     }
 
     DrawAimTriggerStatusPanel();
+    DrawOverlayInfo(frameEntitySnapshot(), frameDynamicEntitySnapshot().size());
     if (viewMatricesFresh && OW::Config::draw_hp_pack)
         DrawHealthPacks(frameDynamicEntitySnapshot());
     if (OW::Config::draw_fov)

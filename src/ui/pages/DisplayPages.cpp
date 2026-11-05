@@ -56,27 +56,69 @@ void UI::VisualsPage() {
         const char* labels[] = {
             "Box", "Hero Name", "BattleTag",
             "Health Color", "Health Bar", "Health Bar 2",
-            "Distance", "Ultimate", "Skill Info",
+            "Distance", "World Skill Cooldowns",
             "Skeleton", "Hero Avatar", "Model Shapes (research)",
-            "Snapline", "Eye Ray", "Radar",
+            "Snapline", "Eye Ray",
             "Radar Lines", "FOV Circle", "Tracking Deadzone",
             "Crosshair", "Health Packs", nullptr
         };
         bool* values[] = {
             &OW::Config::draw_info, &OW::Config::name, &OW::Config::drawbattletag,
             &OW::Config::drawhealth, &OW::Config::healthbar, &OW::Config::healthbar2,
-            &OW::Config::dist, &OW::Config::ult, &OW::Config::skillinfo,
+            &OW::Config::dist, &OW::Config::skillinfo,
             &OW::Config::draw_skel, &OW::Config::draw_avatar, &OW::Config::draw_hitbox,
-            &OW::Config::drawline, &OW::Config::eyeray, &OW::Config::radar,
+            &OW::Config::drawline, &OW::Config::eyeray,
             &OW::Config::radarline, &OW::Config::draw_fov, &OW::Config::drawTrackingDeadzones,
             &OW::Config::crosscircle, &OW::Config::draw_hp_pack, nullptr
         };
         const float ratios[] = { 1.0f, 1.0f, 1.2f };
-        DrawCheckboxGrid3(labels, values, 7, 26.0f, ratios);
+        DrawCheckboxGrid3(labels, values, 6, 26.0f, ratios);
         if(OW::Config::draw_hitbox)
             ImGui::TextWrapped("%s",(OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified ?
                 "已匹配模型使用原始形状；绑定/姿态及伤害用途待核。未匹配角色沿用估计几何。" :
                 "Matched models use extracted shapes; pose and damage use unverified. Unmatched models use estimated geometry."));
+    }
+    CloseGroupBox();
+
+    UIGroupBox("Overlay Elements");
+    {
+        auto fixedStyleRow = [](const char* label, const char* id, bool* enabled) {
+            SettingRow(label);
+            UICheckbox(id, enabled);
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", L("ED style"));
+        };
+        auto placement = [](const char* id, float* x, float* y, float* scale) {
+            ImGui::PushID(id);
+            if (ImGui::TreeNode(L("Position / scale"))) {
+                auto percent = [](const char* label, const char* control, float* value, float low, float high) {
+                    float percent = *value * 100;
+                    SettingRow(label); PushControlWidth();
+                    if (UISlider(control, &percent, low, high, Number(0, " %"))) *value = percent / 100;
+                    ImGui::PopItemWidth();
+                };
+                percent("Horizontal position", "##x", x, 0, 100);
+                percent("Vertical position", "##y", y, 0, 100);
+                if (scale) percent("Scale", "##scale", scale, 35, 250);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        };
+        fixedStyleRow("Top-left Info", "##overlayInfo", &OW::Config::showOverlayInfo);
+        SettingRow("Hero Status");
+        UICheckbox("##heroStatus", &OW::Config::ult);
+        ImGui::SameLine();
+        static const char* styles[] = {"ED Compact", "Custom Status"};
+        ImGui::SetNextItemWidth(190);
+        ImGui::BeginDisabled(!OW::Config::ult);
+        UISelect("##heroStatusStyle", &OW::Config::heroStatusStyle, styles, IM_ARRAYSIZE(styles));
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%s", L("Portrait, skills, health and ultimate switch together."));
+        placement("hero", &OW::Config::heroStatusPosX, &OW::Config::heroStatusPosY, &OW::Config::heroStatusScale);
+        fixedStyleRow("Behavior and Slots", "##slotStatus", &OW::Config::showSlotStatus);
+        placement("slots", &OW::Config::slotPosX, &OW::Config::slotPosY, nullptr);
+        fixedStyleRow("Radar", "##hudRadar", &OW::Config::radar);
+        placement("radar", &OW::Config::radarPosX, &OW::Config::radarPosY, &OW::Config::radarScale);
     }
     CloseGroupBox();
 
@@ -97,7 +139,6 @@ void UI::VisualsPage() {
 void DrawThemeGeneralPage() {
     UIGroupBox("ESP Display Position");
     {
-        static const char* kDisplayPosition[] = { "Above Head", "Left Side", "Right Side" };
         static const char* kUltimateRosterFilter[] = { "All", "Enemy", "Ally" };
         static const char* kRadarCorner[] = { "Bottom Right", "Bottom Left", "Top Right", "Top Left" };
 
@@ -114,11 +155,8 @@ void DrawThemeGeneralPage() {
             ImGui::PopItemWidth();
         };
 
-        drawPositionSelect("Radar Corner", "##radarCorner", OW::Config::radar,
-                           &OW::Config::radarCorner, kRadarCorner, IM_ARRAYSIZE(kRadarCorner));
-        drawPositionSelect("Skill Cooldowns", "##skillDisplayMode", OW::Config::skillinfo,
-                           &OW::Config::skillDisplayMode, kDisplayPosition, IM_ARRAYSIZE(kDisplayPosition));
-        drawPositionSelect("Ultimate Roster", "##ultimateRosterFilter", OW::Config::ult,
+
+        drawPositionSelect("Hero Status Team", "##ultimateRosterFilter", OW::Config::ult,
                            &OW::Config::ultimateRosterFilter,
                            kUltimateRosterFilter, IM_ARRAYSIZE(kUltimateRosterFilter));
     }

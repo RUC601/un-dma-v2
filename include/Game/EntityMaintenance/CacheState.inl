@@ -44,21 +44,8 @@
         DWORD heroUpdateTick = 0;
         DWORD nameTeamUpdateTick = 0;
         bool nameTeamValid = false;
-        DWORD skillUpdateTick = 0;
-        bool skillValid = false;
-        uint8_t skillRefreshCursor = 0;
-        DWORD localSkillUpdateTick = 0;
-        bool localSkillValid = false;
-        uint8_t localSkillRefreshCursor = 0;
         bool isEnemy = false;
         bool vis = false;
-        bool skill1act = false;
-        bool skill2act = false;
-        float ultimate = 0.0f;
-        bool ultimateValid = false;
-        float skillcd1 = 0.0f;
-        float skillcd2 = 0.0f;
-        bool reloading = false;
         std::string heroName = "Unknown";
         OW::c_entity::SkeletonBoneCache skeletonCache{};
         OW::ModelShapes::Sample cachedModelShapes{};
@@ -98,6 +85,25 @@
         }
     };
     struct RosterEntry : ComponentBaseCache {
+        // Actor state must survive replacing the component-address cache in CacheRebuild.inl.
+        DWORD skillUpdateTick = 0;
+        bool skillValid = false;
+        uint8_t skillRefreshCursor = 0;
+        DWORD localSkillUpdateTick = 0;
+        bool localSkillValid = false;
+        uint8_t localSkillRefreshCursor = 0;
+        bool skill1act = false;
+        bool skill2act = false;
+        float ultimate = 0.0f;
+        bool ultimateValid = false;
+        DWORD displayUltimateTick = 0;
+        std::array<uint64_t, 3> ultimateIdentity{};
+        float skillcd1 = 0.0f;
+        float skillcd2 = 0.0f;
+        std::array<OW::OverlayStatus::CooldownSample, 2> displayCooldowns{};
+        std::array<OW::CooldownTimers::State, 2> cooldownTimers{};
+        std::array<uint64_t, 4> cooldownIdentity{};
+        bool reloading = false;
         uint64_t participantKey = 0;
         DWORD participantIdentityUpdateTick = 0;
         bool participantIdentityValid = false;

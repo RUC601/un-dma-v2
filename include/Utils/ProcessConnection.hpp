@@ -12,6 +12,7 @@ inline std::atomic<bool> g_connected{ false };
 inline std::atomic<bool> g_connecting{ false };
 inline std::atomic<bool> g_reconnectRequested{ false };
 inline std::atomic<bool> g_dmaRecoveryRequested{ false };
+inline std::atomic<bool> g_cacheRefreshRequested{ false };
 inline std::atomic<int> g_pid{ 0 };
 inline std::atomic<uint64_t> g_baseAddress{ 0 };
 inline std::atomic<uint64_t> g_connectionEpoch{ 0 };
@@ -48,6 +49,16 @@ inline bool IsReconnectRequested()
     return g_reconnectRequested.load(std::memory_order_acquire);
 }
 
+inline void RequestCacheRefresh()
+{
+    g_cacheRefreshRequested.store(true, std::memory_order_release);
+}
+
+inline bool ConsumeCacheRefreshRequest()
+{
+    return g_cacheRefreshRequested.exchange(false, std::memory_order_acq_rel);
+}
+
 inline bool IsConnected()
 {
     return g_connected.load(std::memory_order_acquire);
@@ -57,6 +68,36 @@ inline bool IsConnecting()
 {
     return g_connecting.load(std::memory_order_acquire);
 }
+
+inline bool IsRecoveryBusy()
+{
+    return IsConnecting() || IsReconnectRequested() || IsDmaRecoveryRequested() ||
+        g_cacheRefreshRequested.load(std::memory_order_acquire);
+}
+
+struct CacheRefreshHotkey {
+    int key = 0;
+    bool localHeld = false;
+    bool remoteHeld = false;
+
+    bool Update(int configuredKey, bool localDown, bool remoteAvailable, bool remoteDown, bool busy)
+    {
+        if (configuredKey <= 0 || configuredKey >= 256 || configuredKey != key) {
+            key = configuredKey;
+            localHeld = localDown;
+            remoteHeld = remoteAvailable && remoteDown;
+            return false;
+        }
+        bool pressed = localDown && !localHeld;
+        localHeld = localDown;
+        // An unavailable DMA sample during reconnect is not a key release.
+        if (remoteAvailable) {
+            pressed |= remoteDown && !remoteHeld;
+            remoteHeld = remoteDown;
+        }
+        return pressed && !busy;
+    }
+};
 
 inline int ConnectedPid()
 {

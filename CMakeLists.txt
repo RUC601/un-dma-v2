@@ -239,23 +239,6 @@ endfunction()
 
 copy_leechcore_runtime(Unleashed)
 
-set(WEAPON_CADENCE_TSV
-    "${CMAKE_SOURCE_DIR}/data/overwatch_weapon_cadence_20260714.tsv")
-
-if(EXISTS "${WEAPON_CADENCE_TSV}")
-    target_compile_definitions(Unleashed PRIVATE
-        WEAPON_CADENCE_SOURCE_PATH="${WEAPON_CADENCE_TSV}")
-    add_custom_command(TARGET Unleashed POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:Unleashed>/data"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${WEAPON_CADENCE_TSV}"
-            "$<TARGET_FILE_DIR:Unleashed>/data/overwatch_weapon_cadence_20260714.tsv"
-    )
-else()
-    message(FATAL_ERROR "Experimental weapon cadence TSV is missing: ${WEAPON_CADENCE_TSV}")
-endif()
-
 add_custom_target(V2Assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/assets/icons"

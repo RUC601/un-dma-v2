@@ -88,6 +88,8 @@ inline constexpr NamedU64 kHeroIds[] = {
     { "Shion", MakeHeroId(0x52C) },
     // Pure hero catalog 0x3CC1F0; CN live 2026-11-04, confirmed by the user.
     { "D.Mon", MakeHeroId(0x542) },
+    // OWLib CN 2.25.0.0: 000000000570.075 = 血律; runtime ID also recorded in UC 516727/387.txt.
+    { "Doctrine", MakeHeroId(0x570) },
     { "Standard Bot", MakeHeroId(0x33C) },
     { "Tank Bot", MakeHeroId(0x337) },
     { "Sniper Bot", MakeHeroId(0x35A) },

@@ -10,6 +10,8 @@
 #include "Game/DoomfistPunch.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
+#include "Game/ProjectilePhysics.hpp"
+#include "Game/SkillCooldownTimers.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
@@ -192,6 +194,7 @@ namespace {
         float gravity = 0.0f;
         float projectileRadius = 0.0f;
         float preFireDelayMs = 0.0f;
+        float launchDirectionUpBias = 0.0f;
     };
 
     struct SkillProjectileRuntime {
@@ -200,6 +203,8 @@ namespace {
         bool gravity = false;
         float projectileRadius = 0.0f;
         float preFireDelayMs = 0.0f;
+        float launchDirectionUpBias = 0.0f;
+        float gravityAcceleration = 9.8f;
     };
 
     struct SkillAimCandidate {
@@ -1517,21 +1522,31 @@ namespace {
     TrajectoryParams GetTrajectoryParams(const char* skillId)
     {
         const std::string skill = skillId ? skillId : "";
-        if (skill == "sleep-dart")
-            return { 60.0f, 45.0f, 0.0f, 0.2f, 320.0f };
-        if (skill == "chain-hook")
-            return { 62.0f, 20.0f, 0.0f, 0.5f, 100.0f };
-        if (skill == "pulse-bomb")
-            return { 15.0f, 5.0f, 20.0f, 0.0f, 0.0f };
-        if (skill == "helix-rockets")
-            return { 50.0f, 40.0f, 0.0f, 0.32f, 0.0f };
-        if (skill == "sticky-bombs")
-            return { 50.0f, 35.0f, 0.0f, 0.2f, 0.0f };
-        if (skill == "whip-shot")
-            return { 80.0f, 20.0f, 0.0f, 0.3f, 0.0f };
-        if (skill == "accretion")
-            return { 37.5f, 35.0f, 20.0f, 0.5f, 0.0f };
-        return { 60.0f, 40.0f, 0.0f, 0.0f, 0.0f };
+        TrajectoryParams params = [&]() -> TrajectoryParams {
+            if (skill == "sleep-dart")
+                return { 60.0f, 45.0f, 0.0f, 0.2f, 320.0f };
+            if (skill == "chain-hook")
+                return { 62.0f, 20.0f, 0.0f, 0.5f, 100.0f };
+            if (skill == "pulse-bomb")
+                return { 15.0f, 5.0f, 0.0f, 0.0f, 0.0f };
+            if (skill == "helix-rockets")
+                return { 50.0f, 40.0f, 0.0f, 0.32f, 0.0f };
+            if (skill == "sticky-bombs")
+                return { 50.0f, 35.0f, 0.0f, 0.2f, 0.0f };
+            if (skill == "whip-shot")
+                return { 80.0f, 20.0f, 0.0f, 0.3f, 0.0f };
+            if (skill == "accretion")
+                return { 37.5f, 35.0f, 0.0f, 0.5f, 0.0f };
+            return { 60.0f, 40.0f, 0.0f, 0.0f, 0.0f };
+        }();
+        if (const auto* physics = FindProjectilePhysicsProfile(skill)) {
+            if (physics->referenceSpeed > 0.0f && skill != "pulse-bomb" && skill != "accretion")
+                params.speed = physics->referenceSpeed;
+            params.gravity = physics->gravityAcceleration;
+            params.launchDirectionUpBias = physics->launchDirectionUpBias;
+            params.preFireDelayMs = (std::max)(params.preFireDelayMs, physics->castDelayMs);
+        }
+        return params;
     }
 
     SkillProjectileRuntime ResolveSkillProjectileRuntime(const Config::HeroSkillSettings& settings,
@@ -1541,6 +1556,8 @@ namespace {
         runtime.speed = settings.projectileSpeed > 0.0f ? settings.projectileSpeed : params.speed;
         runtime.maxRange = params.maxRange;
         runtime.gravity = settings.projectileGravity || params.gravity > 0.0f;
+        runtime.gravityAcceleration = params.gravity > 0.0f ? params.gravity : (runtime.gravity ? 9.8f : 0.0f);
+        runtime.launchDirectionUpBias = params.launchDirectionUpBias;
         runtime.projectileRadius = settings.projectileRadius > 0.0f
             ? settings.projectileRadius
             : params.projectileRadius;
@@ -1554,21 +1571,19 @@ namespace {
                                      const Vector3& targetVel,
                                      const Vector3& srcPos,
                                      float projectileSpeed,
-                                     float gravity)
+                                     float gravity, float launchDirectionUpBias, float preFireDelayMs)
     {
         if (!IsFiniteVector(targetPos) || !IsFiniteVector(targetVel) ||
             !IsFiniteVector(srcPos) || projectileSpeed <= 0.0f) {
             return targetPos;
         }
 
-        const float distance = srcPos.DistTo(targetPos);
-        const float travelTime = distance / projectileSpeed;
-        Vector3 predicted = targetPos + targetVel * travelTime;
-        if (gravity > 0.0f) {
-            // This project uses world Y as the vertical axis.
-            predicted.Y += 0.5f * gravity * travelTime * travelTime;
-        }
-        return predicted;
+        const Vector3 preFireTarget = ApplyTargetMotionPreFireDelay(
+            targetPos, targetVel, preFireDelayMs, 1000.0f);
+        const BallisticIntercept intercept = SolveBallisticIntercept(
+            srcPos, preFireTarget, targetVel, projectileSpeed, gravity);
+        return intercept.solved ? CompensateProjectileLaunchBias(
+            srcPos, intercept.aimPoint, launchDirectionUpBias) : targetPos;
     }
 
     CandidateEntity FindBestCandidate(const Config::HeroSkillSettings& settings, float maxRange)
@@ -1784,7 +1799,9 @@ namespace {
         const ProjectileRuntimeSpec projectileSpec{
             projectile.speed,
             projectile.gravity,
-            false
+            false,
+            projectile.launchDirectionUpBias,
+            projectile.gravityAcceleration
         };
 
         int matchingTargets = 0;
@@ -2259,7 +2276,9 @@ namespace {
             const ProjectileRuntimeSpec projectileSpec{
                 projectile.speed,
                 projectile.gravity,
-                false
+                false,
+                projectile.launchDirectionUpBias,
+                projectile.gravityAcceleration
             };
             const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
                 entity,
@@ -3005,13 +3024,25 @@ namespace {
         if (!settings.cooldownGuard)
             return false;
 
+        const auto rules = CooldownTimers::ForHero(local.HeroID);
+        auto timerCooling = [&](size_t activeSlot) -> std::optional<bool> {
+            for (size_t slot = 0; slot < rules.size(); ++slot) {
+                const auto& cd = local.display_cooldowns[slot];
+                if (rules[slot].activeSlot == activeSlot && cd.estimated)
+                    return cd.Fresh(GetTickCount()) && cd.Remaining() > .05f;
+            }
+            return std::nullopt;
+        };
+
         switch (definition.inputAction) {
         case HeroSkillInputAction::PrimaryFire:
             return Config::reloading;
         case HeroSkillInputAction::Ability1:
+            if (const auto cooling = timerCooling(0)) return *cooling;
             return SkillCooldownActive(local.skill1act, local.skillcd1);
         case HeroSkillInputAction::Ability2:
         case HeroSkillInputAction::SecondaryFire:
+            if (const auto cooling = timerCooling(1)) return *cooling;
             return SkillCooldownActive(local.skill2act, local.skillcd2);
         case HeroSkillInputAction::Ultimate:
             return !std::isfinite(local.ultimate) || local.ultimate < 100.0f;
@@ -3516,7 +3547,7 @@ namespace {
                 candidate.velocity,
                 source,
                 params.speed,
-                params.gravity);
+                params.gravity, params.launchDirectionUpBias, params.preFireDelayMs);
         }
 
         if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
@@ -3983,7 +4014,7 @@ namespace {
                 candidate.velocity,
                 source,
                 params.speed,
-                params.gravity);
+                params.gravity, params.launchDirectionUpBias, params.preFireDelayMs);
         }
         if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
             return false;
