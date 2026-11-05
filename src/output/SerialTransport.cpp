@@ -16,6 +16,9 @@
 namespace
 {
     std::atomic<unsigned long long> g_SerialOutputSendCount{ 0 };
+    constexpr uint64_t kPhysicalSnapshotMaxAgeMs = 100;
+    constexpr uint64_t kMakcuButtonPollIntervalMs = 60;
+    constexpr uint64_t kMakcuTextPollTimeoutMs = 30;
 
     bool IsSerialOutputCommand(OutputCommandType type)
     {
@@ -270,25 +273,35 @@ bool SerialTransport::OpenConfiguredPort(bool AllowDuringStopping)
 
     hSerial = newHandle;
     parser.Reset(); responses.clear(); keyboardReady=false; maskReady=false;
+    makcuPhysicalReply.reset();
+    makcuFirmwareVersion.reset();
+    makcuBinaryMonitor = false;
+    makcuTextNeedsSync = false;
+    makcuBinaryPollStartedMs = 0;
+    makcuNextButtonPollMs = 0;
     {std::lock_guard stateLock(snapshotMutex);physical={};}
     if (serialProtocol.load() != V2::Output::SerialProtocol::KmBox) {
         PurgeComm(newHandle, PURGE_RXCLEAR | PURGE_TXCLEAR);
-        const auto identity=QueryLocked("km.version()\r\n");
+        const auto identity=QueryLocked("km.version()\r\n", true);
         if (!V2::Output::IdentityMatches(serialProtocol.load(),identity)) {
             CloseHandle(newHandle);hSerial=INVALID_HANDLE_VALUE;
             SetConnectionState(OutputConnectionState::Error);return false;
         }
+        bool monitorReady;
         if (serialProtocol.load()==V2::Output::SerialProtocol::Ferrum) {
             keyboardReady=true;maskReady=true;
+            monitorReady = WriteLocked("km.buttons(1)\r\n");
         } else {
             const auto route=QueryLocked("km.device()\r\n");
             const auto begin=route.find("R:");
             const auto end=route.find(';',begin);
             maskReady=begin!=std::string::npos;
             keyboardReady=begin!=std::string::npos && route.substr(begin,end-begin).find('K')!=std::string::npos;
+            monitorReady = ConfigureMakcuMonitorLocked(begin!=std::string::npos);
         }
-        if (!WriteLocked("km.buttons(1)\r\n")) {
-            CloseHandle(newHandle);hSerial=INVALID_HANDLE_VALUE;return false;
+        if (!monitorReady) {
+            CloseHandle(newHandle);hSerial=INVALID_HANDLE_VALUE;
+            SetConnectionState(OutputConnectionState::Error);return false;
         }
     }
     hSerial = newHandle;
@@ -624,15 +637,19 @@ void SerialTransport::HeartbeatLoop()
         if (lifecycleState.load(std::memory_order_acquire) != LifecycleState::Running)
             continue;
 
-        if (OW::Config::OutputSuppressedByMenu())
-            continue;
-
         if(connectionState.load()!=OutputConnectionState::Connected) continue;
         if(serialProtocol.load()==V2::Output::SerialProtocol::KmBox) continue;
         std::lock_guard lock(serialMutex);
-        if(!V2::Output::IdentityMatches(serialProtocol.load(),QueryLocked("km.version()\r\n"))) {
+        const bool expiredBinaryPoll = makcuBinaryPollStartedMs != 0 &&
+            GetTickCount64() - makcuBinaryPollStartedMs > kPhysicalSnapshotMaxAgeMs;
+        if (OW::Config::OutputSuppressedByMenu() && !makcuTextNeedsSync && !expiredBinaryPoll)
+            continue;
+        if(QueryLocked("km.version()\r\n", true).empty()) {
             SetConnectionState(OutputConnectionState::Error);
             std::lock_guard stateLock(snapshotMutex);physical={};
+        } else {
+            makcuTextNeedsSync = false;
+            if (expiredBinaryPoll) makcuBinaryPollStartedMs = 0;
         }
 
     }
@@ -770,7 +787,7 @@ int SerialTransport::Middle(bool down)
     return EnqueueCommand(command, OutputCommandType::MouseButton, OutputIntentForState(down));
 }
 
-bool SerialTransport::WriteLocked(const std::string& command)
+bool SerialTransport::WriteLocked(std::string_view command)
 {
     if (hSerial==INVALID_HANDLE_VALUE && !writeChunkOverride) return false;
     size_t sent=0;
@@ -778,7 +795,7 @@ bool SerialTransport::WriteLocked(const std::string& command)
     while(sent<command.size()) {
         if(GetTickCount64()>=deadline) return false;
         DWORD count=0;
-        const bool ok=writeChunkOverride ? writeChunkOverride(std::string_view(command).substr(sent),count)
+        const bool ok=writeChunkOverride ? writeChunkOverride(command.substr(sent),count)
             : WriteFile(hSerial,command.data()+sent,DWORD(command.size()-sent),&count,nullptr)!=FALSE;
         if(!ok || !count || count>command.size()-sent) return false;
         sent+=count;
@@ -786,7 +803,7 @@ bool SerialTransport::WriteLocked(const std::string& command)
     return true;
 }
 
-bool SerialTransport::ReadInputLocked()
+bool SerialTransport::ReadInputLocked(bool allowDeviceError)
 {
     char bytes[512];DWORD count=0;
     if(readOverride) {
@@ -799,13 +816,24 @@ bool SerialTransport::ReadInputLocked()
         if(!stats.cbInQue) return true;
         if(!ReadFile(hSerial,bytes,(std::min)(DWORD(sizeof(bytes)),stats.cbInQue),&count,nullptr)) return false;
     }
-    for(auto& event:parser.Feed({bytes,count})) {
+    for(auto& event:parser.Feed({bytes,count}, serialProtocol.load()==V2::Output::SerialProtocol::Makcu)) {
         if(event.kind==V2::Output::SerialEvent::Kind::Fault) return false;
         if(event.kind==V2::Output::SerialEvent::Kind::Buttons) {
-            std::lock_guard lock(snapshotMutex);
-            physical={true,event.buttons,GetTickCount64()};
+            PublishPhysicalButtons(event.buttons, GetTickCount64());
+        } else if (event.kind==V2::Output::SerialEvent::Kind::MakcuPhysicalButtons) {
+            if (makcuBinaryMonitor) {
+                if (makcuBinaryPollStartedMs != 0 && event.buttons < 32 &&
+                    GetTickCount64() - makcuBinaryPollStartedMs <= kPhysicalSnapshotMaxAgeMs)
+                    PublishPhysicalButtons(event.buttons, makcuBinaryPollStartedMs);
+                makcuBinaryPollStartedMs = 0;
+            } else {
+                makcuPhysicalReply = event.buttons;
+            }
+        } else if (event.kind==V2::Output::SerialEvent::Kind::MakcuFirmwareVersion) {
+            makcuFirmwareVersion = event.firmwareVersion;
         } else {
-            if(event.body.find("ERR")!=std::string::npos) return false;
+            if (!allowDeviceError && event.body.find("ERR")!=std::string::npos)
+                return false;
             if(responses.size()>=32) responses.pop_front();
             responses.push_back(std::move(event.body));
         }
@@ -813,18 +841,20 @@ bool SerialTransport::ReadInputLocked()
     return true;
 }
 
-std::string SerialTransport::QueryLocked(const std::string& command)
+std::string SerialTransport::QueryLocked(const std::string& command, bool expectIdentity)
 {
-    if(!ReadInputLocked()) return {};
+    const bool drainTextPoll = expectIdentity && makcuTextNeedsSync;
+    if(!ReadInputLocked(drainTextPoll)) return {};
     responses.clear();
     if(!WriteLocked(command)) return {};
     const auto deadline=GetTickCount64()+500;
     while(GetTickCount64()<deadline) {
-        if(!ReadInputLocked()) return {};
+        if(!ReadInputLocked(drainTextPoll)) return {};
         while(!responses.empty()) {
             auto body=std::move(responses.front());responses.pop_front();
             auto echo=command;while(!echo.empty() && (echo.back()=='\r'||echo.back()=='\n')) echo.pop_back();
             if(body==echo || body==echo+"\r\n") continue;
+            if (expectIdentity && !V2::Output::IdentityMatches(serialProtocol.load(), body)) continue;
             return body;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -832,12 +862,114 @@ std::string SerialTransport::QueryLocked(const std::string& command)
     return {};
 }
 
+void SerialTransport::PublishPhysicalButtons(uint8_t buttons, uint64_t sampledAtMs)
+{
+    std::lock_guard lock(snapshotMutex);
+    physical = {true, buttons, sampledAtMs};
+}
+
+bool SerialTransport::ConfigureMakcuMonitorLocked(bool v4Route)
+{
+    using namespace V2::Output::MakcuProtocol;
+    // Older firmware can send bare bytes that are ambiguous in the text stream.
+    if (!WriteLocked("km.buttons(0)\r\n")) return false;
+    if (v4Route) {
+        if (!WriteLocked(PhysicalButtonsRequest)) return false;
+        const auto deadline = GetTickCount64() + kPhysicalSnapshotMaxAgeMs;
+        while (GetTickCount64() < deadline) {
+            if (!ReadInputLocked(true)) return false;
+            if (makcuPhysicalReply) {
+                if (*makcuPhysicalReply < 32) {
+                    makcuBinaryMonitor = true;
+                    PublishPhysicalButtons(*makcuPhysicalReply, GetTickCount64());
+                    return WriteLocked("km.buttons(1)\r\n");
+                }
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    if (v4Route) {
+        // V4.030/031/033 already support the prefixed stream but lack the binary snapshot.
+        if (!WriteLocked(FirmwareVersionRequest)) return false;
+        const auto deadline = GetTickCount64() + kPhysicalSnapshotMaxAgeMs;
+        while (!makcuFirmwareVersion && GetTickCount64() < deadline) {
+            if (!ReadInputLocked(true)) return false;
+            if (!makcuFirmwareVersion) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    if (!ReadInputLocked(true) || !RefreshMakcuButtonsLocked()) return false;
+    return !HasLegacyPrefixedButtonStream(makcuFirmwareVersion.value_or(0)) ||
+        WriteLocked("km.buttons(1)\r\n");
+}
+
+bool SerialTransport::QueryMakcuTextButtonsLocked()
+{
+    using namespace V2::Output::MakcuProtocol;
+    std::string commands;
+    for (const auto query : ButtonQueries) {
+        commands += query;
+        commands += "\r\n";
+    }
+    responses.clear();
+    const auto started = GetTickCount64();
+    if (!WriteLocked(commands)) return false;
+    const auto deadline = GetTickCount64() + kMakcuTextPollTimeoutMs;
+    size_t button = 0;
+    uint8_t buttons = 0;
+    bool rejected = false;
+    while (!rejected && GetTickCount64() < deadline) {
+        if (!ReadInputLocked(true)) return false;
+        while (!responses.empty()) {
+            const auto body = std::move(responses.front());
+            responses.pop_front();
+            if (body.find("ERR") != std::string::npos) {
+                rejected = true;
+                break;
+            }
+            const auto state = PhysicalButton(body, button);
+            if (!state) continue;
+            if (*state) buttons |= uint8_t(1u << button);
+            if (++button == ButtonQueries.size()) {
+                std::lock_guard lock(snapshotMutex);
+                if (physical.sampledAtMs < started) physical = {true, buttons, GetTickCount64()};
+                return true;
+            }
+        }
+        if (!rejected) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // Drain outstanding text replies through the next identity check before retrying.
+    makcuTextNeedsSync = true;
+    std::lock_guard lock(snapshotMutex);
+    if (physical.sampledAtMs < started) physical = {};
+    return true;
+}
+
+bool SerialTransport::RefreshMakcuButtonsLocked()
+{
+    const auto now = GetTickCount64();
+    if (makcuTextNeedsSync || makcuBinaryPollStartedMs != 0 || now < makcuNextButtonPollMs)
+        return true;
+    {
+        std::lock_guard lock(snapshotMutex);
+        if (physical.available && now - physical.sampledAtMs < kMakcuButtonPollIntervalMs)
+            return true;
+    }
+    makcuNextButtonPollMs = now + kMakcuButtonPollIntervalMs;
+    if (!makcuBinaryMonitor) return QueryMakcuTextButtonsLocked();
+    if (!WriteLocked(V2::Output::MakcuProtocol::PhysicalButtonsRequest)) return false;
+    makcuBinaryPollStartedMs = now;
+    return true;
+}
+
 void SerialTransport::PollInput()
 {
     if(writeOverride || serialProtocol.load()==V2::Output::SerialProtocol::KmBox ||
        connectionState.load()!=OutputConnectionState::Connected) return;
     std::lock_guard lock(serialMutex);
-    if(!ReadInputLocked()) {
+    const bool refreshMakcu = serialProtocol.load()==V2::Output::SerialProtocol::Makcu &&
+        lifecycleState.load()==LifecycleState::Running;
+    if (!ReadInputLocked() || (refreshMakcu && !RefreshMakcuButtonsLocked())) {
         SetConnectionState(OutputConnectionState::Error);
         std::lock_guard stateLock(snapshotMutex);physical={};
     }
@@ -847,7 +979,7 @@ V2::Output::PhysicalInputSnapshot SerialTransport::PhysicalInput() const
 {
     std::lock_guard lock(snapshotMutex);auto result=physical;
     result.available=result.available && connectionState.load()==OutputConnectionState::Connected &&
-        GetTickCount64()-result.sampledAtMs<=100;
+        GetTickCount64()-result.sampledAtMs<=kPhysicalSnapshotMaxAgeMs;
     return result;
 }
 

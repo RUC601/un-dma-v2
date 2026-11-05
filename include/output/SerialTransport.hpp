@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -54,9 +55,19 @@ private:
     std::atomic<bool> keyboardReady{false}, maskReady{false};
     mutable std::mutex snapshotMutex;
     V2::Output::PhysicalInputSnapshot physical;
-    bool ReadInputLocked();
-    bool WriteLocked(const std::string& command);
-    std::string QueryLocked(const std::string& command);
+    std::optional<uint8_t> makcuPhysicalReply;
+    std::optional<uint32_t> makcuFirmwareVersion;
+    bool makcuBinaryMonitor = false;
+    bool makcuTextNeedsSync = false;
+    uint64_t makcuBinaryPollStartedMs = 0;
+    uint64_t makcuNextButtonPollMs = 0;
+    bool ReadInputLocked(bool allowDeviceError = false);
+    bool WriteLocked(std::string_view command);
+    std::string QueryLocked(const std::string& command, bool expectIdentity = false);
+    bool ConfigureMakcuMonitorLocked(bool v4Route);
+    bool RefreshMakcuButtonsLocked();
+    bool QueryMakcuTextButtonsLocked();
+    void PublishPhysicalButtons(uint8_t buttons, uint64_t sampledAtMs);
     void PollInput();
     int ExecuteKeyboardReport(const std::vector<unsigned char>& keys, bool releaseOnly = false);
 
