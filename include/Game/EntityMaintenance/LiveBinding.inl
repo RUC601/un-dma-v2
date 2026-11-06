@@ -4,7 +4,7 @@
             const auto fail=[&](const char* reason){failure=reason;return false;};
             failure=nullptr;
             if(observedHero)*observedHero=0;
-            if(!offset::IsCnProfile() || !candidate.AngleBase)return fail("local_controller_missing");
+            if(!offset::UsesProtectedEntityLayout() || !candidate.AngleBase)return fail("local_controller_missing");
             OW::EntityHeaderSnapshot actorHeader{},controllerHeader{};
             if(!actorHeader.Read(candidate.address) || !controllerHeader.Read(candidate.LinkParent))
                 return fail("live_header_read_failed");

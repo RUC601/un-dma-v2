@@ -3,18 +3,18 @@
 #include <Windows.h>
 #include <cstdint>
 #include <limits>
-#include "Game/Cn154905.hpp"
+#include "Game/Cn155284.hpp"
 
 namespace OW::ProductImageIdentity {
 
-// Accepted CN 154905N image headers; this identifies the profile, not a file hash.
-inline constexpr uint32_t kTimestamp = Cn154905::timestamp;
-inline constexpr uint32_t kImageSize = Cn154905::imageSize;
+// Accepted CN 155284N image headers; this identifies the profile, not a file hash.
+inline constexpr uint32_t kTimestamp = Cn155284::timestamp;
+inline constexpr uint32_t kImageSize = Cn155284::imageSize;
 
 enum class Result { Accepted, Unreadable, InvalidHeaders, UnsupportedVersion };
 
 template <typename Read>
-Result Check(uint64_t base, Read&& read, uint32_t& timestamp, uint32_t& imageSize)
+Result ReadHeaders(uint64_t base, Read&& read, uint32_t& timestamp, uint32_t& imageSize)
 {
     timestamp = imageSize = 0;
     IMAGE_DOS_HEADER dos{};
@@ -33,6 +33,15 @@ Result Check(uint64_t base, Read&& read, uint32_t& timestamp, uint32_t& imageSiz
         return Result::InvalidHeaders;
     timestamp = nt.FileHeader.TimeDateStamp;
     imageSize = nt.OptionalHeader.SizeOfImage;
+    return Result::Accepted;
+}
+
+template <typename Read>
+Result Check(uint64_t base, Read&& read, uint32_t& timestamp, uint32_t& imageSize)
+{
+    const auto result = ReadHeaders(base, read, timestamp, imageSize);
+    if (result != Result::Accepted)
+        return result;
     return timestamp == kTimestamp && imageSize == kImageSize
         ? Result::Accepted : Result::UnsupportedVersion;
 }

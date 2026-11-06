@@ -961,7 +961,7 @@ namespace OW {
         return transposed;
     }
 
-    struct DynamicBzMatrixSelection {
+    struct DynamicWorldMatrixSelection {
         bool valid = false;
         uint64_t offset = 0;
         uint64_t address = 0;
@@ -972,14 +972,14 @@ namespace OW {
         Matrix rowMajor{};
     };
 
-    inline bool ScoreBz151177RowMajorMatrix(
+    inline bool ScoreWorld151177RowMajorMatrix(
         const Matrix& matrix,
         uint64_t offset,
         uint64_t decoded,
         const std::vector<c_entity>& entities,
         const c_entity& local,
         const Vector2& window,
-        DynamicBzMatrixSelection& score)
+        DynamicWorldMatrixSelection& score)
     {
         if (!IsMatrixNonIdentity(matrix))
             return false;
@@ -1030,14 +1030,14 @@ namespace OW {
         return true;
     }
 
-    inline bool TrySelectBz151177DynamicViewProjection(
+    inline bool TrySelectWorld151177DynamicViewProjection(
         uint64_t decoded,
         Matrix& selectedViewProjection,
         uint64_t& selectedPtr)
     {
         static DWORD lastSelectTick = 0;
         static uint64_t lastDecoded = 0;
-        static DynamicBzMatrixSelection lastSelection{};
+        static DynamicWorldMatrixSelection lastSelection{};
         static Matrix lastPublished{};
 
         const DWORD now = GetTickCount();
@@ -1079,13 +1079,13 @@ namespace OW {
             : (Config::manualScreenHeight > 0 ? static_cast<float>(Config::manualScreenHeight) : 1080.0f);
         const Vector2 window(width, height);
 
-        DynamicBzMatrixSelection best{};
-        DynamicBzMatrixSelection previousNow{};
+        DynamicWorldMatrixSelection best{};
+        DynamicWorldMatrixSelection previousNow{};
         for (uint64_t offset = kSweepStart; offset <= kSweepEnd; offset += kSweepStride) {
             Matrix matrix{};
             std::memcpy(&matrix, bytes.data() + static_cast<size_t>(offset - kSweepStart), sizeof(Matrix));
-            DynamicBzMatrixSelection candidate{};
-            if (!ScoreBz151177RowMajorMatrix(matrix, offset, decoded, entities, local, window, candidate))
+            DynamicWorldMatrixSelection candidate{};
+            if (!ScoreWorld151177RowMajorMatrix(matrix, offset, decoded, entities, local, window, candidate))
                 continue;
             if (!best.valid || candidate.score > best.score)
                 best = candidate;

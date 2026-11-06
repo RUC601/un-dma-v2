@@ -6,6 +6,7 @@
 #include "Memory/KeyState.hpp"
 #include "Memory/DeviceRecovery.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/ProductImageIdentity.hpp"
 #include "Game/profiles/ProfileState.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/ProcessConnection.hpp"
@@ -302,10 +303,22 @@ static bool TryConnectTargetProcess(bool forceReconnect, bool manualRequest)
     profileState.module = OW::SDK->dwGameBase;
     profileState.pid = mem.GetCurrentProcessId();
     const int requested = V2::Profiles::requestedProfile.load();
-    profileState.detection = V2::Profiles::Detect(profileState.module,
-        [](uint64_t at, void* dst, size_t size) { return mem.ReadFreshExact(at, dst, size); },
+    const auto read = [](uint64_t at, void* dst, size_t size) { return mem.ReadFreshExact(at, dst, size); };
+    uint32_t timestamp = 0, imageSize = 0;
+    const auto identity = OW::ProductImageIdentity::ReadHeaders(profileState.module, read, timestamp, imageSize);
+    const int imageProfile = V2::Profiles::FindImageProfile(timestamp, imageSize);
+    if (identity != OW::ProductImageIdentity::Result::Accepted || imageProfile < 0 ||
+        (requested >= 0 && requested != imageProfile)) {
+        MarkProcessDisconnected(imageProfile >= 0 ? "Selected region does not match Overwatch.exe"
+            : identity == OW::ProductImageIdentity::Result::Unreadable ? "Waiting for Overwatch.exe image headers"
+            : "Unsupported Overwatch.exe build");
+        Diagnostics::Info("Profile identity: request=%d status=%d timestamp=0x%X size=0x%X.",
+            requested, int(identity), timestamp, imageSize);
+        return false;
+    }
+    profileState.detection = V2::Profiles::Detect(profileState.module, read,
         [&] { return !OW::RuntimeShutdownRequested() && mem.GetCurrentProcessId() == profileState.pid &&
-            OW::SDK->dwGameBase == profileState.module; }, requested);
+            OW::SDK->dwGameBase == profileState.module; }, imageProfile);
     const auto* matched = V2::Profiles::MatchedProfile(profileState.detection);
     if (!matched) {
         const bool ambiguous = profileState.detection.status == V2::Profiles::DetectionStatus::Ambiguous;

@@ -131,13 +131,13 @@ namespace OW {
         TYPE_TRANSFORM        = 0x01,
         TYPE_VELOCITY         = 0x4,
         // Legacy 151177 values kept for source compatibility. Runtime code
-        // must use offset::Active().type* so BZ and CN can diverge.
+        // must use offset::Active().type* so World and CN can diverge.
         TYPE_TEAM             = 0x21,
         TYPE_BONE             = 0x24,  // updated per UC p330 (was 0x27)
         TYPE_TRANSFORM_ALT    = 0x25,
         TYPE_ROTATION         = 0x2F,
-        TYPE_LINK             = 0x34,  // legacy 151177 id; active BZ 151722 / CN 153480 profiles use 0x33
-        TYPE_P_VISIBILITY     = 0x34,  // active BZ 151722 / CN 153480 id; +0x98 semantics are profile-specific
+        TYPE_LINK             = 0x34,  // legacy 151177 id; active World 151722 / CN 153480 profiles use 0x33
+        TYPE_P_VISIBILITY     = 0x34,  // active World 151722 / CN 153480 id; +0x98 semantics are profile-specific
         TYPE_SKILL            = 0x37,
         TYPE_ANGLE            = 0x39,
         TYPE_HEALTH           = 0x3B,

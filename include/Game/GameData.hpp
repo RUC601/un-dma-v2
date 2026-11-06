@@ -222,7 +222,7 @@ constexpr const char* HeroName(uint64_t heroId) noexcept {
 
 inline std::string UnknownHeroFallbackName(uint64_t heroId) {
     char fallback[24] = {};
-    std::snprintf(fallback, sizeof(fallback), "BzHero_%04llX",
+    std::snprintf(fallback, sizeof(fallback), "WorldHero_%04llX",
         static_cast<unsigned long long>(heroId & 0xFFFFull));
     return fallback;
 }

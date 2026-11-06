@@ -258,7 +258,7 @@
                 sanitizeStaleRosterEntity(rosterEntity);
             }
 
-            if (OW::offset::IsCnProfile() &&
+            if (OW::offset::UsesProtectedEntityLayout() &&
                 rosterEntity.roster_state == OW::EntityRosterState::Fresh &&
                 !hasRenderableAnchor(rosterEntity)) {
                 it = entityRoster.erase(it);

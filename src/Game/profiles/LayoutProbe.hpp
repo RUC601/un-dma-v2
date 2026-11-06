@@ -13,10 +13,19 @@ struct Profile {
     constexpr const auto& Offsets() const { return OW::offset::ForProfile(runtime); }
 };
 inline constexpr std::array<Profile,3> profiles{{
-    {"CN", "154905N", OW::offset::RuntimeProfile::Cn},
-    {"BZ", "154905", OW::offset::RuntimeProfile::Bz154905},
-    {"KR", "152688", OW::offset::RuntimeProfile::Kr152688},
+    {"CN", "2.25.1.0.155284N", OW::offset::RuntimeProfile::Cn},
+    {"World", "2.25.1.0.155284", OW::offset::RuntimeProfile::World155284},
+    {"Nexon", "2.25.1.0.155284KB", OW::offset::RuntimeProfile::Nexon155284},
 }};
+inline constexpr int FindImageProfile(uint32_t timestamp, uint32_t imageSize)
+{
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        const auto& offsets = profiles[i].Offsets();
+        if (offsets.imageTimestamp == timestamp && offsets.imageSize == imageSize)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
 enum class ProbeStatus { Match, NotReady, ReadFailed, InvalidPointer, InvalidMatrix, Stale };
 enum class DetectionStatus { Matched, NotReady, NoMatch, Ambiguous, Stale };
 struct Probe {

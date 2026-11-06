@@ -2,16 +2,15 @@
 #include <bit>
 #include <cstdint>
 
-// 2.25.1.0.154905N: IDA owners and read-only samples are archived in
-// 03_DOWNP/2.25.1.0.154905N/cn/offset_work_2026-11-04.
-namespace OW::Cn154905 {
-inline constexpr uint32_t timestamp = 1792635532, imageSize = 0x5A98000;
+// CN 155284N RVAs from 03_DOWNP/202611060630. The transforms also occur in 155284KB.
+namespace OW::Cn155284 {
+inline constexpr uint32_t timestamp = 0x6AEBE914, imageSize = 0x5A98000;
 inline constexpr uint64_t keyByteA = 0x4A9D525, keyByteB = 0x4A9DA31;
 inline constexpr uint64_t entityRoot = 0x4C71748, entityState = 0x4C71730;
-inline constexpr uint64_t entityLock = 0x53BB9E0;
+inline constexpr uint64_t entityLock = 0x53BB920;
 // 0x800 slots is the initial allocation, not a permanent scan bound.
 inline constexpr uint64_t entityInitialBytes = 0x8000;
-inline constexpr uint64_t viewRoot = 0x4C08E78, globalAdmin = 0x4DD7160;
+inline constexpr uint64_t viewRoot = 0x4C08E78, globalAdmin = 0x4DD70A0;
 inline constexpr uint64_t mouseScaleX = 0x4AA456C, mouseScaleY = 0x4AA4584;
 inline constexpr uint64_t pointerXor = 0xD9B0DF0D8532B5A0ULL;
 inline constexpr uint64_t pointerAdd = 0x488A1F0DC13B6040ULL;
@@ -24,8 +23,7 @@ constexpr uint64_t Substitute(uint64_t value) {
     return result;
 }
 
-// 154905N scalar starts at 0x547C96; relocation-normalized effective blocks
-// and helper 0x549870 preserve the two-LUT transform. Obfuscation bytes changed.
+// 155284N scalar starts at 0x547C96. The known-answer samples below are from 154905N.
 constexpr uint64_t Component(uint64_t value, uint8_t a, uint8_t b) {
     value = std::rotr((value + 0x0D030666FEB038CEULL) ^ a, 40) ^ 0x357B5A44DBADDD24ULL;
     value = std::rotr(Substitute(value) + 0x33696B953606C040ULL, 26) ^ b ^ 0x2CEFECC4CAD54C5EULL;

@@ -881,7 +881,7 @@ void entity_thread() {
                      cached.heroUpdateTick == 0 ||
                      processLoopTick - cached.heroUpdateTick >= OW::kEntityHeroIntervalMs);
                 const bool scatterCnVisibility =
-                    offset::IsCnProfile() &&
+                    offset::UsesProtectedEntityLayout() &&
                     activeOffsetsForHotBatch.VisibilityValueOffset != 0 &&
                     cached.visibility != 0;
                 const uint64_t visibilityValueAddress = scatterCnVisibility
@@ -1520,7 +1520,7 @@ void entity_thread() {
                  processLoopTick - componentCache.heroUpdateTick >= OW::kEntityHeroIntervalMs);
             const auto& activeOffsets = offset::Active();
             scatterCnVisibility =
-                offset::IsCnProfile() &&
+                offset::UsesProtectedEntityLayout() &&
                 activeOffsets.VisibilityValueOffset != 0 &&
                 entity.VisBase != 0;
             visibilityValueAddress = scatterCnVisibility
@@ -1611,7 +1611,7 @@ void entity_thread() {
             }
 
             // ---- Velocity / position / bones ----
-            if (offset::IsCnProfile() && !velocityRead) {
+            if (offset::UsesProtectedEntityLayout() && !velocityRead) {
                 // A failed read cannot refresh coordinates from zero-padded
                 // typed reads. The roster keeps the preceding sample's age.
                 Diagnostics::RecordInvalidEntity();
@@ -1620,7 +1620,7 @@ void entity_thread() {
             if (velocityRead) {
                 entity.pos      = Vector3(velo_compo.location.x, velo_compo.location.y - 1.f, velo_compo.location.z);
                 entity.velocity = Vector3(velo_compo.velocity.x, velo_compo.velocity.y, velo_compo.velocity.z);
-                if(offset::IsCnProfile() && !OW::c_entity::IsPlausibleSpatialAnchor(entity.pos)) {
+                if(offset::UsesProtectedEntityLayout() && !OW::c_entity::IsPlausibleSpatialAnchor(entity.pos)) {
                     requestTopologyRescan(processLoopTick);
                     Diagnostics::RecordInvalidEntity();
                     continue;
@@ -1631,7 +1631,7 @@ void entity_thread() {
                     RuntimeTrace::Emit(RuntimeTrace::EntityReject,entity.address,entity.read_started_tick_ms,entity.read_completed_tick_ms,2);continue;
                 }
             }
-            if (!offset::IsCnProfile()) {
+            if (!offset::UsesProtectedEntityLayout()) {
                 XMFLOAT3 transformPosition{};
                 if (cacheIt->second->transform &&
                     SDK->read_range(cacheIt->second->transform + 0x3D0, &transformPosition, sizeof(transformPosition))) {
@@ -1672,8 +1672,8 @@ void entity_thread() {
                     }
                     if (heroRead) {
                         const uint64_t newHeroId = heroId;
-                        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905 &&
-                            !Cn154905::HeroId(newHeroId)) {
+                        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn155284 &&
+                            !Cn155284::HeroId(newHeroId)) {
                             requestTopologyRescan(processLoopTick);
 
                             OW::RevokeEntityBodyObservation(cacheIt->second->entity.address,
@@ -1769,7 +1769,7 @@ void entity_thread() {
                     entity.pos = entity.neck_pos;
                 } else if (entity.MaxHealth == 1000) {
                     entity.HeroID = 0x16bb; // Bob
-                } else if (offset::IsCnProfile() &&
+                } else if (offset::UsesProtectedEntityLayout() &&
                            std::fabs(entity.PlayerHealthMax - 200.0f) <= 5.0f) {
                     XMFLOAT3 temppos = velocityRead
                         ? velo_compo.location
@@ -1782,7 +1782,7 @@ void entity_thread() {
                     entity.chest_pos = Vector3(temppos.x, baseY + 0.75f, temppos.z);
                     entity.cached_bot_chest_bone = entity.chest_pos;
                     entity.cached_bot_chest_bone_valid = true;
-                } else if (offset::IsCnProfile() &&
+                } else if (offset::UsesProtectedEntityLayout() &&
                            std::fabs(entity.PlayerHealthMax - 500.0f) <= 10.0f) {
                     XMFLOAT3 temppos = velocityRead
                         ? velo_compo.location
@@ -1816,7 +1816,7 @@ void entity_thread() {
 
             }
             const bool syntheticCnTrainingBot =
-                offset::IsCnProfile() &&
+                offset::UsesProtectedEntityLayout() &&
                 !entity.HeroBase &&
                 OW::GameData::IsTrainingBotHeroId(entity.HeroID);
 
@@ -1933,7 +1933,7 @@ void entity_thread() {
                     entity.CacheSkeletonBones(
                         skeletonSlowCache.skeletonCache,
                         velocityBoneData,
-                        !OW::offset::IsCnProfile());
+                        !OW::offset::UsesProtectedEntityLayout());
                     const double cacheSkeletonMs = static_cast<double>(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - cacheSkeletonStartedAt).count()) /
@@ -1957,7 +1957,7 @@ void entity_thread() {
                             static_cast<size_t>(
                                 skeletonSlowCache.skeletonCache.maxMappedIndex) +
                             sizeof(XMFLOAT3);
-                    } else if (!OW::offset::IsCnProfile()) {
+                    } else if (!OW::offset::UsesProtectedEntityLayout()) {
                         pipelineStats.skeletonFallbackGetBonePosCount++;
                         pipelineStats.skeletonExactBoneReadCount += 3;
                     }
@@ -2224,8 +2224,7 @@ void entity_thread() {
                     std::chrono::steady_clock::now() - teamNamePhaseStartedAt).count()) / 1000.0;
 
             // ---- Visibility (refreshed every frame) ----
-            // DecryptVis owns profile-specific polarity. CN uses visComp+0x98
-            // as a live-verified raw bool state: raw == 1 means visible.
+            // Both read paths use the active profile's visibility decoder.
             if(!hotAlreadyApplied) {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.visibilityMs);
             if (entity.VisBase) {
@@ -2549,7 +2548,7 @@ void entity_thread() {
                 recordNameUnknownSample(entity, ComponentParent, LinkParent, name);
             }
             const bool hasRenderablePosition =
-                !OW::offset::IsCnProfile() || hasRenderableAnchor(entity);
+                !OW::offset::UsesProtectedEntityLayout() || hasRenderableAnchor(entity);
             const bool scanSeenThisCycle =
                 rawScanSeenComponents.find(ComponentParent) != rawScanSeenComponents.end();
             const bool scanMissHotRead =

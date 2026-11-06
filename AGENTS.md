@@ -17,7 +17,7 @@ V2 产品文档统一放在 `../docs/un-dma-v2/`，跨产品共用的文档放�
 
 此前“只建立工作区和验证隔离”的迁移阶段已经结束。后续 V2 实施以 `../docs/un-dma-v2/V2_REFACTOR_PLAN.zh-CN.md` 为现行总纲、`../../02_RESEARCH/un-dma-research/v2-product-research/V2_RESEARCH_NOTES.zh-CN.md` 为研究索引，按用户在执行线程中确定的目标推进；当前已进入实现与现场核验，实际状态见 ../docs/un-dma-v2/V2_PROGRESS.zh-CN.md。本工作区不承担 V1 日常维护；V1 独立位于 `../un-dma-v1`，其分支 `v1/cn` 和现有可用程序不能被覆盖、切换或 reset。
 
-命名 CN=国服/NetEase、KR=Nexon、BZ=普通国际服。CN 为完整业务路径，KR/BZ 仅有显式只读候选路由，继承值和门控不因 V2 名字改变。后续本轮只跑通并验证 CN；KR/BZ 按已有 Pure 证据接入可编译的候选实现并标为实服未验证，不安排 KR/BZ 实服验证，也不以其缺席阻塞收口。不把相机可用当整体适配，不编造缺失资料。
+当前地区命名 CN=国服/NetEase、World=普通国际服、Nexon=韩服。
 
 保留 UN 自有算法、Behavior 定义、参数关系和 Slot 业务语义，Pure 主要作为运行组织参考；UI 按 UN 业务重设计，使用用户新安装的 jakubkrehel/skills 套件，旧 make-interfaces-feel-better 不再是活动入口。V2 初期允许成体系重构，暂停 Ponytail 的最小改动取向。目标模式中局部未解决项不阻断独立工作；全部完成则结束，全局阻塞或仅剩必须用户介入的事项时暂停并报告，不把待验写成已通过。
 

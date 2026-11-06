@@ -2,28 +2,19 @@
 
 #include <atomic>
 #include <cstdint>
-#include "Game/Cn154905.hpp"
+#include "Game/Cn155284.hpp"
 
-// =============================================================================
-// Overwatch Offsets - BZ 2.23.11.151722 / CN 2.25.1.0.154905N
-//
-// BZ evidence remains 03_DOWNP/2.23.11.151722/bz.
-// CN dump: 03_DOWNP/2.25.1.0.154905N/Overwatch.exe_x64_memdump.exe
-// CN IDA/Diaphora and read-only proof: same version's cn/offset_work_2026-11-04.
-// CN entity/state/lock, view/admin, key-byte and input RVAs moved; effective
-// component/parent/singleton/visibility transforms and payload layouts retained.
-// Camera/primary projection processing is unchanged; physical/visual/endurance
-// acceptance is separate from the bounded read-only evidence.
-// =============================================================================
+// Current builds: World 155284, CN 155284N, Nexon 155284KB.
+// Evidence: 03_DOWNP/202611060630, Pure 1106 Profile and forum 516727 p394.
 
 namespace OW {
     namespace offset {
 
         enum class RuntimeProfile {
-            WorldBz,
+            World151722,
             Cn,
-            Bz154905,
-            Kr152688,
+            World155284,
+            Nexon155284,
         };
 
         // Initialization baseline for consumers outside an attached session.
@@ -36,18 +27,18 @@ namespace OW {
             World151293,
             World151722,
             Identity,
-            Cn154905,
-            Bz154905,
+            Cn155284,
+            World155284,
         };
 
         enum class SingletonListMode {
-            EncryptedWorldBz,
-            EncryptedWorldBz151293,
-            EncryptedWorldBz151722,
-            LiveGameAdminWorldBz,
+            EncryptedWorld,
+            EncryptedWorld151293,
+            EncryptedWorld151722,
+            LiveGameAdminWorld,
             Plain,
-            Cn154905,
-            Bz154905,
+            Cn155284,
+            World155284,
         };
 
         enum class ViewMatrixMode {
@@ -68,7 +59,7 @@ namespace OW {
         };
 
         struct RuntimeOffsetProfile {
-            const char* name = "world/bz";
+            const char* name = "world";
             ComponentTransformMode componentTransform = ComponentTransformMode::World0527;
             uint32_t typeTeam = 0;
             uint32_t typePlayerController = 0;
@@ -97,7 +88,7 @@ namespace OW {
             uint64_t VM_ProjMatrix = 0;
 
             uint64_t GlobalAdmin_RVA = 0;
-            SingletonListMode singletonListMode = SingletonListMode::EncryptedWorldBz;
+            SingletonListMode singletonListMode = SingletonListMode::EncryptedWorld;
             ViewMatrixMode viewMatrixMode = ViewMatrixMode::EncryptedChain;
             uint64_t VM_DirectMatrix = 0;
             ViewMatrixChainMode viewMatrixChain = ViewMatrixChainMode::LegacyLong;
@@ -110,6 +101,10 @@ namespace OW {
             bool capacityBoundRegistry = false;
             bool pooledHealth = false;
             uint64_t visibilityClearMask = 0;
+            uint64_t componentKeySecondByteRva = 0;
+            uint64_t registryLockRva = 0;
+            uint32_t imageTimestamp = 0;
+            uint32_t imageSize = 0;
         };
 
         // =========================================================================
@@ -121,19 +116,19 @@ namespace OW {
         static constexpr auto KeyGlobal_XOR    = 0xF5;        // diagnostic only
         static constexpr auto GetGlobalKey_RVA = 0x581D20;    // diagnostic legacy helper
 
-        // BZ 151722 component transform owner is statically mapped, but its
+        // World 151722 component transform owner is statically mapped, but its
         // historical builder-style diagnostic RVA has not been re-established.
         // OLD (0521): static constexpr auto DecryptComponent_RVA = 0x563700;
-        static constexpr auto DecryptComponent_RVA = 0x0; // diagnostic only; unresolved for BZ 151722
+        static constexpr auto DecryptComponent_RVA = 0x0; // diagnostic only; unresolved for World 151722
         static constexpr auto DecryptTable_Mask    = 0x7FF;    // 2048 entries
 
         // Component pointer resolver (forum p331 NormPlayer, IDA tail at RVA 0x5637D2).
         // OLD (0521): static constexpr auto ComponentXorQword_RVA = 0x3A86E30;
-        static constexpr auto ComponentXorQword_RVA = 0x3A8A578; // IDA + live reverified 2026-08-04: BZ 151722 key source root
+        static constexpr auto ComponentXorQword_RVA = 0x3A8A578; // IDA + live reverified 2026-08-04: World 151722 key source root
         // OLD (0521): static constexpr auto ComponentXorQword_Off = 0x10C;
         static constexpr auto ComponentXorQword_Off = 0x186;     // IDA + live verified: [keySource+0x186]
         // OLD (0521): static constexpr auto ComponentXorByte_RVA = 0x3772769;
-        static constexpr auto ComponentXorByte_RVA  = 0x3770195; // IDA + live reverified: BZ 151722 component tail byte
+        static constexpr auto ComponentXorByte_RVA  = 0x3770195; // IDA + live reverified: World 151722 component tail byte
         static constexpr auto ComponentPreXorByte_RVA = 0x3800A7D; // helper/list byte in sub_7FF6444DCA40; not active component tail
         // OLD (0521): Component_Add1=0x4C8675CDE55BA1B2, Component_Add2=0x7BE57670994040F6
         // OLD (0521): Component_Xor1=0x3864150DB528414C, Component_Xor2=0xA4764E53CD34159B, Component_Ror=3
@@ -153,7 +148,7 @@ namespace OW {
         static constexpr auto Component151177_Xor2  = 0x9A2687D39D0D255A;
         static constexpr auto Component151177_Ror1  = 9;
         static constexpr auto Component151177_Ror2  = 47;
-        // BZ 151293 returned to the add/xor/add/xor/xor/ROR3 transform shape.
+        // World 151293 returned to the add/xor/add/xor/xor/ROR3 transform shape.
         static constexpr auto Component151293_Add1  = Component150818_Add1;
         static constexpr auto Component151293_Add2  = Component150818_Add2;
         static constexpr auto Component151293_Xor1  = Component150818_Xor1;
@@ -185,16 +180,16 @@ namespace OW {
         static constexpr auto ComponentWrapper_Ror2         = 19;
 
         // Visibility/data flag resolver (forum p331 full disassembly, IDA RVA 0x58C880).
-        // Legacy BZ 150818 encrypted-visibility formula. Active BZ/CN 151752
+        // Legacy World 150818 encrypted-visibility formula. Active World/CN 151752
         // profiles both read +0x98, but only CN exposes a raw bool there.
         // OLD (0521): static constexpr auto VisibilityGlobalKeyPtr_RVA = 0x3B76970;
-        static constexpr auto VisibilityGlobalKeyPtr_RVA = ComponentXorQword_RVA; // live BZ 150818 shared key source
+        static constexpr auto VisibilityGlobalKeyPtr_RVA = ComponentXorQword_RVA; // live World 150818 shared key source
         // OLD (0521): static constexpr auto VisibilityQwordOffset = 0x1B1;
-        static constexpr auto VisibilityQwordOffset      = 0x6A;      // live BZ 150818 sujung formula
+        static constexpr auto VisibilityQwordOffset      = 0x6A;      // live World 150818 sujung formula
         // OLD (0521): static constexpr auto VisibilityValueOffset = 0x98;
-        static constexpr auto VisibilityValueOffset      = 0x98;     // active BZ/CN visibility payload
-        static constexpr auto VisibilityBzVisibleMask    = 0x80000000ull; // BZ 151722: set means visible
-        static constexpr auto VisibilityMagicByte_RVA    = 0x3746659; // live BZ 150818 sujung formula
+        static constexpr auto VisibilityValueOffset      = 0x98;     // active World/CN visibility payload
+        static constexpr auto VisibilityWorldVisibleMask    = 0x80000000ull; // World 151722: set means visible
+        static constexpr auto VisibilityMagicByte_RVA    = 0x3746659; // live World 150818 sujung formula
         static constexpr auto Visibility_Add1            = 0x5CE60F50EA1D337F;
         static constexpr auto Visibility_Ror1            = 3;
         static constexpr auto Visibility_Add2            = 0x78D75198F1D34D38;
@@ -209,8 +204,8 @@ namespace OW {
 
         // Entity system.
         // OLD (0521): static constexpr auto Address_entity_base = 0x39298C8;
-        static constexpr auto Address_entity_base = 0x392BF58; // IDA, dumper and live reverified: BZ 151722 entity list root
-        static constexpr auto EntityList_SlotCount_RVA = 0x392BF40; // BZ 151722 entity state/version qword
+        static constexpr auto Address_entity_base = 0x392BF58; // IDA, dumper and live reverified: World 151722 entity list root
+        static constexpr auto EntityList_SlotCount_RVA = 0x392BF40; // World 151722 entity state/version qword
         static constexpr auto entity_entry_stride = 0x10;      // entity list slot: { entity, pad }
         static constexpr auto Entity_MatchId      = 0x138;     // u32 on component parent; retained from 0521
         static constexpr auto Entity_PoolPtr      = 0x30;      // masked with 0xFFFFFFFFFFFFFFC0
@@ -221,7 +216,7 @@ namespace OW {
 
         // p344 verified/carry-forward structural constants. Keep these named even
         // when a runtime path still uses older local helpers.
-        static constexpr auto Address_LiveFov_RVA = 0x4037628; // unresolved for BZ 150818; not used by runtime path
+        static constexpr auto Address_LiveFov_RVA = 0x4037628; // unresolved for World 150818; not used by runtime path
         static constexpr auto Default_FOV_Horizontal_Deg = 103.0f;
         static constexpr auto kOpenProcessFlags = 0x438;
 
@@ -266,9 +261,9 @@ namespace OW {
         // Static 150818: +0x2224/+0x2228 are per-frame input deltas scaled by
         // input.MouseScaleX/Y. The durable setting is singleton[0x6] + 0x2238,
         // stored as normalized UI sensitivity (4.5 -> 0.045).
-        static constexpr auto Sensitivity_EncryptedPtr_RVA = 0x0; // direct pointer unresolved for BZ 151177
-        static constexpr auto GlobalAdmin_WorldBz_RVA = 0x3A903F0; // IDA + live reverified BZ 151722 direct admin root
-        static constexpr auto SensitivityAdmin_WorldBz_RVA = GlobalAdmin_WorldBz_RVA; // admin +0x160 live-decode -> slot[6]
+        static constexpr auto Sensitivity_EncryptedPtr_RVA = 0x0; // direct pointer unresolved for World 151177
+        static constexpr auto GlobalAdmin_World_RVA = 0x3A903F0; // IDA + live reverified World 151722 direct admin root
+        static constexpr auto SensitivityAdmin_World_RVA = GlobalAdmin_World_RVA; // admin +0x160 live-decode -> slot[6]
         static constexpr auto GlobalAdmin_Ne_2_22_1_1_150434_RVA = 0x43F1BF0;
         static constexpr auto GlobalAdmin_Ne_2_23_0_0_150818_RVA = 0x43C97F0;
         static constexpr auto GlobalAdmin_Ne_2_23_0_3_151177_RVA = 0x43CB8B0;
@@ -277,7 +272,7 @@ namespace OW {
         static constexpr auto GlobalAdmin_Ne_2_23_11_151722_RVA = 0x43CB300;
         static constexpr auto GlobalAdmin_Ne_2_24_0_0_152690_RVA = 0x4447970;
         static constexpr auto GlobalAdmin_Ne_2_24_1_0_153480_RVA = 0x446C6F0;
-        static constexpr auto GlobalAdmin_RVA = GlobalAdmin_WorldBz_RVA;
+        static constexpr auto GlobalAdmin_RVA = GlobalAdmin_World_RVA;
         static constexpr auto Singleton_K1_xor = 0x5E3E2720BC53F290;
         static constexpr auto Singleton_K2_sub = 0x7A8EE1534F59D103;
         static constexpr auto Singleton_K3_add = 0xEFFE7E69F8213D2E;
@@ -303,15 +298,15 @@ namespace OW {
         static constexpr auto Sensitivity_NormalizedToUserScale = 100.0f;
         static constexpr auto Invert_Y_Flag = 0x2156;
 
-        // ViewMatrix - BZ 2.23.11.151722
+        // ViewMatrix - World 2.23.11.151722
         //   Chain root:
         //   0x38D03C0 -> (raw ^ 0x35614A18A98F5D88) +
         //                 0x5A62179C65E68926.
         //   Then +0x20 -> +0x48 -> +0x6D0 -> +0x8 -> render VP +0xC0.
         // OLD (0521): static constexpr auto Address_viewmatrix_base = 0x38D0220;
-        static constexpr auto Address_viewmatrix_chain_base = 0x38D03C0; // IDA + live reverified BZ 151722 chain root
-        static constexpr auto Address_viewmatrix_primary_base = 0x3960A58; // historical BZ 151177 diagnostic only
-        static constexpr auto Address_viewmatrix_direct_base = 0x3960A70; // historical BZ 151177 diagnostic only
+        static constexpr auto Address_viewmatrix_chain_base = 0x38D03C0; // IDA + live reverified World 151722 chain root
+        static constexpr auto Address_viewmatrix_primary_base = 0x3960A58; // historical World 151177 diagnostic only
+        static constexpr auto Address_viewmatrix_direct_base = 0x3960A70; // historical World 151177 diagnostic only
         static constexpr auto Address_viewmatrix_base = Address_viewmatrix_chain_base;
         // OLD (0521): key1=0x59D406B75C2A4377, key2=0xD54D81BA4EED36CE, key3=0x1C840F09D6923D76
         static constexpr auto offset_viewmatrix_xor_key  = 0x35614A18A98F5D88;
@@ -324,8 +319,8 @@ namespace OW {
         static constexpr auto VM_ViewProjectionMatrix = 0xC0;
         static constexpr auto VM_ViewMatrix  = 0x140;
         static constexpr auto VM_ProjMatrix  = 0xB0;
-        static constexpr auto Bz150818_DirectViewProjectionMatrix = 0x1C0;
-        static constexpr auto Bz151177_DirectViewProjectionMatrix = 0xF70; // legacy dynamic-context seed; unused by BZ 151177 chain mode
+        static constexpr auto World150818_DirectViewProjectionMatrix = 0x1C0;
+        static constexpr auto World151177_DirectViewProjectionMatrix = 0xF70; // legacy dynamic-context seed; unused by World 151177 chain mode
 
         // Viewport dimensions (2026-05-27, dump_SCY.exe).
         // IDA: FullScreenWidth/FullScreenHeight option objects at
@@ -335,13 +330,13 @@ namespace OW {
         static constexpr auto ViewportHeight_RVA = 0x0;
 
         // Input globals.
-        static constexpr auto InputMouseScaleX_RVA      = 0x3776BDC; // IDA + live reverified BZ 151722 input.MouseScaleX
-        static constexpr auto InputMouseScaleY_RVA      = 0x3776BF4; // IDA + live reverified BZ 151722 input.MouseScaleY
+        static constexpr auto InputMouseScaleX_RVA      = 0x3776BDC; // IDA + live reverified World 151722 input.MouseScaleX
+        static constexpr auto InputMouseScaleY_RVA      = 0x3776BF4; // IDA + live reverified World 151722 input.MouseScaleY
 
         static constexpr auto changefov = 0x402B658; // current candidate; not revalidated in 0527 pass
 
-        inline constexpr RuntimeOffsetProfile kWorldBzRuntimeProfile{
-            "world/bz 151722",
+        inline constexpr RuntimeOffsetProfile kWorld151722RuntimeProfile{
+            "world 151722",
             ComponentTransformMode::World151722,
             0x20, // live semantic proof: Ana local 0x01000000, 6 enemies 0x00800000
             0x42, // live semantic proof: unique Ana +0x1260 unit vector
@@ -366,29 +361,29 @@ namespace OW {
             VM_ViewProjectionMatrix,
             VM_ViewMatrix,
             VM_ProjMatrix,
-            GlobalAdmin_WorldBz_RVA,
-            SingletonListMode::EncryptedWorldBz151722,
+            GlobalAdmin_World_RVA,
+            SingletonListMode::EncryptedWorld151722,
             ViewMatrixMode::EncryptedChainXorAdd,
-            Bz151177_DirectViewProjectionMatrix,
+            World151177_DirectViewProjectionMatrix,
             ViewMatrixChainMode::LegacyLong,
         };
 
         inline constexpr RuntimeOffsetProfile kCnRuntimeProfile{
-            .name = "CN 154905N",
-            .componentTransform = ComponentTransformMode::Cn154905,
+            .name = "CN 2.25.1.0.155284N",
+            .componentTransform = ComponentTransformMode::Cn155284,
             .typeTeam = 0x20,
             .typePlayerController = 0x42,
             .typeRotation = 0x2E,
             .typeLink = 0x33,
             .typeHealth = 0x3A,
             .typeHeroId = 0x53,
-            .Address_entity_base = Cn154905::entityRoot,
-            .InputMouseScaleX_RVA = Cn154905::mouseScaleX,
-            .InputMouseScaleY_RVA = Cn154905::mouseScaleY,
+            .Address_entity_base = Cn155284::entityRoot,
+            .InputMouseScaleX_RVA = Cn155284::mouseScaleX,
+            .InputMouseScaleY_RVA = Cn155284::mouseScaleY,
             .VisibilityValueOffset = 0x98,
-            .Address_viewmatrix_base = Cn154905::viewRoot,
-            .offset_viewmatrix_xor_key = Cn154905::pointerXor,
-            .offset_viewmatrix_xor_key2 = Cn154905::pointerAdd,
+            .Address_viewmatrix_base = Cn155284::viewRoot,
+            .offset_viewmatrix_xor_key = Cn155284::pointerXor,
+            .offset_viewmatrix_xor_key2 = Cn155284::pointerAdd,
             .VM_P1 = 0x20,
             .VM_P2 = 0x48,
             .VM_ViewProjectionParent = 0x6D0,
@@ -396,77 +391,79 @@ namespace OW {
             .VM_ViewProjectionMatrix = 0xC0,
             .VM_ViewMatrix = 0x140,
             .VM_ProjMatrix = 0xB0,
-            .GlobalAdmin_RVA = Cn154905::globalAdmin,
-            .singletonListMode = SingletonListMode::Cn154905,
+            .GlobalAdmin_RVA = Cn155284::globalAdmin,
+            .singletonListMode = SingletonListMode::Cn155284,
             .viewMatrixMode = ViewMatrixMode::EncryptedChainXorAdd,
             .typeSkill = 0x36,
+            .componentKeyByteRva = Cn155284::keyByteA,
             .pooledHealth = true,
+            .componentKeySecondByteRva = Cn155284::keyByteB,
+            .registryLockRva = Cn155284::entityLock,
+            .imageTimestamp = Cn155284::timestamp,
+            .imageSize = Cn155284::imageSize,
         };
 
-        // 516727 p394#4850032. The camera, registry and component transform
-        // have read-only evidence on 154905. Input scale is still unresolved.
-        inline constexpr RuntimeOffsetProfile kBz154905RuntimeProfile{
-            .name = "BZ 154905",
-            .componentTransform = ComponentTransformMode::Bz154905,
+        inline constexpr RuntimeOffsetProfile kWorld155284RuntimeProfile{
+            .name = "World 2.25.1.0.155284",
+            .componentTransform = ComponentTransformMode::World155284,
             .typeTeam = 0x20,
             .typePlayerController = 0x42,
             .typeRotation = 0x2E,
             .typeLink = 0x33,
             .typeHealth = 0x3A,
             .typeHeroId = 0x53,
-            .Address_entity_base = 0x3BB39A8,
+            .Address_entity_base = 0x3A4E998,
+            .InputMouseScaleX_RVA = 0x3884C0C,
+            .InputMouseScaleY_RVA = 0x3884C24,
             .VisibilityValueOffset = 0x98,
-            .Address_viewmatrix_base = 0x3B4B0E8,
-            .offset_viewmatrix_xor_key = 0x4FFB48E02CB5397CULL,
-            .offset_viewmatrix_xor_key2 = 0x0F26BE43E44F8A31ULL,
+            .Address_viewmatrix_base = 0x39E60D8,
+            .offset_viewmatrix_xor_key = 0xCA296338AF46F0EEULL,
+            .offset_viewmatrix_xor_key2 = 0xDD551D50F1E53C4BULL,
             .VM_P1 = 0x20,
             .VM_P2 = 0x48,
             .VM_ViewMatrix = 0x140,
             .VM_ProjMatrix = 0xB0,
-            .GlobalAdmin_RVA = 0x3D1CF10,
-            .singletonListMode = SingletonListMode::Bz154905,
-            .viewMatrixMode = ViewMatrixMode::EncryptedChainXorAdd,
+            .GlobalAdmin_RVA = 0x3BB7E10,
+            .singletonListMode = SingletonListMode::World155284,
+            .viewMatrixMode = ViewMatrixMode::EncryptedChain,
             .viewMatrixChain = ViewMatrixChainMode::CameraProjectionShort,
             .typeSkill = 0x36,
-            .componentKeyRootRva = 0x3D17098,
-            .componentKeyByteRva = 0x39E3AE8,
-            .componentKeyOffset = 0x3A,
-            .clientGameRva = 0x3D171A0,
+            .componentKeyRootRva = 0x3BB1F98,
+            .componentKeyByteRva = 0x387E182,
+            .componentKeyOffset = 0x2C,
+            .clientGameRva = 0x3BB20A0,
             .capacityBoundRegistry = true,
             .pooledHealth = true,
-            .visibilityClearMask = 0x200000000000ULL,
+            .visibilityClearMask = 0x80,
+            .registryLockRva = 0x419B3D0,
+            .imageTimestamp = 0x6AEBEABB,
+            .imageSize = 0x4876000,
         };
 
-        // Pure Korea/Nexon 152688 and forum p370. Shared entity IDs are
-        // provisional on KR. Admin, visibility and input scale are unknown.
-        inline constexpr RuntimeOffsetProfile kKr152688RuntimeProfile{
-            .name = "KR 152688",
-            .componentTransform = ComponentTransformMode::Identity,
-            .typeTeam = 0x20,
-            .typePlayerController = 0x42,
-            .typeRotation = 0x2E,
-            .typeLink = 0x33,
-            .typeHealth = 0x3A,
-            .typeHeroId = 0x53,
-            .Address_entity_base = 0x35E8568,
-            .Address_viewmatrix_base = 0x3CD33B0,
-            .VM_P1 = 0x20,
-            .VM_P2 = 0x48,
-            .VM_ViewMatrix = 0x140,
-            .VM_ProjMatrix = 0xB0,
-            .viewMatrixMode = ViewMatrixMode::DirectChain,
-            .viewMatrixChain = ViewMatrixChainMode::CameraProjectionShort,
-            .typeSkill = 0x36,
-            .capacityBoundRegistry = true,
-        };
+        // 155284KB shares the protected transforms and table layout with 155284N.
+        inline constexpr RuntimeOffsetProfile kNexon155284RuntimeProfile = [] {
+            auto profile = kCnRuntimeProfile;
+            profile.name = "Nexon 2.25.1.0.155284KB";
+            profile.Address_entity_base = 0x3F37FF8;
+            profile.InputMouseScaleX_RVA = 0x3D6DBCC;
+            profile.InputMouseScaleY_RVA = 0x3D6DBE4;
+            profile.Address_viewmatrix_base = 0x3ECF728;
+            profile.GlobalAdmin_RVA = 0x409D740;
+            profile.componentKeyByteRva = 0x3D67455;
+            profile.componentKeySecondByteRva = 0x3D67961;
+            profile.registryLockRva = 0x4680860;
+            profile.imageTimestamp = 0x6AEBEA26;
+            profile.imageSize = 0x4D6B000;
+            return profile;
+        }();
 
         constexpr const RuntimeOffsetProfile& ForProfile(RuntimeProfile profile)
         {
             switch (profile) {
             case RuntimeProfile::Cn: return kCnRuntimeProfile;
-            case RuntimeProfile::Bz154905: return kBz154905RuntimeProfile;
-            case RuntimeProfile::Kr152688: return kKr152688RuntimeProfile;
-            case RuntimeProfile::WorldBz: return kWorldBzRuntimeProfile;
+            case RuntimeProfile::World155284: return kWorld155284RuntimeProfile;
+            case RuntimeProfile::Nexon155284: return kNexon155284RuntimeProfile;
+            case RuntimeProfile::World151722: return kWorld151722RuntimeProfile;
             }
             return kCnRuntimeProfile;
         }
@@ -516,9 +513,14 @@ namespace OW {
             return ActiveProfile() == RuntimeProfile::Cn;
         }
 
+        inline bool UsesProtectedEntityLayout()
+        {
+            return Active().componentTransform == ComponentTransformMode::Cn155284;
+        }
+
         inline uint32_t TeamRawComparisonKeyFromFlags(uint32_t flags)
         {
-            return IsCnProfile()
+            return UsesProtectedEntityLayout()
                 ? (flags & Team_CnComparisonMask)
                 : (flags & Team_LegacyMask);
         }
@@ -532,7 +534,7 @@ namespace OW {
         {
             // The low byte contains relation detail, not the stable team key.
             // Live data shows same-team actors can differ there, so compare
-            // only the legacy team bits for active BZ 151722 / CN 153480.
+            // only the legacy team bits for active World 151722 / CN 153480.
             return flags & Team_LegacyMask;
         }
 

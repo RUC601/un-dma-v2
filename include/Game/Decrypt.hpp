@@ -202,8 +202,8 @@ namespace OW {
     }
 
     inline uint64_t GetParent(uint64_t encrypted) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
-            return Cn154905::Parent(encrypted);
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn155284)
+            return Cn155284::Parent(encrypted);
         __try {
             auto result = encrypted;
             result = (result >> 0x20) | (result << 0x20);
@@ -338,7 +338,7 @@ namespace OW {
                 -static_cast<int32_t>(present)));
         const auto& activeOffsets = offset::Active();
 
-        if (activeOffsets.componentTransform == offset::ComponentTransformMode::Cn154905) {
+        if (activeOffsets.componentTransform == offset::ComponentTransformMode::Cn155284) {
             struct Keys {
                 uint64_t base = 0, epoch = 0, sampled = 0;
                 uint8_t a = 0, b = 0;
@@ -354,14 +354,14 @@ namespace OW {
             if (!keys.valid || keys.base != SDK->dwGameBase || keys.epoch != epoch || now - keys.sampled >= 16) {
                 keys.valid = false;
                 uint8_t a = 0, b = 0;
-                if (!SDK->read_range(SDK->dwGameBase + Cn154905::keyByteA, &a, sizeof(a)) ||
-                    !SDK->read_range(SDK->dwGameBase + Cn154905::keyByteB, &b, sizeof(b))) {
+                if (!SDK->read_range(SDK->dwGameBase + activeOffsets.componentKeyByteRva, &a, sizeof(a)) ||
+                    !SDK->read_range(SDK->dwGameBase + activeOffsets.componentKeySecondByteRva, &b, sizeof(b))) {
                     Diagnostics::RecordDecryptFailure();
                     return 0;
                 }
                 keys = {SDK->dwGameBase, epoch, now, a, b, true};
             }
-            const uintptr_t decoded = static_cast<uintptr_t>(present_mask & Cn154905::Component(component, keys.a, keys.b));
+            const uintptr_t decoded = static_cast<uintptr_t>(present_mask & Cn155284::Component(component, keys.a, keys.b));
             uint8_t type = 0;
             if (decoded < 0x10000 || decoded >= 0x0000800000000000ULL ||
                 !SDK->read_range(decoded + 0x10, &type, sizeof(type)) || type != idx) {
@@ -381,10 +381,10 @@ namespace OW {
         uint64_t component_key_source = 0;
         uint64_t component_key_material_1 = 0;
         uint8_t component_key_byte = 0;
-        const bool bz154905 = activeOffsets.componentTransform == offset::ComponentTransformMode::Bz154905;
-        const auto keyRoot = bz154905 ? activeOffsets.componentKeyRootRva : offset::ComponentXorQword_RVA;
-        const auto keyOffset = bz154905 ? activeOffsets.componentKeyOffset : offset::ComponentXorQword_Off;
-        const auto keyByte = bz154905 ? activeOffsets.componentKeyByteRva : offset::ComponentXorByte_RVA;
+        const bool world155284 = activeOffsets.componentTransform == offset::ComponentTransformMode::World155284;
+        const auto keyRoot = world155284 ? activeOffsets.componentKeyRootRva : offset::ComponentXorQword_RVA;
+        const auto keyOffset = world155284 ? activeOffsets.componentKeyOffset : offset::ComponentXorQword_Off;
+        const auto keyByte = world155284 ? activeOffsets.componentKeyByteRva : offset::ComponentXorByte_RVA;
         if (!SDK->GetCachedComponentKeyMaterial(SDK->dwGameBase + keyRoot, keyOffset, SDK->dwGameBase + keyByte,
                 component_key_source,
                 component_key_material_1,
@@ -393,10 +393,10 @@ namespace OW {
             return 0;
         }
 
-        if (bz154905) {
+        if (world155284) {
             if (!component_key_material_1)
                 return 0;
-            const auto decoded = present_mask & RegionalLayout::Bz154905::DecodeComponent(
+            const auto decoded = present_mask & RegionalLayout::World155284::DecodeComponent(
                 component, component_key_material_1, component_key_byte);
             return decoded > 0x10000 && decoded < 0x800000000000ULL ? decoded : 0;
         }
@@ -487,11 +487,11 @@ namespace OW {
     }
 
     inline uint64_t DecodeVisibilityRaw(uint64_t raw) {
-        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn154905)
-            return Cn154905::Visibility(raw);
+        if (offset::Active().componentTransform == offset::ComponentTransformMode::Cn155284)
+            return Cn155284::Visibility(raw);
         if (const auto mask = offset::Active().visibilityClearMask)
-            return (raw & mask) == 0 ? 1 : 0;
-        return offset::IsCnProfile() ? raw : ((raw & offset::VisibilityBzVisibleMask) != 0 ? 1 : 0);
+            return raw != 0 && raw != UINT64_MAX && (raw & mask) == 0 ? 1 : 0;
+        return offset::UsesProtectedEntityLayout() ? raw : ((raw & offset::VisibilityWorldVisibleMask) != 0 ? 1 : 0);
     }
 
     inline uint64_t DecryptVis(uint64_t visBase) {
@@ -499,7 +499,9 @@ namespace OW {
         if (!activeOffsets.VisibilityValueOffset)
             return 0;
 
-        const uint64_t raw = SDK->RPM<uint64_t>(visBase + activeOffsets.VisibilityValueOffset);
+        uint64_t raw = 0;
+        if (!SDK->read_range(visBase + activeOffsets.VisibilityValueOffset, &raw, sizeof(raw)))
+            return 0;
         const bool visible = DecodeVisibilityRaw(raw) == 1;
 
         static bool loggedVisibility = false;
@@ -769,26 +771,26 @@ namespace OW {
         if (!raw)
             return false;
 
-        gameAdmin = activeOffsets.clientGameRva ? RegionalLayout::Bz154905::DecodeGameAdmin(raw)
+        gameAdmin = activeOffsets.clientGameRva ? RegionalLayout::World155284::DecodeGameAdmin(raw)
                                                : DecryptLiveGameAdmin(raw);
         return IsPlausibleUserPointer(gameAdmin);
     }
 
     inline uint64_t ResolveSingletonList(uint64_t raw) {
         switch (offset::Active().singletonListMode) {
-        case offset::SingletonListMode::Cn154905:
-            return Cn154905::Singleton(raw);
-        case offset::SingletonListMode::Bz154905:
-            return RegionalLayout::Bz154905::DecodeGlobalAdmin(raw);
+        case offset::SingletonListMode::Cn155284:
+            return Cn155284::Singleton(raw);
+        case offset::SingletonListMode::World155284:
+            return RegionalLayout::World155284::DecodeGlobalAdmin(raw);
         case offset::SingletonListMode::Plain:
             return raw;
-        case offset::SingletonListMode::LiveGameAdminWorldBz:
+        case offset::SingletonListMode::LiveGameAdminWorld:
             return raw;
-        case offset::SingletonListMode::EncryptedWorldBz151293:
+        case offset::SingletonListMode::EncryptedWorld151293:
             return DecryptLiveGameAdmin(raw);
-        case offset::SingletonListMode::EncryptedWorldBz151722:
+        case offset::SingletonListMode::EncryptedWorld151722:
             return DecryptSingletonList151722(raw);
-        case offset::SingletonListMode::EncryptedWorldBz:
+        case offset::SingletonListMode::EncryptedWorld:
         default:
             return DecryptSingletonList(raw);
         }
@@ -840,7 +842,7 @@ namespace OW {
         if (!activeOffsets.GlobalAdmin_RVA)
             return false;
 
-        if (activeOffsets.singletonListMode == offset::SingletonListMode::LiveGameAdminWorldBz)
+        if (activeOffsets.singletonListMode == offset::SingletonListMode::LiveGameAdminWorld)
             return TryGetLiveGameAdminSingleton(index, object);
 
         const uint64_t admin = SDK->RPM<uint64_t>(
@@ -924,17 +926,17 @@ namespace OW {
         return true;
     }
 
-    inline bool TryReadWorldBzGlobalAdminSensitivity(
+    inline bool TryReadWorldGlobalAdminSensitivity(
         float& value,
         uint64_t* sourceObject) {
         value = 0.0f;
         if (sourceObject)
             *sourceObject = 0;
-        if (!SDK->dwGameBase || !offset::SensitivityAdmin_WorldBz_RVA)
+        if (!SDK->dwGameBase || !offset::SensitivityAdmin_World_RVA)
             return false;
 
         const uint64_t admin = SDK->RPM<uint64_t>(
-            SDK->dwGameBase + offset::SensitivityAdmin_WorldBz_RVA);
+            SDK->dwGameBase + offset::SensitivityAdmin_World_RVA);
         if (!IsPlausibleUserPointer(admin))
             return false;
 
@@ -966,7 +968,7 @@ namespace OW {
         if (sourceObject)
             *sourceObject = 0;
 
-        if (TryReadWorldBzGlobalAdminSensitivity(value, sourceObject))
+        if (TryReadWorldGlobalAdminSensitivity(value, sourceObject))
             return true;
 
         uint64_t gameAdmin = 0;
@@ -989,19 +991,14 @@ namespace OW {
         if (sourceObject)
             *sourceObject = 0;
 
-        if (offset::Active().capacityBoundRegistry)
-            return TryReadInputMouseScaleSensitivity(value, sourceObject);
-
-        if (offset::Active().singletonListMode == offset::SingletonListMode::LiveGameAdminWorldBz)
+        if (offset::Active().singletonListMode == offset::SingletonListMode::LiveGameAdminWorld)
             return TryReadLiveGameAdminSensitivity(value, sourceObject) ||
                 TryReadInputMouseScaleSensitivity(value, sourceObject);
 
         uint64_t sensitivityObject = 0;
-        if (!TryGetGlobalAdminSingleton(offset::SensitivitySingletonIndex, sensitivityObject))
-            return false;
-
-        if (!TryReadSensitivityFromObject(sensitivityObject, value))
-            return false;
+        if (!TryGetGlobalAdminSingleton(offset::SensitivitySingletonIndex, sensitivityObject) ||
+            !TryReadSensitivityFromObject(sensitivityObject, value))
+            return TryReadInputMouseScaleSensitivity(value, sourceObject);
 
         if (sourceObject)
             *sourceObject = sensitivityObject;
@@ -1017,7 +1014,7 @@ namespace OW {
         static uintptr_t cached = 0;
         static uint64_t cachedBase = 0;
         static uint64_t cachedEpoch = 0;
-        static offset::RuntimeProfile cachedProfile = offset::RuntimeProfile::WorldBz;
+        static offset::RuntimeProfile cachedProfile = offset::RuntimeProfile::World151722;
         const offset::RuntimeProfile currentProfile = offset::ActiveProfile();
         const uint64_t epoch = ProcessConnection::ConnectionEpoch();
         if (cached && cachedEpoch == epoch && cachedBase == SDK->dwGameBase && cachedProfile == currentProfile)
@@ -1067,7 +1064,7 @@ namespace OW {
             ReadEntityScannerEnvFlagState("UN_DMA_LIGHT_SCAN");
         if (lightScanFlag >= 0)
             return lightScanFlag == 1;
-        return offset::IsCnProfile() ||
+        return offset::UsesProtectedEntityLayout() ||
             EntityScannerEnvFlagEnabled("UN_DMA_ENTITY_PIPELINE_V2");
     }
 
@@ -1359,7 +1356,7 @@ namespace OW {
     // =========================================================================
 
     inline bool DynamicEntityRegistryEnabled() {
-        return offset::IsCnProfile() || offset::Active().capacityBoundRegistry;
+        return offset::Active().registryLockRva != 0;
     }
 #ifdef UNLEASHED_REGISTRY_PRODUCER_TEST
     inline uint64_t (*registryProducerClock)()=&::GetTickCount64;
@@ -1429,21 +1426,12 @@ namespace OW {
             return contextCurrent() && mem.ReadFreshExact(address, output, size);
         };
         const auto& offsets = offset::Active();
-        auto error = EntityRegistry::Error::ReadFailed;
-        if (offsets.capacityBoundRegistry) {
-            const auto header = RegionalLayout::ReadRegistry(module + offsets.Address_entity_base, readCurrent);
-            if (header.root) {
-                incoming = {.epoch = epoch, .module = module, .root = header.root, .capacity = header.capacity};
-                error = EntityRegistry::Error::None;
-            }
-        } else {
-            error = EntityRegistry::ReadSnapshotRetryBusy(epoch, module, readCurrent, [&] {
-                REGISTRY_PRODUCER_EVENT("pause_begin");
-                const bool running = RuntimeWorkerSleep(1);
-                REGISTRY_PRODUCER_EVENT("pause_end");
-                return running && contextCurrent();
-            }, incoming);
-        }
+        auto error = EntityRegistry::ReadSnapshotRetryBusy(epoch, module, readCurrent, [&] {
+            REGISTRY_PRODUCER_EVENT("pause_begin");
+            const bool running = RuntimeWorkerSleep(1);
+            REGISTRY_PRODUCER_EVENT("pause_end");
+            return running && contextCurrent();
+        }, incoming, offsets.Address_entity_base - 24, offsets.registryLockRva, offsets.imageSize);
         // V2 恢复定位只运行在串行 reader lane；正式扫描仍消费原有代次快照。
         if(offset::IsCnProfile() && error!=EntityRegistry::Error::None && error!=EntityRegistry::Error::Busy &&
            error!=EntityRegistry::Error::Unstable && contextCurrent()) {
@@ -1455,7 +1443,7 @@ namespace OW {
                 resolver.status==EntityRegistry::ResolveStatus::Ambiguous ||
                 resolver.status==EntityRegistry::ResolveStatus::EmptyUnconfirmed;
             if(!resolver.Matches(epoch,module) || (terminal && now-resetAt>5000)) {
-                const auto ranges=V2::Memory::WritableSections(module,Cn154905::imageSize,
+                const auto ranges=V2::Memory::WritableSections(module,Cn155284::imageSize,
                     [&](uint64_t at,void* dst,size_t n){return contextCurrent() && mem.ReadFreshExact(at,dst,n);});
                 std::vector<EntityRegistry::SearchRange> input;
                 for(auto r:ranges)input.push_back({r.begin,r.end});
@@ -1466,7 +1454,7 @@ namespace OW {
             if(rangesReady) {
                 error=resolver.Step([&](uint64_t at,void* dst,size_t n){return mem.ReadFreshExact(at,dst,n);},
                     contextCurrent,[&](uint64_t parent,const EntityRegistry::Snapshot& table) {
-                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,Cn154905::imageSize))return false;
+                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,Cn155284::imageSize))return false;
                         // 候选必须具有当前 CN parent 的实读身份及组件位图，非零地址不算语义通过。
                         uint32_t match=0;std::array<uint64_t,2> components{};
                         return contextCurrent() && mem.ReadFreshExact(parent+offset::Entity_MatchId,&match,sizeof(match)) &&
@@ -1544,7 +1532,7 @@ namespace OW {
 
         sample.root=entity_list;
         sample.complete=true;
-        const bool cnProfile = offset::IsCnProfile();
+        const bool cnProfile = offset::UsesProtectedEntityLayout();
         const size_t listReadSize = guard.dynamic?guard.snapshot.Bytes():(cnProfile ? 0x40000 : 0x1E000);
         const size_t chunkSize = cnProfile ? 0x10000 : 0x1000;
         uint64_t moduleSize = 0;
@@ -1713,7 +1701,7 @@ namespace OW {
         const auto trace=[&](uint64_t reason,uint64_t component=0) {
             RuntimeTrace::Emit(RuntimeTrace::DiscoveryProbe,parent,reason,component,knownLink);
         };
-        if((!offset::IsCnProfile() && !offset::Active().capacityBoundRegistry) || !topology.complete ||
+        if((!offset::UsesProtectedEntityLayout() && !offset::Active().capacityBoundRegistry) || !topology.complete ||
             !AcceptEntityRegistry(topology.registry) ||
             !std::binary_search(topology.members.begin(),topology.members.end(),parent))return result;
         EntityHeaderSnapshot header{};
@@ -2025,7 +2013,7 @@ namespace OW {
                    entity_id == 0x400000000002533;
         };
 
-        const bool cnProfile = offset::IsCnProfile();
+        const bool cnProfile = offset::UsesProtectedEntityLayout();
         const DWORD rootCacheTtlMs =
             cnProfile && !DynamicEntityRegistryEnabled() ? EntityScannerEntityListRootCacheTtlMs() : 0;
         const bool rootCacheEnabled = cnProfile && rootCacheTtlMs > 0;
@@ -3348,7 +3336,7 @@ namespace OW {
                 return candidates;
             };
 
-        const bool worldBzProfile = !offset::IsCnProfile();
+        const bool worldProfile = !offset::UsesProtectedEntityLayout();
         std::unordered_set<uint64_t> cnLinkTargetPairs{};
 
         struct PersistentCnLinkDecryptNegativeCacheEntry {
@@ -3457,7 +3445,7 @@ namespace OW {
                 continue;
             }
 
-            if (worldBzProfile && lightScan) {
+            if (worldProfile && lightScan) {
                 bool added = false;
                 if (current.unique_id != 0)
                     added = addPlayableMatches(current.unique_id + 1, cur_entity, true);
@@ -3476,7 +3464,7 @@ namespace OW {
                 cur_entity,
                 current.header.valid ? &current.header : nullptr);
             if (!common_linker) {
-                if (worldBzProfile) {
+                if (worldProfile) {
                     Diagnostics::RecordInvalidEntity();
                     scanDetail.scanMatchLinkMs += elapsedMs(matchLinkStartedAt);
                     continue;
@@ -3486,7 +3474,7 @@ namespace OW {
                 ++scanDetail.linkPresent;
             }
 
-            if (worldBzProfile) {
+            if (worldProfile) {
                 uint32_t unique_id = SDK->RPM<uint32_t>(common_linker + offset::Link_UniqueId);
                 if (unique_id != 0)
                     ++scanDetail.linkUidNonZero;
@@ -3609,7 +3597,7 @@ namespace OW {
             scanDetail.scanMatchLinkMs += elapsedMs(matchLinkStartedAt);
         }
 
-        if (offset::IsCnProfile() && !lightScan) {
+        if (offset::UsesProtectedEntityLayout() && !lightScan) {
             for (const EntityScanRecord& current : records) {
                 co_yield EntityScanProgress{EntityScanPhase::Pairing, &result};
                 if (!RuntimeWorkersRunning() || !ProcessConnection::IsConnected() || !registryGuard.Check())

@@ -305,7 +305,7 @@ void DrawMiscDiagnosticsPage() {
     const auto* matched = V2::Profiles::MatchedProfile(profile.detection);
     UIGroupBox("版本与布局");
     int selected = V2::Profiles::requestedProfile.load() + 1;
-    const char* choices[] = {"Auto", "CN", "BZ", "KR"};
+    const char* choices[] = {"Auto", "CN", "World", "Nexon"};
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.44f);
     if (ImGui::Combo("##RequestedProfile", &selected, choices, IM_ARRAYSIZE(choices))) {
         V2::Profiles::requestedProfile.store(selected - 1);
@@ -1097,7 +1097,7 @@ void DrawMiscOutputPage() {
             }
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Reads current in-game sensitivity from the live singleton path when available, with input.MouseScaleX/Y as the BZ fallback. Manual sensitivity remains the final fallback."));
+            ImGui::SetTooltip("%s", L("Reads current in-game sensitivity from the live singleton path when available, with input.MouseScaleX/Y as the World fallback. Manual sensitivity remains the final fallback."));
         ImGui::SameLine();
         if (UIActionButton(T(UiText::ReadGameSens), 64.0f)) {
             float detectedSensitivity = 0.0f;

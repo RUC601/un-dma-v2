@@ -4,10 +4,10 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include "Game/Cn154905.hpp"
+#include "Game/Cn155284.hpp"
 
 namespace OW::EntityRegistry {
-inline constexpr uint64_t stateRva=Cn154905::entityState, lockRva=Cn154905::entityLock;
+inline constexpr uint64_t stateRva=Cn155284::entityState, lockRva=Cn155284::entityLock;
 inline constexpr uint32_t maxSlots=0x200000, slotBytes=16;
 inline constexpr uint64_t pollMs=250, retryMs=50;
 enum class Error : uint8_t { None, ReadFailed, Busy, Unstable, Invalid, Changed, Disconnected };
@@ -20,13 +20,14 @@ struct Snapshot {
         return epoch==b.epoch && module==b.module && root==b.root && state==b.state && capacity==b.capacity;
     }
 };
-inline bool Valid(const Snapshot& s) {
+inline bool Valid(const Snapshot& s, uint32_t imageSize=Cn155284::imageSize) {
     return s.epoch && s.module && s.capacity && s.capacity<=maxSlots && s.root>=0x10000 &&
         !(s.root&7) && s.root<0x800000000000ull && s.Bytes()<=0x800000000000ull-s.root &&
-        (s.root<s.module || s.root>=s.module+Cn154905::imageSize);
+        (s.root<s.module || s.root>=s.module+imageSize);
 }
 template<class Read>
-Error ReadSnapshotAt(uint64_t epoch,uint64_t module,uint64_t stateLocation,uint64_t lockLocation,Read&& read,Snapshot& out) {
+Error ReadSnapshotAt(uint64_t epoch,uint64_t module,uint64_t stateLocation,uint64_t lockLocation,Read&& read,Snapshot& out,
+                     uint32_t imageSize=Cn155284::imageSize) {
     uint32_t before=0,after=0;
     std::array<uint8_t,32> a{},b{};
     if(!read(module+lockLocation,&before,sizeof(before)))return Error::ReadFailed;
@@ -43,7 +44,7 @@ Error ReadSnapshotAt(uint64_t epoch,uint64_t module,uint64_t stateLocation,uint6
     decode(a,first);decode(b,second);
     // Used/free counters change normally; only table identity must be stable.
     if(!first.SameTable(second))return Error::Unstable;
-    if(!Valid(second))return Error::Invalid;
+    if(!Valid(second,imageSize))return Error::Invalid;
     out=second;return Error::None;
 }
 template<class Read>
@@ -51,9 +52,11 @@ Error ReadSnapshot(uint64_t epoch,uint64_t module,Read&& read,Snapshot& out) {
     return ReadSnapshotAt(epoch,module,stateRva,lockRva,read,out);
 }
 template<class Read,class Pause>
-Error ReadSnapshotRetryBusy(uint64_t epoch,uint64_t module,Read&& read,Pause&& pause,Snapshot& out) {
+Error ReadSnapshotRetryBusy(uint64_t epoch,uint64_t module,Read&& read,Pause&& pause,Snapshot& out,
+                            uint64_t stateLocation=stateRva,uint64_t lockLocation=lockRva,
+                            uint32_t imageSize=Cn155284::imageSize) {
     for(unsigned attempt=0;;++attempt) {
-        const auto error=ReadSnapshot(epoch,module,read,out);
+        const auto error=ReadSnapshotAt(epoch,module,stateLocation,lockLocation,read,out,imageSize);
         if(error!=Error::Busy || attempt==2)return error;
         if(!pause())return Error::Disconnected;
     }

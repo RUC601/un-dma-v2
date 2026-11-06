@@ -33,6 +33,7 @@
 #include "Game/GameData.hpp"
 #include "Game/HeroPerks.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/profiles/LayoutProbe.hpp"
 #include "Game/Target.hpp"
 #include "Utils/Config.hpp"
 #include "Utils/Diagnostics.hpp"
@@ -1282,9 +1283,9 @@ std::vector<TargetFloatHit> CollectFloatTargetHits(
     return hits;
 }
 
-constexpr uint64_t kBzInputOptionsVtableRva = 0x2ED8D60;
-constexpr uint64_t kBzModuleProbeSize = 0x5000000;
-constexpr float kBzInputOptionsAngleScale = 0.011519159190356731f;
+constexpr uint64_t kWorldInputOptionsVtableRva = 0x2ED8D60;
+constexpr uint64_t kWorldModuleProbeSize = 0x5000000;
+constexpr float kWorldInputOptionsAngleScale = 0.011519159190356731f;
 
 void AppendCandidateSlotSelectedBooleanJson(
     std::ostringstream& out,
@@ -3048,7 +3049,7 @@ std::string BuildEntitiesJson(const std::unordered_map<std::string, std::string>
         const OW::c_entity& entity = candidates[index].entity;
         const std::string heroName = HeroName(entity.HeroID, entity.LinkBase);
         const bool syntheticCnTrainingBot =
-            OW::offset::IsCnProfile() &&
+            OW::offset::UsesProtectedEntityLayout() &&
             !entity.HeroBase &&
             OW::GameData::IsTrainingBotHeroId(entity.HeroID);
         const bool trainingBot = IsTrainingBotEntity(entity);
@@ -3223,9 +3224,6 @@ std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::
     const bool selectedShortChain = activeOffsets.viewMatrixChain ==
         OW::offset::ViewMatrixChainMode::CameraProjectionShort;
     const auto viewMatrixMode = activeOffsets.viewMatrixMode;
-    const bool directRoot = viewMatrixMode == OW::offset::ViewMatrixMode::DirectChain;
-    const bool subXorSubRoot = viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedChainSubXorSub;
-    const bool xorAddRoot = viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedChainXorAdd;
 
     uint64_t root = 0;
     uint64_t decoded = 0;
@@ -3245,17 +3243,7 @@ std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::
 
     if (moduleBase != 0 && activeOffsets.Address_viewmatrix_base != 0 &&
         TryReadValue(moduleBase + activeOffsets.Address_viewmatrix_base, root) && root != 0) {
-        decoded = directRoot
-            ? root
-            : (xorAddRoot
-                ? (root ^ activeOffsets.offset_viewmatrix_xor_key) +
-                    activeOffsets.offset_viewmatrix_xor_key2
-                : subXorSubRoot
-                ? ((root - activeOffsets.offset_viewmatrix_xor_key)
-                    ^ activeOffsets.offset_viewmatrix_xor_key2) -
-                    activeOffsets.offset_viewmatrix_xor_key3
-                : ((root + activeOffsets.offset_viewmatrix_xor_key)
-                    ^ activeOffsets.offset_viewmatrix_xor_key2));
+        decoded = OW::offset::DecodeCameraRoot(activeOffsets, root);
 
         if (decoded != 0) {
             if (viewMatrixMode == OW::offset::ViewMatrixMode::EncryptedDirectMatrix) {
@@ -3345,7 +3333,7 @@ std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::
     AppendJsonString(out, selectedShortChain ? "camera-projection-short" : "legacy-long");
     out << ",\"chain_selection\":\"profile-static\""
         << ",\"published_source\":";
-    AppendJsonString(out, (selectedShortChain || OW::offset::IsCnProfile()) ? "camera_times_projection" : "render_vp");
+    AppendJsonString(out, (selectedShortChain || OW::offset::UsesProtectedEntityLayout()) ? "camera_times_projection" : "render_vp");
     out
         << ",\"module_base\":";
     AppendHexOrNull(out, moduleBase);
@@ -3370,7 +3358,7 @@ std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::
     out << ",\"projection_ptr\":";
     AppendHexOrNull(out, projectionPtr);
     out << ",\"published_ptr\":";
-    AppendHexOrNull(out, OW::offset::IsCnProfile() ? 0 : directRenderPtr);
+    AppendHexOrNull(out, OW::offset::UsesProtectedEntityLayout() ? 0 : directRenderPtr);
     out << ",\"published_camera_ptr\":";
     AppendHexOrNull(out, cameraPtr);
     out << ",\"direct_read\":" << (directRead ? "true" : "false")
@@ -4211,8 +4199,8 @@ int RunLifecycleSelfTest()
         for (const char* name : {"UN_DMA_ENTITY_PIPELINE_V2", "UN_DMA_SCAN_LATEST_WINS",
                 "UN_DMA_COLD_TOPOLOGY_SCAN", "UN_DMA_STEADY_ENTITY_SCHEDULER"})
             SetEnvironmentVariableA(name, flag);
-        for (const auto profile : {OW::offset::RuntimeProfile::Cn, OW::offset::RuntimeProfile::WorldBz}) {
-            OW::offset::SetActiveProfile(profile);
+        for (const auto& profile : V2::Profiles::profiles) {
+            OW::offset::SetActiveProfile(profile.runtime);
             const auto json = BuildDiagnosticsJson();
             for (const char* expected : {"\"entity_pipeline_v2_enabled\":true", "\"scan_latest_wins_enabled\":true",
                     "\"cold_topology_scan_enabled\":true", "\"steady_entity_scheduler_enabled\":true",
@@ -4226,7 +4214,7 @@ int RunLifecycleSelfTest()
     }
     OW::offset::SetActiveProfile(profileBefore);
     // This test only uses local sockets and empty snapshots; it never starts DMA.
-    for (const char* path : { "/api/bz-offset-probe", "/api/bz-matrix-sweep" }) {
+    for (const char* path : { "/api/world-offset-probe", "/api/world-matrix-sweep" }) {
         int statusCode = 0;
         (void)BuildJsonForTarget(RequestTarget{path, {}}, statusCode);
         if (statusCode != 404)

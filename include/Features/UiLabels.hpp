@@ -519,7 +519,7 @@ inline constexpr UiLabelPair kUiLabels[] = {
       "每弧度的鼠标移动计数。校准后优先使用校准值。" },
     { "Manual current in-game sensitivity. Auto-read uses a separate runtime value and falls back to this when unavailable.",
       "手动游戏灵敏度。自动读取失败时使用此值。" },
-    { "Reads current in-game sensitivity from the live singleton path when available, with input.MouseScaleX/Y as the BZ fallback. Manual sensitivity remains the final fallback.",
+    { "Reads current in-game sensitivity from the live singleton path when available, with input.MouseScaleX/Y as the World fallback. Manual sensitivity remains the final fallback.",
       "读取当前游戏灵敏度；读取失败时使用手动值。" },
     { "The sensitivity value currently used by Auto Sens Scale. It is DMA-read when auto-read succeeds, otherwise manual.",
       "当前用于灵敏度换算的值；自动读取成功时使用读取值，否则使用手动值。" },

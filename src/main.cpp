@@ -443,18 +443,18 @@ int main(int argc, char** argv)
         const std::string argument = argv[index] ? argv[index] : "";
         if (argument == "--help" || argument == "-h") {
             std::printf("Usage: UNDMA_V2 [--config-check] [--test-server]\n"
-                        "       [--test-server-port 1..65535] [--test-server-cors] [--box-perf-mode]\n       [--run-seconds 1..1800] [--reconnect-after 1..1799] [--canvas-only]\n       [--profile auto|cn|bz|kr]\n");
+                        "       [--test-server-port 1..65535] [--test-server-cors] [--box-perf-mode]\n       [--run-seconds 1..1800] [--reconnect-after 1..1799] [--canvas-only]\n       [--profile auto|cn|world|nexon]\n");
             return 0;
         }
         if (argument == "--profile") {
             if (++index>=argc) { std::fprintf(stderr,"Missing --profile value.\n"); return 2; }
             const std::string value=argv[index];
-            if (value == "bz-candidate" || value == "kr-candidate") {
-                std::fprintf(stderr, "Candidate-only profiles were retired. Use --profile bz or --profile kr for the full runtime.\n");
+            if (value == "world-candidate" || value == "nexon-candidate" || value == "kr-candidate") {
+                std::fprintf(stderr, "Candidate-only profiles were retired. Use --profile world or --profile nexon for the full runtime.\n");
                 return 2;
             }
-            const int selected = value == "auto" ? -1 : value == "cn" ? 0 : value == "bz" ? 1 : value == "kr" ? 2 : -2;
-            if (selected == -2) { std::fprintf(stderr, "Profile must be auto, cn, bz or kr.\n"); return 2; }
+            const int selected = value == "auto" ? -1 : value == "cn" ? 0 : value == "world" ? 1 : (value == "nexon" || value == "kr") ? 2 : -2;
+            if (selected == -2) { std::fprintf(stderr, "Profile must be auto, cn, world or nexon.\n"); return 2; }
             V2::Profiles::requestedProfile.store(selected);
             continue;
         }
