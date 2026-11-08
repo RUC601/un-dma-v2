@@ -1093,6 +1093,7 @@ namespace OW { namespace Config {
     inline float visualMaxDist  = 100.f;
     inline bool name            = false;
     inline bool ult             = true;
+    inline bool gameOutlines    = false;
     inline bool draw_skel       = false;
     inline bool draw_avatar     = true;
     inline bool draw_hitbox     = false;

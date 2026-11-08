@@ -22,6 +22,7 @@
             OW::TargetingDetail::InvalidateTargetBody(value.address,value.roster_key,value.actor_generation);
             record.deathKnown=true;record.dead=true;record.deathUpdateTick=tick;record.alive=false;
             record.entity=std::move(value);record.seenThisCycle=true;record.lastHotReadTick=tick;
+            record.visibilitySample = {};
             if(newlyDead) {
                 ++lifecycleStats.entityRecordMarkDeadCount;
                 record.respawnWatchStartedTick=tick;record.respawnFirstScanRequested=false;record.respawnLastScanRequestTick=0;

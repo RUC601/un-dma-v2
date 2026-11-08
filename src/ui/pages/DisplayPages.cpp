@@ -80,6 +80,9 @@ void UI::VisualsPage() {
     }
     CloseGroupBox();
 
+    SettingRow("Game Outlines (unverified)");
+    UICheckbox("##gameOutlines", &OW::Config::gameOutlines);
+
     UIGroupBox("Overlay Elements");
     {
         auto fixedStyleRow = [](const char* label, const char* id, bool* enabled) {

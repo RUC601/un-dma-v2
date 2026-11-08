@@ -1138,7 +1138,7 @@ int KmBoxNetBackend::ExecuteSafetyReleaseAll()
 void KmBoxNetBackend::QueueWorkerLoop()
 {
     queueThreadId.store(GetCurrentThreadId(), std::memory_order_release);
-    auto lastFlush = std::chrono::steady_clock::now();
+    auto lastSendStarted = std::chrono::steady_clock::time_point{};
     while (queueRunning.load(std::memory_order_acquire)) {
         OutputQueuedNetCommand command{};
         {
@@ -1167,7 +1167,7 @@ void KmBoxNetBackend::QueueWorkerLoop()
         }
 
         const auto flushInterval = std::chrono::milliseconds(FlushIntervalForCommand(command.type));
-        const auto elapsed = std::chrono::steady_clock::now() - lastFlush;
+        const auto elapsed = std::chrono::steady_clock::now() - lastSendStarted;
         if (elapsed < flushInterval)
             std::this_thread::sleep_for(flushInterval - elapsed);
 
@@ -1193,6 +1193,7 @@ void KmBoxNetBackend::QueueWorkerLoop()
 
         if (command.type == OutputCommandType::SafetyReleaseAll) {
             Diagnostics::Aim("udp.queue safety_release_all transport_start");
+            lastSendStarted = std::chrono::steady_clock::now();
             const int status = ExecuteSafetyReleaseAll();
             if (status != success) {
                 Diagnostics::Error(
@@ -1200,7 +1201,6 @@ void KmBoxNetBackend::QueueWorkerLoop()
                     status);
             }
             CompleteCommand(command.completion, status);
-            lastFlush = std::chrono::steady_clock::now();
             continue;
         }
 
@@ -1253,6 +1253,8 @@ void KmBoxNetBackend::QueueWorkerLoop()
                 command.data.cmd_mouse.y,
                 command.data.cmd_mouse.button);
         }
+        // ACK time already counts toward the minimum send-start interval.
+        lastSendStarted = std::chrono::steady_clock::now();
         const int status = useOutputOverride
             ? safetySendOverride(
                 command.data.head.cmd,
@@ -1303,7 +1305,6 @@ void KmBoxNetBackend::QueueWorkerLoop()
         }
 
         CompleteCommand(command.completion, status);
-        lastFlush = std::chrono::steady_clock::now();
     }
     queueThreadId.store(0, std::memory_order_release);
 }

@@ -494,7 +494,8 @@ namespace OW {
         return offset::UsesProtectedEntityLayout() ? raw : ((raw & offset::VisibilityWorldVisibleMask) != 0 ? 1 : 0);
     }
 
-    inline uint64_t DecryptVis(uint64_t visBase) {
+    inline uint64_t DecryptVis(uint64_t visBase, bool* readable = nullptr) {
+        if (readable) *readable = false;
         const auto& activeOffsets = offset::Active();
         if (!activeOffsets.VisibilityValueOffset)
             return 0;
@@ -502,7 +503,8 @@ namespace OW {
         uint64_t raw = 0;
         if (!SDK->read_range(visBase + activeOffsets.VisibilityValueOffset, &raw, sizeof(raw)))
             return 0;
-        const bool visible = DecodeVisibilityRaw(raw) == 1;
+        if (readable) *readable = true;
+        const bool visible = DecodeVisibilityRaw(raw) != 0;
 
         static bool loggedVisibility = false;
         if (!loggedVisibility) {

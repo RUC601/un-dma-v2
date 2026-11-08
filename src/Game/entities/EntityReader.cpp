@@ -880,11 +880,10 @@ void entity_thread() {
                     (!cached.heroValid ||
                      cached.heroUpdateTick == 0 ||
                      processLoopTick - cached.heroUpdateTick >= OW::kEntityHeroIntervalMs);
-                const bool scatterCnVisibility =
-                    offset::UsesProtectedEntityLayout() &&
+                const bool scatterVisibility =
                     activeOffsetsForHotBatch.VisibilityValueOffset != 0 &&
-                    cached.visibility != 0;
-                const uint64_t visibilityValueAddress = scatterCnVisibility
+                    cached.visibility != 0 && cached.visibilitySample.Due(processLoopTick);
+                const uint64_t visibilityValueAddress = scatterVisibility
                     ? cached.visibility + activeOffsetsForHotBatch.VisibilityValueOffset
                     : 0;
 
@@ -906,7 +905,7 @@ void entity_thread() {
                         cached.hero,
                         refreshHero,
                         visibilityValueAddress,
-                        scatterCnVisibility)) {
+                        scatterVisibility)) {
                     continue;
                 }
                 if (cached.rotationLeaf) {
@@ -1097,7 +1096,12 @@ void entity_thread() {
                     cached.skeletonUpdateTick=item.readStartedTick;
                 }
             } else if(item.boneRangeCount)cached.skeletonCache.valid=false;
-            if(item.reads.VisibilityRead())next.Vis=OW::DecodeVisibilityRaw(item.reads.visibilityRaw)==1;
+            if (item.reads.visibilityRequested)
+                cached.visibilitySample.Commit(OW::DecodeVisibilityRaw(item.reads.visibilityRaw),
+                    item.reads.VisibilityRead(), item.readStartedTick, item.readCompletedTick);
+            next.Vis = cached.visibility ? cached.visibilitySample.Visible(GetTickCount()) :
+                (offset::UsesProtectedEntityLayout() && !next.HeroBase && OW::GameData::IsTrainingBotHeroId(next.HeroID));
+            cached.vis = next.Vis;
             next.read_started_tick_ms=item.readStartedTick;next.read_completed_tick_ms=item.readCompletedTick;
             next.sample_time_us=item.sampleTimeUs;
             next.anchor_sample_tick_ms=item.readStartedTick;next.last_seen_tick_ms=item.readStartedTick;
@@ -1498,7 +1502,7 @@ void entity_thread() {
             if(hotAlreadyApplied)entity=cacheIt->second->entity;
             bool refreshHealth = false;
             bool refreshHero = false;
-            bool scatterCnVisibility = false;
+            bool scatterVisibility = false;
             uint64_t visibilityValueAddress = 0;
             EntityHotFieldReads hotReads{};
             OW::velocity_fields_t velo_compo{};
@@ -1519,11 +1523,10 @@ void entity_thread() {
                  componentCache.heroUpdateTick == 0 ||
                  processLoopTick - componentCache.heroUpdateTick >= OW::kEntityHeroIntervalMs);
             const auto& activeOffsets = offset::Active();
-            scatterCnVisibility =
-                offset::UsesProtectedEntityLayout() &&
+            scatterVisibility =
                 activeOffsets.VisibilityValueOffset != 0 &&
-                entity.VisBase != 0;
-            visibilityValueAddress = scatterCnVisibility
+                entity.VisBase != 0 && componentCache.visibilitySample.Due(processLoopTick);
+            visibilityValueAddress = scatterVisibility
                 ? entity.VisBase + activeOffsets.VisibilityValueOffset
                 : 0;
                 bool hotReadsFromBatch = false;
@@ -1554,7 +1557,7 @@ void entity_thread() {
                         entity.HeroBase,
                         refreshHero,
                         visibilityValueAddress,
-                        scatterCnVisibility);
+                        scatterVisibility);
                     entity.read_completed_tick_ms = GetTickCount();
                     entity.sample_time_us=RuntimeTrace::NowUs();
                 }
@@ -1694,8 +1697,10 @@ void entity_thread() {
                             if (heroChanged) {
                                 ++lifecycleStats.componentCacheInvalidateHeroChangeCount;
                                 requestTopologyRescan(processLoopTick);
+                                componentCache.visibilitySample = {};
                                 componentCache.nameTeamValid = false;
                                 componentCache.nameTeamUpdateTick = 0;
+                                componentCache.skillDeadlines = {};
                                 componentCache.skillValid = false;
                                 componentCache.skillUpdateTick = 0;
                                 componentCache.localSkillValid = false;
@@ -2131,11 +2136,19 @@ void entity_thread() {
                 slowNow - slowCache.nameTeamUpdateTick >= OW::kEntityTeamNameIntervalMs;
             if (refreshNameTeam && !consumeCycleBudget(teamNameRefreshBudget))
                 refreshNameTeam = false;
-            bool refreshSkillStatus =
-                !slowCache.skillValid ||
-                slowNow - slowCache.skillUpdateTick >=
-                    (V2::Alerts::ObserveSkillHero(entity.HeroID) || V2::Alerts::ObserveUltimateHero(entity.HeroID)
-                        ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs);
+            const DWORD skillInterval =
+                V2::Alerts::ObserveSkillHero(entity.HeroID) || V2::Alerts::ObserveUltimateHero(entity.HeroID)
+                    ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs;
+            size_t skillField = slowCache.skillRefreshCursor % 3;
+            bool refreshSkillStatus = false;
+            for (size_t offset = 0; offset < 3; ++offset) {
+                const size_t candidate = (slowCache.skillRefreshCursor + offset) % 3;
+                if (slowCache.skillDeadlines[candidate].Due(slowNow, skillInterval)) {
+                    skillField = candidate;
+                    refreshSkillStatus = true;
+                    break;
+                }
+            }
             if (refreshSkillStatus && !consumeCycleBudget(skillRefreshBudget))
                 refreshSkillStatus = false;
             const bool refreshLocalSkillStatus =
@@ -2223,14 +2236,16 @@ void entity_thread() {
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - teamNamePhaseStartedAt).count()) / 1000.0;
 
-            // ---- Visibility (refreshed every frame) ----
+            // ---- Visibility: independent deadline, exact reads, bounded sample age ----
             // Both read paths use the active profile's visibility decoder.
             if(!hotAlreadyApplied) {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.visibilityMs);
-            if (entity.VisBase) {
+            if (entity.VisBase && componentCache.visibilitySample.Due(processLoopTick)) {
+                DWORD visibilityStarted = scatterVisibility && hotReads.visibilityRequested
+                    ? entity.read_started_tick_ms : GetTickCount();
                 uint64_t rawVis = 0;
                 bool rawVisRead = false;
-                if (scatterCnVisibility) {
+                if (scatterVisibility) {
                     dmaFieldWindow.visibilityRequested++;
                     rawVis = hotReads.visibilityRaw;
                     rawVisRead = hotReads.VisibilityRead();
@@ -2246,6 +2261,7 @@ void entity_thread() {
                         dmaFieldWindow.visibilityFallback++;
                         pipelineStats.hotScatterFallbackReadCount++;
                         pipelineStats.visibilityFallbackCount++;
+                        visibilityStarted = GetTickCount();
                         rawVisRead = SDK->read_range(
                             visibilityValueAddress,
                             &rawVis,
@@ -2254,15 +2270,15 @@ void entity_thread() {
                             dmaFieldWindow.visibilityReadFail++;
                     }
                 } else {
-                    rawVis = OW::DecryptVis(entity.VisBase);
-                    rawVisRead = true;
+                    rawVis = OW::DecryptVis(entity.VisBase, &rawVisRead);
                 }
 
                 if (!rawVisRead)
                     rawVis = 0;
-                else if (scatterCnVisibility)
+                else if (scatterVisibility)
                     rawVis = OW::DecodeVisibilityRaw(rawVis);
-                entity.Vis = (rawVis == 1);
+                componentCache.visibilitySample.Commit(rawVis, rawVisRead, visibilityStarted, GetTickCount());
+                entity.Vis = componentCache.visibilitySample.Visible(GetTickCount());
                 slowCache.vis = entity.Vis;
                 if (rawVis != 0 && rawVis != 1) {
                     dmaFieldWindow.visibilityAnomaly++;
@@ -2275,7 +2291,12 @@ void entity_thread() {
             } else if (syntheticCnTrainingBot) {
                 entity.Vis = true;
                 slowCache.vis = true;
+            } else if (entity.VisBase) {
+                entity.Vis = componentCache.visibilitySample.Visible(GetTickCount());
+                slowCache.vis = entity.Vis;
             } else {
+                entity.Vis = slowCache.vis = false;
+                componentCache.visibilitySample = {};
                 dmaFieldWindow.visibilityBaseMissing++;
             }
             }
@@ -2335,7 +2356,7 @@ void entity_thread() {
                         i,
                         static_cast<unsigned long long>(entity.SkillBase));
                 }
-                switch (slowCache.skillRefreshCursor % 3) {
+                switch (skillField) {
                 case 0:
                     observeSkill(0);
                     break;
@@ -2356,7 +2377,8 @@ void entity_thread() {
                     break;
                 }
                 }
-                slowCache.skillRefreshCursor = (slowCache.skillRefreshCursor + 1) % 3;
+                slowCache.skillDeadlines[skillField].Schedule(GetTickCount(), skillInterval);
+                slowCache.skillRefreshCursor = (skillField + 1) % 3;
                 pipelineStats.skillReadCount++;
                 if (slowCache.skillRefreshCursor == 0) {
                     slowCache.skillUpdateTick = slowNow;
@@ -2619,6 +2641,8 @@ void entity_thread() {
             OW::offset::ActiveProfile() != runtimeProfile) {
             continue;
         }
+
+#include "Game/EntityMaintenance/Outlines.inl"
 
         // Swap processed entities
         maintenanceCursor=OW::PresentationTiming::AdvanceMaintenanceCursor(entityLoopStart,raw_entities.size(),maintenanceVisited,skeletonBudgetForCycle);

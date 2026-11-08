@@ -375,6 +375,7 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Radar Corner", "雷达位置" },
     { "Skill Cooldowns", "技能冷却位置" },
     { "Ultimate Roster", "终极技能列表" },
+    { "Game Outlines (unverified)", "游戏描边（待验证）" },
     { "Box Outline", "方框轮廓" },
     { "Visible Fill", "可见目标填色" },
     { "Hidden Fill", "遮挡目标填色" },

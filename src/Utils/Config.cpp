@@ -2970,6 +2970,7 @@ namespace OW { namespace Config {
             visualMaxDist = 100.0f;       // default: 100m
             name = false;                 // name labels are no longer shown in the UI
             ult = true;                   // default: true
+            gameOutlines = false;
             draw_skel = false;            // default: incomplete skeleton overlay is opt-in
             draw_avatar = true;           // default: preserve box avatar overlay
             draw_hitbox = false;          // default: hitbox overlay is opt-in
@@ -6243,6 +6244,7 @@ namespace OW { namespace Config {
             visualMaxDist = ReadFixedFloat(ini, section, "visualMaxDist", visualMaxDist);
             name = ReadBool(ini, section, "name", name);
             ult = ReadBool(ini, section, "ult", ult);
+            gameOutlines = ReadBool(ini, section, "gameOutlines", false);
             draw_skel = ReadBool(ini, section, "draw_skel", draw_skel);
             draw_avatar = ReadBool(ini, section, "draw_avatar", draw_avatar);
             draw_hitbox = ReadBool(ini, section, "draw_hitbox", draw_hitbox);
@@ -6888,6 +6890,7 @@ namespace OW { namespace Config {
                 ToText(drawline).c_str(), ToText(draw_fov).c_str(), ToText(drawTrackingDeadzones).c_str(), ToText(draw_hp_pack).c_str(),
                 ToText(crosscircle).c_str(), ToText(eyeray).c_str(),
                 ToText(boxPerfMode).c_str(), ToText(boxPerfFastRect).c_str());
+            LogConfig(level, "Dump: gameOutlines=%s", ToText(gameOutlines).c_str());
             LogConfig(level, "Dump: colors EnemyCol=%s fovcol=%s enargb=%s invisnenargb=%s targetargb=%s allyargb=%s",
                 ColorText(EnemyCol).c_str(), ColorText(fovcol).c_str(),
                 ColorText(enargb).c_str(), ColorText(invisnenargb).c_str(), ColorText(targetargb).c_str(),
@@ -7005,6 +7008,7 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, "Global", "visualMaxDist", visualMaxDist);
             WriteBoolValue(path, "Global", "name", name);
             WriteBoolValue(path, "Global", "ult", ult);
+            WriteBoolValue(path, "Global", "gameOutlines", gameOutlines);
             WriteBoolValue(path, "Global", "draw_skel", draw_skel);
             WriteBoolValue(path, "Global", "draw_avatar", draw_avatar);
             WriteBoolValue(path, "Global", "draw_hitbox", draw_hitbox);

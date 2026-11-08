@@ -46,6 +46,7 @@
         bool nameTeamValid = false;
         bool isEnemy = false;
         bool vis = false;
+        OW::VisibilitySample visibilitySample{};
         std::string heroName = "Unknown";
         OW::c_entity::SkeletonBoneCache skeletonCache{};
         OW::ModelShapes::Sample cachedModelShapes{};
@@ -85,10 +86,13 @@
         }
     };
     struct RosterEntry : ComponentBaseCache {
+        OW::EdOutline::State outlineState{};
+        std::array<uint64_t, 6> outlineIdentity{};
         // Actor state must survive replacing the component-address cache in CacheRebuild.inl.
         DWORD skillUpdateTick = 0;
         bool skillValid = false;
         uint8_t skillRefreshCursor = 0;
+        std::array<OW::FieldDeadline, 3> skillDeadlines{};
         DWORD localSkillUpdateTick = 0;
         bool localSkillValid = false;
         uint8_t localSkillRefreshCursor = 0;

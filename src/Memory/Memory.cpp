@@ -1,4 +1,5 @@
 #include "Memory/Memory.h"
+#include "Memory/SignaturePattern.hpp"
 #include "Utils/RuntimeTrace.hpp"
 #include "Utils/Diagnostics.hpp"
 
@@ -174,33 +175,6 @@ namespace {
 
 	/* ---- LPSTR helpers (VMMDLL API uses non-const LPSTR) ---- */
 	inline LPSTR ToLpstr(const char* s) { return const_cast<LPSTR>(s); }
-
-	/* ---- Signature scan helpers ---- */
-
-	static const char* hexdigits =
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\001\002\003\004\005\006\007\010\011\000\000\000\000\000\000"
-		"\000\012\013\014\015\016\017\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\012\013\014\015\016\017\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000"
-		"\000\000\000\000\000\000\000\000\000\000\000\000\000\000";
-
-	static uint8_t GetByte(const char* hex)
-	{
-		const auto hi = static_cast<unsigned char>(hex[0]);
-		const auto lo = static_cast<unsigned char>(hex[1]);
-		return static_cast<uint8_t>((hexdigits[hi] << 4) | hexdigits[lo]);
-	}
 
 } // anonymous namespace
 
@@ -1481,37 +1455,13 @@ uint64_t Memory::FindSignature(const char* signature, uint64_t range_start,
 	if (PID == 0)
 		PID = m_currentPid.load(std::memory_order_acquire);
 
-	std::vector<uint8_t> buffer(range_end - range_start);
-	if (!VMMDLL_MemReadEx(this->vHandle, PID, range_start,
-		buffer.data(), static_cast<DWORD>(buffer.size()), 0, VMMDLL_FLAG_NOCACHE))
-		return 0;
-
-	const char* pat = signature;
-	uint64_t first_match = 0;
-	for (uint64_t i = range_start; i < range_end; i++)
-	{
-		if (*pat == '?' || buffer[i - range_start] == GetByte(pat))
-		{
-			if (!first_match)
-				first_match = i;
-
-			if (!pat[2])
-				break;
-
-			pat += 3;
-		}
-		else
-		{
-			if (first_match)
-			{
-				i = first_match;            // backtrack so next iteration tries first_match+1
-				first_match = 0;
-			}
-			pat = signature;
-		}
-	}
-
-	return first_match;
+	return DmaSignature::Scan(signature, range_start, range_end,
+        [&](uint64_t address, uint8_t* data, size_t size) -> size_t {
+            DWORD actual = 0;
+            if (!VMMDLL_MemReadEx(vHandle, PID, address, data, static_cast<DWORD>(size),
+                    &actual, VMMDLL_FLAG_NOCACHE) || actual != size) return 0;
+            return actual;
+        }, [&] { return m_cancelPending.load(std::memory_order_acquire); });
 }
 
 /* ------------------------------------------------------------------ */
