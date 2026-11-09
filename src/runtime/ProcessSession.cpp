@@ -8,6 +8,7 @@
 #include "Memory/KeyState.hpp"
 #include "Memory/DeviceRecovery.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/map/MapReader.hpp"
 #include "Game/ProductImageIdentity.hpp"
 #include "Game/profiles/ProfileState.hpp"
 #include "Utils/Diagnostics.hpp"
@@ -137,6 +138,7 @@ static void StopBackgroundThreads()
 
 static void ClearProcessRuntimeSnapshots()
 {
+    V2::Maps::Clear();
     V2::HostInteraction::Publish({});
     V2::Profiles::Publish({});
     OW::entitySceneGeneration.fetch_add(1,std::memory_order_acq_rel);

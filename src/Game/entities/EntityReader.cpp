@@ -4,6 +4,7 @@
 #include "../../runtime/Acquisition.hpp"
 #include "EntityWorkers.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/map/MapReader.hpp"
 #include "Game/SkillCooldownTimers.hpp"
 #include "Alerts/Settings.hpp"
 #include "Renderer/VisualSettings.hpp"
@@ -436,6 +437,7 @@ void entity_thread() {
         V2::Acquisition::Wait(nextProcessTick, entityProcessPeriod);
 
         SampleAcquisitionCamera();
+        V2::Maps::Sample();
         const auto pipelineCycleStartedAt = std::chrono::steady_clock::now();
         const Diagnostics::DmaReadStats pipelineDmaStart = Diagnostics::SnapshotDmaReadStats();
         Diagnostics::EntityPipelineProcessStats pipelineStats{};

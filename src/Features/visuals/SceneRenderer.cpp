@@ -1,6 +1,7 @@
 #include "features/visuals/EntityVisuals.hpp"
 #include "SceneRenderer.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/map/MapReader.hpp"
 #include "Game/HeroSettings.hpp"
 #include "Game/HeroSkills.hpp"
 #include "Game/FovGeometry.hpp"
@@ -68,7 +69,7 @@ namespace {
         std::snprintf(text, sizeof(text), "Reads: %.0f/s", readsPerSecond);
         line(text);
         line("Config: " + OW::Config::lastConfigProfile);
-        line("Map: --");
+        line("Map: " + OW::MapData::DisplayName(V2::Maps::Snapshot().id));
         line("Hero: " + OverlayRenderDetail::CurrentLocalHeroName(OW::SnapshotLocalHeroIdForStatus()));
         line("Damage boost: --");
         line("Nano boost: --");

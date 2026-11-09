@@ -129,6 +129,7 @@ set(UNLEASHED_SOURCES
     src/features/visuals/EntityVisuals.cpp
     src/features/visuals/SceneRenderer.cpp
     src/Game/camera/CameraWorker.cpp
+    src/Game/map/MapReader.cpp
     src/Game/snapshots/PresentationWorker.cpp
     src/Game/entities/EntityDiscovery.cpp
     src/Game/entities/EntityReader.cpp
