@@ -137,7 +137,8 @@ fn publish(app: &tauri::AppHandle, status: Status) {
 fn glass(app: &tauri::AppHandle, value: &Value) {
     if let Some(w) = app.get_webview_window("main") {
         if value["loginGlass"].as_bool().unwrap_or(true) {
-            if window_vibrancy::apply_acrylic(&w, Some((21, 22, 28, 190))).is_err() {
+            let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            if window_vibrancy::apply_acrylic(&w, Some((21, 22, 28, 64))).is_err() {
                 let _ = w.set_background_color(Some(tauri::window::Color(21, 22, 28, 255)));
             }
         } else {

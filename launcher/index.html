@@ -1,18 +1,18 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>UNLEASHED</title></head><body><div id="un-login-final" class="viz-dotted-background">
   <section class="unf-window" aria-label="UNLEASHED 登录定稿" lang="zh-CN">
     <div id="drag" data-tauri-drag-region></div><button id="close" aria-label="关闭 / Close">×</button>
-<button id="update" hidden aria-label="更新 / Update"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></svg></button>
-<div id="update-panel" hidden><strong id="update-title"></strong><progress id="download" max="100"></progress><p id="update-status"></p><button id="update-action"></button></div>
+<button id="update" type="button" hidden aria-label="发现新版本" title="发现新版本" aria-expanded="false" aria-controls="update-panel"><span class="unf-update-ring" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></span></button>
+<div id="update-panel" hidden role="region" aria-labelledby="update-title"><strong id="update-title"></strong><progress id="download" max="100"></progress><p id="update-status" aria-live="polite"></p><button id="update-action"></button></div>
 <p id="error" role="alert" hidden></p>
 <header class="unf-brand">
       <img class="unf-logo" src="/unleashed-logo.png" alt="UN Logo">
-      <h2><span>UN</span>LEASHED</h2>
+      <h2 data-wordmark="UNLEASHED" aria-label="UNLEASHED"><span>UN</span>LEASHED</h2>
       <div class="unf-divider"><span></span><b id="unf-title">登录</b><span></span></div>
     </header>
     <form id="unf-form" novalidate autocomplete="off">
       <label class="unf-field" for="unf-account"><span id="unf-account-label">账号</span><input id="unf-account" type="text" value="Linzer3000" autocomplete="off" spellcheck="false"></label>
       <div class="unf-field"><label for="unf-password" id="unf-password-label">密码</label><div class="unf-password"><input id="unf-password" type="text" value="unleashed" autocomplete="off" spellcheck="false"><button id="unf-eye" class="cursor-interaction" type="button" aria-label="隐藏密码" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
-      <button id="unf-authorize" type="button" class="cursor-interaction" aria-live="polite">AUTHORIZATION</button>
+      <button id="unf-authorize" type="button" class="cursor-interaction" aria-live="polite">授权</button>
     </form>
     <div class="unf-language">
       <button id="unf-language-trigger" class="cursor-interaction" type="button" aria-expanded="false" aria-controls="unf-language-popup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span id="unf-language-label">中文</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -66,14 +66,27 @@
 <style>
 html,body{margin:0;min-width:320px;background:transparent;overflow:hidden}body{height:100vh}
 #un-login-final{min-height:0;height:100vh;padding:0;background:transparent}
-#un-login-final .unf-window{width:100%;height:100%;padding:30px 34px 23px;position:relative;border-color:#ffffff16;box-shadow:inset 0 1px #ffffff10;background:#15161ce8}
-body.glass #un-login-final .unf-window{background:linear-gradient(145deg,#25252deb,#15161ce8)}
-#un-login-final h2{font-size:30px;letter-spacing:1.8px}
-#drag{position:absolute;inset:0 60px auto 0;height:28px}#close,#update{position:absolute;top:10px;width:26px;height:26px;border:0;background:transparent;color:#a3a6b7;border-radius:5px;padding:4px}
-#close{right:10px}#un-login-final #update{right:42px;color:#ef2459}#close:hover,#update:hover{background:#ffffff0d}
+#un-login-final .unf-window{width:100%;height:100%;padding:30px 34px 23px;position:relative;isolation:isolate;border-color:#d7cbd129;border-top-color:#eee5ef40;border-left-color:#e6d8e433;box-shadow:inset 0 1px #ffffff0b,inset 0 -1px #0003;background:#15161c}
+body.glass #un-login-final .unf-window{background:linear-gradient(138deg,rgb(40 40 50 / .70),rgb(19 20 27 / .64))}
+body.glass #un-login-final .unf-window::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-1;background:linear-gradient(115deg,#ffffff06,transparent 25% 74%,#f8d4e705)}
+#un-login-final h2{font-size:30px;letter-spacing:1.8px;position:relative;isolation:isolate;color:#f8eef3;text-shadow:0 0 4px #ffebf02b,0 0 16px #e4114350,0 0 32px #e4114335}
+#un-login-final h2::before{content:attr(data-wordmark);position:absolute;inset:0;pointer-events:none;z-index:-1;color:#e41143;filter:blur(14px);opacity:.45;transform:scale(1.025,1.14)}
+#un-login-final h2>span{color:#f02a5d;text-shadow:0 0 7px #f3205566,0 0 18px #e4114366,0 0 36px #e411433d}
+#un-login-final .unf-logo{filter:drop-shadow(0 0 10px #e411432b)}
+#un-login-final .unf-divider>span{box-shadow:0 0 8px #e4114320}
+#un-login-final .unf-field,#un-login-final #unf-language-trigger{color:#b9b7c4}
+#un-login-final input{background:#171820a8;border-color:#d4c9db26;box-shadow:inset 0 1px 4px #0000001c;color:#eee9f2}
+#un-login-final #unf-authorize{background:linear-gradient(180deg,#d31845,#ba1138);border-color:#f02c5b8c;box-shadow:inset 0 1px #ffffff1a,0 4px 18px #e4114314;font-size:12px;letter-spacing:2px}
+#drag{position:absolute;inset:0 84px auto 0;height:28px}#close{position:absolute;top:10px;right:10px;width:26px;height:26px;border:0;background:transparent;color:#a3a6b7;border-radius:5px;padding:4px}
+#un-login-final #update{position:absolute;top:6px;right:38px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:50%;background:transparent;color:#e41143}
+#un-login-final .unf-update-ring{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid #e4114359;border-radius:50%;background:#f8e8ed;transition:background-color .15s,color .15s}
+#un-login-final #update svg{width:11px;height:11px;stroke-width:2.7}
+#un-login-final #update[aria-expanded="true"] .unf-update-ring{background:#e41143;color:#fff5f8}
+@media(hover:hover){#close:hover{background:#ffffff0d}#un-login-final #update:hover .unf-update-ring{background:#e41143;color:#fff5f8}#un-login-final input:hover{border-color:#e0d4df3a}#un-login-final #unf-authorize:hover{background:linear-gradient(180deg,#e31d50,#c71440);box-shadow:inset 0 1px #ffffff20,0 4px 20px #e4114326}}
+@media(pointer:coarse){#un-login-final #update{top:1px;right:36px;width:44px;height:44px}}
 #update-panel{position:absolute;z-index:8;top:43px;right:12px;width:265px;padding:16px;text-align:left;background:#1b1d25;border:1px solid #353440;border-radius:8px;box-shadow:0 12px 32px #0007}
 #update-panel p{overflow-wrap:anywhere}#download{width:100%;accent-color:#ef2459;height:5px}#update-action{border:1px solid #ef2459;border-radius:4px;background:#b41138;padding:7px 12px;min-width:120px}
 #error{position:absolute;z-index:10;left:12px;right:12px;top:32px;padding:10px;background:#3e1725;border:1px solid #b6284d;border-radius:6px;font-size:11px;text-align:left;overflow-wrap:anywhere}
 #un-login-final button{cursor:pointer}#un-login-final button:disabled{opacity:.6;cursor:wait}
-@media(prefers-reduced-motion:no-preference){#unf-authorize:active{scale:.96;transition:scale .15s ease-out}}
+@media(prefers-reduced-motion:no-preference){#unf-authorize:not(:disabled):active,#update:active .unf-update-ring{scale:.96;transition:scale .15s ease-out}}
 </style><script type="module" src="/src/main.js"></script></body></html>
