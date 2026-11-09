@@ -328,6 +328,8 @@ namespace OW {
 
     class hpanddy {
     public:
+        uint32_t position_tick_ms = 0;
+        uint64_t object_parent = 0;
         uint64_t scene_generation = 0;
         uint64_t  entityid = 0;
         uintptr_t MeshBase = 0;

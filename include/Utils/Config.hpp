@@ -19,6 +19,7 @@
 #include "Game/AimPlan.hpp"
 #include "Game/AimBehaviorMode.hpp"
 #include "Game/GameData.hpp"
+#include "Utils/InputLabels.hpp"
 #include "Game/TriggerBoneSelection.hpp"
 
 // -----------------------------------------------------------------------
@@ -475,6 +476,12 @@ namespace OW { namespace Config {
     inline thread_local uint64_t selectedAimHero = 0;
     inline thread_local uint64_t selectedAimSample = 0;
     inline thread_local uint64_t selectedAimActor=0, selectedAimEpoch=0, selectedAimScene=0;
+    struct SlotTargetRules {
+        bool active=false, ignoreSombraStealth=false, requireTargetable=false;
+        float allyHealthMaxPercent=100;
+        SkeletonBoneMask allyBoneMask=kDefaultAimBoneMask;
+    };
+    inline thread_local SlotTargetRules slotTargetRules{};
     inline thread_local bool targetAimPlanEnabled = false;
     inline thread_local AimMethodPreset selectedAimMethod{};
     inline int   aimbotPriority = 0;
@@ -775,6 +782,8 @@ namespace OW { namespace Config {
                 current.distanceM = ClampDynamicFovDistanceM(previous.distanceM + 0.01f);
         }
 
+        for(int index=preset.pointCount-2;index>=0;--index)
+            preset.points[index].distanceM=(std::min)(preset.points[index].distanceM,preset.points[index+1].distanceM-0.01f);
         return preset;
     }
 
@@ -1432,6 +1441,11 @@ namespace OW { namespace Config {
         float maxHeadDistance = 100.0f;
         float stickiness = 100.0f;
         int priority = 0;        // 0=FOV, 1=HP, 2=Distance
+        int allyKey = OW::Labels::kAimActivationKeyNoneIndex;
+        float allyHealthMaxPercent = 100.0f;
+        SkeletonBoneMask allyBoneMask = kDefaultAimBoneMask;
+        bool ignoreSombraStealth = false;
+        bool requireTargetable = false;
         int targetTeam = 0;      // 0=Enemies, 1=Allies, 2=All
         bool ignoreInvisible = true;
         int traceCondition = 0;   // 0=Strict, 1=Relaxed, 2=Off
@@ -1681,11 +1695,17 @@ namespace OW { namespace Config {
         int jumpKeyCode = VK_SPACE;
         bool ammoGuard = false;
         int ammoGuardReserve = 1;
-        int skillKey = -1;
+        int skillKey = -1; // Legacy storage only; runtime output uses hero action mapping.
+        int runtimeOutputVk = 0; // Resolved per execution, never serialized.
+        int runtimeJumpVk = VK_SPACE;
         float projectileSpeed = 0.0f;
         float projectileRadius = 0.0f;
         bool projectileGravity = false;
         float preFireDelayMs = 0.0f; // skill wind-up added to lead prediction
+        int targetPriority = 0; // 0 angular error, 1 health percentage, 2 distance
+        float assistanceDelayMs = 0.0f; // wait before aim assistance, separate from projectile wind-up
+        bool drawSkillFov = false;
+        ImVec4 skillFovColor{0.80f, 0.35f, 0.45f, 0.85f};
         float maxAimTimeMs = 650.0f; // 0 disables the acquisition-session timeout
         float punchMaxHeightAbove = 2.0f;
         float punchMaxHeightBelow = 2.0f;

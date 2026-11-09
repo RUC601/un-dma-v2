@@ -1,3 +1,4 @@
+#include "ui/Search.hpp"
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -6,6 +7,8 @@
 #include "ui/SlotSelector.hpp"
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
+#include "ui/ColorPicker.hpp"
+#include "config/UiPreferences.hpp"
 #include "ui/EditorSupport.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
@@ -49,6 +52,7 @@ using namespace UI::ValueFormat;
 
 void ApplySelectedTypePreset();
 void DrawRuntimeReadinessDetails();
+void DrawHeroKeyPage();
 
 // =====================================================================
 // LOCAL UI STATE
@@ -938,7 +942,7 @@ static ImU32 MixColor(ImU32 from, ImU32 to, float t) {
 static float VisualTransition(ImGuiID id, bool enabled, float speed = 16.0f) {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
-    if (!animations) return enabled ? 1.0f : 0.0f;
+    if (!animations || UI::Preferences::values.reducedMotion) return enabled ? 1.0f : 0.0f;
     ImGuiStorage* storage = ImGui::GetStateStorage();
     float current = storage->GetFloat(id, enabled ? 1.0f : 0.0f);
     float target = enabled ? 1.0f : 0.0f;
@@ -1536,6 +1540,7 @@ static float RoundToSliderStep(float value, float step) {
 //                 box (drawing its border lazily via CloseGroupBox).
 // =====================================================================
 bool UIGroupBox(const char* title, float minHeightPx, float bottomGapPx) {
+    UI::Search::Anchor(title);
     title = L(title);
     // Close previous group box first (draws its border)
     if (g_gbOpen)
@@ -1633,7 +1638,7 @@ bool UICheckbox(const char* label, bool* value) {
 
     ImGuiContext& g    = *GImGui;
     const ImGuiID id   = window->GetID(label);
-    const float sz = (std::max)(16.0f,ImGui::GetFontSize());
+    const float sz = (std::max)(30.0f,ImGui::GetFontSize()*2);
     const float height = ControlHeight();
     const float spacing = g.Style.ItemInnerSpacing.x + 2.0f;
 
@@ -1659,27 +1664,12 @@ bool UICheckbox(const char* label, bool* value) {
 
     float hoverT = VisualTransition(id ^ 0x23a7, hovered || held, 18.0f);
     float checkedT = VisualTransition(id ^ 0x51d3, *value, 18.0f);
-    ImVec2 boxMin(bb.Min.x, bb.Min.y + (height - sz) * 0.5f);
-    ImVec2 boxMax(boxMin.x + sz, boxMin.y + sz);
-    ImU32 baseCol = MixColor(kColControl, kColControlHover, hoverT);
-    ImU32 squareCol = MixColor(baseCol, kColAccent, checkedT);
-    float rounding = 0.0f;
-
-    window->DrawList->AddRectFilled(boxMin, boxMax, squareCol, rounding);
-    window->DrawList->AddRect(boxMin, boxMax,
-                              MixColor(kColStroke, IM_COL32(0xf0, 0x34, 0x5d, 0xD0), checkedT),
-                              rounding, 0, 1.0f);
-
-    if (checkedT > 0.18f) {
-        ImU32 tickCol = MixColor(IM_COL32(0xff, 0xff, 0xff, 0x00),
-                                 IM_COL32(0xff, 0xff, 0xff, 0xF4), checkedT);
-        window->DrawList->AddLine(ImVec2(boxMin.x + 3.0f, boxMin.y + 6.0f),
-                                  ImVec2(boxMin.x + 5.2f, boxMin.y + 8.1f),
-                                  tickCol, 1.4f);
-        window->DrawList->AddLine(ImVec2(boxMin.x + 5.2f, boxMin.y + 8.1f),
-                                  ImVec2(boxMin.x + 9.1f, boxMin.y + 3.8f),
-                                  tickCol, 1.4f);
-    }
+    const float trackHeight=16.f;
+    ImVec2 boxMin(bb.Min.x,bb.Min.y+(height-trackHeight)*.5f);
+    ImVec2 boxMax(boxMin.x+sz,boxMin.y+trackHeight);
+    window->DrawList->AddRectFilled(boxMin,boxMax,MixColor(kColControlHot,kColAccent,checkedT),trackHeight*.5f);
+    const float knobX=boxMin.x+8+(sz-16)*checkedT;
+    window->DrawList->AddCircleFilled(ImVec2(knobX,boxMin.y+8),5.5f,MixColor(kColTextDim,kColText,checkedT),20);
 
     if (hasVisibleLabel) {
         ImVec2 labelPos(bb.Min.x + sz + spacing, bb.Min.y + (height - labelSize.y) * 0.5f);
@@ -2498,6 +2488,7 @@ void UITwoColumns(std::function<void()> left, std::function<void()> right) {
 // SettingRow  --  Renders a fixed-width label column + the next widget.
 // =====================================================================
 void SettingRow(const char* label, float labelWidthPx) {
+    UI::Search::Anchor(label);
     label = L(label);
     const float available = ImGui::GetContentRegionAvail().x;
     labelWidthPx *= (std::max)(1.0f, ImGui::GetFontSize()/15.0f);
@@ -2536,31 +2527,9 @@ bool UIActionSlotEnabledCheckbox(ActionSlotKind kind,
     return true;
 }
 
-bool UIColorEdit(const char* label, ImVec4* value,
-                        float labelWidthPx) {
-    ImGui::PushID(label);
-    SettingRow(label, labelWidthPx);
-    PushControlWidth();
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, kColControl);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, kColControlHover);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, kColControlHot);
-    ImGui::PushStyleColor(ImGuiCol_Border, kColStroke);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
-
-    const bool changed = ImGui::ColorEdit4(
-        "##color",
-        &value->x,
-        ImGuiColorEditFlags_NoLabel |
-        ImGuiColorEditFlags_AlphaBar |
-        ImGuiColorEditFlags_DisplayRGB |
-        ImGuiColorEditFlags_InputRGB
-    );
-
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(4);
-    ImGui::PopItemWidth();
-    ImGui::PopID();
-    return changed;
+bool UIColorEdit(const char* label, ImVec4* value, float labelWidthPx) {
+    SettingRow(label,labelWidthPx);
+    return UI::ColorPicker(label,*value);
 }
 
 // =====================================================================
@@ -2714,6 +2683,7 @@ void UI::InitializeResources(ID3D11Device* device) {
 void UI::ShutdownResources() {
     StopFirePatternRecorder();
     AutoSave(true);
+    Preferences::Save();
     if (s_logoTexture) {
         s_logoTexture->Release();
         s_logoTexture = nullptr;
@@ -2721,7 +2691,7 @@ void UI::ShutdownResources() {
 }
 
 UI::MenuClientSize UI::DesiredMenuClientSize() {
-    return s_desiredMenuClientSize;
+    return {0, 0};
 }
 
 // =====================================================================
@@ -2957,7 +2927,7 @@ static void DrawHeroContextToolbar(float saveWidth, float height) {
 }
 
 static void DrawEditingContext() {
-    const bool heroPage = UI::state.activeTab == UI::TAB_AIMING ||
+    const bool heroPage = UI::state.activeTab == UI::TAB_AIMING || UI::state.activeTab == UI::TAB_ALERT || UI::state.activeTab == UI::TAB_KEYS ||
         (UI::state.activeTab == UI::TAB_THEME && UI::state.themeSubTab == 1);
     if (!heroPage) {
         ImGui::TextDisabled("%s", L("Shared settings"));
@@ -2996,11 +2966,14 @@ void UI::Render() {
     OW::Config::ScopedConfigEdit configEdit;
     EnsurePreNewFrameInitHook();
     if (!state.initialized) InitStyle();
-    SyncSelectedTypeWithDetectedHero();
+    Theme::Apply();
+    OW::Config::uiLanguage = Preferences::values.language;
+    if(!ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))SyncSelectedTypeWithDetectedHero();
     if (!OW::Config::Menu) return;
     int page = 0;
     if(state.activeTab==TAB_AIMING) page=ImClamp(state.aimingSubTab,0,3);
     else if(state.activeTab==TAB_ALERT) page=4;
+    else if(state.activeTab==TAB_KEYS) page=15;
     else if(state.activeTab==TAB_VISUALS) page=5;
     else if(state.activeTab==TAB_THEME) page=6+ImClamp(state.themeSubTab,0,1);
     else { const int mapping[]={13,14,8,9,10,11,12}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
@@ -3017,10 +2990,11 @@ void UI::Render() {
         {chinese?"行为模式":"Behavior modes", chinese?"共享参数":"Shared settings"},
         {chinese?"运动方法":"Methods", chinese?"共享参数":"Shared settings"},
         {chinese?"动态范围":"Dynamic FOV", chinese?"共享参数":"Shared settings"},
-        {chinese?"设备":"Devices", chinese?"系统":"System"},
-        {chinese?"屏幕":"Screen", chinese?"系统":"System"},
-        {chinese?"配置":"Configuration", chinese?"系统":"System"},
-        {chinese?"诊断":"Diagnostics", chinese?"系统":"System"}
+        {chinese?"输入与设备":"Input and devices", chinese?"系统":"System"},
+        {chinese?"Overlay 与字体":"Overlay and fonts", chinese?"系统":"System"},
+        {chinese?"配置与界面":"Configuration", chinese?"系统":"System"},
+        {chinese?"诊断":"Diagnostics", chinese?"系统":"System"},
+        {chinese?"按键映射":"Action keys", chinese?"系统":"System"}
     };
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
@@ -3032,6 +3006,7 @@ void UI::Render() {
         if (page<4) { state.activeTab=TAB_AIMING; state.aimingSubTab=page; }
         else if (page==4) state.activeTab=TAB_ALERT;
         else if (page==5) state.activeTab=TAB_VISUALS;
+        else if (page==15) state.activeTab=TAB_KEYS;
         else if (page<8) { state.activeTab=TAB_THEME; state.themeSubTab=page-6; }
         else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,0,1}; state.miscSubTab=mapping[page-8]; }
         DrawEditingContext();
@@ -3041,9 +3016,9 @@ void UI::Render() {
         case 4: AlertPage(); break;
         case 5: VisualsPage(); break; case 6: DrawThemeGeneralPage(); break;
         case 7: DrawThemeFovRingsPage(); break; case 8: DrawMiscBehaviorPage(); break;
-        case 9: DrawMiscMethodPage(); break; case 10: DrawMiscDynamicFovPage(); break;
+        case 9: DrawMiscBehaviorPage(); break; case 10: DrawMiscDynamicFovPage(); break;
         case 11: DrawMiscOutputPage(); break; case 12: DrawMiscScreenPage(); break;
-        case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break;
+        case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break; case 15: DrawHeroKeyPage(); break;
         }
         CloseGroupBox();
     }, DrawRuntimeStatusStrip, DrawHeroContextToolbar);

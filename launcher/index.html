@@ -1,0 +1,79 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>UNLEASHED</title></head><body><div id="un-login-final" class="viz-dotted-background">
+  <section class="unf-window" aria-label="UNLEASHED 登录定稿" lang="zh-CN">
+    <div id="drag" data-tauri-drag-region></div><button id="close" aria-label="关闭 / Close">×</button>
+<button id="update" hidden aria-label="更新 / Update"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></svg></button>
+<div id="update-panel" hidden><strong id="update-title"></strong><progress id="download" max="100"></progress><p id="update-status"></p><button id="update-action"></button></div>
+<p id="error" role="alert" hidden></p>
+<header class="unf-brand">
+      <img class="unf-logo" src="/unleashed-logo.png" alt="UN Logo">
+      <h2><span>UN</span>LEASHED</h2>
+      <div class="unf-divider"><span></span><b id="unf-title">登录</b><span></span></div>
+    </header>
+    <form id="unf-form" novalidate autocomplete="off">
+      <label class="unf-field" for="unf-account"><span id="unf-account-label">账号</span><input id="unf-account" type="text" value="Linzer3000" autocomplete="off" spellcheck="false"></label>
+      <div class="unf-field"><label for="unf-password" id="unf-password-label">密码</label><div class="unf-password"><input id="unf-password" type="text" value="unleashed" autocomplete="off" spellcheck="false"><button id="unf-eye" class="cursor-interaction" type="button" aria-label="隐藏密码" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      <button id="unf-authorize" type="button" class="cursor-interaction" aria-live="polite">AUTHORIZATION</button>
+    </form>
+    <div class="unf-language">
+      <button id="unf-language-trigger" class="cursor-interaction" type="button" aria-expanded="false" aria-controls="unf-language-popup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span id="unf-language-label">中文</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 9 6 6 6-6"/></svg></button>
+      <div id="unf-language-popup" role="group" aria-label="语言 / Language" hidden>
+        <button type="button" data-language="zh-CN" class="cursor-interaction" aria-pressed="true"><span>中文</span><span class="unf-check" aria-hidden="true">✓</span></button>
+        <button type="button" data-language="en" class="cursor-interaction" aria-pressed="false"><span>English</span><span class="unf-check" aria-hidden="true">✓</span></button>
+      </div>
+    </div>
+  </section>
+</div>
+<style>
+  #un-login-final{display:flex;justify-content:center;align-items:center;min-height:590px;padding:32px 12px;box-sizing:border-box}
+  #un-login-final *{box-sizing:border-box}
+  #un-login-final .unf-window{--unf-bg:#15161c;--unf-input:#1d1f27;--unf-stroke:#2f303b;--unf-muted:#a3a6b7;--unf-text:#f2ecf1;--unf-red:#e41143;width:375px;max-width:100%;border:1px solid #2c2731;border-radius:12px;background:var(--unf-bg);color:var(--unf-text);padding:30px 34px 23px;font:12px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 20px 65px #0003;color-scheme:dark;text-align:center}
+  #un-login-final .unf-logo{width:46px;height:46px;object-fit:contain}
+  #un-login-final h2{font-size:30px;line-height:1.4;letter-spacing:1.8px;font-weight:700;margin:14px 0 0;color:var(--unf-text);text-shadow:0 0 18px #e4114355}
+  #un-login-final h2>span{color:#ef2459}
+  #un-login-final .unf-divider{display:flex;gap:12px;align-items:center;justify-content:center;margin:17px 0 26px;color:var(--unf-muted)}
+  #un-login-final .unf-divider b{font-size:11px;font-weight:400;letter-spacing:1.4px;white-space:nowrap;min-width:47px}
+  #un-login-final .unf-divider>span{height:2px;flex:1;background:linear-gradient(to left,#e41143c0,#e4114315)}
+  #un-login-final .unf-divider>span:last-child{transform:rotate(180deg)}
+  #un-login-final .unf-field{display:flex;flex-direction:column;gap:7px;text-align:left;margin:0 0 17px;color:var(--unf-muted)}
+  #un-login-final input{width:100%;min-width:0;height:41px;background:var(--unf-input);border:1px solid var(--unf-stroke);border-radius:5px;color:#e2e4ed;padding:0 11px;font:12px "Segoe UI","Microsoft YaHei",sans-serif}
+  #un-login-final input:focus-visible{outline:2px solid #ef2459;outline-offset:2px}
+  #un-login-final button{font:inherit;color:inherit}
+  #un-login-final button:focus-visible{outline:2px solid #ef2459;outline-offset:3px}
+  #un-login-final .unf-password{position:relative}
+  #un-login-final .unf-password input{padding-right:44px}
+  #un-login-final #unf-eye{position:absolute;right:2px;top:2px;width:37px;height:37px;display:flex;align-items:center;justify-content:center;padding:0;background:transparent;border:0;border-radius:4px;color:var(--unf-muted)}
+  #un-login-final #unf-eye:hover{background:#ffffff06;color:var(--unf-text)}
+  #un-login-final svg{width:15px;height:15px;stroke-width:1.6}
+  #un-login-final #unf-authorize{width:100%;height:42px;margin:5px 0 0;background:#c70f3b;border:1px solid #e41b4d;border-radius:5px;letter-spacing:1.15px;font-size:11px;transition:background .15s}
+  #un-login-final #unf-authorize:hover{background:#dc1447}
+  #un-login-final #unf-authorize:active{background:#af1036}
+  #un-login-final .unf-language{position:relative;display:table;margin:19px auto 0}
+  #un-login-final #unf-language-trigger{border:0;border-radius:4px;background:transparent;color:var(--unf-muted);display:flex;gap:7px;align-items:center;justify-content:center;min-width:94px;height:32px;padding:5px 8px;font-size:11px}
+  #un-login-final #unf-language-trigger:hover,#un-login-final #unf-language-trigger[aria-expanded="true"]{color:var(--unf-text);background:#ffffff05}
+  #un-login-final #unf-language-trigger svg:last-child{width:12px;height:12px}
+  #un-login-final #unf-language-popup{position:absolute;z-index:5;bottom:calc(100% + 8px);right:0;width:168px;padding:5px;border:1px solid #34333f;border-radius:7px;background:#1b1d25;box-shadow:0 10px 30px #0006;transform-origin:bottom right;animation:unf-open .14s ease-out}
+  #un-login-final [hidden]{display:none!important}
+  #un-login-final #unf-language-popup>button{display:flex;width:100%;align-items:center;justify-content:space-between;text-align:left;min-height:33px;padding:7px 10px;border:0;border-radius:4px;background:transparent;color:var(--unf-muted);font-size:12px}
+  #un-login-final #unf-language-popup>button:hover{background:#ffffff08;color:var(--unf-text)}
+  #un-login-final #unf-language-popup>button[aria-pressed="true"]{background:#e411431c;color:#f2ecf1}
+  #un-login-final .unf-check{color:#ef2459;visibility:hidden}
+  #un-login-final [aria-pressed="true"]>.unf-check{visibility:visible}
+  @keyframes unf-open{from{opacity:0;transform:translateY(4px) scale(.98)}to{opacity:1;transform:none}}
+  @media(prefers-reduced-motion:reduce){#un-login-final *{animation:none!important;transition:none!important}}
+  @media(max-width:420px){#un-login-final .unf-window{padding-left:24px;padding-right:24px}#un-login-final h2{font-size:26px;letter-spacing:1.4px}}
+  @media(pointer:coarse){#un-login-final input{font-size:16px;height:44px}#un-login-final #unf-eye{top:0;right:0;width:44px;height:44px}#un-login-final #unf-authorize,#un-login-final #unf-language-trigger,#un-login-final #unf-language-popup>button{min-height:44px}}
+</style>
+<style>
+html,body{margin:0;min-width:320px;background:transparent;overflow:hidden}body{height:100vh}
+#un-login-final{min-height:0;height:100vh;padding:0;background:transparent}
+#un-login-final .unf-window{width:100%;height:100%;padding:30px 34px 23px;position:relative;border-color:#ffffff16;box-shadow:inset 0 1px #ffffff10;background:#15161ce8}
+body.glass #un-login-final .unf-window{background:linear-gradient(145deg,#25252deb,#15161ce8)}
+#un-login-final h2{font-size:30px;letter-spacing:1.8px}
+#drag{position:absolute;inset:0 60px auto 0;height:28px}#close,#update{position:absolute;top:10px;width:26px;height:26px;border:0;background:transparent;color:#a3a6b7;border-radius:5px;padding:4px}
+#close{right:10px}#un-login-final #update{right:42px;color:#ef2459}#close:hover,#update:hover{background:#ffffff0d}
+#update-panel{position:absolute;z-index:8;top:43px;right:12px;width:265px;padding:16px;text-align:left;background:#1b1d25;border:1px solid #353440;border-radius:8px;box-shadow:0 12px 32px #0007}
+#update-panel p{overflow-wrap:anywhere}#download{width:100%;accent-color:#ef2459;height:5px}#update-action{border:1px solid #ef2459;border-radius:4px;background:#b41138;padding:7px 12px;min-width:120px}
+#error{position:absolute;z-index:10;left:12px;right:12px;top:32px;padding:10px;background:#3e1725;border:1px solid #b6284d;border-radius:6px;font-size:11px;text-align:left;overflow-wrap:anywhere}
+#un-login-final button{cursor:pointer}#un-login-final button:disabled{opacity:.6;cursor:wait}
+@media(prefers-reduced-motion:no-preference){#unf-authorize:active{scale:.96;transition:scale .15s ease-out}}
+</style><script type="module" src="/src/main.js"></script></body></html>

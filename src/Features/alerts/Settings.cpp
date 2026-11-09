@@ -1,3 +1,4 @@
+#include "Game/HeroSettings.hpp"
 #include "Alerts/Settings.hpp"
 #include "Game/GameData.hpp"
 #include <Windows.h>
@@ -8,6 +9,7 @@ namespace V2::Alerts {
 namespace {
 std::mutex settingsMutex;
 Settings currentSettings;
+std::atomic<uint64_t> runtimeHero{0};
 std::atomic<uint64_t> observedRules{0};
 std::atomic<uint64_t> observedUltimates{0};
 static_assert(kDefinitions.size() <= 64);
@@ -64,20 +66,29 @@ Settings Normalize(Settings settings) {
     return settings;
 }
 Settings GetSettings() { std::lock_guard lock(settingsMutex); return currentSettings; }
+Settings GetRuntimeSettings() {
+    const auto hero=V2::HeroSettings::Get(runtimeHero.load(std::memory_order_acquire));
+    auto settings=hero.alerts;
+    const auto shared=GetSettings();
+    settings.voice=shared.voice;settings.volume=shared.volume;settings.outputDevice=shared.outputDevice;
+    if(!hero.alertsEnabled)settings.skillEnabled=settings.ultimateEnabled=false;
+    return settings;
+}
+void SetRuntimeHero(uint64_t hero) {
+    runtimeHero.store(hero,std::memory_order_release);
+    const auto settings=GetRuntimeSettings();
+    uint64_t mask=0;
+    if(settings.skillEnabled)for(size_t i=0;i<settings.rules.size();++i)
+        if(settings.rules[i].enabled)mask|=uint64_t{1}<<i;
+    observedRules.store(mask,std::memory_order_release);mask=0;
+    if(settings.ultimateEnabled)for(size_t i=0;i<kPlayableHeroCount;++i)
+        if(UltimateHeroEnabled(settings,OW::GameData::kHeroIds[i].value))mask|=uint64_t{1}<<i;
+    observedUltimates.store(mask,std::memory_order_release);
+}
 void SetSettings(Settings settings) {
-    settings = Normalize(std::move(settings));
-    std::lock_guard lock(settingsMutex);
-    currentSettings = std::move(settings);
-    uint64_t mask = 0;
-    if (currentSettings.skillEnabled)
-        for (size_t index = 0; index < currentSettings.rules.size(); ++index)
-            if (currentSettings.rules[index].enabled) mask |= uint64_t{1} << index;
-    observedRules.store(mask, std::memory_order_release);
-    mask = 0;
-    if (currentSettings.ultimateEnabled)
-        for (size_t i = 0; i < kPlayableHeroCount; ++i)
-            if (UltimateHeroEnabled(currentSettings, OW::GameData::kHeroIds[i].value)) mask |= uint64_t{1} << i;
-    observedUltimates.store(mask, std::memory_order_release);
+    settings=Normalize(std::move(settings));
+    {std::lock_guard lock(settingsMutex);currentSettings=std::move(settings);}
+    SetRuntimeHero(runtimeHero.load(std::memory_order_acquire));
 }
 bool ObserveSkillHero(uint64_t hero) {
     const auto mask = observedRules.load(std::memory_order_acquire);

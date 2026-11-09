@@ -391,10 +391,6 @@ using namespace Detail;
         if (presentCount >= kHeroPresetSlotCount)
             return -1;
 
-        const int defaultMode = kind == HeroPresetSlotKind::Aim ?
-            EnsureDefaultBehaviorModeUnlocked(kAimBehaviorTracking) : -1;
-        if (kind == HeroPresetSlotKind::Aim && defaultMode < 0) return -1;
-
         HeroSlotPreset& slot = slots[static_cast<size_t>(presentCount)];
         ResetHeroPresetSlot(slot, presentCount);
         slot.present = true;
@@ -402,14 +398,7 @@ using namespace Detail;
         slot.stableId = NewSlotIdentity();
         slot.name = DefaultHeroSlotName(presentCount);
         slot.preset = ValidateHeroPresetValueForHero(heroId, seedPreset);
-        if (kind == HeroPresetSlotKind::Aim) {
-            slot.preset.fov = kDefaultAimFovDeg;
-            slot.preset.fovMode = kFovModeFixed;
-            slot.preset.dynamicFovPresetId = -1;
-            StoreHeroBehaviorMode(slot.preset);
-            slot.preset.aimBehaviorPresetId = defaultMode;
-            ResolveHeroBehaviorMode(slot.preset);
-        }
+        slot.preset.allyKey = OW::Labels::kAimActivationKeyNoneIndex;
         slot.preset.key = OW::Labels::kAimActivationKeyNoneIndex;
         slot.preset.trigger.key = OW::Labels::kAimActivationKeyNoneIndex;
         NormalizeHeroPresetSlots(slots, heroId, kind);

@@ -1,6 +1,8 @@
 #include "features/visuals/EntityVisuals.hpp"
 #include "SceneRenderer.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/HeroSettings.hpp"
+#include "Game/HeroSkills.hpp"
 #include "Game/FovGeometry.hpp"
 #include "Renderer/Renderer.hpp"
 #include "Utils/Diagnostics.hpp"
@@ -46,18 +48,20 @@ namespace {
                 readsPerSecond = double(reads - lastReads) * 1000 / DWORD(now - lastTick);
             lastTick = now; lastReads = reads;
         }
-        constexpr float font = 12, lineHeight = 14;
-        ImGui::GetForegroundDrawList()->PushClipRect(ImVec2(10,0), ImVec2(222,196), true);
+        const auto settings=V2::HeroSettings::Snapshot();const auto& display=settings->display;
+        const float scale=display.infoScale,font=12*scale,lineHeight=14*scale;
+        const float originX=10+OW::OverlayStatus::Position(display.infoX,CanvasWidth(),222*scale),originY=10+OW::OverlayStatus::Position(display.infoY,CanvasHeight(),196*scale);
+        ImGui::GetForegroundDrawList()->PushClipRect(ImVec2(originX,originY), ImVec2(originX+222*scale,originY+196*scale), true);
         const char* title = "Unleashed ";
 
-        Render::DrawText(ImVec2(10,10), IM_COL32_WHITE, title, 13.5f);
-        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(13.5f, FLT_MAX, 0, title).x;
+        Render::DrawText(ImVec2(originX,originY), IM_COL32_WHITE, title, 13.5f*scale);
+        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(13.5f*scale, FLT_MAX, 0, title).x;
         char text[96]{};
         std::snprintf(text, sizeof(text), "[%.0f]", Diagnostics::RenderFps());
-        Render::DrawText(ImVec2(10 + titleWidth,10), IM_COL32(100,240,115,255), text, 13.5f);
-        float y = 28;
+        Render::DrawText(ImVec2(originX+titleWidth,originY), IM_COL32(100,240,115,255), text, 13.5f*scale);
+        float y=originY+18*scale;
         auto line = [&](const std::string& value) {
-            Render::DrawText(ImVec2(10,y), IM_COL32(225,230,239,240), value.c_str(), font);
+            Render::DrawText(ImVec2(originX,y), IM_COL32(225,230,239,240), value.c_str(), font);
             y += lineHeight;
         };
         line("Players: " + std::to_string(entities.size()));
@@ -708,9 +712,6 @@ namespace {
 
     static void DrawFovCircle(const OW::c_entity& localSnapshot)
     {
-        if (!OW::Config::draw_fov)
-            return;
-
         const float width = CanvasWidth();
         const float height = CanvasHeight();
         if (width <= 0.0f || height <= 0.0f)
@@ -723,6 +724,23 @@ namespace {
         const OW::TargetingDetail::FovRuntimeContext fovContext =
             BuildFovRuntimeContext(renderViewMatrixXor);
 
+        // Skill circles have their own switch and do not enable the global Aim circle.
+        int skillDiagnosticKey = 1000;
+        for (const auto& definition : OW::AllHeroSkillDefinitions()) {
+            ++skillDiagnosticKey;
+            if (!OW::IsHeroSkillDefinitionActiveForRuntime(definition, localSnapshot.HeroID) ||
+                !(definition.controls & OW::HeroSkillControls::TrackingOverlay)) continue;
+            const auto settings = OW::Config::GetHeroSkillSettings(localSnapshot.HeroID, definition.skillId, definition.defaultSettings);
+            if (!settings.enabled || !settings.drawSkillFov) continue;
+            OW::Config::FovRingSlotStyle style{};
+            style.visible = true;
+            style.color = settings.skillFovColor;
+            style.thickness = 1.5f;
+            style.showLabel = false;
+            DrawStyledFovRing(center, width, height, settings.tracking.fov, projection, fovContext,
+                             style, false, skillDiagnosticKey, nullptr);
+        }
+        if (!OW::Config::draw_fov) return;
         const OW::Config::RuntimeDrawFovState activeState = OW::Config::SnapshotRuntimeDrawFov();
         bool drewAny = false;
         if (localSnapshot.HeroID != 0) {
@@ -782,14 +800,16 @@ namespace {
         if (width <= 0.0f || height <= 0.0f)
             return;
 
-        const OW::Vector2 center(width * 0.5f, height * 0.5f);
-        const Render::Color color = ToRenderColor(OW::Config::fovcol);
-        const float arm = 7.0f;
-        const float radius = OW::Config::therad > 0 ? static_cast<float>(OW::Config::therad) : 8.0f;
+        const auto settings=V2::HeroSettings::Snapshot();
+        const auto& style=settings->display.elements[int(V2::VisualSettings::Element::Crosshair)];
+        const OW::Vector2 center(width*.5f+style.offsetX,height*.5f+style.offsetY);
+        const Render::Color color=ToRenderColor(style.visible);
+        const float arm=style.size*.5f;
+        const float radius=style.size*.5f;
 
-        Render::DrawLine(OW::Vector2(center.X - arm, center.Y), OW::Vector2(center.X + arm, center.Y), color, 1.5f);
-        Render::DrawLine(OW::Vector2(center.X, center.Y - arm), OW::Vector2(center.X, center.Y + arm), color, 1.5f);
-        Render::DrawCircle(center, radius, color, 48, 1.0f);
+        Render::DrawLine(OW::Vector2(center.X - arm, center.Y), OW::Vector2(center.X + arm, center.Y), color, style.thickness);
+        Render::DrawLine(OW::Vector2(center.X, center.Y - arm), OW::Vector2(center.X, center.Y + arm), color, style.thickness);
+        Render::DrawCircle(center, radius, color, 48, style.thickness);
     }
 
     static void DrawRadar(const std::vector<OW::c_entity>& entitySnapshot,
@@ -806,12 +826,14 @@ namespace {
         if (width <= 0.0f || height <= 0.0f)
             return;
 
-        const float radius = (std::min)(126.0f * OW::Config::radarScale, (std::min)(width,height)*.5f-2);
+        const auto visual=V2::HeroSettings::Snapshot();
+        const auto& radar=visual->display.radar;
+        const float radius=(std::min)(radar.radius,(std::min)(width,height)*.5f-2);
         const float centerX = radius + OW::OverlayStatus::Position(OW::Config::radarPosX,width,2*radius);
         const float centerY = radius + OW::OverlayStatus::Position(OW::Config::radarPosY,height,2*radius);
         const OW::Vector2 center(centerX, centerY);
         const Render::Color border(170, 180, 192, 110);
-        const Render::Color background(18, 20, 25, 180);
+        const Render::Color background(18,20,25,int(radar.backgroundAlpha*255));
 
         Render::DrawFilledCircle(center, radius, background, 72);
         Render::DrawCircle(center, radius, border, 72, 1.0f);
@@ -822,10 +844,10 @@ namespace {
         OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
         OW::GetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
         DirectX::XMFLOAT3 forward = renderViewMatrixXor.get_rotation();
-        const float yaw = static_cast<float>(std::atan2(forward.x, forward.z));
+        const float yaw = static_cast<float>(radar.rotate?std::atan2(forward.x,forward.z):0.f);
         const float cosYaw = std::cos(-yaw);
         const float sinYaw = std::sin(-yaw);
-        const float scale = 1.8f * OW::Config::radarScale;
+        const float scale=radius/radar.rangeM;
 
         for (size_t index = 0; index < entitySnapshot.size(); ++index) {
             const OW::c_entity& entity = entitySnapshot[index];
@@ -833,13 +855,14 @@ namespace {
                 !localSnapshot.HasUsableBody(GetTickCount(),OW::EntitySceneGeneration()) || entity.address == localSnapshot.address)
                 continue;
 
+            if(!radar.allies&&!entity.Team)continue;
             const float dx = entity.pos.X - localSnapshot.pos.X;
             const float dz = entity.pos.Z - localSnapshot.pos.Z;
             float rx = (dx * cosYaw - dz * sinYaw) * scale;
             float rz = (dx * sinYaw + dz * cosYaw) * scale;
 
             const float len = std::sqrt(rx * rx + rz * rz);
-            const float maxLen = (std::max)(0.0f, radius - 9.0f * OW::Config::radarScale - 2.0f);
+            const float maxLen = (std::max)(0.0f, radius-radar.markerSize*.5f-2);
             if (len > maxLen && len > 0.001f) {
                 const float k = maxLen / len;
                 rx *= k;
@@ -847,42 +870,36 @@ namespace {
             }
 
             const OW::Vector2 point(center.X + rx, center.Y + rz);
-            const Render::Color entityColor = EntityRadarColor(entity, index);
+            const Render::Color entityColor=ToRenderColor(entity.Team?radar.enemy:radar.ally);
             if (OW::Config::radarline)
                 Render::DrawLine(center, point, Render::Color(entityColor.R, entityColor.G, entityColor.B, 90), 1.0f);
-            const ImU32 markerColor = entity.Team ? IM_COL32(240,90,95,235) : IM_COL32(105,225,140,235);
-            DrawHeroRadarMarker(entity, point.X, point.Y, markerColor, OW::Config::radarScale);
+            const ImU32 markerColor=ImGui::ColorConvertFloat4ToU32(entity.Team?radar.enemy:radar.ally);
+            DrawHeroRadarMarker(entity, point.X, point.Y, markerColor,radar.markerSize/18.f);
         }
     }
 
-    static void DrawHealthPacks(const std::vector<OW::hpanddy>& dynamicEntitySnapshot)
-    {
-        if (!OW::Config::draw_hp_pack)
-            return;
-
-        if (dynamicEntitySnapshot.empty())
-            return;
-
-        const OW::Vector2 windowSize(CanvasWidth(), CanvasHeight());
-        OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
-        OW::GetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
-
-        for (const OW::hpanddy& pack : dynamicEntitySnapshot) {
-            if(pack.scene_generation!=OW::EntitySceneGeneration())continue;
-            OW::Vector2 screen{};
-            OW::Vector3 world(pack.POS.x, pack.POS.y, pack.POS.z);
-            if (!renderViewMatrix.WorldToScreen(world, &screen, windowSize))
-                continue;
-
-            const bool isBob = pack.entityid == 0x400000000002533;
-            const Render::Color color = isBob ? Render::Color(255, 170, 40, 220)
-                                              : Render::Color(60, 220, 120, 220);
-            const std::string label = isBob ? "Bob" : "HP";
-
-            Render::DrawFilledCircle(screen, 4.0f, color, 20);
-            Render::DrawStrokeText(ImVec2(screen.X + 7.0f, screen.Y - 7.0f), color.ToImU32(), label.c_str(), 13.0f);
+    static void DrawHealthPacks(const std::vector<OW::hpanddy>& objects) {
+        const auto settings=V2::HeroSettings::Snapshot();const auto& world=settings->display.world;
+        if(!world.enabled)return;
+        OW::Matrix view{},camera{};OW::GetViewMatricesSnapshot(view,camera);
+        const auto local=OW::SnapshotLocalEntity();const uint32_t now=GetTickCount();
+        for(const auto& object:objects) {
+            const int type=V2::VisualSettings::ObjectIndex(object.entityid);
+            if(type<0||!world.types[type]||object.scene_generation!=OW::EntitySceneGeneration()||
+                !object.position_tick_ms||uint32_t(now-object.position_tick_ms)>200)continue;
+            const OW::Vector3 position(object.POS.x,object.POS.y,object.POS.z);
+            const float distance=local.pos.DistTo(position);
+            if(world.maxDistance>0&&distance>world.maxDistance)continue;
+            OW::Vector2 screen{};if(!view.WorldToScreen(position,&screen,OW::Vector2(CanvasWidth(),CanvasHeight())))continue;
+            const auto color=ImGui::ColorConvertFloat4ToU32(world.colors[type]);auto* draw=ImGui::GetForegroundDrawList();
+            if(world.box)draw->AddRect(ImVec2(screen.X-world.size*.5f,screen.Y-world.size*.5f),ImVec2(screen.X+world.size*.5f,screen.Y+world.size*.5f),color,2,0,1.5f);
+            if(world.icon)draw->AddCircleFilled(ImVec2(screen.X,screen.Y),3.5f,color,20);
+            std::string label=world.name?V2::VisualSettings::kObjects[type].name:"";
+            if(world.distance)label+=(label.empty()?"":" ")+std::to_string(int(distance))+" m";
+            if(!label.empty())Render::DrawStrokeText(ImVec2(screen.X+7,screen.Y-world.size*.5f),color,label.c_str(),world.size);
         }
     }
+
 
 
 } // namespace
@@ -938,7 +955,7 @@ void V2::Visuals::DrawFrame()
 
     DrawAimTriggerStatusPanel();
     DrawOverlayInfo(frameEntitySnapshot(), frameDynamicEntitySnapshot().size());
-    if (viewMatricesFresh && OW::Config::draw_hp_pack)
+    if (viewMatricesFresh && V2::HeroSettings::Snapshot()->display.world.enabled)
         DrawHealthPacks(frameDynamicEntitySnapshot());
     if (OW::Config::draw_fov)
         DrawFovCircle(frameLocalSnapshot());

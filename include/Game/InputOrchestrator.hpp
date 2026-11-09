@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Game/AimArchitecture.hpp"
+#include "Game/HostInteractionState.hpp"
 #include "Game/CalibrationPolicy.hpp"
 #include "Game/OutputScheduler.hpp"
 #include "output/OutputRuntime.hpp"
@@ -90,7 +91,7 @@ inline OutputRuntimeState CurrentOutputRuntimeState()
         V2::Output::ActiveRuntimeSnapshot();
     return {
         applied.generation,
-        RuntimeOutputSessionEnabled() &&
+        RuntimeOutputSessionEnabled() && !V2::HostInteraction::paused.load(std::memory_order_acquire) &&
             !CalibrationBlocksNormalOutput(Config::calibrationInProgress.load(std::memory_order_acquire)) &&
             applied.descriptor.backend != V2::Output::OutputRuntimeBackend::None &&
             V2::Output::IsRuntimeOutputGateOpen() &&

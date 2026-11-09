@@ -140,7 +140,7 @@
         uint64_t entityId = 0;
         uintptr_t meshBase = 0;
         XMFLOAT3 pos{};
-        DWORD updateTick = 0;
+        DWORD updateTick = 0, lastAttemptTick = 0;
     };
     std::unordered_map<uint64_t, DynamicEntityCache> dynamicEntityCache{};
     dynamicEntityCache.reserve(64);

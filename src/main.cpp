@@ -3,6 +3,7 @@ namespace AimbotDetail {int RunAimReleaseOutputSelfTest();}
 namespace OW {int RunSkillModeScopeSelfTest();}
 #endif
 #include "features/visuals/EntityVisuals.hpp"
+#include "runtime/LauncherBridge.hpp"
 // =============================================================================
 // Unleashed DMA -- Overwatch 2 External Cheat
 //
@@ -428,6 +429,7 @@ static int RunConfigCheckCli()
 
 int main(int argc, char** argv)
 {
+    V2::Launcher::enabled=HasCommandLineFlag(argc,argv,"--launcher-stdio") && GetFileType(GetStdHandle(STD_INPUT_HANDLE))==FILE_TYPE_PIPE;
     CrashDump::InstallUnhandledExceptionFilter(L"crash_dumps");
 
     // ---- Console ----
@@ -466,7 +468,7 @@ int main(int argc, char** argv)
             continue;
         }
         if (argument == "--config-check" || argument == "--test-server" ||
-            argument == "--test-server-cors" || argument == "--box-perf-mode" || argument == "--canvas-only")
+            argument == "--test-server-cors" || argument == "--box-perf-mode" || argument == "--canvas-only" || argument == "--launcher-stdio")
             continue;
 #ifdef UNLEASHED_SELF_TESTS
         if (argument == "--skill-mode-scope-selftest" || argument == "--aim-release-output-selftest" || argument == "--config-concurrency-selftest" || argument == "--config-persistence-selftest" ||
@@ -637,6 +639,7 @@ int main(int argc, char** argv)
     PreloadHeroAvatars();
     PreloadAbilityIcons();
     V2::Alerts::Start();
+    V2::Launcher::Send("{\"event\":\"ready\"}");
     StartProcessConnectionThread();
     Diagnostics::Info("Settings ready; hardware and process connection run in background.");
 

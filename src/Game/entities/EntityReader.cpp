@@ -6,6 +6,7 @@
 #include "Game/Overwatch.hpp"
 #include "Game/SkillCooldownTimers.hpp"
 #include "Alerts/Settings.hpp"
+#include "Renderer/VisualSettings.hpp"
 
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
@@ -1238,20 +1239,31 @@ void entity_thread() {
                 dynamicCacheIt = dynamicEntityCache.end();
             }
             if (dynamicCacheIt != dynamicEntityCache.end() && dynamicCacheIt->second.valid) {
+                uint64_t identityPointer=0,currentId=0;
+                if(!SDK->read_range(ComponentParent+0x30,&identityPointer,sizeof(identityPointer)))continue;
+                identityPointer&=0xFFFFFFFFFFFFFFC0;
+                if(!identityPointer||!SDK->read_range(identityPointer+0x10,&currentId,sizeof(currentId)))continue;
+                if(currentId!=dynamicCacheIt->second.entityId) {
+                    dynamicEntityCache.erase(dynamicCacheIt);continue;
+                }
                 ++lifecycleStats.dynamicCacheReusedCount;
                 DynamicEntityCache& cachedDynamic = dynamicCacheIt->second;
                 if (cachedDynamic.meshBase &&
-                    (cachedDynamic.updateTick == 0 ||
-                     processLoopTick - cachedDynamic.updateTick >= OW::kEntityProcessIntervalMs)) {
+                    (cachedDynamic.lastAttemptTick == 0 ||
+                     processLoopTick - cachedDynamic.lastAttemptTick >= OW::kEntityProcessIntervalMs)) {
+                    cachedDynamic.lastAttemptTick=processLoopTick;
                     OW::velocity_compo_t hpdyVelocity{};
-                    if (SDK->read_range(cachedDynamic.meshBase + 0x200, &hpdyVelocity.location, sizeof(hpdyVelocity.location))) {
-                        cachedDynamic.pos = hpdyVelocity.location;
-                        cachedDynamic.updateTick = processLoopTick;
+                    if(SDK->read_range(cachedDynamic.meshBase+0x200,&hpdyVelocity.location,sizeof(hpdyVelocity.location)) &&
+                        std::isfinite(hpdyVelocity.location.x)&&std::isfinite(hpdyVelocity.location.y)&&std::isfinite(hpdyVelocity.location.z) &&
+                        (hpdyVelocity.location.x!=0||hpdyVelocity.location.y!=0||hpdyVelocity.location.z!=0)) {
+                        cachedDynamic.pos=hpdyVelocity.location;cachedDynamic.updateTick=processLoopTick;
                     }
                 }
 
                 OW::hpanddy hpdyentity{};
                 hpdyentity.scene_generation=processSceneGeneration;
+                hpdyentity.object_parent=ComponentParent;hpdyentity.position_tick_ms=cachedDynamic.updateTick;
+                if(!hpdyentity.position_tick_ms||DWORD(processLoopTick-hpdyentity.position_tick_ms)>200)continue;
                 hpdyentity.entityid = cachedDynamic.entityId;
                 hpdyentity.MeshBase = cachedDynamic.meshBase;
                 hpdyentity.POS = cachedDynamic.pos;
@@ -1316,31 +1328,30 @@ void entity_thread() {
                 ScopedPipelinePhaseTimer specialTimer(pipelineStats.phase.entitySpecialProbeMs);
                 uint64_t ptrValue = 0;
                 if (!componentHeader.ReadParentOffset(0x30, ptrValue))
-                    ptrValue = SDK->RPM<uint64_t>(ComponentParent + 0x30);
+                    if(!SDK->read_range(ComponentParent+0x30,&ptrValue,sizeof(ptrValue)))continue;
                 uint64_t Ptr = ptrValue & 0xFFFFFFFFFFFFFFC0;
                 if (Ptr && Ptr < 0xFFFFFFFFFFFFFFEF) {
-                    uint64_t EntityID = SDK->RPM<uint64_t>(Ptr + 0x10);
-                    if (EntityID == 0x400000000000060 || EntityID == 0x40000000000480A ||
-                        EntityID == 0x40000000000005F || EntityID == 0x400000000002533) {
+                    uint64_t EntityID=0;
+                    if(!SDK->read_range(Ptr+0x10,&EntityID,sizeof(EntityID)))continue;
+                    if(V2::VisualSettings::ObjectIndex(EntityID)>=0) {
                         OW::hpanddy hpdyentity{};
                         hpdyentity.scene_generation=processSceneGeneration;
                         hpdyentity.entityid = EntityID;
                         hpdyentity.MeshBase = OW::DecryptComponent(
                             ComponentParent, OW::TYPE_VELOCITY, componentSnapshot);
-                        OW::velocity_compo_t hpdyVelocity{};
-                        if (hpdyentity.MeshBase &&
-                            SDK->read_range(hpdyentity.MeshBase, &hpdyVelocity, sizeof(hpdyVelocity))) {
-                            hpdyentity.POS = hpdyVelocity.location;
-                        } else if (hpdyentity.MeshBase) {
-                            hpdyentity.POS = SDK->RPM<XMFLOAT3>(hpdyentity.MeshBase + 0x380 + 0x50);
-                        }
+                        hpdyentity.object_parent=ComponentParent;
+                        XMFLOAT3 position{};
+                        if(!hpdyentity.MeshBase||!SDK->read_range(hpdyentity.MeshBase+0x200,&position,sizeof(position)) ||
+                            !std::isfinite(position.x)||!std::isfinite(position.y)||!std::isfinite(position.z)||
+                            (position.x==0&&position.y==0&&position.z==0))continue;
+                        hpdyentity.POS=position;hpdyentity.position_tick_ms=processLoopTick;
                         DynamicEntityCache dynamicCache{};
                         dynamicCache.linkParent = LinkParent;
                         dynamicCache.valid = true;
                         dynamicCache.entityId = EntityID;
                         dynamicCache.meshBase = hpdyentity.MeshBase;
                         dynamicCache.pos = hpdyentity.POS;
-                        dynamicCache.updateTick = processLoopTick;
+                        dynamicCache.updateTick = dynamicCache.lastAttemptTick = processLoopTick;
                         const bool dynamicCacheReplacing =
                             dynamicCacheExpiredByLinkChange ||
                             dynamicEntityCache.find(ComponentParent) != dynamicEntityCache.end();
@@ -2401,8 +2412,13 @@ void entity_thread() {
 
             // Sombra stealth affects the effective visibility state, so keep it
             // on the per-process path with DecryptVis instead of the slow cache.
+            entity.sombraStealthKnown=false;entity.sombraStealth=false;
             if (entity.HeroID == OW::eHero::HERO_SOMBRA && entity.Team && entity.SkillBase) {
-                entity.Vis = (entity.Vis && !OW::IsSkillActivate1(entity.SkillBase + 0x40, 0, 0x7C5));
+                __m128 query{};uint16_t ids[15]={0,0x7C5};query.m128_u64[1]=entity.SkillBase+0x40+0xD0;
+                const auto skill=OW::FnSkillStruct(&query,ids);uint8_t active=0;
+                entity.sombraStealthKnown=skill&&SDK->read_range(skill+0x48,&active,sizeof(active))&&active<=1;
+                entity.sombraStealth=entity.sombraStealthKnown&&active==1;
+                entity.Vis = (entity.Vis && !entity.sombraStealth);
                 slowCache.vis = entity.Vis;
             }
 

@@ -1,6 +1,12 @@
+#include "runtime/LauncherBridge.hpp"
+#include "ui/FontFile.hpp"
 #include "Renderer/Overlay.hpp"
 #include "Renderer/FrameSchedule.hpp"
 #include "Features/UI.hpp"
+#include "config/UiPreferences.hpp"
+#include "Game/HeroSettings.hpp"
+#include <fstream>
+#include <filesystem>
 #include "Game/Offsets.hpp"
 #include "Game/SDK.hpp"
 #include "Game/Overwatch.hpp"
@@ -19,9 +25,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace {
 
-constexpr int kDefaultMenuClientWidth = 720;
-constexpr int kDefaultMenuClientHeight = 550;
-constexpr int kMinimumMenuClientHeight = 140;
+constexpr int kDefaultMenuClientWidth = 1160;
+constexpr int kDefaultMenuClientHeight = 800;
+constexpr int kMinimumMenuClientHeight = 480;
 constexpr int kInitialMenuTopMargin = 24;
 constexpr int kInitialMenuBottomMargin = 16;
 constexpr int kMenuDragHeight = 41;
@@ -230,13 +236,14 @@ void RefreshTargetScreenSize() {
     OW::ClearDetectedScreenSize();
 }
 
-void ApplyMinimumMenuTrackSize(LPARAM lParam) {
+void ApplyMinimumMenuTrackSize(HWND window, LPARAM lParam) {
     MINMAXINFO* minMax = reinterpret_cast<MINMAXINFO*>(lParam);
     if (!minMax)
         return;
 
-    minMax->ptMinTrackSize.x = kDefaultMenuClientWidth;
-    minMax->ptMinTrackSize.y = kMinimumMenuClientHeight;
+    const float dpiScale = static_cast<float>(GetDpiForWindow(window)) / 96.0f;
+    minMax->ptMinTrackSize.x = static_cast<LONG>(720 * dpiScale);
+    minMax->ptMinTrackSize.y = static_cast<LONG>(kMinimumMenuClientHeight * dpiScale);
 }
 
 bool IsInMenuDragZone(HWND hWnd, POINT cursor) {
@@ -262,8 +269,19 @@ LRESULT HitTestBorderlessMenu(HWND hWnd, LPARAM lParam) {
     };
     ScreenToClient(hWnd, &cursor);
 
-    // The menu is auto-sized by the UI layout. Treat edges as client area so
-    // grabbing the top bar cannot accidentally resize the borderless window.
+    RECT bounds{};
+    GetClientRect(hWnd,&bounds);
+    const int edge=6;
+    const bool left=cursor.x<edge,right=cursor.x>=bounds.right-edge;
+    const bool top=cursor.y<edge,bottom=cursor.y>=bounds.bottom-edge;
+    if(top&&left)return HTTOPLEFT;
+    if(top&&right)return HTTOPRIGHT;
+    if(bottom&&left)return HTBOTTOMLEFT;
+    if(bottom&&right)return HTBOTTOMRIGHT;
+    if(left)return HTLEFT;
+    if(right)return HTRIGHT;
+    if(top)return HTTOP;
+    if(bottom)return HTBOTTOM;
     if (IsInMenuDragZone(hWnd, cursor))
         return HTCAPTION;
 
@@ -295,11 +313,22 @@ void ConfigureCanvasFont(ImGuiIO& io) {
     fontConfig.PixelSnapH = true;
     fontConfig.RasterizerMultiply = 1.0f;
 
-    ImFont* font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consola.ttf", 13.0f, &fontConfig);
-    if (!font)
-        font = io.Fonts->AddFontDefault();
-    if (font)
-        io.FontDefault = font;
+    const auto settings=V2::HeroSettings::Snapshot();
+    const auto& display=settings->display;
+    UI::OverlayFonts::error.clear();
+    auto add=[&](const std::string& path,const std::string& fallback,ImFontConfig& config,const ImWchar* ranges=nullptr){
+        auto bytes=UI::OverlayFonts::Read(path);
+        if(bytes.empty()) {UI::OverlayFonts::error+="Font unavailable: "+path+"; ";bytes=UI::OverlayFonts::Read(fallback);}
+        if(bytes.empty())return static_cast<ImFont*>(nullptr);
+        void* owned=ImGui::MemAlloc(bytes.size());std::memcpy(owned,bytes.data(),bytes.size());
+        return io.Fonts->AddFontFromMemoryTTF(owned,static_cast<int>(bytes.size()),14,&config,ranges);
+    };
+    ImFont* font=add(display.font,"C:/Windows/Fonts/consola.ttf",fontConfig);
+    if(!font)font=io.Fonts->AddFontDefault();
+    if(font)io.FontDefault=font;
+    ImFontConfig fallback;fallback.MergeMode=true;
+    add(display.chineseFont,"C:/Windows/Fonts/msyh.ttc",fallback,io.Fonts->GetGlyphRangesChineseFull());
+
 }
 
 DXGI_SWAP_CHAIN_DESC MakeSwapChainDesc(HWND hWnd, UINT width, UINT height) {
@@ -386,8 +415,23 @@ LRESULT WINAPI MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             else if (LOWORD(wParam) == WA_INACTIVE)
                 g_Overlay.OnMenuDeactivated(reinterpret_cast<HWND>(lParam));
             break;
+        case WM_DPICHANGED: {
+            const auto* rect=reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(hWnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);
+            return 0;
+        }
+        case WM_EXITSIZEMOVE: {
+            RECT client{};
+            if(GetClientRect(hWnd,&client)) {
+                const float dpi=GetDpiForWindow(hWnd)/96.f;
+                UI::Preferences::values.windowWidth=int(client.right/dpi+.5f);
+                UI::Preferences::values.windowHeight=int(client.bottom/dpi+.5f);
+                UI::Preferences::Save();
+            }
+            return 0;
+        }
         case WM_GETMINMAXINFO:
-            ApplyMinimumMenuTrackSize(lParam);
+            ApplyMinimumMenuTrackSize(hWnd, lParam);
             return 0;
         case WM_ERASEBKGND:
             return 1;
@@ -421,6 +465,7 @@ LRESULT WINAPI MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 } // namespace
 
 bool Overlay::Initialize(const wchar_t* overlayTitle) {
+    ImGui_ImplWin32_EnableDpiAwareness();
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     if (!RegisterWindowClasses(instance))
         return false;
@@ -455,6 +500,7 @@ void Overlay::Run(std::function<void()> renderCallback) {
     FrameWaitTimer frameTimer;
     bool running = true;
     while (running) {
+        V2::Launcher::Poll();
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
@@ -615,10 +661,12 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
                  static_cast<int>(m_canvasWidth), static_cast<int>(m_canvasHeight),
                  SWP_SHOWWINDOW);
 
-    const DWORD menuStyle = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX;
+    const DWORD menuStyle = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
     const DWORD menuExStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
-    const int menuW = kDefaultMenuClientWidth;
-    const int menuH = kDefaultMenuClientHeight;
+    UI::Preferences::Load(OW::Config::uiLanguage);
+    const float dpi=GetDpiForSystem()/96.f;
+    const int menuW=int(UI::Preferences::values.windowWidth*dpi+.5f);
+    const int menuH=int(UI::Preferences::values.windowHeight*dpi+.5f);
 
     RECT workArea = {};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
@@ -633,12 +681,12 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
     m_menuHWnd = CreateWindowExW(
         menuExStyle,
         kMenuClassName,
-        L"UNDMA CN Settings",
+        L"UNLEASHED V2",
         menuStyle,
         menuX,
         menuY,
-        menuW,
-        menuH,
+        MinInt(menuW,workW),
+        MinInt(menuH,workH),
         nullptr,
         nullptr,
         instance,
@@ -895,6 +943,7 @@ void Overlay::ApplyDesiredMenuClientSize() {
         return;
 
     const UI::MenuClientSize desired = UI::DesiredMenuClientSize();
+    if(desired.width<=0 || desired.height<=0) return;
     int desiredClientW = MaxInt(1, RoundClientSize(desired.width));
     int desiredClientH = MaxInt(kMinimumMenuClientHeight, RoundClientSize(desired.height));
 
@@ -972,6 +1021,12 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     const auto t0 = std::chrono::steady_clock::now();
 
     ImGui::SetCurrentContext(m_canvasContext);
+    const auto fonts=V2::HeroSettings::Snapshot();
+    static std::string fontPath,chinesePath;
+    if(fontPath!=fonts->display.font||chinesePath!=fonts->display.chineseFont) {
+        fontPath=fonts->display.font;chinesePath=fonts->display.chineseFont;
+        ImGui::GetIO().Fonts->Clear();ConfigureCanvasFont(ImGui::GetIO());
+    }
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1009,6 +1064,7 @@ void Overlay::RenderMenu() {
         return;
 
     ImGui::SetCurrentContext(m_menuContext);
+    ImGui::GetStyle().FontScaleDpi=GetDpiForWindow(m_menuHWnd)/96.f;
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();

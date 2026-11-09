@@ -1,4 +1,6 @@
 #include "Actions.hpp"
+#include "Game/HeroSettings.hpp"
+#include "Game/snapshots/SnapshotAccess.hpp"
 #include "Utils/Diagnostics.hpp"
 #include <atomic>
 #include <cstdio>
@@ -32,6 +34,7 @@ namespace OW {
     bool ShouldSuppressOutput(
         const char* action,
         OutputIntent intent) {
+        if(intent==OutputIntent::Normal && V2::HostInteraction::paused.load(std::memory_order_acquire))return true;
         if (intent == OutputIntent::Normal &&
             CalibrationBlocksNormalOutput(Config::calibrationInProgress.load(std::memory_order_acquire)))
             return true;
@@ -417,6 +420,7 @@ namespace OW {
         OutputUnownedControlCallback ownerlessRelease,
         std::uint64_t expectedGeneration,
         bool requireNewPress) {
+        if(control.kind==OutputControlKind::MouseButton&&control.code>2)return ActionOutputStatus::UnsupportedTransport;
         const V2::Output::OutputRuntimeAppliedState applied = V2::Output::RuntimeController().Applied();
         if (applied.descriptor.backend == V2::Output::OutputRuntimeBackend::None ||
             !V2::Output::RuntimeController().CanDispatch(applied.generation) ||
@@ -495,17 +499,16 @@ namespace OW {
         const std::string resolvedOwnerKey = ownerKey && *ownerKey
             ? std::string(ownerKey)
             : DefaultMouseButtonOwnerKey(ownerSource, button);
-        return SetOwnedOutputControl(
-            resolvedOwnerKey,
-            ownerSource,
-            { OutputControlKind::MouseButton,
-              static_cast<std::uint16_t>(button) },
-            down,
-            "mouse_button",
-            false,
-            {},
-            expectedGeneration,
-            requireNewPress);
+        const auto action=button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle;
+        const int vk=V2::HeroSettings::Key(SnapshotLocalEntity().HeroID,action);
+        const int mappedButton=vk==1?0:vk==2?1:vk==4?2:vk==5?3:vk==6?4:-1;
+        const auto hid=V2::HeroSettings::HidUsage(vk);
+        if(mappedButton<0&&!hid)return ActionOutputStatus::InvalidAction;
+        const auto generation=expectedGeneration?expectedGeneration:V2::Output::ActiveRuntimeSnapshot().generation;
+        return SetOwnedOutputControl(resolvedOwnerKey,ownerSource,
+            {mappedButton>=0?OutputControlKind::MouseButton:hid>=0xE0?OutputControlKind::KeyboardModifier:OutputControlKind::KeyboardUsage,
+             static_cast<std::uint16_t>(mappedButton>=0?mappedButton:hid)},
+            down,"hero_action",mappedButton<0,{},generation,requireNewPress);
     }
 
     ActionOutputStatus ReleaseMouseButtonActionStateOrPhysicalFallback(
@@ -536,21 +539,25 @@ namespace OW {
             return ActionOutputStatus::Suppressed;
         }
 
+        const int vk=V2::HeroSettings::Key(SnapshotLocalEntity().HeroID,button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle);
+        const int mappedButton=vk==1?0:vk==2?1:vk==4?2:vk==5?3:vk==6?4:-1;
+        const auto hid=V2::HeroSettings::HidUsage(vk);
+        if(mappedButton<0&&!hid)return ActionOutputStatus::InvalidAction;
+        const OutputControl mappedControl{mappedButton>=0?OutputControlKind::MouseButton:hid>=0xE0?OutputControlKind::KeyboardModifier:OutputControlKind::KeyboardUsage,static_cast<std::uint16_t>(mappedButton>=0?mappedButton:hid)};
         const bool accepted = RuntimeOutputScheduler()
             .ReleaseManualControlOrExecuteIfUnownedForGeneration(
             resolvedOwnerKey,
             ownerSource,
-            {
-                OutputControlKind::MouseButton,
-                static_cast<std::uint16_t>(button)
-            },
+            mappedControl,
             expectedGeneration,
-            [button, physicalFallbackReleased](
+            [mappedButton, physicalFallbackReleased](
                 std::uint64_t backendGeneration) {
+                // Transport has no isolated physical-key release. Never emit an all-key-up report.
+                if(mappedButton<0)return false;
                 const bool released =
                     V2::Output::DispatchForceReleaseMouseButtonForGeneration(
                         backendGeneration,
-                        button) == success;
+                        mappedButton) == success;
                 if (physicalFallbackReleased)
                     *physicalFallbackReleased = released;
                 return released;
@@ -585,14 +592,16 @@ namespace OW {
         const std::string resolvedOwnerKey = ownerKey && *ownerKey
             ? std::string(ownerKey)
             : DefaultMouseButtonOwnerKey(ownerSource, button);
+        const int vk=V2::HeroSettings::Key(SnapshotLocalEntity().HeroID,button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle);
+        const int mappedButton=vk==1?0:vk==2?1:vk==4?2:vk==5?3:vk==6?4:-1;
+        const auto hid=V2::HeroSettings::HidUsage(vk);
+        if(mappedButton<0&&!hid)return ActionOutputStatus::InvalidAction;
+        const OutputControl mappedControl{mappedButton>=0?OutputControlKind::MouseButton:hid>=0xE0?OutputControlKind::KeyboardModifier:OutputControlKind::KeyboardUsage,static_cast<std::uint16_t>(mappedButton>=0?mappedButton:hid)};
         const bool accepted = RuntimeOutputScheduler()
             .ReleaseManualControlOrExecuteIfUnownedForGeneration(
             resolvedOwnerKey,
             ownerSource,
-            {
-                OutputControlKind::MouseButton,
-                static_cast<std::uint16_t>(button)
-            },
+            mappedControl,
             expectedGeneration,
             [](std::uint64_t) { return true; });
         return accepted
@@ -608,16 +617,23 @@ namespace OW {
         (void)SendMouseButtonActionState(button, down, ownerSource, ownerKey);
     }
 
-    unsigned char GameActionKeyboardHid(GameAction action) {
-        switch (action) {
-        case GameAction::Ability1:    return KEY_LEFTSHIFT;
-        case GameAction::Ability2:    return KEY_E;
-        case GameAction::Ultimate:    return KEY_Q;
-        case GameAction::Melee:       return KEY_V;
-        case GameAction::MoveForward: return KEY_W;
-        default:                      return 0;
+    static int MappedActionVk(GameAction action) {
+        using A=V2::HeroSettings::Action;
+        A mapped;
+        switch(action) {
+        case GameAction::PrimaryFire:mapped=A::Primary;break;
+        case GameAction::SecondaryFire:mapped=A::Secondary;break;
+        case GameAction::MiddleMouse:mapped=A::Middle;break;
+        case GameAction::Ability1:mapped=A::Ability1;break;
+        case GameAction::Ability2:mapped=A::Ability2;break;
+        case GameAction::Ultimate:mapped=A::Ultimate;break;
+        case GameAction::Melee:mapped=A::Melee;break;
+        case GameAction::MoveForward:mapped=A::Forward;break;
+        default:return 0;
         }
+        return V2::HeroSettings::Key(SnapshotLocalEntity().HeroID,mapped);
     }
+    unsigned char GameActionKeyboardHid(GameAction action) {return V2::HeroSettings::HidUsage(MappedActionVk(action));}
 
     ActionOutputStatus SetActionStateForGeneration(
         GameAction action,
@@ -627,40 +643,16 @@ namespace OW {
         if (!ownerKey)
             return ActionOutputStatus::InvalidAction;
 
-        switch (action) {
-        case GameAction::PrimaryFire:
-            return SendMouseButtonActionState(
-                0, down, OutputOwnerSource::GameAction, ownerKey,
-                expectedGeneration);
-        case GameAction::SecondaryFire:
-            return SendMouseButtonActionState(
-                1, down, OutputOwnerSource::GameAction, ownerKey,
-                expectedGeneration);
-        case GameAction::MiddleMouse:
-            return SendMouseButtonActionState(
-                2, down, OutputOwnerSource::GameAction, ownerKey,
-                expectedGeneration);
-        default:
-            break;
-        }
-
-        const unsigned char hidCode = GameActionKeyboardHid(action);
-        if (hidCode == 0)
-            return ActionOutputStatus::InvalidAction;
-        return SetOwnedOutputControl(
-            ownerKey,
-            OutputOwnerSource::GameAction,
-            {
-                hidCode >= 0xE0 && hidCode <= 0xE7
-                    ? OutputControlKind::KeyboardModifier
-                    : OutputControlKind::KeyboardUsage,
-                hidCode
-            },
-            down,
-            "keyboard",
-            true,
-            {},
-            expectedGeneration);
+        const int vk=MappedActionVk(action);
+        int button=-1;
+        if(vk==VK_LBUTTON)button=0;else if(vk==VK_RBUTTON)button=1;else if(vk==VK_MBUTTON)button=2;
+        else if(vk==VK_XBUTTON1)button=3;else if(vk==VK_XBUTTON2)button=4;
+        const unsigned char hid=V2::HeroSettings::HidUsage(vk);
+        if(button<0&&!hid)return ActionOutputStatus::InvalidAction;
+        const auto generation=expectedGeneration?expectedGeneration:V2::Output::ActiveRuntimeSnapshot().generation;
+        return SetOwnedOutputControl(ownerKey,OutputOwnerSource::GameAction,
+            {button>=0?OutputControlKind::MouseButton:hid>=0xE0?OutputControlKind::KeyboardModifier:OutputControlKind::KeyboardUsage,
+             static_cast<std::uint16_t>(button>=0?button:hid)},down,button>=0?"mouse_button":"keyboard",button<0,{},generation);
     }
 
     ActionOutputStatus SetActionState(GameAction action, bool down) {

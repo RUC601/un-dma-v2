@@ -10,6 +10,7 @@
 #include "config/SlotStorageInternal.hpp"
 
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Structs.hpp"
 #include "Game/Target.hpp"
 #include "Game/FlickRepeat.hpp"
@@ -1914,6 +1915,9 @@ namespace OW { namespace Config {
             auto known=[](uint64_t h) { return !GameData::IsKnownHeroId(h); };
             std::erase_if(preset.aimPlan.selection.heroes,known);
             for(auto& group:preset.aimPlan.groups) std::erase_if(group.heroes,known);
+            preset.allyKey = std::clamp(preset.allyKey,0,OW::Labels::AimActivationKeyCount()-1);
+            preset.allyHealthMaxPercent = std::isfinite(preset.allyHealthMaxPercent) ? std::clamp(preset.allyHealthMaxPercent,0.f,100.f) : 100.f;
+            preset.allyBoneMask = NormalizeSkeletonBoneMask(preset.allyBoneMask);
             preset.targetTeam = std::clamp(preset.targetTeam, 0, 2);
             preset.maxAimTime = std::clamp(preset.maxAimTime, 0.0f, 100.0f);
             preset.minCharge = std::clamp(preset.minCharge, 0.0f, 100.0f);
@@ -2031,6 +2035,10 @@ namespace OW { namespace Config {
             settings.tracking.method = ClampAimMethodIndex(settings.tracking.method);
             settings.tracking.smooth = std::clamp(settings.tracking.smooth, 0.0f, 100.0f);
             settings.tracking.speedScale = std::clamp(settings.tracking.speedScale, 0.0f, 100.0f);
+            settings.targetPriority = std::clamp(settings.targetPriority, 0, 2);
+            settings.assistanceDelayMs = std::clamp(std::isfinite(settings.assistanceDelayMs) ? settings.assistanceDelayMs : 0.0f, 0.0f, 1000.0f);
+            float* skillColor = &settings.skillFovColor.x;
+            for (int c = 0; c < 4; ++c) skillColor[c] = std::clamp(std::isfinite(skillColor[c]) ? skillColor[c] : 1.0f, 0.0f, 1.0f);
             settings.tracking.fov = ClampFovDeg(settings.tracking.fov);
             settings.tracking.bone = settings.tracking.bone == kAimBoneClosest
                 ? kAimBoneClosest
@@ -3682,6 +3690,11 @@ namespace OW { namespace Config {
             AddJsonInt(value,"releaseConfigVersion",preset.releaseConfigVersion,allocator);
             value.AddMember("modeTuning",ModeJson::TuningJson(preset,allocator),allocator);
             value.AddMember("behaviorConfigs",ModeJson::ConfigsJson(preset.behaviorConfigs,allocator),allocator);
+            AddJsonInt(value, "allyKey", preset.allyKey, allocator);
+            AddJsonFloat(value, "allyHealthMaxPercent", preset.allyHealthMaxPercent, allocator);
+            AddJsonInt(value, "allyBoneMask", static_cast<int>(preset.allyBoneMask), allocator);
+            AddJsonBool(value, "ignoreSombraStealth", preset.ignoreSombraStealth, allocator);
+            AddJsonBool(value, "requireTargetable", preset.requireTargetable, allocator);
             AddJsonInt(value, "targetTeam", preset.targetTeam, allocator);
             AddJsonFloat(value, "maxAimTime", preset.maxAimTime, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
@@ -3816,6 +3829,13 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "trackingSpeedScale", settings.tracking.speedScale, allocator);
             AddJsonInt(value, "trackingMethod", settings.tracking.method, allocator);
             AddJsonFloat(value, "trackingSmooth", settings.tracking.smooth, allocator);
+            AddJsonInt(value, "targetPriority", settings.targetPriority, allocator);
+            AddJsonFloat(value, "assistanceDelayMs", settings.assistanceDelayMs, allocator);
+            AddJsonBool(value, "drawSkillFov", settings.drawSkillFov, allocator);
+            AddJsonFloat(value, "skillFovR", settings.skillFovColor.x, allocator);
+            AddJsonFloat(value, "skillFovG", settings.skillFovColor.y, allocator);
+            AddJsonFloat(value, "skillFovB", settings.skillFovColor.z, allocator);
+            AddJsonFloat(value, "skillFovA", settings.skillFovColor.w, allocator);
             AddJsonFloat(value, "trackingFov", settings.tracking.fov, allocator);
             AddJsonInt(value, "trackingBone", settings.tracking.bone, allocator);
             AddJsonFloat(value, "trackingHitboxScale", settings.tracking.hitbox, allocator);
@@ -3942,6 +3962,12 @@ namespace OW { namespace Config {
                 return PersistenceFailure(path, "Load hero config; original file preserved",
                     error == ERROR_SUCCESS ? ERROR_INVALID_DATA : error);
             }
+            if(document.IsObject()&&document.HasMember("heroSettings")) {
+                rapidjson::StringBuffer buffer;rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);document["heroSettings"].Accept(writer);
+                if(!V2::HeroSettings::Decode(buffer.GetString(),false)) {
+                    AddUniquePath(failedHeroLoads,path);return PersistenceFailure(path,"Invalid hero UI settings; original file preserved",ERROR_INVALID_DATA);
+                }
+            }
             std::erase_if(failedHeroLoads, [&](const auto& failed) { return SamePathText(failed, path); });
             return true; // A missing sidecar leaves document null; it is not a parse failure.
         }
@@ -4025,6 +4051,10 @@ namespace OW { namespace Config {
             document.AddMember(aimKey, aimStore, allocator);
             document.AddMember(triggerKey, triggerStore, allocator);
             document.AddMember(skillKey, skillStore, allocator);
+            rapidjson::Document runtimeSettings;
+            runtimeSettings.Parse(V2::HeroSettings::Encode().c_str());
+            rapidjson::Value runtimeCopy;runtimeCopy.CopyFrom(runtimeSettings,allocator);
+            document.AddMember("heroSettings",runtimeCopy,allocator);
 
             return document;
         }
@@ -4112,6 +4142,17 @@ namespace OW { namespace Config {
                 }
             }
 
+            const std::string runtimeHeroKey = std::to_string(heroId);
+            rapidjson::Document currentUi;currentUi.Parse(V2::HeroSettings::Encode().c_str());
+            auto* savedUi=FindOrAddObjectMember(document,"heroSettings");
+            if(savedUi->ObjectEmpty()) {rapidjson::Value copy;copy.CopyFrom(currentUi,allocator);savedUi->Swap(copy);}
+            else if(currentUi["heroes"].HasMember(runtimeHeroKey.c_str())) {
+                rapidjson::Value* savedHeroes=nullptr;
+                if(savedUi->HasMember("heroes")&&(*savedUi)["heroes"].IsObject())savedHeroes=&(*savedUi)["heroes"];
+                else {rapidjson::Value heroes(rapidjson::kObjectType);if(savedUi->HasMember("heroes"))savedUi->RemoveMember("heroes");savedUi->AddMember("heroes",heroes,allocator);savedHeroes=&(*savedUi)["heroes"];}
+                rapidjson::Value heroValue;heroValue.CopyFrom(currentUi["heroes"][runtimeHeroKey.c_str()],allocator);
+                UpsertJsonMember(*savedHeroes,runtimeHeroKey,std::move(heroValue),allocator);
+            }
             return WriteJsonDocument(heroConfigPath, document);
         }
 
@@ -4294,6 +4335,13 @@ namespace OW { namespace Config {
                 "trackingFov",
                 defaults.tracking.fov,
                 legacyFovApertureValues);
+            defaults.targetPriority = ReadJsonInt(value, "targetPriority", defaults.targetPriority);
+            defaults.assistanceDelayMs = ReadJsonFloat(value, "assistanceDelayMs", defaults.assistanceDelayMs);
+            defaults.drawSkillFov = ReadJsonBool(value, "drawSkillFov", defaults.drawSkillFov);
+            defaults.skillFovColor.x = ReadJsonFloat(value, "skillFovR", defaults.skillFovColor.x);
+            defaults.skillFovColor.y = ReadJsonFloat(value, "skillFovG", defaults.skillFovColor.y);
+            defaults.skillFovColor.z = ReadJsonFloat(value, "skillFovB", defaults.skillFovColor.z);
+            defaults.skillFovColor.w = ReadJsonFloat(value, "skillFovA", defaults.skillFovColor.w);
             defaults.tracking.bone = ReadJsonInt(value, "trackingBone", defaults.tracking.bone);
             defaults.meleeRadius = ReadJsonFloat(value, "meleeRadius", defaults.meleeRadius);
             defaults.tracking.hitbox = ReadJsonHitboxScaleCompat(
@@ -4755,6 +4803,11 @@ namespace OW { namespace Config {
             defaults.priority = ReadJsonInt(value, "priority", defaults.priority);
             if(value.HasMember("aimPlan")) defaults.aimPlan = AimPlan::Json::ReadPlan(value["aimPlan"]);
             else defaults.aimPlan = {};
+            defaults.allyKey = ReadJsonInt(value,"allyKey",defaults.allyKey);
+            defaults.allyHealthMaxPercent = ReadJsonFloat(value,"allyHealthMaxPercent",defaults.allyHealthMaxPercent);
+            defaults.allyBoneMask = static_cast<SkeletonBoneMask>(ReadJsonInt(value,"allyBoneMask",static_cast<int>(defaults.allyBoneMask)));
+            defaults.ignoreSombraStealth = ReadJsonBool(value,"ignoreSombraStealth",defaults.ignoreSombraStealth);
+            defaults.requireTargetable = ReadJsonBool(value,"requireTargetable",defaults.requireTargetable);
             defaults.targetTeam = ReadJsonInt(value, "targetTeam", defaults.targetTeam);
             defaults.maxAimTime = ReadJsonFloat(value, "maxAimTime", defaults.maxAimTime);
             defaults.minCharge = ReadJsonFloat(value, "minCharge", defaults.minCharge);
@@ -5004,7 +5057,36 @@ namespace OW { namespace Config {
                 heroConfigVersion < kHeroFovAnglesStoredAsHalfAnglesVersion;
             const bool legacyAimBehaviorValues =
                 heroConfigVersion < kHeroAimBehaviorSemanticsVersion;
-            gLastHeroConfigNeedsSave = heroConfigVersion < kCurrentHeroConfigVersion;
+            const bool newHeroSettings=!document.HasMember("heroSettings");
+            if(newHeroSettings) {
+                // Keep both original files before the first UI/config migration.
+                for(const auto& source:{heroConfigPath}) {
+                    if(PathIsRegularFile(source)) {
+                        const auto backup=source+".before-ui-20261109.bak";
+                        if(!CopyFileA(source.c_str(),backup.c_str(),TRUE) && GetLastError()!=ERROR_FILE_EXISTS)
+                            return PersistenceFailure(source,"Back up before hero settings migration");
+                    }
+                }
+                V2::HeroSettings::AutomaticActions automatic;
+                automatic.altFireHealth=AutoRMBhealth;automatic.altFireDistance=AutoRMBdistance;
+                automatic.defensiveHealth=SkillHealth;automatic.repeatIntervalMs=Shoottime;
+                V2::HeroSettings::Migrate(automatic,V2::Alerts::GetSettings());
+                auto display=V2::HeroSettings::Snapshot()->display;
+                for(auto& style:display.elements){style.visible=enargb;style.hidden=invisnenargb;style.target=targetargb;style.ally=allyargb;}
+                display.radar.radius=std::clamp(126.f*radarScale,40.f,600.f);display.radar.rangeM=70;
+                display.radar.markerSize=std::clamp(18.f*radarScale,3.f,48.f);
+                display.radar.enemy=enargb;display.radar.ally=allyargb;
+                display.elements[int(V2::VisualSettings::Element::Crosshair)].visible=fovcol;
+                display.elements[int(V2::VisualSettings::Element::Crosshair)].size=float(therad>0?therad:8)*2;
+                display.world.enabled=draw_hp_pack;display.world.types[0]=draw_hp_pack;
+                V2::HeroSettings::SetDisplay(display);
+            } else {
+                rapidjson::StringBuffer buffer;rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                document["heroSettings"].Accept(writer);
+                if(!V2::HeroSettings::Decode(buffer.GetString()))
+                    return PersistenceFailure(heroConfigPath,"Load hero settings",ERROR_INVALID_DATA);
+            }
+            gLastHeroConfigNeedsSave = heroConfigVersion < kCurrentHeroConfigVersion || newHeroSettings;
 
             heroAimPresets.clear();
             heroTriggerPresets.clear();
@@ -5213,7 +5295,7 @@ namespace OW { namespace Config {
             if (!prepared && !ReadHeroConfigForLoad(heroConfigPath, read)) return false;
             const auto& document = prepared ? *prepared : read;
             if (!document.IsNull()) {
-                LoadHeroConfigUnlocked(heroConfigPath, document);
+                if(!LoadHeroConfigUnlocked(heroConfigPath, document))return false;
                 if (!gLastHeroConfigNeedsSave || deferMigrationSave) return true;
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 gLastHeroConfigNeedsSave = !saved;
@@ -7138,6 +7220,10 @@ namespace OW { namespace Config {
             if (!KeyExists(ini, kAimbotSection, "aimbotBoneMask2"))
                 aimbotBoneMask2 = AimBoneMaskFromLegacy(Bone2, autobone2);
             LoadOutputSettingsUnlocked(ini);
+            V2::HeroSettings::AutomaticActions automatic;
+            automatic.altFireHealth=AutoRMBhealth;automatic.altFireDistance=AutoRMBdistance;
+            automatic.defensiveHealth=SkillHealth;automatic.repeatIntervalMs=Shoottime;
+            V2::HeroSettings::Migrate(automatic,V2::Alerts::GetSettings());
         }
 
         void ApplySystemConfigMigrationDefaultsUnlocked(int fileVersion)
@@ -7346,6 +7432,14 @@ namespace OW { namespace Config {
 
         rapidjson::Document heroDocument;
         if (!ReadHeroConfigForLoad(HeroConfigPath(path), heroDocument)) return ConfigLoadResult::Failed;
+        if(heroDocument.IsNull()||!heroDocument.HasMember("heroSettings")) {
+            for(const auto& source:{path,HeroConfigPath(path)})if(PathIsRegularFile(source)) {
+                const auto backup=source+".before-ui-20261109.bak";
+                if(!CopyFileA(source.c_str(),backup.c_str(),TRUE)&&GetLastError()!=ERROR_FILE_EXISTS) {
+                    PersistenceFailure(source,"Back up profile before UI migration");return ConfigLoadResult::Failed;
+                }
+            }
+        }
         const std::string heroName = HeroSectionName(heroId, linkBase);
         bool migrationSaved = true;
         struct AutoSaveLoadGuard {
@@ -7621,6 +7715,7 @@ namespace OW { namespace Config {
         void ApplyLocalHeroAimPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            slotTargetRules={true,preset.ignoreSombraStealth,preset.requireTargetable,preset.allyHealthMaxPercent,preset.allyBoneMask};
             View_aimModeState()={true,static_cast<const AimBehaviorTuning&>(preset),preset.aimPlan.motion,preset.behaviorConfigs};
             View_Fov() = preset.fov;
             View_minFov1() = preset.fov;
@@ -7693,6 +7788,7 @@ namespace OW { namespace Config {
         void ApplyLocalHeroTriggerPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
+            slotTargetRules={true,preset.ignoreSombraStealth,preset.requireTargetable,preset.allyHealthMaxPercent,preset.allyBoneMask};
             View_aimPlan() = {};
             View_aimPlan().selection = preset.aimPlan.selection;
             View_triggerbot() = preset.trigger.enabled;

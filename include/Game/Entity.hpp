@@ -82,6 +82,7 @@ namespace OW {
         float MaxBarrierHealth  = 0.f;
 
         bool barrprot = false;
+        bool sombraStealthKnown=false, sombraStealth=false;
         bool imort    = false;
 
         // --- State ---

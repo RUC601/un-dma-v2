@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(Unleashed LANGUAGES CXX)
+project(Unleashed VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,6 +102,8 @@ set(UNLEASHED_SOURCES
     src/ui/SlotSelector.cpp
     src/ui/Text.cpp
     src/ui/Theme.cpp
+    src/config/UiPreferences.cpp
+    src/config/HeroSettings.cpp
     src/ui/pages/AimPage.cpp
     src/ui/pages/TriggerPage.cpp
     src/ui/pages/SkillPages.cpp

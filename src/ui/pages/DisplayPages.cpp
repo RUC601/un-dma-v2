@@ -1,3 +1,4 @@
+#include "ui/Search.hpp"
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -6,6 +7,7 @@
 #include "ui/SlotSelector.hpp"
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
+#include "ui/ColorPicker.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
@@ -17,6 +19,7 @@ using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -49,152 +52,192 @@ using namespace UI::ValueFormat;
 #include "ui/EditorSupport.hpp"
 using namespace UI::Theme;
 
-void UI::VisualsPage() {
-    // Player Visual Features -- renderer-backed OW::Config toggles.
-    UIGroupBox("Player Visual Features");
-    {
-        const char* labels[] = {
-            "Box", "Hero Name", "BattleTag",
-            "Health Color", "Health Bar", "Health Bar 2",
-            "Distance", "World Skill Cooldowns",
-            "Skeleton", "Hero Avatar", "Model Shapes (research)",
-            "Snapline", "Eye Ray",
-            "Radar Lines", "FOV Circle", "Tracking Deadzone",
-            "Crosshair", "Health Packs", nullptr
-        };
-        bool* values[] = {
-            &OW::Config::draw_info, &OW::Config::name, &OW::Config::drawbattletag,
-            &OW::Config::drawhealth, &OW::Config::healthbar, &OW::Config::healthbar2,
-            &OW::Config::dist, &OW::Config::skillinfo,
-            &OW::Config::draw_skel, &OW::Config::draw_avatar, &OW::Config::draw_hitbox,
-            &OW::Config::drawline, &OW::Config::eyeray,
-            &OW::Config::radarline, &OW::Config::draw_fov, &OW::Config::drawTrackingDeadzones,
-            &OW::Config::crosscircle, &OW::Config::draw_hp_pack, nullptr
-        };
-        const float ratios[] = { 1.0f, 1.0f, 1.2f };
-        DrawCheckboxGrid3(labels, values, 6, 26.0f, ratios);
-        if(OW::Config::draw_hitbox)
-            ImGui::TextWrapped("%s",(OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified ?
-                "已匹配模型使用原始形状；绑定/姿态及伤害用途待核。未匹配角色沿用估计几何。" :
-                "Matched models use extracted shapes; pose and damage use unverified. Unmatched models use estimated geometry."));
-    }
-    CloseGroupBox();
-
-    SettingRow("Game Outlines (unverified)");
-    UICheckbox("##gameOutlines", &OW::Config::gameOutlines);
-
-    UIGroupBox("Overlay Elements");
-    {
-        auto fixedStyleRow = [](const char* label, const char* id, bool* enabled) {
-            SettingRow(label);
-            UICheckbox(id, enabled);
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", L("ED style"));
-        };
-        auto placement = [](const char* id, float* x, float* y, float* scale) {
-            ImGui::PushID(id);
-            if (ImGui::TreeNode(L("Position / scale"))) {
-                auto percent = [](const char* label, const char* control, float* value, float low, float high) {
-                    float percent = *value * 100;
-                    SettingRow(label); PushControlWidth();
-                    if (UISlider(control, &percent, low, high, Number(0, " %"))) *value = percent / 100;
-                    ImGui::PopItemWidth();
-                };
-                percent("Horizontal position", "##x", x, 0, 100);
-                percent("Vertical position", "##y", y, 0, 100);
-                if (scale) percent("Scale", "##scale", scale, 35, 250);
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
-        };
-        fixedStyleRow("Top-left Info", "##overlayInfo", &OW::Config::showOverlayInfo);
-        SettingRow("Hero Status");
-        UICheckbox("##heroStatus", &OW::Config::ult);
-        ImGui::SameLine();
-        static const char* styles[] = {"ED Compact", "Custom Status"};
-        ImGui::SetNextItemWidth(190);
-        ImGui::BeginDisabled(!OW::Config::ult);
-        UISelect("##heroStatusStyle", &OW::Config::heroStatusStyle, styles, IM_ARRAYSIZE(styles));
-        ImGui::EndDisabled();
-        ImGui::TextDisabled("%s", L("Portrait, skills, health and ultimate switch together."));
-        placement("hero", &OW::Config::heroStatusPosX, &OW::Config::heroStatusPosY, &OW::Config::heroStatusScale);
-        fixedStyleRow("Behavior and Slots", "##slotStatus", &OW::Config::showSlotStatus);
-        placement("slots", &OW::Config::slotPosX, &OW::Config::slotPosY, nullptr);
-        fixedStyleRow("Radar", "##hudRadar", &OW::Config::radar);
-        placement("radar", &OW::Config::radarPosX, &OW::Config::radarPosY, &OW::Config::radarScale);
-    }
-    CloseGroupBox();
-
-    // Filters
-    UIGroupBox("Filters");
-    {
-        SettingRow("Max Distance");
-        PushControlWidth();
-        UISlider("##visMaxDist", &OW::Config::visualMaxDist, 0.0f, 1000.0f, Number(0, " m"));
-        ImGui::PopItemWidth();
-    }
-    CloseGroupBox();
+namespace {
+using V2::VisualSettings::Element;
+using V2::VisualSettings::Settings;
+using V2::VisualSettings::Style;
+bool StyleDetails(Style& style,Element element) {
+    const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair;
+    const bool line=element==Element::Box||element==Element::Health||element==Element::Resources||element==Element::Skeleton||element==Element::Prediction||element==Element::Hitbox||element==Element::Snapline||element==Element::EyeRay||element==Element::Crosshair;
+    bool changed=false;
+    if(size){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Size"),&style.size,6,80,"%.1f");}
+    if(line){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Thickness"),&style.thickness,.5f,8,"%.1f px");}
+    ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("X",&style.offsetX,-300,300,"%.0f px");
+    ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("Y",&style.offsetY,-300,300,"%.0f px");
+    ImGui::TextDisabled("%s",L("Ally"));ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
+    ImGui::TextDisabled("%s",L("Target"));ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
+    return changed;
+}
+bool ElementRow(Settings& settings,Element element,bool& enabled) {
+    const int index=int(element);ImGui::PushID(index);
+    const float labelWidth=(std::max)(100.f,ImGui::GetContentRegionAvail().x-138);
+    SettingRow(V2::VisualSettings::kElementNames[index],labelWidth);
+    bool changed=UICheckbox("##enabled",&enabled);
+    auto& style=settings.elements[index];
+    ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible,[&]{changed|=StyleDetails(style,element);});
+    ImGui::SetItemTooltip("%s",L("Visible"));
+    ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
+    ImGui::SetItemTooltip("%s",L("Hidden"));
+    ImGui::SameLine();if(ImGui::SmallButton("..."))ImGui::OpenPopup("##details");
+    if(ImGui::BeginPopup("##details")){changed|=StyleDetails(style,element);ImGui::EndPopup();}
+    ImGui::PopID();return changed;
+}
+void Card(const char* title,const std::function<void()>& content) {
+    ImGui::PushID(title);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,10);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(12,10));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,kColPanelSoft);
+    ImGui::BeginChild("Card",ImVec2(0,0),ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY|ImGuiChildFlags_AlwaysAutoResize|ImGuiChildFlags_AlwaysUseWindowPadding,
+        ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+    if(UI::Search::Pending())ImGui::SetNextItemOpen(true);
+    UI::Search::Anchor(title);
+    if(ImGui::CollapsingHeader(L(title),ImGuiTreeNodeFlags_DefaultOpen))content();
+    ImGui::EndChild();ImGui::PopStyleColor();ImGui::PopStyleVar(2);ImGui::Spacing();ImGui::PopID();
+}
+void Preview(const Settings& settings) {
+    static bool visible=true;
+    UICheckbox(L("Visible"),&visible);ImGui::SameLine();ImGui::TextDisabled("%s",L("Example"));
+    const ImVec2 p=ImGui::GetCursorScreenPos();
+    const float width=ImGui::GetContentRegionAvail().x;
+    ImGui::Dummy(ImVec2(width,320));
+    auto* draw=ImGui::GetWindowDrawList();
+    const float cx=p.x+width*.5f,top=p.y+62,bottom=p.y+260,left=cx-48,right=cx+48;
+    auto style=[&](Element e)->const Style&{return settings.elements[int(e)];};
+    auto position=[&](Element e,float x,float y){return ImVec2(x+style(e).offsetX,y+style(e).offsetY);};
+    auto color=[&](Element e){return ImGui::ColorConvertFloat4ToU32(V2::VisualSettings::Color(style(e),true,visible));};
+    const float scale=settings.dynamicFont?1.6f:1.f;
+    auto text=[&](Element e,float x,float y,const char* value){auto* font=ImGui::GetFont();const float size=style(e).size*scale;const float w=font->CalcTextSizeA(size,FLT_MAX,0,value).x;draw->AddText(font,size,position(e,x-w*.5f,y),color(e),value);};
+    const ImU32 silhouette=IM_COL32(111,116,132,55);
+    draw->AddCircleFilled(ImVec2(cx,top+30),12,silhouette,24);
+    const std::pair<ImVec2,ImVec2> bones[]={{{cx,top+46},{cx,bottom-65}},{{cx,top+65},{left+4,top+115}},{{cx,top+65},{right-4,top+115}},{{cx,bottom-65},{left+8,bottom}},{{cx,bottom-65},{right-8,bottom}}};
+    for(const auto& bone:bones)draw->AddLine(bone.first,bone.second,silhouette,8);
+    if(OW::Config::draw_skel){const auto c=color(Element::Skeleton);draw->AddCircle(position(Element::Skeleton,cx,top+30),12,c,24,style(Element::Skeleton).thickness);
+        for(const auto& bone:bones)draw->AddLine(position(Element::Skeleton,bone.first.x,bone.first.y),position(Element::Skeleton,bone.second.x,bone.second.y),c,style(Element::Skeleton).thickness);}
+    if(OW::Config::draw_info){const auto c=color(Element::Box);const float thickness=style(Element::Box).thickness;
+        const auto a=position(Element::Box,left,top),b=position(Element::Box,right,bottom);
+        if(settings.boxType==2)draw->AddRectFilled(a,b,(c&~IM_COL32_A_MASK)|(((((c>>IM_COL32_A_SHIFT)&255u)*45u)/255u)<<IM_COL32_A_SHIFT));
+        if(settings.boxType!=0)draw->AddRect(a,b,c,0,0,thickness);
+        else for(int side=0;side<2;++side)for(int row=0;row<2;++row){const auto point=position(Element::Box,side?right:left,row?bottom:top);
+            draw->AddLine(point,ImVec2(point.x+(side?-20:20),point.y),c,thickness);draw->AddLine(point,ImVec2(point.x,point.y+(row?-20:20)),c,thickness);}}
+    if(OW::Config::name){const char* label=settings.nameType==1?"Player":settings.nameType==2?"Ana / Player":"Ana";text(Element::Name,cx,top-22,label);}
+    if(OW::Config::drawbattletag)text(Element::BattleTag,cx,top-40,"Player");
+    if(OW::Config::draw_avatar){auto* icons=Render::GetIconManager();auto* image=icons?icons->LoadHeroAvatar("ana"):nullptr;const float size=style(Element::Avatar).size;
+        if(image){const auto a=position(Element::Avatar,cx-size*.5f,top-size-10);draw->AddImageRounded(reinterpret_cast<ImTextureID>(image),a,ImVec2(a.x+size,a.y+size),ImVec2(0,0),ImVec2(1,1),color(Element::Avatar),4);}}
+    if(OW::Config::healthbar){const auto a=position(Element::Health,left-7,top);const float w=style(Element::Health).thickness;draw->AddRectFilled(a,ImVec2(a.x+w,a.y+bottom-top),kColControl);draw->AddRectFilled(ImVec2(a.x,a.y+40),ImVec2(a.x+w,a.y+bottom-top),color(Element::Health));}
+    if(OW::Config::healthbar2){const auto a=position(Element::Resources,cx-style(Element::Resources).size*2.5f,top-9);draw->AddRectFilled(a,ImVec2(a.x+style(Element::Resources).size*5,a.y+style(Element::Resources).thickness*3),kColControl);draw->AddRectFilled(a,ImVec2(a.x+style(Element::Resources).size*4,a.y+style(Element::Resources).thickness*3),color(Element::Resources));}
+    if(settings.worldUltimate)text(Element::Ultimate,right+18,top,"67%");
+    if(OW::Config::skillinfo){const float size=style(Element::Skills).size;for(int i=0;i<2;++i){const auto a=position(Element::Skills,right+8+i*(size+3),top+20);draw->AddRect(a,ImVec2(a.x+size,a.y+size),color(Element::Skills),3,0,style(Element::Skills).thickness);draw->AddText(ImGui::GetFont(),size*.67f,ImVec2(a.x+2,a.y+2),color(Element::Skills),i?"--":"4");}}
+    if(OW::Config::dist)text(Element::Distance,cx,bottom+4,"14 m");
+    if(settings.prediction)draw->AddCircle(position(Element::Prediction,cx+25,top+75),style(Element::Prediction).size*.25f,color(Element::Prediction),20,style(Element::Prediction).thickness);
+    if(OW::Config::draw_hitbox)draw->AddCircle(position(Element::Hitbox,cx,top+30),16,color(Element::Hitbox),24,style(Element::Hitbox).thickness);
+    if(OW::Config::drawline)draw->AddLine(ImVec2(cx,p.y+315),position(Element::Snapline,cx,bottom),color(Element::Snapline),style(Element::Snapline).thickness);
+    if(OW::Config::eyeray)draw->AddLine(position(Element::EyeRay,cx,top+30),position(Element::EyeRay,right+30,top+40),color(Element::EyeRay),style(Element::EyeRay).thickness);
+    if(settings.offscreen){const auto tip=position(Element::Offscreen,p.x+width-18,top+110);const float size=style(Element::Offscreen).size;draw->AddTriangleFilled(tip,ImVec2(tip.x-size,tip.y-size*.5f),ImVec2(tip.x-size,tip.y+size*.5f),color(Element::Offscreen));}
+    if(OW::Config::crosscircle){const auto center=position(Element::Crosshair,cx,top+100);draw->AddCircle(center,style(Element::Crosshair).size*.5f,color(Element::Crosshair),24,style(Element::Crosshair).thickness);}
 }
 
-// =====================================================================
-// UI::ThemePage
-// =====================================================================
+}
+void UI::VisualsPage() {
+    auto settings=V2::HeroSettings::Snapshot()->display;
+    bool changed=false;
+    const float width=ImGui::GetContentRegionAvail().x;
+    const bool columns=width>=650;
+    const float height=(std::max)(200.f,ImGui::GetContentRegionAvail().y);
+    ImGui::BeginChild("VisualsLeft",ImVec2(columns?(width-16)*.5f:0,columns?height:0),columns?ImGuiChildFlags_None:ImGuiChildFlags_AutoResizeY);
+    Card("Players",[&]{
+        SettingRow(L("Enabled"));changed|=UICheckbox("##playersEnabled",&settings.enabled);
+        SettingRow(L("Draw Enemy"));changed|=UICheckbox("##enemies",&settings.enemies);
+        SettingRow(L("Draw Ally"));changed|=UICheckbox("##allies",&settings.allies);
+        SettingRow(L("Visible Only"));changed|=UICheckbox("##visibleOnly",&settings.visibleOnly);
+        SettingRow("Max Distance");PushControlWidth();UISlider("##maxDistance",&OW::Config::visualMaxDist,0,1000,Number(0," m"));ImGui::PopItemWidth();
+    });
+    Card("Player ESP",[&]{
+        SettingRow("Dynamic Font Scaling");changed|=UICheckbox("##dynamicFont",&settings.dynamicFont);
+        changed|=ElementRow(settings,Element::Box,OW::Config::draw_info);
+        const char* boxes[]={"Corner","Rectangle","Filled"};SettingRow("Box Type");PushControlWidth();changed|=UISelect("##boxType",&settings.boxType,boxes,3);ImGui::PopItemWidth();
+        changed|=ElementRow(settings,Element::Name,OW::Config::name);
+        const char* names[]={"Hero Name","BattleTag","Hero / BattleTag"};SettingRow("Name Type");PushControlWidth();changed|=UISelect("##nameType",&settings.nameType,names,3);ImGui::PopItemWidth();
+        changed|=ElementRow(settings,Element::BattleTag,OW::Config::drawbattletag);
+        changed|=ElementRow(settings,Element::Health,OW::Config::healthbar);
+        changed|=ElementRow(settings,Element::Resources,OW::Config::healthbar2);
+        changed|=ElementRow(settings,Element::Distance,OW::Config::dist);
+        changed|=ElementRow(settings,Element::Avatar,OW::Config::draw_avatar);
+        changed|=ElementRow(settings,Element::Ultimate,settings.worldUltimate);
+        changed|=ElementRow(settings,Element::Skeleton,OW::Config::draw_skel);
+        changed|=ElementRow(settings,Element::Skills,OW::Config::skillinfo);
+        changed|=ElementRow(settings,Element::Prediction,settings.prediction);
+        changed|=ElementRow(settings,Element::Hitbox,OW::Config::draw_hitbox);
+        changed|=ElementRow(settings,Element::Offscreen,settings.offscreen);
+        changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
+        changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);
+        changed|=ElementRow(settings,Element::Crosshair,OW::Config::crosscircle);
+        SettingRow("Game Outlines (unverified)");UICheckbox("##gameOutlines",&OW::Config::gameOutlines);
+    });
+    Card("World",[&]{
+        auto& world=settings.world;
+        ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"物品识别与字段待现场核验；轮胎缺少可靠身份":"Object capture pending live validation; tire identity unavailable");
+        SettingRow("Enabled");changed|=UICheckbox("##worldEnabled",&world.enabled);
+        SettingRow("Box");changed|=UICheckbox("##worldBox",&world.box);
+        SettingRow("Name");changed|=UICheckbox("##worldName",&world.name);
+        SettingRow("Icon");changed|=UICheckbox("##worldIcon",&world.icon);
+        SettingRow("Distance");changed|=UICheckbox("##worldDistance",&world.distance);
+        SettingRow("Max Distance");PushControlWidth();changed|=UISlider("##worldMaxDistance",&world.maxDistance,0,1000,Number(0," m"));ImGui::PopItemWidth();
+        SettingRow("Size");PushControlWidth();changed|=UISlider("##worldSize",&world.size,6,80,Number(0," px"));ImGui::PopItemWidth();
+        for(int i=0;i<int(V2::VisualSettings::kObjects.size());++i){ImGui::PushID(i);const auto label=std::string(L(V2::VisualSettings::kObjects[i].name))+(i==0?"":" *");SettingRow(label.c_str());
+            ImGui::BeginDisabled(V2::VisualSettings::kObjects[i].id==0);
+            changed|=UICheckbox("##object",&world.types[i]);ImGui::SameLine();changed|=UI::ColorPicker("color",world.colors[i]);ImGui::EndDisabled();
+            ImGui::SetItemTooltip("%s",i==0?L("Existing capture; live verification required"):L("Candidate identification; live verification required"));ImGui::PopID();}
+    });
+    ImGui::EndChild();
+    if(columns)ImGui::SameLine(0,16);
+    ImGui::BeginChild("VisualsRight",ImVec2(0,columns?height:0),columns?ImGuiChildFlags_None:ImGuiChildFlags_AutoResizeY);
+    Card("Appearance preview",[&]{Preview(settings);});
+    Card("Radar",[&]{auto& radar=settings.radar;
+        SettingRow("Enabled");UICheckbox("##radarEnabled",&OW::Config::radar);
+        auto slider=[&](const char* label,const char* id,float& value,float low,float high,const char* unit){SettingRow(label);PushControlWidth();changed|=UISlider(id,&value,low,high,Number(1,unit));ImGui::PopItemWidth();};
+        slider("Size","##radarRadius",radar.radius,40,600," px");slider("Display distance","##radarRange",radar.rangeM,5,500," m");
+        slider("Marker Size","##markerSize",radar.markerSize,3,48," px");slider("Background Opacity","##radarAlpha",radar.backgroundAlpha,0,1,"");
+        SettingRow("Draw Ally");changed|=UICheckbox("##radarAllies",&radar.allies);
+        SettingRow("Rotate with view");changed|=UICheckbox("##radarRotate",&radar.rotate);
+        SettingRow("Radar Lines");UICheckbox("##radarLines",&OW::Config::radarline);
+        changed|=UIColorEdit("Enemy",&radar.enemy);changed|=UIColorEdit("Ally",&radar.ally);
+        slider("Horizontal position","##radarX",OW::Config::radarPosX,0,1,"");slider("Vertical position","##radarY",OW::Config::radarPosY,0,1,"");
+    });
+    Card("HUD",[&]{
+        auto placement=[](const char* id,float& x,float& y,float* scale){ImGui::PushID(id);bool edited=false;
+            ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat("X",&x,0,1,"%.3f");ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat("Y",&y,0,1,"%.3f");
+            if(scale){ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat(L("Scale"),scale,.35f,2.5f,"%.2fx");}ImGui::PopID();return edited;};
+        SettingRow("Top-left Info");UICheckbox("##info",&OW::Config::showOverlayInfo);
+        changed|=placement("info",settings.infoX,settings.infoY,&settings.infoScale);
+        SettingRow("Hero Status");UICheckbox("##heroStatus",&OW::Config::ult);
+        const char* styles[]={"ED Compact","Custom Status"};SettingRow("Style");PushControlWidth();UISelect("##heroStyle",&OW::Config::heroStatusStyle,styles,2);ImGui::PopItemWidth();
+        placement("hero",OW::Config::heroStatusPosX,OW::Config::heroStatusPosY,&OW::Config::heroStatusScale);
+        const char* teams[]={"All","Enemy","Ally"};SettingRow("Hero Status Team");PushControlWidth();UISelect("##roster",&OW::Config::ultimateRosterFilter,teams,3);ImGui::PopItemWidth();
+        SettingRow("Behavior and Slots");UICheckbox("##slotStatus",&OW::Config::showSlotStatus);
+        placement("slots",OW::Config::slotPosX,OW::Config::slotPosY,nullptr);
+    });
+    ImGui::EndChild();
+    if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
+}
 void DrawThemeGeneralPage() {
-    UIGroupBox("ESP Display Position");
-    {
-        static const char* kUltimateRosterFilter[] = { "All", "Enemy", "Ally" };
-        static const char* kRadarCorner[] = { "Bottom Right", "Bottom Left", "Top Right", "Top Left" };
-
-        auto drawPositionSelect = [](const char* rowLabel, const char* controlId,
-                                     bool visualEnabled, int* value,
-                                     const char* const items[], int itemCount) {
-            SettingRow(rowLabel);
-            PushControlWidth();
-            if (visualEnabled) {
-                UISelect(controlId, value, items, itemCount);
-            } else {
-                UIDisabledSelect(controlId);
-            }
-            ImGui::PopItemWidth();
-        };
-
-
-        drawPositionSelect("Hero Status Team", "##ultimateRosterFilter", OW::Config::ult,
-                           &OW::Config::ultimateRosterFilter,
-                           kUltimateRosterFilter, IM_ARRAYSIZE(kUltimateRosterFilter));
+    auto settings=V2::HeroSettings::Snapshot()->display;
+    bool changed=false;
+    for(int i=0;i<int(Element::Count);++i) {
+        ImGui::PushID(i);
+        Card(V2::VisualSettings::kElementNames[i],[&]{
+            auto& style=settings.elements[i];
+            changed|=UIColorEdit("Visible",&style.visible);changed|=UIColorEdit("Hidden",&style.hidden);
+            changed|=UIColorEdit("Ally",&style.ally);changed|=UIColorEdit("Target",&style.target);
+            changed|=StyleDetails(style,static_cast<Element>(i));
+        });
+        ImGui::PopID();
     }
-    CloseGroupBox();
-
-    UIGroupBox("Overlay Colors");
-    {
-        UIColorEdit("Box Outline", &OW::Config::EnemyCol);
-        UIColorEdit("FOV Circle", &OW::Config::fovcol);
-        UIColorEdit("Visible Fill", &OW::Config::enargb);
-        UIColorEdit("Hidden Fill", &OW::Config::invisnenargb);
-        UIColorEdit("Target Fill", &OW::Config::targetargb);
-        UIColorEdit("Ally Fill", &OW::Config::allyargb);
-    }
-    CloseGroupBox();
+    Card("Game Outlines (unverified)",[&]{UIColorEdit("Visible Fill",&OW::Config::enargb);UIColorEdit("Hidden Fill",&OW::Config::invisnenargb);UIColorEdit("Target Fill",&OW::Config::targetargb);UIColorEdit("Ally Fill",&OW::Config::allyargb);});
+    if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
 }
 
 static bool UIFovRingCompactColorEdit(const char* label, ImVec4* value) {
-    ImGui::SetNextItemWidth(92.0f);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, kColControl);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, kColControlHover);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, kColControlHot);
-    ImGui::PushStyleColor(ImGuiCol_Border, kColStroke);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
-    const bool changed = ImGui::ColorEdit4(
-        label,
-        &value->x,
-        ImGuiColorEditFlags_NoLabel |
-        ImGuiColorEditFlags_NoInputs |
-        ImGuiColorEditFlags_AlphaBar |
-        ImGuiColorEditFlags_DisplayRGB |
-        ImGuiColorEditFlags_InputRGB);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(4);
-    return changed;
+    return UI::ColorPicker(label,*value);
 }
 
 static bool UIFovRingStyleRow(OW::Config::FovRingSlotKind kind,

@@ -1,5 +1,6 @@
 #include "EntityVisuals.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/TrainingBotDisplay.hpp"
 #include "Game/snapshots/Interpolation.hpp"
 #include <cfloat>
@@ -793,7 +794,7 @@ namespace OverlayRenderDetail {
     inline bool DrawAbilityIconSlot(IconManager* iconManager, const OW::HeroAbilityIcons& icons,
                                     const char* abilityIcon, float& cursorX, float y,
                                     float iconSize, float gap, float opacity,
-                                    bool onCooldown, float cooldown, const char* missingLabel = nullptr) {
+                                    bool onCooldown, float cooldown, const char* missingLabel = nullptr, ImU32 tint=IM_COL32_WHITE) {
         ID3D11ShaderResourceView* texture = nullptr;
         if (iconManager && abilityIcon && abilityIcon[0])
             texture = iconManager->GetIcon(std::string(icons.heroSlug) + "/" + abilityIcon);
@@ -810,14 +811,14 @@ namespace OverlayRenderDetail {
         Render::DrawIcon(texture,
                          ImVec2(cursorX + imagePadding, y + imagePadding),
                          ImVec2(imageSize, imageSize),
-                         ImU32WithAlpha(255, 255, 255, alpha));
+                         (tint & ~IM_COL32_A_MASK) | (static_cast<ImU32>(((tint>>IM_COL32_A_SHIFT)&255)*alpha)<<IM_COL32_A_SHIFT));
 
         if (onCooldown) {
             Render::DrawFilledRect(Vector2(cursorX, y), iconSize, iconSize,
                                    ImColorWithAlpha(0, 0, 0, alpha * 0.58f));
             const std::string text = FormatIconCooldown(cooldown);
             DrawIconSlotText(cursorX, y, iconSize, text,
-                             ImU32WithAlpha(255, 230, 120, alpha), 9.0f);
+                             tint==IM_COL32_WHITE?ImU32WithAlpha(255,230,120,alpha):tint, iconSize*.5f);
         }
 
         AdvanceIconSlot(cursorX, iconSize, gap);
@@ -846,7 +847,7 @@ namespace OverlayRenderDetail {
     }
 
     inline void DrawSkillCooldowns(const OW::c_entity& entity, const std::string& heroName,
-                                   float x, float y, float opacity) {
+                                   float x, float y, float opacity, const V2::VisualSettings::Style* style=nullptr,ImU32 tint=IM_COL32_WHITE) {
         const OW::HeroAbilityIcons* icons = OW::GetAbilityIcons(heroName);
         IconManager* iconManager = Render::GetIconManager();
         if (icons && iconManager) EnsureAbilityIconsLoaded(iconManager, *icons);
@@ -854,15 +855,16 @@ namespace OverlayRenderDetail {
             const auto& sample = entity.display_cooldowns[slot];
             const bool known = sample.Fresh(GetTickCount());
             const float remaining = sample.Remaining();
-            const float sx = x + float(slot) * 21.0f;
+            const float size=style?style->size:18.f;
+            const float sx = x + float(slot) * (size+3);
             float cursor = sx;
             if (icons && iconManager)
                 DrawAbilityIconSlot(iconManager, *icons, slot == 0 ? icons->ability1Icon : icons->ability2Icon,
-                    cursor, y, 18, 3, opacity * (known ? 1.0f : .25f),
-                    known && remaining > .05f, remaining, slot == 0 ? "S1" : "S2");
+                    cursor, y, size, 3, opacity * (known ? 1.0f : .25f),
+                    known && remaining > .05f, remaining, slot == 0 ? "S1" : "S2",tint);
             if (!known || !icons || !iconManager) {
                 const std::string text = known ? FormatIconCooldown(remaining) : "--";
-                Render::DrawStrokeText(ImVec2(sx, y), ImU32WithAlpha(255,230,120,opacity), text.c_str(), 12);
+                Render::DrawStrokeText(ImVec2(sx, y), tint==IM_COL32_WHITE?ImU32WithAlpha(255,230,120,opacity):tint, text.c_str(), size*.67f);
             }
         }
     }
@@ -890,7 +892,7 @@ namespace OverlayRenderDetail {
             Render::DrawLine(from, to, color, thickness);
     }
 
-    inline void DrawSkeleton(const OW::c_entity& entity, const OW::Matrix& view, const Render::Color& color, float thickness) {
+    inline void DrawSkeleton(const OW::c_entity& entity, const OW::Matrix& view, const Render::Color& color, float thickness, Vector2 offset={}) {
         Vector2 points[18]{};
         bool projected[18]{};
         const Vector2 windowSize(OW::WX, OW::WY);
@@ -901,6 +903,7 @@ namespace OverlayRenderDetail {
             if (!entity.skeleton_bone_valid[i])
                 continue;
             projected[i] = view.WorldToScreen(entity.skeleton_bones[i], &points[i], windowSize);
+            points[i]=points[i]+offset;
         }
 
         auto draw = [&](int from, int to) {
@@ -1053,7 +1056,7 @@ namespace OverlayRenderDetail {
     inline bool DrawHitboxes(const OW::c_entity& entity,
                              const OW::Matrix& view,
                              const Render::Color& color,
-                             float opacity) {
+                             float opacity, float thickness=1,Vector2 offset={}) {
         // Original model shapes use their own size; never apply the aim window scale.
         if(OW::ModelShapes::Supported(entity.HeroID) && entity.model_shapes.modelIndex>=0) {
             if(!entity.model_shapes.tick || GetTickCount()-entity.model_shapes.tick>100)return false;
@@ -1075,7 +1078,7 @@ namespace OverlayRenderDetail {
                     if(view.WorldToScreen(world(a),&sa,Vector2(OW::WX,OW::WY)) &&
                        view.WorldToScreen(world(b),&sb,Vector2(OW::WX,OW::WY)) &&
                        std::isfinite(sa.X) && std::isfinite(sa.Y) && std::isfinite(sb.X) && std::isfinite(sb.Y)) {
-                        Render::DrawLine(sa,sb,shapeColor,1.f);drew=true;
+                        Render::DrawLine(sa+offset,sb+offset,shapeColor,thickness);drew=true;
                     }
                 });
             }
@@ -1101,7 +1104,8 @@ namespace OverlayRenderDetail {
         }
 
         const Render::Color hitboxColor(color.R, color.G, color.B, ToByte(opacity * 0.70f));
-        constexpr float capsuleThickness = 1.0f;
+        const float capsuleThickness=thickness;
+        for(auto& ellipse:ellipses)ellipse.center=ellipse.center+offset;
         static constexpr std::pair<int, int> kBoneConnections[] = {
             {0, 1}, {1, 2}, {2, 3},
             {1, 4}, {4, 6}, {6, 12},
@@ -1178,6 +1182,10 @@ float DrawAimTriggerStatusPanel() {
 void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
                                    const OW::c_entity& local_snapshot,
                                    bool boxPerfMode) {
+    const auto visualState=V2::HeroSettings::Snapshot();
+    const auto& display=visualState->display;
+    if(!display.enabled)return;
+    using VisualElement=V2::VisualSettings::Element;
     const auto playerInfoStart = std::chrono::steady_clock::now();
 
     Diagnostics::PlayerInfoStats renderStats{};
@@ -1467,6 +1475,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             continue;
         }
 
+        if((entity.Team&&!display.enemies)||(!entity.Team&&!display.allies)||(display.visibleOnly&&!entity.Vis))continue;
         Vector3 Vec3 = entity.head_pos;
         const float dist = cameraDistanceOriginValid
             ? cameraDistanceOrigin.DistTo(Vec3)
@@ -1484,8 +1493,29 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             continue;
         }
 
+        auto elementColor=[&](VisualElement element) {
+            const auto& style=display.elements[int(element)];
+            const bool selected=OverlayRenderDetail::IsSelectedEnemyTarget(entity,index,selectedTargetKey,selectedTargetIndex);
+            return OverlayRenderDetail::ToImU32(OverlayRenderDetail::ApplyVisualState(V2::VisualSettings::Color(style,entity.Team,entity.Vis,selected),entity,distanceOpacity));
+        };
+        auto elementStyle=[&](VisualElement element)->const V2::VisualSettings::Style& {return display.elements[int(element)];};
+        auto arrow=[&] {
+            if(!display.offscreen || !local_snapshot.HasUsableBody(renderTick,OW::EntitySceneGeneration()) || !OverlayRenderDetail::IsFiniteVector(local_snapshot.pos))return;
+            Matrix view{},camera{};OW::GetViewMatricesSnapshot(view,camera);
+            const auto forward=camera.get_rotation();const float yaw=std::atan2(forward.x,forward.z);
+            const float dx=entity.pos.X-local_snapshot.pos.X,dz=entity.pos.Z-local_snapshot.pos.Z;
+            float x=dx*std::cos(yaw)-dz*std::sin(yaw),y=-(dx*std::sin(yaw)+dz*std::cos(yaw));
+            const float length=std::sqrt(x*x+y*y);if(length<.001f)return;x/=length;y/=length;
+            const auto& style=elementStyle(VisualElement::Offscreen);
+            const float cx=OW::WX*.5f,cy=OW::WY*.5f;
+            const float reach=(std::min)((cx-30)/(std::max)(.001f,std::abs(x)),(cy-30)/(std::max)(.001f,std::abs(y)));
+            const ImVec2 tip(cx+x*reach+style.offsetX,cy+y*reach+style.offsetY);
+            const float size=style.size;
+            ImGui::GetForegroundDrawList()->AddTriangleFilled(tip,ImVec2(tip.x-x*size-y*size*.5f,tip.y-y*size+x*size*.5f),ImVec2(tip.x-x*size+y*size*.5f,tip.y-y*size-x*size*.5f),elementColor(VisualElement::Offscreen));
+        };
         OverlayRenderDetail::ProjectedEntityBounds bounds{};
         if (!OverlayRenderDetail::TryBuildProjectedBounds(entity, bounds, &renderViewMatrix)) {
+            arrow();
             RuntimeTrace::Emit(RuntimeTrace::RenderSkip,9,entity.address,renderCameraSequence);
             renderStats.skippedWorldToScreen++;
             continue;
@@ -1503,6 +1533,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         }
         renderStats.projected++;
 
+        if(bounds.centerX+bounds.width*.5f<0||bounds.centerX-bounds.width*.5f>OW::WX||bounds.bottom<0||bounds.top>OW::WY){arrow();continue;}
         float top = bounds.top;
         float bottom = bounds.bottom;
         float centerX = bounds.centerX;
@@ -1511,8 +1542,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         trackProjectionJump(entity, centerX, centerY);
         captureProjectedSample(entity, left, top, width, height, centerX, bottom, dist);
 
-        const ImU32 boxColor = OverlayRenderDetail::EntityBoxColor(
-            entity, index, selectedTargetKey, selectedTargetIndex, distanceOpacity);
+        const ImU32 boxColor=OW::Config::drawhealth?OverlayRenderDetail::EntityBoxColor(entity,index,selectedTargetKey,selectedTargetIndex,distanceOpacity):elementColor(VisualElement::Box);
         if (boxPerfMode) {
             const float perfThickness = entity.Vis ? 1.5f : 1.0f;
             if (OW::Config::boxPerfFastRect) {
@@ -1531,8 +1561,13 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         Render::Color lineColor = OverlayRenderDetail::EntityRenderColor(
             entity, index, selectedTargetKey, selectedTargetIndex, distanceOpacity);
         const float visualOpacity = OverlayRenderDetail::VisibilityAlpha(entity, distanceOpacity);
-        const float outlineThickness = entity.Vis ? 1.8f : 1.2f;
-        const float skeletonThickness = entity.Vis ? 1.5f : 1.0f;
+        const float outlineThickness=elementStyle(VisualElement::Box).thickness;
+        const float skeletonThickness=elementStyle(VisualElement::Skeleton).thickness;
+        const float fontScale=display.dynamicFont?std::clamp(30.f/(std::max)(1.f,dist),.7f,1.6f):1.f;
+        auto text=[&](VisualElement element,float x,float y,const std::string& label) {
+            const auto& style=elementStyle(element);
+            OverlayRenderDetail::DrawCenteredText(ImVec2(x+style.offsetX,y+style.offsetY),elementColor(element),label,style.size*fontScale);
+        };
         const bool specialEntity = OverlayRenderDetail::IsSpecialEntity(entity);
         bool drewAny = false;
 
@@ -1543,11 +1578,10 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
 
         ID3D11ShaderResourceView* heroIcon = nullptr;
         if (OW::Config::draw_avatar &&
-            OW::EntityRosterPolicy::ShouldRenderWorldHeroAvatar(entity.Team) &&
             !specialEntity && heroName != "Unknown")
             heroIcon = OverlayRenderDetail::FindEntityHeroIcon(entity);
 
-        constexpr float iconSize = 24.0f;
+        const float iconSize=elementStyle(VisualElement::Avatar).size;
         Vector2 ultimateIndicatorCenter(centerX, top - 18.0f);
         if (heroIcon) {
             const float iconY = top - iconSize - 10.0f;
@@ -1555,7 +1589,13 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         }
 
         if (OW::Config::draw_info || OW::Config::draw_edge || OW::Config::drawbox3d) {
-            Render::DrawCorneredBox(left, top, width, bottom - top, boxColor, outlineThickness, boxOutlineColor);
+            const auto& style=elementStyle(VisualElement::Box);
+            const float x=left+style.offsetX,y=top+style.offsetY;
+            if(display.boxType==0)Render::DrawCorneredBox(x,y,width,bottom-top,boxColor,outlineThickness,boxOutlineColor);
+            else {
+                if(display.boxType==2)ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(x,y),ImVec2(x+width,y+bottom-top),(boxColor&~IM_COL32_A_MASK)|(((((boxColor>>IM_COL32_A_SHIFT)&255u)*45u)/255u)<<IM_COL32_A_SHIFT));
+                ImGui::GetForegroundDrawList()->AddRect(ImVec2(x,y),ImVec2(x+width,y+bottom-top),boxColor,0,0,outlineThickness);
+            }
             drewAny = true;
         }
 
@@ -1563,46 +1603,59 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             ? (top - iconSize - 24.0f)
             : (top - 18.0f);
         if (OW::Config::name && !specialEntity && heroName != "Unknown" && heroName != "Bot" && !heroName.empty()) {
-            OverlayRenderDetail::DrawCenteredText(ImVec2(centerX, labelY), color, heroName, 13.0f);
+            const std::string label=display.nameType==1?(entity.battletag.empty()?"--":entity.battletag):display.nameType==2?heroName+" / "+(entity.battletag.empty()?"--":entity.battletag):heroName;
+            text(VisualElement::Name,centerX,labelY,label);
             labelY += 13.0f;
             drewAny = true;
         }
         if (OW::Config::drawbattletag && !entity.battletag.empty()) {
-            OverlayRenderDetail::DrawCenteredText(ImVec2(centerX, labelY), color, entity.battletag, 12.0f);
+            text(VisualElement::BattleTag,centerX,labelY,entity.battletag);
             drewAny = true;
         }
 
         if (OW::Config::healthbar) {
-            Render::DrawHealthBar(Vector2(left - 7.0f, top), bottom - top,
-                                  entity.PlayerHealth, entity.PlayerHealthMax, visualOpacity);
+            const auto& style=elementStyle(VisualElement::Health);
+            const float ratio=entity.PlayerHealthMax>0?std::clamp(entity.PlayerHealth/entity.PlayerHealthMax,0.f,1.f):0;
+            auto* draw=ImGui::GetForegroundDrawList();
+            const float x=left-7+style.offsetX,y=top+style.offsetY;
+            draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+style.thickness+1,y+bottom-top+1),IM_COL32(0,0,0,200));
+            draw->AddRectFilled(ImVec2(x,y+(bottom-top)*(1-ratio)),ImVec2(x+style.thickness,y+bottom-top),elementColor(VisualElement::Health));
             OverlayRenderDetail::DrawStackedResourceBar(entity, left - 13.0f, top, bottom - top, visualOpacity);
             drewAny = true;
         }
 
         if (OW::Config::healthbar2) {
-            int shield = static_cast<int>(entity.MinArmorHealth + entity.MinBarrierHealth);
-            int maxShield = static_cast<int>(entity.MaxArmorHealth + entity.MaxBarrierHealth);
-            const float compactHealthTop = heroIcon
-                ? (ultimateIndicatorCenter.Y + iconSize * 0.5f + 3.0f)
-                : (top - 9.0f);
-            Render::DrawSeerLikeHealth(centerX, compactHealthTop, shield, maxShield,
-                                        static_cast<int>(entity.MinHealth),
-                                        static_cast<int>(entity.MaxHealth));
-            drewAny = true;
+            const auto& style=elementStyle(VisualElement::Resources);
+            const float maximum=entity.MaxHealth+entity.MaxArmorHealth+entity.MaxBarrierHealth;
+            if(maximum>0&&std::isfinite(maximum)) {
+                const float barWidth=style.size*5,barHeight=style.thickness*3;
+                const float x=centerX-barWidth*.5f+style.offsetX,y=top-9+style.offsetY;
+                auto* draw=ImGui::GetForegroundDrawList();draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+barWidth+1,y+barHeight+1),IM_COL32(0,0,0,200));
+                const float current[]={entity.MinHealth,entity.MinArmorHealth,entity.MinBarrierHealth};
+                const float maxima[]={entity.MaxHealth,entity.MaxArmorHealth,entity.MaxBarrierHealth};
+                float cursor=x;auto tint=ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Resources));
+                for(int pool=0;pool<3;++pool)if(maxima[pool]>0) {
+                    const float segment=barWidth*maxima[pool]/maximum,fill=segment*std::clamp(current[pool]/maxima[pool],0.f,1.f);
+                    auto color=tint;const float shade=1.f-pool*.16f;color.x*=shade;color.y*=shade;color.z*=shade;
+                    draw->AddRectFilled(ImVec2(cursor,y),ImVec2(cursor+fill,y+barHeight),ImGui::ColorConvertFloat4ToU32(color));
+                    cursor+=segment;draw->AddLine(ImVec2(cursor,y),ImVec2(cursor,y+barHeight),IM_COL32(0,0,0,180));
+                }
+                drewAny=true;
+            }
         }
 
         if (OW::Config::drawline) {
-            Render::DrawLine(Vector2(OW::WX * 0.5f, OW::WY), Vector2(centerX, bottom), lineColor, 1.0f);
+            Render::DrawLine(Vector2(OW::WX*.5f,OW::WY),Vector2(centerX+elementStyle(VisualElement::Snapline).offsetX,bottom+elementStyle(VisualElement::Snapline).offsetY),OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Snapline))),elementStyle(VisualElement::Snapline).thickness);
             drewAny = true;
         }
 
         if (OW::Config::draw_skel && !specialEntity) {
-            OverlayRenderDetail::DrawSkeleton(entity, renderViewMatrix, lineColor, skeletonThickness);
+            OverlayRenderDetail::DrawSkeleton(entity,renderViewMatrix,OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Skeleton))),skeletonThickness,Vector2(elementStyle(VisualElement::Skeleton).offsetX,elementStyle(VisualElement::Skeleton).offsetY));
             drewAny = true;
         }
 
         if (OW::Config::draw_hitbox && !specialEntity)
-            drewAny |= OverlayRenderDetail::DrawHitboxes(entity, renderViewMatrix, lineColor, visualOpacity);
+            drewAny |= OverlayRenderDetail::DrawHitboxes(entity,renderViewMatrix,OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Hitbox))),visualOpacity,elementStyle(VisualElement::Hitbox).thickness,Vector2(elementStyle(VisualElement::Hitbox).offsetX,elementStyle(VisualElement::Hitbox).offsetY));
 
         if (entity.Vis) {
             OverlayRenderDetail::DrawVisibleEyeIndicator(
@@ -1615,27 +1668,39 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             Vector3 rayEnd(Vec3.X + sinf(entity.Rot.X) * 5.0f, Vec3.Y, Vec3.Z + cosf(entity.Rot.X) * 5.0f);
             if (renderViewMatrix.WorldToScreen(Vec3, &eyeStart, Vector2(OW::WX, OW::WY)) &&
                 renderViewMatrix.WorldToScreen(rayEnd, &eyeEnd, Vector2(OW::WX, OW::WY))) {
-                Render::DrawLine(eyeStart, eyeEnd, lineColor, 1.0f);
+                const Vector2 offset(elementStyle(VisualElement::EyeRay).offsetX,elementStyle(VisualElement::EyeRay).offsetY);
+                Render::DrawLine(eyeStart+offset,eyeEnd+offset,OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::EyeRay))),elementStyle(VisualElement::EyeRay).thickness);
                 drewAny = true;
             }
         }
 
         if (OW::Config::dist) {
             std::string distanceText = std::to_string(static_cast<int>(dist)) + "m";
-            OverlayRenderDetail::DrawCenteredText(ImVec2(centerX, bottom + 4.0f), color, distanceText, 14.0f);
+            text(VisualElement::Distance,centerX,bottom+4,distanceText);
             drewAny = true;
         }
 
         if (heroIcon) {
             Render::DrawIcon(heroIcon,
-                             ImVec2(centerX - iconSize * 0.5f, ultimateIndicatorCenter.Y - iconSize * 0.5f),
-                             ImVec2(iconSize, iconSize),
-                             OverlayRenderDetail::ImU32WithAlpha(255, 255, 255, visualOpacity));
+                             ImVec2(centerX-iconSize*.5f+elementStyle(VisualElement::Avatar).offsetX,ultimateIndicatorCenter.Y-iconSize*.5f+elementStyle(VisualElement::Avatar).offsetY),
+                             ImVec2(iconSize,iconSize),elementColor(VisualElement::Avatar));
             drewAny = true;
         }
 
+        if(display.worldUltimate && entity.display_ultimate_tick && DWORD(renderTick-entity.display_ultimate_tick)<2000 && std::isfinite(entity.ultimate) && entity.ultimate>=0 && entity.ultimate<=100.01f) {
+            char label[24];std::snprintf(label,sizeof(label),"%.0f%%",entity.ultimate);
+            text(VisualElement::Ultimate,left+width+18,top,label);drewAny=true;
+        }
+        if(display.prediction) {
+            Vector2 predicted{};
+            const Vector3 end=OW::TargetingDetail::ApplyPrediction(entity,entity.chest_pos,true,false);
+            if(renderViewMatrix.WorldToScreen(end,&predicted,Vector2(OW::WX,OW::WY))) {
+                const auto& style=elementStyle(VisualElement::Prediction);
+                ImGui::GetForegroundDrawList()->AddCircle(ImVec2(predicted.X+style.offsetX,predicted.Y+style.offsetY),style.size*.25f,elementColor(VisualElement::Prediction),24,style.thickness);
+            }
+        }
         if (showAboveHeadSkillCooldowns) {
-            OverlayRenderDetail::DrawSkillCooldowns(entity, heroName, left + width + 8.0f, top + 20.0f, visualOpacity);
+            OverlayRenderDetail::DrawSkillCooldowns(entity,heroName,left+width+8+elementStyle(VisualElement::Skills).offsetX,top+20+elementStyle(VisualElement::Skills).offsetY,visualOpacity,&elementStyle(VisualElement::Skills),elementColor(VisualElement::Skills));
             drewAny = true;
         }
 

@@ -707,6 +707,17 @@ namespace OW {
             if (entity.address == local.address)
                 return false;
 
+            const auto& rules=Config::slotTargetRules;
+            if(rules.active) {
+                if(!entity.Team) {
+                    if(!std::isfinite(entity.PlayerHealthMax)||entity.PlayerHealthMax<=0 ||
+                       entity.PlayerHealth/entity.PlayerHealthMax*100.f>rules.allyHealthMaxPercent) return false;
+                } else {
+                    if(rules.ignoreSombraStealth && entity.HeroID==eHero::HERO_SOMBRA &&
+                       (!entity.sombraStealthKnown || entity.sombraStealth))return false;
+                    if(rules.requireTargetable && (entity.imort||entity.barrprot))return false;
+                }
+            }
             switch (teamMode) {
             case 0:  return entity.Team;  // Enemies
             case 1:  return !entity.Team; // Allies
@@ -1679,7 +1690,7 @@ namespace OW {
 
                     const SkeletonBoneMask candidateMask =
                         TargetingDetail::EffectiveAimBoneMaskForDistance(
-                            Config::View_aimbotBoneMask(),
+                            Config::slotTargetRules.active && !entities[i].Team ? Config::slotTargetRules.allyBoneMask : Config::View_aimbotBoneMask(),
                             initialDistance);
                     int candidateBoneId = BONE_HEAD;
                     Vector3 rootPosition{};
@@ -1791,51 +1802,54 @@ namespace OW {
             }
         }
 
-        // Ashe B.O.B targeting
+        // Ashe dynamite targeting (existing object-target behavior)
         const auto& planSelection=Config::View_aimPlan().selection;
-        // The dynamic B.O.B record has no trusted hero/health/visibility payload.
-        const bool allowLegacyBob=!Config::targetAimPlanEnabled || (planSelection.mode==0 &&
+        // The dynamic dynamite record has no trusted hero/health/visibility payload.
+        const bool allowLegacyDynamite=!Config::targetAimPlanEnabled || (planSelection.mode==0 &&
             planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimbotPriority()!=3);
-        if (local_entity.HeroID == eHero::HERO_ASHE && allowLegacyBob) {
+        if (local_entity.HeroID == eHero::HERO_ASHE && allowLegacyDynamite) {
             for (hpanddy hppack : hp_dy_entities) {
                 if (hppack.entityid == 0x400000000002533) {
-                    const bool currentLockedBob = activeLock.active &&
-                        activeLock.entityKey == hppack.entityid;
+                    if(hppack.scene_generation!=EntitySceneGeneration()||!hppack.position_tick_ms||
+                       DWORD(now-hppack.position_tick_ms)>200||!hppack.object_parent)continue;
+                    const auto objectKey=hppack.object_parent;
+                    const bool currentLockedDynamite = activeLock.active &&
+                        activeLock.entityKey == objectKey;
                     const bool applyTrackingExitMargin =
-                        trackingContinuityEnabled && currentLockedBob;
-                    if (TargetingDetail::CandidateBlockedByMinLock(lockPolicy, activeLock, hppack.entityid, now))
+                        trackingContinuityEnabled && currentLockedDynamite;
+                    if (TargetingDetail::CandidateBlockedByMinLock(lockPolicy, activeLock, objectKey, now))
                         continue;
-                    const Vector3 bobPosition(hppack.POS.x, hppack.POS.y, hppack.POS.z);
-                    const float bobDistance = TargetingDetail::CameraPosition().DistTo(bobPosition);
+                    const Vector3 dynamitePosition(hppack.POS.x, hppack.POS.y, hppack.POS.z);
+                    const float dynamiteDistance = TargetingDetail::CameraPosition().DistTo(dynamitePosition);
                     if (!TargetingDetail::DistancePassesAimFilter(
-                            bobDistance,
+                            dynamiteDistance,
                             applyTrackingExitMargin))
                         break;
                     const float effectiveFovDeg =
                         TrackingContinuityPolicy::EffectiveFovDeg(
                             Config::ResolveDynamicAimFovForDistance(
                                 Config::View_Fov(),
-                                bobDistance),
+                                dynamiteDistance),
                             applyTrackingExitMargin);
                     float fovScoreDeg = 0.0f;
-                    if (!TargetingDetail::IsWithinFovDeg(fovContext, bobPosition, effectiveFovDeg, &fovScoreDeg))
+                    if (!TargetingDetail::IsWithinFovDeg(fovContext, dynamitePosition, effectiveFovDeg, &fovScoreDeg))
                         break;
-                    if (currentLockedBob)
+                    if (currentLockedDynamite)
                         activeLockCandidateSelectable = true;
                     Vector2 Vec2 = CrossHair;
-                    aimViewMatrix.WorldToScreen(bobPosition, &Vec2, Vector2(OW::WX, OW::WY));
-                    const float lockAdjustedScore = TargetingDetail::ApplyRetargetHysteresis(fovScoreDeg, lockPolicy, activeLock, hppack.entityid);
+                    aimViewMatrix.WorldToScreen(dynamitePosition, &Vec2, Vector2(OW::WX, OW::WY));
+                    const float lockAdjustedScore = TargetingDetail::ApplyRetargetHysteresis(fovScoreDeg, lockPolicy, activeLock, objectKey);
                     if (lockAdjustedScore < origin) {
                         best = TargetCandidate{};
                         best.valid = true;
                         best.entityIndex = -1;
-                        best.entityKey = hppack.entityid;
+                        best.entityKey = objectKey;
                         best.boneId = BONE_CHEST;
-                        best.rawAimPoint = bobPosition;
+                        best.rawAimPoint = dynamitePosition;
                         best.predictedAimPoint = best.rawAimPoint;
                         best.aimPoint = best.rawAimPoint;
                         best.screenPoint = Vec2;
-                        best.distance = bobDistance;
+                        best.distance = dynamiteDistance;
                         best.fovScore = fovScoreDeg;
                         best.effectiveFovDeg = effectiveFovDeg;
                         best.dynamicFov = Config::IsDynamicAimFovActive();
@@ -1995,7 +2009,8 @@ namespace OW {
                 for (std::size_t renderSlot = 0;
                      renderSlot < kTriggerBoneGroupForRenderSlot.size();
                      ++renderSlot) {
-                    if (!TriggerBoneMaskIncludesRenderSlot(boneMask, renderSlot))
+                    const auto candidateMask=Config::slotTargetRules.active&&!entity.Team ? Config::slotTargetRules.allyBoneMask : boneMask;
+                    if (!TriggerBoneMaskIncludesRenderSlot(candidateMask, renderSlot))
                         continue;
 
                     int boneId = Plexies20260609::kUnusedRenderSkeletonBone;

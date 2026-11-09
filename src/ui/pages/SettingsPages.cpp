@@ -1,3 +1,4 @@
+#include "ui/FontFile.hpp"
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -6,6 +7,8 @@
 #include "ui/SlotSelector.hpp"
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
+#include "config/UiPreferences.hpp"
+#include "ui/DynamicFovEditor.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
@@ -17,6 +20,7 @@ using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -41,6 +45,7 @@ using namespace UI::ValueFormat;
 #include <cstring>
 #include <cstdio>
 #include <functional>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -136,7 +141,8 @@ void DrawMiscGeneralPage() {
         }
         ImGui::PopItemWidth();
 
-        ImGui::TextWrapped("%s", T(UiText::SavePolicyNotice));
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", T(UiText::SavePolicyNotice));
 
         SettingRow(T(UiText::Folder));
         {
@@ -189,31 +195,30 @@ void DrawMiscGeneralPage() {
         PushControlWidth();
         int uiLanguage = OW::Config::ClampUiLanguage(OW::Config::uiLanguage);
         if (UISelect("##uiLanguage", &uiLanguage, kUiLanguageOptions, IM_ARRAYSIZE(kUiLanguageOptions)))
+        {
             OW::Config::uiLanguage = OW::Config::ClampUiLanguage(uiLanguage);
+            UI::Preferences::values.language=OW::Config::uiLanguage;
+            UI::Preferences::Save();
+        }
         ImGui::PopItemWidth();
 
-        SettingRow(T(UiText::ToggleKey));
-        PushControlWidth();
-        int toggleKeyIndex = FindMenuToggleKeyIndex(OW::Config::MenuToggleKey);
-        OW::Config::MenuToggleKey = kMenuToggleVk[toggleKeyIndex];
-        if (UISelect("##menuToggleKey", &toggleKeyIndex, kMenuToggleKeys, IM_ARRAYSIZE(kMenuToggleKeys)))
-            OW::Config::MenuToggleKey = kMenuToggleVk[toggleKeyIndex];
+        auto& preferences=UI::Preferences::values;
+        bool preferenceChanged=false;
+        static const char* skins[]={"UN Crimson","Graphite","ED Violet"};
+        SettingRow(OW::Config::uiLanguage==1?"界面风格":"Menu style");PushControlWidth();
+        if(UISelect("##menuSkin",&preferences.skin,skins,3)) {preferences.customAccent=false;preferenceChanged=true;}
         ImGui::PopItemWidth();
+        if(!preferences.customAccent)preferences.accent=ImGui::ColorConvertU32ToFloat4(UI::Theme::kColAccent);
+        if(UIColorEdit(OW::Config::uiLanguage==1?"强调色":"Accent color",&preferences.accent)) {preferences.customAccent=true;preferenceChanged=true;}
+        SettingRow(OW::Config::uiLanguage==1?"减少动画":"Reduce motion");
+        preferenceChanged|=UICheckbox("##reduceMotion",&preferences.reducedMotion);
+        SettingRow(OW::Config::uiLanguage==1?"登录毛玻璃":"Login glass");
+        preferenceChanged|=UICheckbox("##loginGlass",&preferences.loginGlass);
+        SettingRow(OW::Config::uiLanguage==1?"控制台分层":"Console layers");
+        preferenceChanged|=UICheckbox("##consoleLayers",&preferences.consoleLayers);
+        if(preferenceChanged)UI::Preferences::Save();
+        if(!UI::Preferences::Error().empty()) ImGui::TextWrapped("%s",UI::Preferences::Error().c_str());
 
-        SettingRow(L("Cache refresh key"));
-        PushControlWidth();
-        const char* refreshKeys[IM_ARRAYSIZE(kMenuToggleKeys) + 1]{};
-        refreshKeys[0] = L("None");
-        std::copy(std::begin(kMenuToggleKeys), std::end(kMenuToggleKeys), refreshKeys + 1);
-        int refreshKeyIndex = OW::Config::CacheRefreshKey == 0 ? 0 :
-            FindMenuToggleKeyIndex(OW::Config::CacheRefreshKey) + 1;
-        if (UISelect("##cacheRefreshKey", &refreshKeyIndex, refreshKeys, IM_ARRAYSIZE(refreshKeys)))
-            OW::Config::CacheRefreshKey = refreshKeyIndex == 0 ? 0 : kMenuToggleVk[refreshKeyIndex - 1];
-        if (OW::Config::CacheRefreshKey == OW::Config::MenuToggleKey)
-            OW::Config::CacheRefreshKey = 0;
-        ImGui::PopItemWidth();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Works on this PC or the game PC when DMA keys are available. Use a different key from the menu. Hold triggers once."));
     }
     CloseGroupBox();
 
@@ -468,6 +473,8 @@ void DrawMiscBehaviorPage() {
         UI::AimPlanEditor::Float("Overshoot Reset","##overshootReset",aimOvershootResetPixels,1,250," px");
     }
     CloseGroupBox();
+    if(ImGui::CollapsingHeader(OW::Config::uiLanguage==1?"兼容方法库":"Legacy methods"))
+        DrawMiscMethodPage();
     if(changed) RefreshBehaviorModeSlots();
 }
 
@@ -809,42 +816,7 @@ void DrawMiscDynamicFovPage() {
         SettingRow("Smooth Curve");
         UICheckbox("##miscDynamicFovSmooth", &editPreset.smooth);
 
-        editPreset.pointCount = std::clamp(editPreset.pointCount, 2, OW::Config::kMaxDynamicFovPoints);
-        SettingRow("Point Count");
-        PushControlWidth();
-        UISlider("##miscDynamicFovPointCount",
-                 &editPreset.pointCount,
-                 2.0f,
-                 static_cast<float>(OW::Config::kMaxDynamicFovPoints), Number(0, ""));
-        editPreset.pointCount = std::clamp(editPreset.pointCount, 2, OW::Config::kMaxDynamicFovPoints);
-        ImGui::PopItemWidth();
-
-        for (int index = 0; index < editPreset.pointCount; ++index) {
-            char distanceLabel[32] = {};
-            char distanceId[48] = {};
-            char fovLabel[32] = {};
-            char fovId[48] = {};
-            std::snprintf(distanceLabel, sizeof(distanceLabel), L("Point %d Dist"), index + 1);
-            std::snprintf(distanceId, sizeof(distanceId), "##dynamicFovPoint%dDistance", index);
-            std::snprintf(fovLabel, sizeof(fovLabel), L("Point %d FOV"), index + 1);
-            std::snprintf(fovId, sizeof(fovId), "##dynamicFovPoint%dFov", index);
-
-            SettingRow(distanceLabel);
-            PushControlWidth();
-            UISlider(distanceId,
-                     &editPreset.points[static_cast<size_t>(index)].distanceM,
-                     OW::Config::kMinDynamicFovDistanceM,
-                     100.0f, Number(0, " m"));
-            ImGui::PopItemWidth();
-
-            SettingRow(fovLabel);
-            PushControlWidth();
-            UISlider(fovId,
-                     &editPreset.points[static_cast<size_t>(index)].fovDeg,
-                     OW::Config::kMinFovDeg,
-                     OW::Config::kMaxFovDeg, Number(0, " deg"));
-            ImGui::PopItemWidth();
-        }
+        UI::DynamicFovEditor(editPreset);
 
         editPreset = OW::Config::ValidateDynamicFovPresetValue(editPreset);
         if (selectedPreset)
@@ -1340,6 +1312,37 @@ void DrawMiscOutputPage() {
 }
 
 void DrawMiscScreenPage() {
+    auto display=V2::HeroSettings::Snapshot()->display;
+    bool displayChanged=false;
+    UIGroupBox(OW::Config::uiLanguage==1?"ESP / HUD 字体":"ESP / HUD fonts");
+    auto fontInput=[&](const char* label,std::string& path) {
+        char text[1024]{};std::snprintf(text,sizeof(text),"%s",path.c_str());
+        SettingRow(label);ImGui::SetNextItemWidth(-1);
+        if(ImGui::InputText("##fontPath",text,sizeof(text),ImGuiInputTextFlags_EnterReturnsTrue)){path=text;displayChanged=true;}
+    };
+    ImGui::PushID("latin");fontInput(OW::Config::uiLanguage==1?"西文字体":"Font",display.font);ImGui::PopID();
+    ImGui::PushID("chinese");fontInput(OW::Config::uiLanguage==1?"中文回退字体":"Chinese fallback",display.chineseFont);ImGui::PopID();
+    if(ImGui::Button(OW::Config::uiLanguage==1?"恢复默认字体":"Restore default fonts")) {
+        display.font="C:/Windows/Fonts/consola.ttf";display.chineseFont="C:/Windows/Fonts/msyh.ttc";displayChanged=true;
+    }
+    ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"输入字体文件完整路径，按 Enter 应用；不影响菜单字体":"Enter a font file path and press Enter; menu fonts are separate");
+    for(const auto& path:{display.font,display.chineseFont})if(GetFileAttributesW(std::filesystem::u8path(path).c_str())==INVALID_FILE_ATTRIBUTES)
+        ImGui::TextColored(ImVec4(1,.65f,.5f,1),"%s: %s",OW::Config::uiLanguage==1?"字体不可用，将回退":"Font unavailable; using fallback",path.c_str());
+    if(!UI::OverlayFonts::error.empty())ImGui::TextWrapped("%s",UI::OverlayFonts::error.c_str());
+    CloseGroupBox();
+    UIGroupBox(OW::Config::uiLanguage==1?"主机状态暂停":"Host state pause");
+    const auto host=V2::HostInteraction::published.load(std::memory_order_acquire);
+    const bool fresh=V2::HostInteraction::Fresh(*host,OW::ProcessConnection::ConnectionEpoch(),GetTickCount());
+    ImGui::BeginDisabled(!(fresh&&host->chatKnown)&&!display.pauseOnChat);
+    SettingRow(OW::Config::uiLanguage==1?"聊天开启时暂停":"Pause while chatting");displayChanged|=UICheckbox("##chatPause",&display.pauseOnChat);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!(fresh&&host->focusKnown)&&!display.pauseOnFocusLoss);
+    SettingRow(OW::Config::uiLanguage==1?"游戏失焦时暂停":"Pause when game loses focus");displayChanged|=UICheckbox("##focusPause",&display.pauseOnFocusLoss);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"主机状态来源待接入":"Host state source pending");
+    CloseGroupBox();
+    if(displayChanged)V2::HeroSettings::SetDisplay(std::move(display));
+
     UIGroupBox(T(UiText::GroupTargetScreen));
     {
         bool screenChanged = false;
@@ -1400,4 +1403,65 @@ void DrawMiscScreenPage() {
             OW::RefreshScreenSizeFromConfig();
     }
     CloseGroupBox();
+}
+
+void DrawHeroKeyPage() {
+    using namespace V2::HeroSettings;
+    const auto hero=CurrentHeroOption();
+    const bool zh=OW::Config::uiLanguage==1;
+    auto settings=Get(hero.heroId);
+    bool changed=false;
+    UIGroupBox(zh?"英雄游戏按键":"Hero action keys");
+    ImGui::BeginDisabled(hero.heroId==0);
+    static uint64_t captureHero=0;
+    static int capture=-1;
+    static bool armed=false;
+    if(captureHero!=hero.heroId){capture=-1;captureHero=hero.heroId;}
+    for(int i=0;i<int(Action::Count);++i) {
+        ImGui::PushID(i);SettingRow(kActionNames[i]);
+        char label[48];const int vk=settings.keys[i];
+        if(capture==i)std::snprintf(label,sizeof(label),"%s",zh?"按键… Esc 取消":"Press a key... Esc cancels");
+        else if(vk==1||vk==2||vk==4||vk==5||vk==6)std::snprintf(label,sizeof(label),"M%d",vk==1?1:vk==2?2:vk==4?3:vk==5?4:5);
+        else {
+            wchar_t name[64]{};const UINT scan=MapVirtualKeyW(vk,MAPVK_VK_TO_VSC);
+            GetKeyNameTextW(scan<<16,name,64);
+            if(!WideCharToMultiByte(CP_UTF8,0,name,-1,label,sizeof(label),nullptr,nullptr)||!label[0])std::snprintf(label,sizeof(label),"VK %d",vk);
+        }
+        if(ImGui::Button(label,ImVec2(220,ControlHeight()))){capture=i;captureHero=hero.heroId;armed=false;}
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled("%s",zh?"鼠标侧键输出、键盘物理按住释放尚不支持；蓄力释放请用鼠标动作键。":"Side-button output and physical keyboard release are unavailable; use mouse action keys for charged releases.");
+    if(capture>=0) {
+        if(!armed){if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000))armed=true;}
+        else if(GetAsyncKeyState(VK_ESCAPE)&0x8000)capture=-1;
+        else for(int vk=1;vk<256;++vk)if(SupportedKey(vk)&&(GetAsyncKeyState(vk)&0x8000)) {
+            if(vk==VK_XBUTTON1||vk==VK_XBUTTON2)continue; // Current output backends emit three mouse buttons.
+            settings.keys[capture]=vk;changed=true;capture=-1;break;
+        }
+    }
+    if(ImGui::Button(zh?"恢复当前英雄默认键":"Reset this hero to default keys")){settings.keys=kDefaultKeys;changed=true;capture=-1;}
+    ImGui::EndDisabled();
+    if(hero.heroId==0)ImGui::TextDisabled("%s",zh?"选择英雄以编辑按键":"Select a hero to edit action keys");
+    CloseGroupBox();
+    if(changed) {
+        std::lock_guard transition(OW::RuntimeOutputProducerTransitionMutex());
+        const bool wasEnabled=OW::RuntimeOutputSessionEnabled();
+        OW::SetRuntimeOutputSessionEnabled(false);
+        OW::InvalidateRuntimeOutputContinuity();
+        OW::CancelActiveSkill();
+        OW::RuntimeOutputScheduler().CancelAllAndJoin();
+        Set(hero.heroId,std::move(settings));
+        OW::SetRuntimeOutputSessionEnabled(wasEnabled);
+    }
+    UIGroupBox(zh?"全局快捷键":"Global shortcuts");
+    SettingRow(T(UiText::ToggleKey));PushControlWidth();
+    int toggle=FindMenuToggleKeyIndex(OW::Config::MenuToggleKey);
+    if(UISelect("##globalMenuKey",&toggle,kMenuToggleKeys,IM_ARRAYSIZE(kMenuToggleKeys)))OW::Config::MenuToggleKey=kMenuToggleVk[toggle];
+    ImGui::PopItemWidth();
+    SettingRow(L("Cache refresh key"));PushControlWidth();
+    int refresh=OW::Config::CacheRefreshKey?FindMenuToggleKeyIndex(OW::Config::CacheRefreshKey)+1:0;
+    const char* items[IM_ARRAYSIZE(kMenuToggleKeys)+1]{};items[0]=L("None");std::copy(std::begin(kMenuToggleKeys),std::end(kMenuToggleKeys),items+1);
+    if(UISelect("##globalRefreshKey",&refresh,items,IM_ARRAYSIZE(items)))OW::Config::CacheRefreshKey=refresh?kMenuToggleVk[refresh-1]:0;
+    if(OW::Config::CacheRefreshKey==OW::Config::MenuToggleKey)OW::Config::CacheRefreshKey=0;
+    ImGui::PopItemWidth();CloseGroupBox();
 }

@@ -1,4 +1,5 @@
-﻿#include <Windows.h>
+#include "Game/HeroSettings.hpp"
+#include <Windows.h>
 
 #include "Game/HeroSkills.hpp"
 #ifdef UNLEASHED_SELF_TESTS
@@ -427,6 +428,8 @@ namespace {
         return "hero:genji_combo:" + runtimeKey;
     }
 
+    bool AddOutputControlForVk(std::vector<OutputControl>& controls,int vk);
+
     std::vector<OutputControl> MouseControlsForMask(int mask)
     {
         std::vector<OutputControl> controls;
@@ -434,10 +437,9 @@ namespace {
         controls.reserve(3);
         for (int bit = 0; bit < 3; ++bit) {
             if ((mask & (1 << bit)) != 0) {
-                controls.push_back({
-                    OutputControlKind::MouseButton,
-                    static_cast<std::uint16_t>(bit)
-                });
+                const auto action=bit==0?V2::HeroSettings::Action::Primary:bit==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle;
+                if(!AddOutputControlForVk(controls,V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,action)))return {};
+
             }
         }
         return controls;
@@ -454,6 +456,7 @@ namespace {
             return true;
 
         std::vector<OutputControl> controls = MouseControlsForMask(newMask);
+        if(newMask && controls.empty())return false;
         const bool accepted = expectedGeneration == 0
             ? TimedOutputScheduler().SetManualControls(
                 SequenceOwnerKey(skillId),
@@ -485,26 +488,7 @@ namespace {
 
     // VK → USB HID key code for the most common game keys.
     // Unmapped VK codes return 0 (no-op).
-    unsigned char VkToHidKeyCode(int vk)
-    {
-        switch (vk) {
-        case VK_SPACE:  return 0x2C; // KEY_SPACEBAR
-        case VK_LCONTROL:
-        case VK_RCONTROL: return 0xE0; // KEY_LEFT_CONTROL
-        case VK_LSHIFT:
-        case VK_RSHIFT:   return 0xE1; // KEY_LEFT_SHIFT
-        case VK_LMENU:
-        case VK_RMENU:    return 0xE2; // KEY_LEFT_ALT
-        case 0x46:        return 0x09; // F key
-        case 0x45:        return 0x08; // E key
-        case 0x51:        return 0x14; // Q key
-        case 0x52:        return 0x15; // R key
-        case 0x56:        return 0x19; // V key
-        case VK_TAB:      return 0x2B; // KEY_TAB
-        case VK_CAPITAL:  return 0x39; // KEY_CAPS_LOCK
-        default:          return 0;
-        }
-    }
+    unsigned char VkToHidKeyCode(int vk) {return V2::HeroSettings::HidUsage(vk);}
 
     bool AddOutputControlForVk(std::vector<OutputControl>& controls, int vk)
     {
@@ -1286,8 +1270,8 @@ namespace {
         runtime.pitchUpTargetAngle = ClampViewPitchTarget(runtime.initialAngles.X + pitchUpReturnJitterDeg * kDegToRad);
         const float pitchUpTravelDeg = std::fabs(effectivePitchDownTargetDeg - runtime.pitchUpTargetAngle * kRadToDeg);
         runtime.pitchUpSpeedDeg = std::clamp((pitchUpTravelDeg / durationMs) * 1000.0f, 0.0f, 4000.0f);
-        runtime.skillVk = MapHotkeyToVK(params.skillKey >= 0 ? params.skillKey : params.key);
-        runtime.jumpVk = std::clamp(params.jumpKeyCode, 0, 255);
+        runtime.skillVk = params.runtimeOutputVk;
+        runtime.jumpVk = params.runtimeJumpVk;
         runtime.phase = ViewpointPhase::PitchDown;
         runtime.phaseStarted = Clock::now();
         runtime.lastTick = runtime.phaseStarted;
@@ -1871,8 +1855,10 @@ namespace {
                 continue;
             }
 
-            if (fovScore < bestScore ||
-                (std::fabs(fovScore - bestScore) <= 0.001f && aimedDistance < bestDistance)) {
+            const float priorityScore = settings.targetPriority == 1 ? vitality
+                : settings.targetPriority == 2 ? aimedDistance : fovScore;
+            if (priorityScore < bestScore ||
+                (std::fabs(priorityScore - bestScore) <= 0.001f && aimedDistance < bestDistance)) {
                 best.valid = true;
                 best.entity = entity;
                 best.entityIndex = static_cast<int>(index);
@@ -1888,7 +1874,7 @@ namespace {
                     selectedBoneId,
                     projectile,
                     settings.tracking.hitbox);
-                bestScore = fovScore;
+                bestScore = priorityScore;
                 bestDistance = aimedDistance;
             }
         }
@@ -1980,7 +1966,7 @@ namespace {
 
     int SkillOutputVk(const Config::HeroSkillSettings& settings)
     {
-        return MapHotkeyToVK(settings.skillKey >= 0 ? settings.skillKey : settings.key);
+        return settings.runtimeOutputVk;
     }
 
     OutputScheduler& TimedOutputScheduler()
@@ -2000,6 +1986,7 @@ namespace {
         case VK_MBUTTON:
             control = { OutputControlKind::MouseButton, 2 };
             return true;
+        case VK_XBUTTON1:case VK_XBUTTON2:return false;
         default:
             break;
         }
@@ -2030,10 +2017,19 @@ namespace {
             duration);
     }
 
+    int MappedMouseButton(V2::HeroSettings::Action action) {
+        const int vk=V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,action);
+        return vk==VK_LBUTTON?0:vk==VK_RBUTTON?1:vk==VK_MBUTTON?2:-1;
+    }
+
     bool StartZaryaAutoRightPulse(const std::string& runtimeKey,
                                   bool releaseLeftDuringPulse,
                                   ZaryaAutoRightTiming timing)
     {
+        const int primary=MappedMouseButton(V2::HeroSettings::Action::Primary);
+        OutputControl secondary{};
+        if(!TryMapVkToOutputControl(V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Secondary),secondary))return false;
+        if(releaseLeftDuringPulse&&primary<0)return false;
         struct PulseState
         {
             std::atomic<bool> maskedLeft{ false };
@@ -2064,18 +2060,18 @@ namespace {
         OutputActionPlan plan{};
         plan.key = runtimeKey;
         plan.ownerSource = OutputOwnerSource::ZaryaPulse;
-        plan.acquire = { { OutputControlKind::MouseButton, 1 } };
+        plan.acquire = { secondary };
 
-        const auto generatedLeftOwnerHeld = []() {
+        const auto generatedLeftOwnerHeld = [primary]() {
             return TimedOutputScheduler().IsControlHeld(
-                { OutputControlKind::MouseButton, 0 });
+                { OutputControlKind::MouseButton, static_cast<uint16_t>(primary) });
         };
 
         if (releaseLeftDuringPulse) {
             OutputActionStep releaseLeft{};
             releaseLeft.afterStart = timing.leftReleaseDelay;
             releaseLeft.callback = [
-                state,
+                state,primary,
                 generatedLeftOwnerHeld,
                 physicalLeftMaskKey](std::uint64_t generation) {
                 // Temporarily mask physical LMB rather than inventing a
@@ -2087,14 +2083,14 @@ namespace {
                 if (!OW::AcquirePhysicalMouseMaskLease(
                         physicalLeftMaskKey,
                         OutputOwnerSource::ZaryaPulse,
-                        0x01u,
+                        uint32_t(1u<<primary),
                         generation)) {
                     return;
                 }
                 state->maskedLeft.store(true, std::memory_order_release);
                 const bool released =
                     V2::Output::DispatchForceReleaseMouseButtonForGeneration(
-                        generation, 0) == success;
+                        generation, primary) == success;
                 state->releasedLeft.store(released, std::memory_order_release);
                 if (!released) {
                     state->restoredLeft.store(
@@ -2111,7 +2107,7 @@ namespace {
 
         OutputActionStep releaseRight{};
         releaseRight.afterStart = timing.rightHold;
-        releaseRight.release = { { OutputControlKind::MouseButton, 1 } };
+        releaseRight.release = { secondary };
         if (!releaseLeftDuringPulse) {
             releaseRight.callback = [state, logCompletion](std::uint64_t) {
                 state->completed.store(true, std::memory_order_release);
@@ -2474,11 +2470,11 @@ namespace {
     {
         std::vector<OutputControl> controls;
         controls.reserve(3);
-        if (runtime.rightDown && !AddOutputControlForVk(controls, VK_RBUTTON))
+        if (runtime.rightDown && !AddOutputControlForVk(controls, V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Secondary)))
             return false;
-        if (runtime.shiftDown && !AddOutputControlForVk(controls, VK_LSHIFT))
+        if (runtime.shiftDown && !AddOutputControlForVk(controls, V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Ability1)))
             return false;
-        if (runtime.meleeDown && !AddOutputControlForVk(controls, 0x56))
+        if (runtime.meleeDown && !AddOutputControlForVk(controls, V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Melee)))
             return false;
         return TimedOutputScheduler().SetManualControls(
             GenjiComboOwnerKey(runtimeKey),
@@ -2836,8 +2832,8 @@ namespace {
     {
         ZaryaAmmoProbeRuntime& runtime = g_zaryaAmmoProbes[runtimeKey];
         const Clock::time_point now = Clock::now();
-        const bool leftDown = AimbotDetail::IsInputVkDown(VK_LBUTTON);
-        const bool rightDown = AimbotDetail::IsInputVkDown(VK_RBUTTON);
+        const bool leftDown = AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Primary));
+        const bool rightDown = AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Secondary));
 
         bool reloading = false;
         const bool fastReloadRead = ReadLocalReloadingFast(local, reloading);
@@ -3493,6 +3489,10 @@ namespace {
         if (SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
             if (!AdvanceSkillAimSession(runtimeKey, held, settings.maxAimTimeMs))
                 return false;
+            const auto& session = g_skillAimSessions.at(runtimeKey);
+            const float elapsedMs = std::chrono::duration<float, std::milli>(Clock::now() - session.started).count();
+            if (elapsedMs < settings.assistanceDelayMs)
+                return false;
         } else if (!held) {
             return false;
         }
@@ -3616,12 +3616,14 @@ namespace {
 
     bool ReleaseRocketPunchInput(const std::string& runtimeKey, uint64_t generation)
     {
+        const int secondary=MappedMouseButton(V2::HeroSettings::Action::Secondary);
+        if(secondary<0)return false;
         bool released = false;
         (void)TimedOutputScheduler().ReleaseManualControlOrExecuteIfUnownedForGeneration(
             runtimeKey, OutputOwnerSource::HeroTimedAction,
-            { OutputControlKind::MouseButton, 1 }, generation,
-            [&released](uint64_t expectedGeneration) {
-                released = V2::Output::DispatchForceReleaseMouseButtonForGeneration(expectedGeneration, 1) == success;
+            { OutputControlKind::MouseButton, static_cast<uint16_t>(secondary) }, generation,
+            [&released,secondary](uint64_t expectedGeneration) {
+                released = V2::Output::DispatchForceReleaseMouseButtonForGeneration(expectedGeneration, secondary) == success;
                 return released;
             });
         return released;
@@ -3683,6 +3685,10 @@ namespace {
                              const Config::HeroSkillSettings& settings,
                              const c_entity& local)
     {
+        const int secondary=MappedMouseButton(V2::HeroSettings::Action::Secondary);
+        if(secondary<0){CancelRocketPunch();return;} // Physical keyboard masking is not supported by the current transport.
+        const uint32_t secondaryMask=1u<<secondary;
+
         auto& runtime = g_rocketPunch;
         const auto applied = V2::Output::ActiveRuntimeSnapshot();
         const auto connection = ProcessConnection::ConnectionEpoch();
@@ -3709,7 +3715,7 @@ namespace {
         if (runtime.masked) {
             // Never use DMA KeyState here: our own mask makes the game see RMB up.
             if (DoomfistPunch::RestoreMouseAfterRelease(now - runtime.releasedAtMs,
-                    fresh, (physical.buttons & 0x02u) != 0)) {
+                    fresh, (physical.buttons & secondaryMask) != 0)) {
                 const bool restored = ReleasePhysicalMouseMaskLease(runtime.maskKey,
                     OutputOwnerSource::HeroTimedAction, runtime.generation);
                 if (restored) {
@@ -3718,14 +3724,14 @@ namespace {
                 }
                 if (restored || ShouldLogSkillGuard(runtimeKey + ":punch_restore"))
                     Diagnostics::Info("doomfist.punch restore accepted=%d elapsedMs=%llu monitorFresh=%d physicalRight=%d",
-                        restored, now-runtime.releasedAtMs, fresh, (physical.buttons & 0x02u) != 0);
+                        restored, now-runtime.releasedAtMs, fresh, (physical.buttons & secondaryMask) != 0);
             }
             return;
         }
         // Allow the mask restoration and the next DMA poll to settle before accepting an up sample.
         if (runtime.unmaskedAtMs != 0 && now - runtime.unmaskedAtMs < 100)
             return;
-        const auto rightSample = KeyState::SampleVk(VK_RBUTTON);
+        const auto rightSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Secondary));
         const auto assistSample = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
         if (!rightSample.available || !assistSample.available) {
             if (ShouldLogSkillGuard(runtimeKey + ":punch_keys"))
@@ -3733,7 +3739,7 @@ namespace {
             return;
         }
         const bool rightDown = rightSample.down;
-        const auto leftSample = KeyState::SampleVk(VK_LBUTTON);
+        const auto leftSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Primary));
         const unsigned cancelInputs = (leftSample.available && leftSample.down ? 1u : 0u) |
             (AimbotDetail::IsInputVkDown(VK_LSHIFT) ? 2u : 0u) |
             (AimbotDetail::IsInputVkDown('E') ? 4u : 0u) |
@@ -3790,10 +3796,10 @@ namespace {
             return;
         }
         // Release only from an observed aligned view; queued motion may run after button output.
-        if (TimedOutputScheduler().IsControlHeld({ OutputControlKind::MouseButton, 1 }))
+        if (TimedOutputScheduler().IsControlHeld({ OutputControlKind::MouseButton, static_cast<uint16_t>(secondary) }))
             return;
         if (!AcquirePhysicalMouseMaskLease(runtime.maskKey, OutputOwnerSource::HeroTimedAction,
-                0x02u, runtime.generation)) {
+                secondaryMask, runtime.generation)) {
             runtime.charge.Block(DoomfistPunch::BlockReason::OutputFailure);
             Diagnostics::Warn("doomfist.punch blocked reason=physical_mask_failed");
             return;
@@ -4549,27 +4555,23 @@ void ProcessHeroSkills()
             continue;
         }
 
-        const bool ownsCompositeOutput =
-            SkillControls(definition, HeroSkillControls::SequenceSteps) ||
-            SkillControls(definition, HeroSkillControls::ComboAction);
-        if (!ownsCompositeOutput) {
-            const int configuredOutputHotkey = settings.skillKey >= 0
-                ? settings.skillKey
-                : settings.key;
-            const int resolvedOutputHotkey = ResolveHeroSkillOutputHotkey(
-                configuredOutputHotkey,
-                definition.inputAction);
-            if (resolvedOutputHotkey != configuredOutputHotkey) {
-                if (ShouldLogSkillGuard(skillKey + ":unsupported_output_key")) {
-                    Diagnostics::Warn(
-                        "Hero skill output hotkey is unsupported by the active output layer; using the action default. skill=%s configured=%d fallback=%d",
-                        skillKey.c_str(),
-                        configuredOutputHotkey,
-                        resolvedOutputHotkey);
-                }
-                settings.skillKey = resolvedOutputHotkey;
+        using MappedAction=V2::HeroSettings::Action;
+        const auto mappedAction=[&] {
+            switch(definition.inputAction) {
+            case HeroSkillInputAction::PrimaryFire:return MappedAction::Primary;
+            case HeroSkillInputAction::SecondaryFire:return MappedAction::Secondary;
+            case HeroSkillInputAction::Ability1:return MappedAction::Ability1;
+            case HeroSkillInputAction::Ability2:return MappedAction::Ability2;
+            case HeroSkillInputAction::Ability3:return MappedAction::Ability3;
+            case HeroSkillInputAction::Ultimate:return MappedAction::Ultimate;
+            case HeroSkillInputAction::Jump:return MappedAction::Jump;
+            case HeroSkillInputAction::Crouch:return MappedAction::Crouch;
+            case HeroSkillInputAction::QuickMelee:return MappedAction::Melee;
+            default:return MappedAction::Primary;
             }
-        }
+        }();
+        settings.runtimeOutputVk=V2::HeroSettings::Key(heroId,mappedAction);
+        settings.runtimeJumpVk=V2::HeroSettings::Key(heroId,MappedAction::Jump);
 
         if (IsZaryaReloadAmmoProbeDefinition(definition)) {
             UpdateZaryaAmmoProbe(skillKey, settings, localSnapshot);
@@ -4595,7 +4597,7 @@ void ProcessHeroSkills()
         }
         if (sequenceSkill)
             UpdateSequenceAmmoBudgetReloadState(skillKey, localSnapshot, settings.ammoGuardReserve);
-        if (sequenceSkill && !sequenceActive && AimbotDetail::IsInputVkDown('R'))
+        if (sequenceSkill && !sequenceActive && AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(heroId,V2::HeroSettings::Action::Reload)))
             ResetSequenceAmmoBudget(skillKey);
 
         if (!sequenceActive && !genjiComboActive &&

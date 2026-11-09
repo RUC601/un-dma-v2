@@ -1,3 +1,4 @@
+#include "Game/HeroSettings.hpp"
 #ifdef UNLEASHED_SELF_TESTS
 #include "output/MockBackend.hpp"
 #endif
@@ -71,12 +72,10 @@ namespace AimbotDetail {
     inline bool IsInputVkDownQuiet(int vk);
 
     inline int PhysicalMouseVkForAction(int action) {
-        switch (OW::MouseButtonForAttackAction(action)) {
-        case 0: return VK_LBUTTON;
-        case 1: return VK_RBUTTON;
-        case 2: return VK_MBUTTON;
-        default: return 0;
-        }
+        using A=V2::HeroSettings::Action;
+        const A mapped=action==0||action==3?A::Primary:action==1||action==2?A::Secondary:
+            action==4?A::Ability1:action==5?A::Ability2:action==6?A::Ability3:A::Ultimate;
+        return V2::HeroSettings::Key(LocalEntity().HeroID,mapped);
     }
 
     inline bool RequiredAimActionIsHeld(const OW::Config::HeroPreset& preset) {
@@ -398,7 +397,7 @@ namespace AimbotDetail {
 
     inline bool TrySelectRuntimeAimPreset(uint64_t heroId, RuntimePresetSelection& selection) {
         OW::Config::ScopedConfigRead configRead;
-        const bool rmbHeld = IsInputVkDownQuiet(VK_RBUTTON);
+        const bool rmbHeld = IsInputVkDownQuiet(V2::HeroSettings::Key(LocalEntity().HeroID,V2::HeroSettings::Action::Secondary));
         struct IndexedAimSlot {
             OW::Config::HeroSlotPreset slot{};
             int slotIndex = -1;
@@ -411,6 +410,13 @@ namespace AimbotDetail {
                 continue;
             if (!RequiredAimActionIsHeld(slot.preset))
                 continue;
+            if(slot.preset.allyKey!=OW::Labels::kAimActivationKeyNoneIndex && IsConfiguredActivationKeyPressedForSelection(slot.preset.allyKey) &&
+               OW::Config::AimScopeFallbackSelectionPriority(slot.scopeRequirement,rmbHeld)>=0) {
+                selection={};selection.preset=slot.preset;selection.preset.targetTeam=1;
+                selection.activationKeyOverride=slot.preset.allyKey;
+                selection.slotIndex=slotIndex;selection.matchedInput=true;selection.scopeRequirement=slot.scopeRequirement;
+                selection.rmbHeld=rmbHeld;return true;
+            }
             enabledSlots[static_cast<size_t>(enabledSlotCount++)] = { slot, slotIndex };
         }
 
@@ -560,6 +566,11 @@ namespace AimbotDetail {
             const OW::Config::TriggerPreset& trigger = slot.preset.trigger;
             if (!trigger.enabled)
                 continue;
+            if(slot.preset.allyKey!=OW::Labels::kAimActivationKeyNoneIndex && IsConfiguredActivationKeyPressedForSelection(slot.preset.allyKey)) {
+                selection={};selection.preset=slot.preset;selection.preset.targetTeam=1;
+                selection.preset.trigger.mode=0;selection.preset.trigger.key=slot.preset.allyKey;
+                selection.slotIndex=slotIndex;selection.matchedInput=true;return true;
+            }
 
             if ((trigger.mode == 0 || trigger.mode == 1) &&
                 IsConfiguredActivationKeyPressedForSelection(trigger.key)) {
@@ -645,7 +656,7 @@ namespace AimbotDetail {
 
     struct ScopedHeroPresetOverride {
         bool previousPlanEnabled=OW::Config::targetAimPlanEnabled;
-        struct PlanGuard { bool previous; ~PlanGuard() { OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
+        struct PlanGuard { bool previous; OW::Config::SlotTargetRules rules=OW::Config::slotTargetRules; ~PlanGuard() { OW::Config::slotTargetRules=rules; OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
         OW::Config::ScopedLocalConfigOverride configOverride;
         OW::Config::RuntimeDrawFovState originalDraw = OW::Config::SnapshotRuntimeDrawFov();
         ScopedHeroPresetOverride(RuntimeState& state) {
@@ -668,7 +679,7 @@ namespace AimbotDetail {
     };
     struct ScopedHeroTriggerPresetOverride {
         bool previousPlanEnabled=OW::Config::targetAimPlanEnabled;
-        struct PlanGuard { bool previous; ~PlanGuard() { OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
+        struct PlanGuard { bool previous; OW::Config::SlotTargetRules rules=OW::Config::slotTargetRules; ~PlanGuard() { OW::Config::slotTargetRules=rules; OW::Config::targetAimPlanEnabled=previous; OW::Config::selectedAimPlan={}; } } planGuard{previousPlanEnabled};
         OW::Config::ScopedLocalConfigOverride configOverride;
         ScopedHeroTriggerPresetOverride() {
             OW::Config::targetAimPlanEnabled=false; OW::Config::selectedAimPlan={}; OW::Config::selectedAimHero=0;
@@ -975,22 +986,16 @@ namespace AimbotDetail {
         return true;
     }
 
-    inline constexpr uint32_t PhysicalMouseMaskForButton(int button) {
-        switch (button) {
-        case 0: return 0x01u;
-        case 1: return 0x02u;
-        case 2: return 0x04u;
-        default: return 0u;
-        }
+    inline uint32_t PhysicalMouseMaskForButton(int button) {
+        if(button<0||button>2)return 0;
+        const auto action=button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle;
+        const int vk=V2::HeroSettings::Key(LocalEntity().HeroID,action);
+        return vk==VK_LBUTTON?1u:vk==VK_RBUTTON?2u:vk==VK_MBUTTON?4u:0u;
     }
 
-    inline constexpr int VkForMouseButton(int button) {
-        switch (button) {
-        case 0: return VK_LBUTTON;
-        case 1: return VK_RBUTTON;
-        case 2: return VK_MBUTTON;
-        default: return 0;
-        }
+    inline int VkForMouseButton(int button) {
+        if(button<0||button>2)return 0;
+        return V2::HeroSettings::Key(LocalEntity().HeroID,button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle);
     }
 
     inline bool ShouldHoldFireWhileTracking(int outputButton) {
@@ -2506,9 +2511,9 @@ namespace AimbotDetail {
             OW::Config::AutoMelee) {
             OW::PulseAction(OW::GameAction::Melee);
         }
-        if (OW::Config::health <= OW::Config::AutoRMBhealth &&
-            dist <= OW::Config::AutoRMBdistance &&
-            OW::Config::AutoRMB) {
+        if (OW::Config::health <= V2::HeroSettings::Automatic(LocalEntity().HeroID).altFireHealth &&
+            dist <= V2::HeroSettings::Automatic(LocalEntity().HeroID).altFireDistance &&
+            V2::HeroSettings::Automatic(LocalEntity().HeroID).altFire) {
             ClickMouseButton(
                 1,
                 10,
@@ -3970,15 +3975,16 @@ namespace AimbotDetail {
     inline void RunAutoRmb() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return;
-        if (!OW::Config::AutoRMB || OW::Config::View_aimbotRequireActionHeld()) return;
+        const auto automatic=V2::HeroSettings::Automatic(LocalEntity().HeroID);
+        if (!automatic.altFire || OW::Config::View_aimbotRequireActionHeld()) return;
 
         const Vector3 vec = OW::GetVector3(false);
             OW::AimCandidateConfig selectedSettings8(OW::Config::selectedAimHero);
         c_entity target{};
         if (!IsZeroVector(vec) && CurrentTarget(target) && target.Team) {
             const float dist = CameraPosition().DistTo(vec);
-            if (OW::Config::health <= OW::Config::AutoRMBhealth &&
-                dist <= OW::Config::AutoRMBdistance &&
+            if (OW::Config::health <= automatic.altFireHealth &&
+                dist <= automatic.altFireDistance &&
                 !(target.skill1act && target.HeroID == OW::eHero::HERO_VENTURE)) {
                 ClickMouseButton(1);
                 OW::RuntimeWorkerSleep(1);
@@ -4034,17 +4040,18 @@ namespace AimbotDetail {
     inline void RunAutoSkill() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return;
-        if (!OW::Config::AutoSkill) return;
+        const auto automatic=V2::HeroSettings::Automatic(LocalEntity().HeroID);
+        if (!automatic.defensive) return;
 
         const c_entity local = LocalEntity();
-        if (local.PlayerHealth > OW::Config::SkillHealth && OW::Config::skilled)
+        if (local.PlayerHealth > automatic.defensiveHealth && OW::Config::skilled)
             OW::Config::skilled = false;
-        else if (local.PlayerHealth < OW::Config::SkillHealth && OW::Config::skilled &&
+        else if (local.PlayerHealth < automatic.defensiveHealth && OW::Config::skilled &&
                  local.PlayerHealth < OW::Config::lasthealth &&
                  local.HeroID != OW::eHero::HERO_DOOMFIST)
             OW::Config::skilled = false;
 
-        if (local.PlayerHealth >= OW::Config::SkillHealth || OW::Config::skilled) return;
+        if (local.PlayerHealth >= automatic.defensiveHealth || OW::Config::skilled) return;
 
         const auto hID = local.HeroID;
         if (hID == OW::eHero::HERO_TRACER || hID == OW::eHero::HERO_SOMBRA ||
@@ -4074,14 +4081,15 @@ namespace AimbotDetail {
 
     inline void RunAutoShootCooldown() {
         const c_entity local = LocalEntity();
-        if (!OW::Config::AutoShoot || !OW::Config::shooted ||
+        const auto automatic=V2::HeroSettings::Automatic(local.HeroID);
+        if (!automatic.repeatFire || !OW::Config::shooted ||
             (local.HeroID == OW::eHero::HERO_HANJO && !local.skill2act)) {
             return;
         }
 
         const int rectime = GetTickCount();
         if (OW::Config::lasttime == 0) OW::Config::lasttime = rectime;
-        else if (rectime - OW::Config::lasttime >= OW::Config::Shoottime) {
+        else if (rectime - OW::Config::lasttime >= automatic.repeatIntervalMs) {
             OW::Config::lasttime = 0;
             OW::Config::shooted = false;
         }

@@ -44,7 +44,7 @@ void Run(std::stop_token stop) {
     uint64_t attemptedRetry = retry.load();
     uint64_t warmAfter = 0;
     while (!stop.stop_requested()) {
-        const auto settings = GetSettings();
+        const auto settings = GetRuntimeSettings();
         if (!prepared || *prepared != settings || attemptedRetry != retry.load()) {
             attemptedRetry = retry.load();
             const auto current = Messages(settings);
@@ -90,7 +90,7 @@ void Run(std::stop_token stop) {
         }
         std::erase_if(editedMessages, [&](const auto& message) { return clips.contains(message); });
         if (editedMessages.empty() && !retiredMessages.empty() &&
-            GetTickCount64() >= warmAfter && GetSettings() == settings) {
+            GetTickCount64() >= warmAfter && GetRuntimeSettings() == settings) {
             for (const auto& message : retiredMessages) RemoveSpeechCache(message);
             retiredMessages.clear();
         }
@@ -106,7 +106,7 @@ void Run(std::stop_token stop) {
         if (request) message = request->message;
         else { message = std::move(warmup.front()); warmup.pop_front(); }
         auto cancelled = [&] {
-            return stop.stop_requested() || GetSettings() != settings ||
+            return stop.stop_requested() || GetRuntimeSettings() != settings ||
                 (request && (request->settings != settings ||
                     (request->stillCurrent && !request->stillCurrent())));
         };
@@ -177,16 +177,16 @@ void Stop() {
 }
 Status GetStatus() { std::lock_guard lock(serviceMutex); return status; }
 void RetrySpeech() { ++retry; changed.notify_all(); }
-void Preview(std::string message) { Enqueue(std::move(message), GetSettings(), {}, true); }
+void Preview(std::string message) { Enqueue(std::move(message), GetRuntimeSettings(), {}, true); }
 void Submit(const char* ruleId, std::function<bool()> stillCurrent) {
-    const auto settings = GetSettings();
+    const auto settings = GetRuntimeSettings();
     if (!settings.skillEnabled) return;
     for (const auto& rule : settings.rules)
         if (rule.id == ruleId && rule.enabled)
             Enqueue(rule.message, settings, std::move(stillCurrent), false);
 }
 void SubmitUltimate(uint64_t hero, std::function<bool()> stillCurrent) {
-    const auto settings = GetSettings();
+    const auto settings = GetRuntimeSettings();
     if (settings.ultimateEnabled && UltimateHeroSupported(hero) && UltimateHeroEnabled(settings, hero))
         Enqueue(UltimateMessage(settings, hero), settings, std::move(stillCurrent), false);
 }

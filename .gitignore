@@ -47,3 +47,8 @@ logs/
 evidence/
 crash_dumps/
 __pycache__/
+
+# Tauri local dependencies / build outputs
+launcher/node_modules/
+launcher/src-tauri/target/
+launcher/src-tauri/gen/

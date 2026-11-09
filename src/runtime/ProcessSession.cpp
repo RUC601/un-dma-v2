@@ -1,4 +1,6 @@
 #include "ProcessSession.hpp"
+#include "Game/HostInteractionState.hpp"
+#include "Game/HeroSettings.hpp"
 #include "WorkerGroup.hpp"
 #include "Alerts/Service.hpp"
 #include "output/DeviceConnection.hpp"
@@ -58,6 +60,16 @@ std::mutex g_ProcessConnectionMutex;
 
         while (OW::RuntimeWorkersRunning()) {
             const DWORD tick = GetTickCount();
+            const auto policy=V2::HeroSettings::Snapshot();
+            const auto host=V2::HostInteraction::published.load(std::memory_order_acquire);
+            const bool paused=V2::HostInteraction::ShouldPause(*host,policy->display.pauseOnChat,policy->display.pauseOnFocusLoss,OW::ProcessConnection::ConnectionEpoch(),tick);
+            if(paused!=V2::HostInteraction::paused.load(std::memory_order_acquire)) {
+                std::lock_guard transition(OW::RuntimeOutputProducerTransitionMutex());
+                V2::HostInteraction::paused.store(paused,std::memory_order_release);
+                OW::InvalidateRuntimeOutputContinuity();
+                OW::RuntimeOutputScheduler().CancelAllAndJoin(OW::OutputActionCancelReason::RuntimeChanged);
+                OW::CancelActiveSkill();
+            }
 
             if (OW::ProcessConnection::IsConnected()) {
                 disconnectHandled = false;
@@ -125,6 +137,7 @@ static void StopBackgroundThreads()
 
 static void ClearProcessRuntimeSnapshots()
 {
+    V2::HostInteraction::Publish({});
     V2::Profiles::Publish({});
     OW::entitySceneGeneration.fetch_add(1,std::memory_order_acq_rel);
     {

@@ -148,6 +148,23 @@ void UI::TriggerPage() {
                                       kTeam, IM_ARRAYSIZE(kTeam));
             ImGui::PopItemWidth();
 
+            SettingRow(L("Ally key"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##allyKey", &activePreset.allyKey, OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally skeleton"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
+            ImGui::PopItemWidth();
+            SettingRow(L("Ignore Sombra stealth"), kAimbotRightLabelWidth);
+            presetChanged |= UICheckbox("##stealthFilter",&activePreset.ignoreSombraStealth);
+            SettingRow(L("Protection filter"), kAimbotRightLabelWidth);
+            presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
             SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##triggerSlotIgnoreInvis", &activePreset.trigger.ignoreInvisible);
 
@@ -159,9 +176,11 @@ void UI::TriggerPage() {
     presetChanged |= UI::AimPlanEditor::Policy(activePreset, false);
     CloseGroupBox();
 
-    ImGui::SetNextItemOpen(state.triggerAdvanced, ImGuiCond_Always);
-    state.triggerAdvanced = ImGui::CollapsingHeader(L("Advanced parameters"));
-    if (state.triggerAdvanced) {
+    if(ImGui::Button(L("Edit advanced parameters...")))ImGui::OpenPopup("##TriggerAdvanced");
+    const auto viewport=ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(viewport->WorkSize.x-24,viewport->WorkSize.y-24));
+    ImGui::SetNextWindowSize(ImVec2((std::min)(650.f,viewport->WorkSize.x-24),380),ImGuiCond_Appearing);
+    if (ImGui::BeginPopup("##TriggerAdvanced",ImGuiWindowFlags_NoSavedSettings)) {
         UITwoColumns([&]() {
             UIGroupBox("Timing & Prediction");
             SettingRow("Charge Aware", kAimbotRightLabelWidth);
@@ -187,6 +206,7 @@ void UI::TriggerPage() {
 
             CloseGroupBox();
         });
+        ImGui::EndPopup();
     }
 
     if (selectedHero->heroId == 0) {

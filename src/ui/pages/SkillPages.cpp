@@ -6,6 +6,7 @@
 #include "ui/SlotSelector.hpp"
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
+#include "ui/ColorPicker.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
@@ -17,6 +18,7 @@ using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -54,7 +56,7 @@ static bool DrawHeroSkillSequenceSteps(const OW::HeroSkillDefinition& definition
     bool changed = false;
 
     ImGui::Spacing();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Sequence Steps  (L=Left  R=Right)"));
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Sequence Steps"));
 
     if (!settings.sequenceSteps.empty()) {
         float speedScale = settings.sequenceSteps.front().speedScale;
@@ -78,9 +80,9 @@ static bool DrawHeroSkillSequenceSteps(const OW::HeroSkillDefinition& definition
 
         bool left = (step.buttonMask & 1) != 0;
         bool right = (step.buttonMask & 2) != 0;
-        if (UICheckbox("L", &left)) { step.buttonMask ^= 1; changed = true; }
+        if (UICheckbox(L("Primary"), &left)) { step.buttonMask ^= 1; changed = true; }
         ImGui::SameLine(0.0f, 4.0f);
-        if (UICheckbox("R", &right)) { step.buttonMask ^= 2; changed = true; }
+        if (UICheckbox(L("Secondary"), &right)) { step.buttonMask ^= 2; changed = true; }
         ImGui::SameLine(0.0f, 8.0f);
 
         ImGui::PushItemWidth(150.0f);
@@ -172,17 +174,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::PopItemWidth();
     }
 
-    if (hasSkillOutputKey) {
-        SettingRow("Skill Key", kAimbotRightLabelWidth);
-        PushControlWidth();
-        changed |= UISelectMapped(
-            "##skillOutputKey",
-            &settings.skillKey,
-            OW::Labels::kHeroSkillOutputKeys,
-            OW::Labels::kHeroSkillOutputHotkeys,
-            OW::DefaultHeroSkillOutputHotkey(definition.inputAction));
-        ImGui::PopItemWidth();
-    }
+    if (hasSkillOutputKey && ImGui::SmallButton(L("Edit hero action keys...")))UI::state.activeTab=UI::TAB_KEYS;
+
 
     if ((hasSequenceControls || hasPitchControls || hasPhaseTiming) &&
         !hasControl(OW::HeroSkillControls::Key)) {
@@ -339,6 +332,23 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             changed = true;
         }
         ImGui::PopItemWidth();
+
+        if (definition.heroId == OW::GameData::MakeHeroId(0x13B)) {
+            SettingRow("Priority", kAimbotRightLabelWidth);
+            PushControlWidth();
+            const char* priorities[] = {L("FOV"), L("Health"), L("Distance")};
+            changed |= UISelect("##skillPriority", &settings.targetPriority, priorities, IM_ARRAYSIZE(priorities));
+            ImGui::PopItemWidth();
+
+            SettingRow("Assistance Delay", kAimbotRightLabelWidth);
+            PushControlWidth();
+            changed |= UISlider("##skillAssistanceDelay", &settings.assistanceDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
+            ImGui::PopItemWidth();
+        }
+        SettingRow("Draw FOV", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##skillDrawFov", &settings.drawSkillFov);
+        ImGui::SameLine();
+        changed |= UI::ColorPicker("skillFovColor", settings.skillFovColor);
 
         SettingRow("Speed Scale", kAimbotRightLabelWidth);
         PushControlWidth();
@@ -517,7 +527,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
 
         if (hasPhaseTiming) {
             drawIntSlider("Fire Delay", "##skillFireDelay", settings.fireDelayMs, 0.0f, 100.0f, Number(0, " ms"));
-            drawIntSlider("Jump Key (VK)", "##skillJumpKeyCode", settings.jumpKeyCode, 0.0f, 255.0f, Number(0, ""));
+
         }
     }
 
@@ -558,52 +568,63 @@ static bool DrawHeroSkillSequenceDefinition(const OW::HeroSkillDefinition& defin
 void UI::SkillsPage() {
     ImGui::PushID("SkillsPage");
 
-    ImGui::TextDisabled("%s", L("Shared settings"));
+    const HeroOption& selectedHero = CurrentHeroOption();
+    auto heroSettings=V2::HeroSettings::Get(selectedHero.heroId);
+    auto& automatic=heroSettings.automatic;
+    const auto previous=automatic;
+    ImGui::BeginDisabled(selectedHero.heroId==0);
     UIGroupBox("Auto Alt-Fire");
     {
-        ImGui::TextWrapped("%s", L("Tap RMB when the selected enemy is below the health and distance limits."));
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Tap RMB when the selected enemy is below the health and distance limits."));
         SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoRmbEnable", &OW::Config::AutoRMB);
+        UICheckbox("##autoRmbEnable", &automatic.altFire);
 
         SettingRow("Health Threshold", kDefaultLabelWidth);
         PushControlWidth();
-        UISlider("##autoRmbHealth", &OW::Config::AutoRMBhealth, 0.0f, 500.0f, Number(0, " HP"));
+        UISlider("##autoRmbHealth", &automatic.altFireHealth, 0.0f, 500.0f, Number(0, " HP"));
         ImGui::PopItemWidth();
 
         SettingRow("Distance", kDefaultLabelWidth);
         PushControlWidth();
-        UISlider("##autoRmbDistance", &OW::Config::AutoRMBdistance, 0.0f, 60.0f, Number(1, " m"));
+        UISlider("##autoRmbDistance", &automatic.altFireDistance, 0.0f, 60.0f, Number(1, " m"));
         ImGui::PopItemWidth();
     }
     CloseGroupBox();
 
     UIGroupBox("Auto Skill");
     {
-        ImGui::TextWrapped("%s", L("Use a supported hero's defensive ability at low self health."));
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Use a supported hero's defensive ability at low self health."));
         SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoSkillEnable", &OW::Config::AutoSkill);
+        UICheckbox("##autoSkillEnable", &automatic.defensive);
 
         SettingRow("Health Threshold", kDefaultLabelWidth);
         PushControlWidth();
-        UISlider("##skillHealth", &OW::Config::SkillHealth, 0.0f, 500.0f, Number(0, " HP"));
+        UISlider("##skillHealth", &automatic.defensiveHealth, 0.0f, 500.0f, Number(0, " HP"));
         ImGui::PopItemWidth();
     }
     CloseGroupBox();
 
     UIGroupBox("Auto Shoot");
     {
-        ImGui::TextWrapped("%s", L("Legacy repeat-fire timer; this does not enable an individual hero skill."));
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Legacy repeat-fire timer; this does not enable an individual hero skill."));
         SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoShootEnable", &OW::Config::AutoShoot);
+        UICheckbox("##autoShootEnable", &automatic.repeatFire);
 
         SettingRow("Cooldown", kDefaultLabelWidth);
         PushControlWidth();
-        UISlider("##shootCooldown", &OW::Config::Shoottime, 100, 2000, Number(0, " ms"));
+        UISlider("##shootCooldown", &automatic.repeatIntervalMs, 100, 2000, Number(0, " ms"));
         ImGui::PopItemWidth();
     }
     CloseGroupBox();
 
-    const HeroOption& selectedHero = CurrentHeroOption();
+    ImGui::EndDisabled();
+    if(automatic.altFire!=previous.altFire||automatic.defensive!=previous.defensive||automatic.repeatFire!=previous.repeatFire||
+        automatic.altFireHealth!=previous.altFireHealth||automatic.altFireDistance!=previous.altFireDistance||
+        automatic.defensiveHealth!=previous.defensiveHealth||automatic.repeatIntervalMs!=previous.repeatIntervalMs)
+        V2::HeroSettings::Set(selectedHero.heroId,heroSettings);
     int renderedSkillCount = 0;
     if (selectedHero.heroId != 0) {
         for (const OW::HeroSkillDefinition& definition : OW::AllHeroSkillDefinitions()) {

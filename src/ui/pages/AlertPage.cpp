@@ -1,3 +1,4 @@
+#include "Game/HeroSettings.hpp"
 #include "ui/EditorSupport.hpp"
 #include "Alerts/Service.hpp"
 #include "Game/AbilityIcons.hpp"
@@ -34,7 +35,11 @@ void ReservedAlert(const char* title, bool zh) {
 void UI::AlertPage() {
     using namespace V2::Alerts;
     const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
-    auto settings = GetSettings();
+    const uint64_t localHero=CurrentHeroOption().heroId;
+    auto heroSettings=V2::HeroSettings::Get(localHero);
+    auto settings=heroSettings.alerts;
+    const auto shared=GetSettings();
+    settings.voice=shared.voice;settings.volume=shared.volume;settings.outputDevice=shared.outputDevice;
     bool edited = false;
     std::string preview;
     ImGui::PushID("AlertPage");
@@ -91,6 +96,10 @@ void UI::AlertPage() {
         : "Uses offline Kokoro Chinese voices. For Oopz, choose the virtual cable playback end here and its recording end as Oopz's microphone on this PC.");
     CloseGroupBox();
 
+    ImGui::BeginDisabled(localHero==0);
+    edited|=UICheckbox(zh?"启用当前英雄预警":"Enable alerts for this hero",&heroSettings.alertsEnabled);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(localHero==0||!heroSettings.alertsEnabled);
     ImGui::PushID("skillAlert");
     UIGroupBox(zh ? "技能预警" : "Skill alerts");
     edited |= UICheckbox(zh ? "开启技能预警###enabled" : "Enable skill alerts###enabled", &settings.skillEnabled);
@@ -190,7 +199,12 @@ void UI::AlertPage() {
     CloseGroupBox();
     ImGui::PopID();
 
-    if (edited) SetSettings(std::move(settings));
+    ImGui::EndDisabled();
+    if(edited) {
+        auto global=GetSettings();global.voice=settings.voice;global.volume=settings.volume;global.outputDevice=settings.outputDevice;
+        SetSettings(std::move(global));
+        heroSettings.alerts=std::move(settings);V2::HeroSettings::Set(localHero,std::move(heroSettings));
+    }
     if (!preview.empty()) Preview(std::move(preview));
     ImGui::PopID();
 }

@@ -151,6 +151,23 @@ void UI::AimbotPage() {
             PushControlWidth();
             presetChanged |= UISelect("##aimTeam", &activePreset.targetTeam, kTeam, IM_ARRAYSIZE(kTeam));
             ImGui::PopItemWidth();
+            SettingRow(L("Ally key"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##allyKey", &activePreset.allyKey, OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally skeleton"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
+            ImGui::PopItemWidth();
+            SettingRow(L("Ignore Sombra stealth"), kAimbotRightLabelWidth);
+            presetChanged |= UICheckbox("##stealthFilter",&activePreset.ignoreSombraStealth);
+            SettingRow(L("Protection filter"), kAimbotRightLabelWidth);
+            presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
             // Hitbox Scale
             SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
             PushControlWidth();
@@ -192,7 +209,7 @@ void UI::AimbotPage() {
                 OW::Config::ResolveHeroBehaviorMode(activePreset);presetChanged=true;
             }
             ImGui::PopItemWidth();
-            ImGui::TextWrapped("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
 
             // Aim activation key is stored per aim slot.
             SettingRow("Aim Activation Key", kAimbotLeftLabelWidth);
@@ -269,18 +286,31 @@ void UI::AimbotPage() {
     });
 
     UIGroupBox("Current Slot parameters");
-    ImGui::TextWrapped("%s",L("These values belong to this Slot. Mode edits change behavior and method, not these values."));
-    if(ImGui::Button(L("Restore mode defaults"))) {OW::Config::ResolveHeroBehaviorMode(activePreset,true);presetChanged=true;}
-    presetChanged|=UI::BehaviorTuningEditor(activePreset,activePreset.aimBehavior);
+    SettingRow("Base speed");PushControlWidth();
+    presetChanged|=UISlider("##slotBaseSpeed",&activePreset.baseSpeed,0,100,Number(1," %"));ImGui::PopItemWidth();
+    if(ImGui::Button(L("Edit motion...")))ImGui::OpenPopup("##MotionEditor");
+    ImGui::SameLine();
+    if(ImGui::Button(L("Edit target hero exceptions...")))ImGui::OpenPopup("##ExceptionEditor");
     CloseGroupBox();
-    if(activePreset.aimBehavior==OW::Config::kAimBehaviorFlick2nd && activePreset.flick2ndInnerMethod>=0 &&
-       activePreset.flick2ndInnerMethod!=activePreset.aimMethod) {
-        auto& motion=OW::Config::EnsureSlotMotion(activePreset,activePreset.flick2ndInnerMethod);
-        UIGroupBox("Second stage motion parameters");
-        presetChanged|=UI::AimPlanEditor::Motion(motion,false);
-        CloseGroupBox();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(ImGui::GetMainViewport()->WorkSize.x-24,ImGui::GetMainViewport()->WorkSize.y-24));
+    ImGui::SetNextWindowSize(ImVec2(650,650),ImGuiCond_FirstUseEver);
+    if(ImGui::BeginPopup("##MotionEditor",ImGuiWindowFlags_NoSavedSettings)) {
+        if(ImGui::Button(L("Restore mode defaults"))) {OW::Config::ResolveHeroBehaviorMode(activePreset,true);presetChanged=true;}
+        presetChanged|=UI::BehaviorTuningEditor(activePreset,activePreset.aimBehavior);
+        presetChanged|=UI::AimPlanEditor::Motion(activePreset.aimPlan.motion,false);
+        if(activePreset.aimBehavior==OW::Config::kAimBehaviorFlick2nd && activePreset.flick2ndInnerMethod>=0 &&
+            activePreset.flick2ndInnerMethod!=activePreset.aimMethod) {
+            auto& motion=OW::Config::EnsureSlotMotion(activePreset,activePreset.flick2ndInnerMethod);
+            if(ImGui::CollapsingHeader(L("Second stage motion parameters")))presetChanged|=UI::AimPlanEditor::Motion(motion,false);
+        }
+        ImGui::EndPopup();
     }
-    presetChanged |= UI::AimPlanEditor::Editor(activePreset);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(ImGui::GetMainViewport()->WorkSize.x-24,ImGui::GetMainViewport()->WorkSize.y-24));
+    ImGui::SetNextWindowSize(ImVec2(680,650),ImGuiCond_FirstUseEver);
+    if(ImGui::BeginPopup("##ExceptionEditor",ImGuiWindowFlags_NoSavedSettings)) {
+        presetChanged|=UI::AimPlanEditor::Editor(activePreset);
+        ImGui::EndPopup();
+    }
 
     ImGui::SetNextItemOpen(state.aimAdvanced, ImGuiCond_Always);
     state.aimAdvanced = ImGui::CollapsingHeader(L("Advanced parameters"));
@@ -345,7 +375,7 @@ void UI::AimbotPage() {
     ImGui::TextDisabled("%s", L("Shared presets"));
     if (ImGui::SmallButton(L("Edit behavior preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 2; }
     ImGui::SameLine();
-    if (ImGui::SmallButton(L("Edit method preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 3; }
+    if (ImGui::SmallButton(L("Edit method preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 2; }
     ImGui::SameLine();
     if (ImGui::SmallButton(L("Edit FOV preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 4; }
     if (ImGui::IsItemHovered())

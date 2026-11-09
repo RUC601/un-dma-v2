@@ -34,13 +34,18 @@ bool Current(const SkillObservation& source) {
 }
 void SkillWorker() {
     SkillDetector detector;
+    uint64_t previousHero=0,previousActor=0;
     while (OW::RuntimeWorkersRunning()) {
-        if (!OW::ProcessConnection::IsConnected()) detector.Reset();
+        if (!OW::ProcessConnection::IsConnected()) {detector.Reset();SetRuntimeHero(0);}
         else {
             const auto frame = OW::SnapshotFrame();
+            if(previousHero!=frame->local.HeroID||previousActor!=frame->local.actor_generation) {
+                detector.Reset();previousHero=frame->local.HeroID;previousActor=frame->local.actor_generation;
+            }
+            SetRuntimeHero(frame->local.HeroID);
             const auto now = GetTickCount();
             std::vector<SkillObservation> samples;
-            const auto settings = GetSettings();
+            const auto settings = GetRuntimeSettings();
             for (const auto& entity : frame->entities) {
                 if (settings.skillEnabled) {
                     for (size_t i = 0; i < kDefinitions.size(); ++i)
@@ -51,7 +56,10 @@ void SkillWorker() {
                     samples.push_back(Observation(entity, frame->local, now, kUltimateSlot));
             }
             for (const auto& event : detector.Observe(samples, now)) {
-                auto current = [source = event.source] { return Current(source); };
+                auto current = [source=event.source,localHero=frame->local.HeroID,localActor=frame->local.actor_generation] {
+                    const auto frame=OW::SnapshotFrame();
+                    return frame->local.HeroID==localHero && frame->local.actor_generation==localActor && Current(source);
+                };
                 if (event.ruleId) Submit(event.ruleId, current);
                 else SubmitUltimate(event.source.hero, current);
             }

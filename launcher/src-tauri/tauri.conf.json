@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Unleashed V2",
+  "version": "2.0.0",
+  "identifier": "com.sensezen.unleashed.v2",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "UNLEASHED",
+        "label": "main",
+        "width": 375,
+        "height": 484,
+        "minWidth": 320,
+        "minHeight": 484,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/RUC601/un-dma-v2/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4RjZFREE3OTYwQzg1NTMKUldSVGhReVdwKzMyV0FxRHJkaEtCRXNWblRDVlNmMFNsTzZHMFFqaS82Y3JyWW14VzFWdDZjZkIK",
+      "requireSignedVersion": true
+    }
+  }
+}

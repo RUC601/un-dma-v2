@@ -1,101 +1,176 @@
+#include "Search.hpp"
+#include "runtime/LauncherBridge.hpp"
 #include "WorkspaceShell.hpp"
 #include "Theme.hpp"
+#include "config/UiPreferences.hpp"
+#include "Utils/Config.hpp"
+#include <imgui_internal.h>
 #include <algorithm>
-#include <cfloat>
 #include <cstring>
 
 namespace UI::Workspace {
+namespace {
+void Icon(ImDrawList* draw, ImVec2 p, int index, ImU32 color) {
+    const float x=p.x+9, y=p.y+9;
+    if(index==0) {
+        draw->AddCircle(ImVec2(x,y),6,color,20,1.3f);draw->AddCircleFilled(ImVec2(x,y),1.5f,color);
+        draw->AddLine(ImVec2(x-9,y),ImVec2(x+9,y),color,1.2f);draw->AddLine(ImVec2(x,y-9),ImVec2(x,y+9),color,1.2f);
+    } else if(index==1) {
+        draw->AddRect(ImVec2(x-5,y-8),ImVec2(x+5,y+8),color,5,0,1.3f);draw->AddLine(ImVec2(x,y-7),ImVec2(x,y-1),color,1.3f);
+    } else if(index==2) {
+        const ImVec2 points[]={{x+2,y-9},{x-6,y+1},{x,y+1},{x-2,y+9},{x+6,y-2},{x,y-2}};draw->AddPolyline(points,6,color,ImDrawFlags_Closed,1.5f);
+    } else if(index==3) {
+        for(int i=0;i<3;++i){const float xx=x-7+i*7;draw->AddRect(ImVec2(xx-2,y-5),ImVec2(xx+2,y+5),color,1,0,1.3f);if(i<2)draw->AddLine(ImVec2(xx+2,y),ImVec2(xx+5,y),color,1.3f);}
+    } else if(index==4) {
+        draw->AddBezierCubic(ImVec2(x-7,y+5),ImVec2(x-6,y-10),ImVec2(x+6,y-10),ImVec2(x+7,y+5),color,1.3f);
+        draw->AddLine(ImVec2(x-8,y+5),ImVec2(x+8,y+5),color,1.3f);draw->AddCircleFilled(ImVec2(x,y+8),1.5f,color);
+    } else if(index==5) {
+        draw->AddRect(ImVec2(x-8,y-5),ImVec2(x+8,y+5),color,5,0,1.3f);draw->AddCircle(ImVec2(x,y),3,color,16,1.3f);
+    } else if(index==6) {
+        draw->AddCircle(ImVec2(x,y),8,color,24,1.3f);draw->AddCircleFilled(ImVec2(x-3,y-3),1.5f,color);draw->AddCircleFilled(ImVec2(x+3,y-3),1.5f,color);draw->AddCircleFilled(ImVec2(x-4,y+2),1.5f,color);
+    } else if(index==7||index==10) {
+        draw->AddCircle(ImVec2(x,y),8,color,24,1.3f);draw->AddCircle(ImVec2(x,y),4,color,20,1.3f);
+    } else if(index==15) {
+        draw->AddRect(ImVec2(x-9,y-6),ImVec2(x+9,y+6),color,2,0,1.3f);
+        for(int row=0;row<2;++row)for(int col=0;col<4;++col)draw->AddCircleFilled(ImVec2(x-6+col*4,y-3+row*5),.8f,color);
+    } else {
+        for(int row=0;row<3;++row){const float yy=y-6+row*6;draw->AddLine(ImVec2(x-8,yy),ImVec2(x+8,yy),color,1.3f);draw->AddCircleFilled(ImVec2(x+(row==1?4:-3),yy),2.5f,color);}
+    }
+}
+}
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
             const std::function<void(ImDrawList*, ImVec2, float)>& footer,
             const std::function<void(float, float)>& header) {
-    const auto* viewport = ImGui::GetMainViewport();
+    const bool zh=OW::Config::uiLanguage==1;
+    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+    auto& preferences=Preferences::values;
+    const auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 12));
-    if (ImGui::Begin("UNDMA V2##workspace", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings)) {
-        const float width = ImGui::GetContentRegionAvail().x;
-        const float toolbarHeight = (std::max)(44.0f, ImGui::GetFontSize() * 2.0f + 12.0f);
-        const float titleSize = ImGui::GetFontSize() * 2.0f;
-        ImFont* titleFont = Theme::s_titleFont ? Theme::s_titleFont : ImGui::GetFont();
-        const ImVec2 titleExtent = titleFont->CalcTextSizeA(titleSize, FLT_MAX, 0, "Unleashed");
-        const float iconSize = toolbarHeight - 8.0f;
-        const float iconWidth = model.brandIcon ? iconSize + 12.0f : 0.0f;
-        const ImVec2 brandPos = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(iconWidth + titleExtent.x, toolbarHeight));
-        auto* draw = ImGui::GetWindowDrawList();
-        if (model.brandIcon)
-            draw->AddImage(model.brandIcon, ImVec2(brandPos.x, brandPos.y + 4),
-                ImVec2(brandPos.x + iconSize, brandPos.y + 4 + iconSize));
-        draw->AddText(titleFont, titleSize,
-            ImVec2(brandPos.x + iconWidth, brandPos.y + (toolbarHeight - titleExtent.y) * .5f),
-            ImGui::GetColorU32(ImGuiCol_Text), "Unleashed");
-        const float saveWidth=(std::max)(148.0f,ImGui::CalcTextSize(model.saveLabel).x+32.0f);
-        if (header) header(saveWidth, toolbarHeight);
-        const float saveX = ImGui::GetWindowContentRegionMax().x - saveWidth;
-        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x <= ImGui::GetWindowPos().x + saveX)
-            ImGui::SameLine(saveX);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.53f,.10f,.18f,1));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.66f,.12f,.23f,1));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.43f,.08f,.15f,1));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-        if (ImGui::Button(model.saveLabel, ImVec2(saveWidth, toolbarHeight))) save();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-        if (!model.status.empty()) {
-            if (model.saveFailed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1,.65f,.5f,1));
-            ImGui::TextWrapped("%s", model.status.c_str());
-            if (model.saveFailed) ImGui::PopStyleColor();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(20,16));
+    if(ImGui::Begin("UNDMA V2##workspace",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings)) {
+        auto* draw=ImGui::GetWindowDrawList();
+        const auto origin=ImGui::GetWindowPos();
+        const auto size=ImGui::GetWindowSize();
+        if(preferences.consoleLayers) {
+            draw->AddRectFilledMultiColor(origin,ImVec2(origin.x+size.x,origin.y+size.y),
+                Theme::kColShell0,Theme::kColShell1,Theme::kColShell2,Theme::kColShell0);
+            draw->AddLine(ImVec2(origin.x+20,origin.y+1),ImVec2(origin.x+size.x-20,origin.y+1),IM_COL32(255,255,255,26));
+        }
+        const float width=ImGui::GetContentRegionAvail().x;
+        const auto brand=ImGui::GetCursorScreenPos();
+        if(model.brandIcon) draw->AddImage(model.brandIcon,brand,ImVec2(brand.x+34,brand.y+34));
+        draw->AddText(Theme::s_titleFont?Theme::s_titleFont:ImGui::GetFont(),27,
+            ImVec2(brand.x+46,brand.y+2),IM_COL32(239,36,89,255),"UN");
+        auto* font=Theme::s_titleFont?Theme::s_titleFont:ImGui::GetFont();
+        const float unWidth=font->CalcTextSizeA(27,1000,0,"UN").x;
+        draw->AddText(font,27,ImVec2(brand.x+46+unWidth,brand.y+2),Theme::kColText,"LEASHED");
+        ImGui::Dummy(ImVec2(260,40));
+        const float saveWidth=(std::max)(148.f,ImGui::CalcTextSize(model.saveLabel).x+28);
+        static char query[128]{};
+        if(width>680) ImGui::SameLine((std::max)(280.f,width-saveWidth-236));
+        ImGui::SetNextItemWidth(width>680?220.f:(std::max)(160.f,width-saveWidth-12));
+        ImGui::InputTextWithHint("##GlobalSearch",zh?"搜索页面和设置…":"Search pages and settings...",query,sizeof(query));
+        if(ImGui::IsItemActivated()||ImGui::IsItemEdited())ImGui::OpenPopup("##SearchResults");
+        if(ImGui::BeginPopup("##SearchResults")) {
+            ImGui::SetNextItemWidth(300);
+            ImGui::InputTextWithHint("##searchQuery",zh?"搜索设置…":"Search settings...",query,sizeof(query));
+            if(ImGui::IsWindowAppearing())ImGui::SetKeyboardFocusHere(-1);
+            bool matched=false;
+            for(const auto& entry:Search::entries) {
+                const auto* localized=UI::Text::Label(entry.label,zh);
+                if(!query[0]||(!ImStristr(entry.label,nullptr,query,nullptr)&&!ImStristr(localized,nullptr,query,nullptr)))continue;
+                matched=true;ImGui::PushID(&entry);
+                const auto label=std::string(model.pages[entry.page].label)+" / "+localized;
+                if(ImGui::Selectable(label.c_str())){model.selected=entry.page;Search::Go(entry.label,entry.page);query[0]=0;ImGui::CloseCurrentPopup();}
+                ImGui::PopID();
+            }
+            for(int i=0;i<int(model.pages.size());++i) {
+                if(i==9) continue;
+                const auto& page=model.pages[i];
+                if(!ImStristr(page.label,nullptr,query,nullptr) && !ImStristr(page.group,nullptr,query,nullptr)) continue;
+                matched=true;
+                const auto label=std::string(page.group)+" / "+page.label;
+                if(ImGui::Selectable(label.c_str())) {model.selected=i;query[0]=0;ImGui::CloseCurrentPopup();}
+            }
+            if(ImStristr("Methods 运动方法",nullptr,query,nullptr)) {
+                matched=true;
+                if(ImGui::Selectable(zh?"共享参数 / 行为模式 / 兼容方法库":"Shared settings / Behavior modes / Legacy methods")) {
+                    model.selected=8;query[0]=0;ImGui::CloseCurrentPopup();
+                }
+            }
+            if(!matched) ImGui::TextDisabled("%s",zh?"没有匹配项":"No matching settings");
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button,Theme::kColAccentDark);
+        if(ImGui::Button(model.saveLabel,ImVec2(saveWidth,ImGui::GetFrameHeight())))save();
+        ImGui::PopStyleColor();
+        if(V2::Launcher::enabled && V2::Launcher::updatePhase!="idle" && V2::Launcher::updatePhase!="current" && !V2::Launcher::updatePhase.empty()) {
+            if(V2::Launcher::updatePhase=="ready") {
+                if(ImGui::SmallButton(zh?"重启并更新":"Restart and update"))V2::Launcher::RequestInstall();
+            } else if(V2::Launcher::updatePhase=="downloading") {
+                ImGui::Text("%s %s",zh?"正在下载更新":"Downloading update",V2::Launcher::updateVersion.c_str());
+                if(V2::Launcher::total)ImGui::ProgressBar(float(V2::Launcher::received)/float(V2::Launcher::total),ImVec2(180,3));
+            } else if(V2::Launcher::updatePhase=="error") {
+                if(ImGui::SmallButton(zh?"重试更新":"Retry update"))V2::Launcher::RequestCheck();
+                ImGui::SetItemTooltip("%s",V2::Launcher::updateError.c_str());
+            } else if(V2::Launcher::updatePhase=="available") {
+                if(ImGui::SmallButton(zh?"下载更新":"Download update"))V2::Launcher::RequestDownload();
+            }
+        }
+        if(header) {ImGui::Dummy(ImVec2(0,0));header(0,30);}
+        if(!model.status.empty()) {
+            if(model.saveFailed) ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.65f,.5f,1));
+            ImGui::TextWrapped("%s",model.status.c_str());
+            if(model.saveFailed) ImGui::PopStyleColor();
         }
         ImGui::Spacing();
-        ImGui::Dummy(ImVec2(0, 6));
-        const bool stacked = width < 600;
-        if(stacked) {
-            ImGui::SetNextItemWidth(-1);
-            if(ImGui::BeginCombo("##PageNavigation", model.pages[model.selected].label)) {
-                for(int i=0;i<static_cast<int>(model.pages.size());++i)
-                    if(ImGui::Selectable(model.pages[i].label, model.selected==i)) model.selected=i;
-                ImGui::EndCombo();
-            }
+        ImGui::Separator();
+        ImGui::Spacing();
+        const float height=(std::max)(100.f,ImGui::GetContentRegionAvail().y-38);
+        const float navWidth=preferences.sidebarCollapsed?48.f*scale:(std::min)(190.f*scale,width*.27f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,Theme::kColShell1);
+        ImGui::BeginChild("BusinessNavigation",ImVec2(navWidth,height),ImGuiChildFlags_AlwaysUseWindowPadding);
+        if(ImGui::Button(preferences.sidebarCollapsed?">##Expand":"<##Collapse",ImVec2(-1,28))) {
+            preferences.sidebarCollapsed=!preferences.sidebarCollapsed;
+            Preferences::Save();
         }
-        const float footerHeight = (std::max)(30.0f, ImGui::GetFontSize()+16.0f);
-        const float height = (std::max)(100.0f, ImGui::GetContentRegionAvail().y - footerHeight - 8);
-        const bool compact = width < 760;
-        float navWidth = compact ? 112.0f : 164.0f;
-        for(const auto& page:model.pages)navWidth=(std::max)(navWidth,ImGui::CalcTextSize(page.label).x+20);
-        navWidth=(std::min)(navWidth,width*.35f);
-        if(!stacked) {
-        ImGui::BeginChild("BusinessNavigation", ImVec2(navWidth, height));
-        const char* group = nullptr;
-        for (int i = 0; i < static_cast<int>(model.pages.size()); ++i) {
-            const auto& page = model.pages[i];
-            if (!group || std::strcmp(group, page.group) != 0) {
-                if (group) ImGui::Dummy(ImVec2(0, 6));
-                ImGui::TextDisabled("%s", page.group);
-                ImGui::Spacing();
-                group = page.group;
+        ImGui::SetItemTooltip("%s",zh?"展开 / 收起导航":"Expand / collapse navigation");
+        const char* group=nullptr;
+        for(int order=0;order<int(model.pages.size());++order) {
+            const int i=model.pages.size()==16?(order==12?15:order>12?order-1:order):order;
+            if(i==9)continue;
+            const auto& page=model.pages[i];
+            if(!group||std::strcmp(group,page.group)!=0) {
+                if(group)ImGui::Dummy(ImVec2(0,10));
+                if(!preferences.sidebarCollapsed)ImGui::TextDisabled("%s",page.group);
+                group=page.group;
             }
             ImGui::PushID(i);
-            const bool selected = model.selected == i;
-            if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.36f,.10f,.16f,1));
-            if (ImGui::Button(page.label, ImVec2(-1, (std::max)(24.0f,ImGui::GetFontSize()+8)))) model.selected = i;
-            if (selected) {
-                const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(min, ImVec2(min.x+3,max.y), IM_COL32(229,108,126,255));
-                ImGui::PopStyleColor();
-            }
+            const bool selected=model.selected==i;
+            const auto p=ImGui::GetCursorScreenPos();
+            const float rowWidth=ImGui::GetContentRegionAvail().x;
+            ImGui::PushStyleColor(ImGuiCol_Button,selected?Theme::kColAccentDark:Theme::kColShell1);
+            if(ImGui::Button("##Page",ImVec2(rowWidth,(std::max)(32.f,ImGui::GetFrameHeight()+4))))model.selected=i;
+            ImGui::PopStyleColor();
+            auto* nav=ImGui::GetWindowDrawList();
+            const auto color=selected?Theme::kColAccent:Theme::kColTextDim;
+            Icon(nav,ImVec2(p.x+8,p.y+7),i,color);
+            if(!preferences.sidebarCollapsed)nav->AddText(ImVec2(p.x+34,p.y+((std::max)(32.f,ImGui::GetFrameHeight()+4)-ImGui::GetFontSize())*.5f),selected?Theme::kColText:Theme::kColTextDim,page.label);
+            if(selected)nav->AddRectFilled(p,ImVec2(p.x+2,p.y+(std::max)(32.f,ImGui::GetFrameHeight()+4)),Theme::kColAccent,1);
+            ImGui::SetItemTooltip("%s / %s",page.group,page.label);
             ImGui::PopID();
         }
         ImGui::EndChild();
+        ImGui::PopStyleColor();
         ImGui::SameLine(0,16);
-        }
-        ImGui::BeginChild("PageBody", ImVec2(0,height));
+        ImGui::BeginChild("PageBody",ImVec2(0,height));
+        Search::currentPage=model.selected;
         body(model.selected);
         ImGui::EndChild();
-        const auto pos = ImGui::GetCursorScreenPos();
-        footer(ImGui::GetWindowDrawList(), pos, width);
+        footer(ImGui::GetWindowDrawList(),ImGui::GetCursorScreenPos(),width);
     }
     ImGui::End();
     ImGui::PopStyleVar();
