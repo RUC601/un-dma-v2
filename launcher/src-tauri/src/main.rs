@@ -188,7 +188,7 @@ fn close_launcher(app: tauri::AppHandle, state: State<Runtime>) -> Result<(), St
     Ok(())
 }
 #[tauri::command]
-async fn authorize(app: tauri::AppHandle) -> Result<(), String> {
+async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String> {
     let state = app.state::<Runtime>();
     let mut slot = state.native.lock().unwrap();
     if slot
@@ -243,6 +243,7 @@ async fn authorize(app: tauri::AppHandle) -> Result<(), String> {
                 if let Ok(v) = serde_json::from_str::<Value>(raw) {
                     match v["event"].as_str() {
                         Some("ready") => {
+                            let _ = send(&read_native, json!({"command":"account","username":username}));
                             if let Some(w) = read_app.get_webview_window("main") {
                                 let _ = w.hide();
                             }

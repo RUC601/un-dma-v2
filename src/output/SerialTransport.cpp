@@ -84,8 +84,10 @@ namespace
             });
     }
 
-    int SerialFlushIntervalForCommand(OutputCommandType type)
+    int SerialFlushIntervalForCommand(OutputCommandType type, V2::Output::SerialProtocol protocol)
     {
+        if (protocol == V2::Output::SerialProtocol::Ferrum && IsSerialMouseMoveCommand(type))
+            return OutputQueueConfig::MouseMoveFlushIntervalMs;
         return type == OutputCommandType::MouseButton
             ? OutputQueueConfig::MouseButtonFlushIntervalMs
             : OutputQueueConfig::CommandFlushIntervalMs;
@@ -587,7 +589,8 @@ void SerialTransport::QueueWorkerLoop()
 
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = now - lastFlush;
-        const auto flushInterval = std::chrono::milliseconds(SerialFlushIntervalForCommand(command.type));
+        const auto flushInterval = std::chrono::milliseconds(
+            SerialFlushIntervalForCommand(command.type, serialProtocol.load()));
         if (elapsed < flushInterval)
             std::this_thread::sleep_for(flushInterval - elapsed);
 
@@ -610,9 +613,21 @@ void SerialTransport::QueueWorkerLoop()
         if (connectionState.load()!=OutputConnectionState::Connected) {
             CompleteCommand(command.completion,err_queue_stopped);continue;
         }
+        const auto sendStarted = std::chrono::steady_clock::now();
         const int status=command.type==OutputCommandType::Keyboard
             ? ExecuteKeyboardReport(command.keyboardKeys,command.outputIntent==OutputIntent::SafetyRelease)
             : (SendCommandOrFailSession(command.command) ? success : err_net_tx);
+        if (OW::Config::aimVerboseLog) {
+            Diagnostics::Aim("serial.send type=%s queue_age_us=%lld send_us=%lld status=%d command=%.*s",
+                ToString(command.type),
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    sendStarted - command.enqueuedAt).count()),
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - sendStarted).count()),
+                status,
+                (std::max)(0, static_cast<int>(command.command.size()) - 2),
+                command.command.c_str());
+        }
         CompleteCommand(command.completion,status);
 
         lastFlush = std::chrono::steady_clock::now();

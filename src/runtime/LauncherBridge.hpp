@@ -18,7 +18,7 @@
 #include "Renderer/Overlay.hpp"
 namespace V2::Launcher {
 inline bool enabled=false;
-inline std::string updatePhase,updateVersion,updateError;
+inline std::string updatePhase,updateVersion,updateError,username;
 inline unsigned long long received=0,total=0;
 inline void Send(const char* message){if(enabled){std::printf("UNIPC %s\n",message);std::fflush(stdout);}}
 inline void RequestDownload(){Send("{\"event\":\"download\"}");}
@@ -42,6 +42,8 @@ inline void Poll(){
    const bool saved=OW::Config::SaveAllConfig(OW::Config::ConfigPath())&&UI::Preferences::Save();
    Send(saved?"{\"event\":\"saved\"}":"{\"event\":\"save_failed\"}");
    if(saved)g_Overlay.RequestExit();
+  }else if(command=="account"&&d.HasMember("username")&&d["username"].IsString()){
+   username.assign(d["username"].GetString(),d["username"].GetStringLength());
   }else if(command=="update"&&d.HasMember("state")&&d["state"].IsObject()){
    const auto& s=d["state"];
    auto text=[&](const char* key){return s.HasMember(key)&&s[key].IsString()?std::string(s[key].GetString()):std::string();};

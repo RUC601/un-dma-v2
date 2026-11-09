@@ -37,11 +37,76 @@ void Icon(ImDrawList* draw, ImVec2 p, int index, ImU32 color) {
         for(int row=0;row<3;++row){const float yy=y-6+row*6;draw->AddLine(ImVec2(x-8,yy),ImVec2(x+8,yy),color,1.3f);draw->AddCircleFilled(ImVec2(x+(row==1?4:-3),yy),2.5f,color);}
     }
 }
+
+void AccountCard(float width, float height, float scale, bool collapsed, bool zh) {
+    const auto pos = ImGui::GetCursorScreenPos();
+    const auto& username = V2::Launcher::username;
+    const char* name = username.empty() ? "—" : username.c_str();
+    ImGui::PushStyleColor(ImGuiCol_Button, Theme::kColControl);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::kColControlHover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::kColControlHot);
+    if (ImGui::Button("##AccountCard", ImVec2(width, height))) ImGui::OpenPopup("##AccountPopup");
+    ImGui::PopStyleColor(3);
+    if (collapsed || ImGui::CalcTextSize(name).x > width - 68.0f * scale)
+        ImGui::SetItemTooltip("%s\nTill: Lifetime", name);
+
+    auto* draw = ImGui::GetWindowDrawList();
+    const float cx = pos.x + (collapsed ? width * .5f : 21.0f * scale);
+    const float cy = pos.y + height * .5f;
+    const ImU32 avatar = Theme::kColTextDim;
+    draw->AddCircleFilled(ImVec2(cx, cy - 5.5f * scale), 5.0f * scale, avatar, 20);
+    draw->PathLineTo(ImVec2(cx - 10.0f * scale, cy + 8.0f * scale));
+    draw->PathBezierCubicCurveTo(ImVec2(cx - 9.0f * scale, cy - 1.0f * scale),
+        ImVec2(cx + 9.0f * scale, cy - 1.0f * scale), ImVec2(cx + 10.0f * scale, cy + 8.0f * scale));
+    draw->PathBezierCubicCurveTo(ImVec2(cx + 5.0f * scale, cy + 11.0f * scale),
+        ImVec2(cx - 5.0f * scale, cy + 11.0f * scale), ImVec2(cx - 10.0f * scale, cy + 8.0f * scale));
+    draw->PathFillConvex(avatar);
+    if (!collapsed) {
+        const float fontSize = ImGui::GetFontSize();
+        const float smallSize = fontSize * .82f;
+        const float textY = pos.y + (height - fontSize - smallSize - 2.0f) * .5f;
+        const float textX = pos.x + 40.0f * scale;
+        draw->PushClipRect(ImVec2(textX, pos.y), ImVec2(pos.x + width - 19.0f * scale, pos.y + height), true);
+        draw->AddText(ImVec2(textX, textY), Theme::kColTextMuted, name);
+        draw->AddText(ImGui::GetFont(), smallSize, ImVec2(textX, textY + fontSize + 2.0f), Theme::kColTextDim, "Till: Lifetime");
+        draw->PopClipRect();
+        const float x = pos.x + width - 12.0f * scale;
+        draw->AddLine(ImVec2(x - 3.0f * scale, cy - 4.0f * scale), ImVec2(x + scale, cy), Theme::kColTextDim, 1.5f * scale);
+        draw->AddLine(ImVec2(x + scale, cy), ImVec2(x - 3.0f * scale, cy + 4.0f * scale), Theme::kColTextDim, 1.5f * scale);
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(pos.x, pos.y - 6.0f * scale), ImGuiCond_Appearing, ImVec2(0, 1));
+    ImGui::SetNextWindowSize(ImVec2(250.0f * scale, 0), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f * scale, 12.0f * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Theme::kColPanel);
+    ImGui::PushStyleColor(ImGuiCol_Border, Theme::kColStroke);
+    if (ImGui::BeginPopup("##AccountPopup")) {
+        ImGui::TextDisabled("UNLEASHED");
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextWrapped("%s", name);
+        ImGui::PopTextWrapPos();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kColAccent), "Till: Lifetime");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::BeginDisabled(username.empty());
+        if (ImGui::Selectable(zh ? "复制 ID" : "Copy ID")) {
+            ImGui::SetClipboardText(username.c_str());
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+}
 }
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
             const std::function<void(ImDrawList*, ImVec2, float)>& footer,
-            const std::function<void(float, float)>& header) {
+            const std::function<void(float, bool)>& header) {
     const bool zh=OW::Config::uiLanguage==1;
     const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
     auto& preferences=Preferences::values;
@@ -66,11 +131,42 @@ void Render(Model& model, const std::function<void()>& save,
         auto* font=Theme::s_titleFont?Theme::s_titleFont:ImGui::GetFont();
         const float unWidth=font->CalcTextSizeA(27,1000,0,"UN").x;
         draw->AddText(font,27,ImVec2(brand.x+46+unWidth,brand.y+2),Theme::kColText,"LEASHED");
-        ImGui::Dummy(ImVec2(260,40));
         const float saveWidth=(std::max)(148.f,ImGui::CalcTextSize(model.saveLabel).x+28);
+        const float frameHeight=ImGui::GetFrameHeight();
+        const float toolbarHeight=(std::max)(30.f,frameHeight);
+        const float rowHeight=(std::max)(40.f,toolbarHeight);
+        const float gap=ImGui::GetStyle().ItemSpacing.x;
+        const float rowGap=ImGui::GetStyle().ItemSpacing.y;
+        const float brandWidth=46.f+font->CalcTextSizeA(27,1000,0,"UNLEASHED").x+8.f;
+        const bool stackedHeader=model.headerWidth>width;
+        const float headerWidth=stackedHeader?model.headerColumnWidth:model.headerWidth;
+        const float headerHeight=stackedHeader?toolbarHeight*2+rowGap:toolbarHeight;
+        const float searchMin=120.f*scale, searchMax=220.f*scale;
+        const float singleSearch=width-brandWidth-headerWidth-saveWidth-gap*3;
+        const bool singleRow=!stackedHeader && singleSearch>=searchMin;
+        float searchWidth=singleRow?(std::min)(searchMax,singleSearch):(std::min)(searchMax,(std::max)(1.f,width-brandWidth-gap));
+        float searchX=0, searchY=0, headerX=0, headerY=0, saveX=0, saveY=0;
+        if(singleRow) {
+            searchX=width-searchWidth-headerWidth-saveWidth-gap*2;
+            headerX=searchX+searchWidth+gap;
+            saveX=headerX+headerWidth+gap;
+        } else {
+            if(searchWidth>=searchMin) searchX=width-searchWidth;
+            else {searchWidth=(std::min)(searchMax,width);searchY=rowHeight+rowGap;}
+            headerY=searchY+rowHeight+rowGap;
+            if(headerWidth+gap+saveWidth<=width) {
+                headerX=width-headerWidth-saveWidth-gap;
+                saveX=headerX+headerWidth+gap;
+                saveY=headerY;
+            } else {
+                saveX=(std::max)(0.f,width-saveWidth);
+                saveY=headerY+headerHeight+rowGap;
+            }
+        }
+        ImGui::Dummy(ImVec2(brandWidth,rowHeight));
         static char query[128]{};
-        if(width>680) ImGui::SameLine((std::max)(280.f,width-saveWidth-236));
-        ImGui::SetNextItemWidth(width>680?220.f:(std::max)(160.f,width-saveWidth-12));
+        ImGui::SetCursorScreenPos(ImVec2(brand.x+searchX,brand.y+searchY+(rowHeight-frameHeight)*.5f));
+        ImGui::SetNextItemWidth(searchWidth);
         ImGui::InputTextWithHint("##GlobalSearch",zh?"搜索页面和设置…":"Search pages and settings...",query,sizeof(query));
         if(ImGui::IsItemActivated()||ImGui::IsItemEdited())ImGui::OpenPopup("##SearchResults");
         if(ImGui::BeginPopup("##SearchResults")) {
@@ -103,10 +199,20 @@ void Render(Model& model, const std::function<void()>& save,
             if(!matched) ImGui::TextDisabled("%s",zh?"没有匹配项":"No matching settings");
             ImGui::EndPopup();
         }
-        ImGui::SameLine();
+        if(header) {
+            ImGui::SetCursorScreenPos(ImVec2(brand.x+headerX,brand.y+headerY+(stackedHeader?0.f:(rowHeight-toolbarHeight)*.5f)));
+            header(toolbarHeight,stackedHeader);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(brand.x+saveX,brand.y+saveY+(rowHeight-toolbarHeight)*.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,6.f);
         ImGui::PushStyleColor(ImGuiCol_Button,Theme::kColAccentDark);
-        if(ImGui::Button(model.saveLabel,ImVec2(saveWidth,ImGui::GetFrameHeight())))save();
+        if(ImGui::Button(model.saveLabel,ImVec2(saveWidth,toolbarHeight)))save();
         ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        const float headerBottom=headerY+(stackedHeader?headerHeight:rowHeight);
+        const float bottom=(std::max)({rowHeight,searchY+rowHeight,headerBottom,saveY+rowHeight});
+        ImGui::SetCursorScreenPos(ImVec2(brand.x,brand.y+bottom));
+        ImGui::Dummy(ImVec2(0,0));
         if(V2::Launcher::enabled && V2::Launcher::updatePhase!="idle" && V2::Launcher::updatePhase!="current" && !V2::Launcher::updatePhase.empty()) {
             if(V2::Launcher::updatePhase=="ready") {
                 if(ImGui::SmallButton(zh?"重启并更新":"Restart and update"))V2::Launcher::RequestInstall();
@@ -120,7 +226,6 @@ void Render(Model& model, const std::function<void()>& save,
                 if(ImGui::SmallButton(zh?"下载更新":"Download update"))V2::Launcher::RequestDownload();
             }
         }
-        if(header) {ImGui::Dummy(ImVec2(0,0));header(0,30);}
         if(!model.status.empty()) {
             if(model.saveFailed) ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.65f,.5f,1));
             ImGui::TextWrapped("%s",model.status.c_str());
@@ -130,14 +235,26 @@ void Render(Model& model, const std::function<void()>& save,
         ImGui::Separator();
         ImGui::Spacing();
         const float height=(std::max)(100.f,ImGui::GetContentRegionAvail().y-38);
-        const float navWidth=preferences.sidebarCollapsed?48.f*scale:(std::min)(190.f*scale,width*.27f);
-        ImGui::PushStyleColor(ImGuiCol_ChildBg,Theme::kColShell1);
-        ImGui::BeginChild("BusinessNavigation",ImVec2(navWidth,height),ImGuiChildFlags_AlwaysUseWindowPadding);
-        if(ImGui::Button(preferences.sidebarCollapsed?">##Expand":"<##Collapse",ImVec2(-1,28))) {
+        const bool collapsed=preferences.sidebarCollapsed;
+        const float navWidth=collapsed?48.f*scale:(std::min)(190.f*scale,width*.27f);
+        const float cardScale=collapsed?scale:(std::min)(scale,(std::max)(1.f,navWidth/190.f));
+        const float cardHeight=(std::max)(52.f*cardScale,ImGui::GetFontSize()*2.f+14.f);
+        ImGui::BeginGroup();
+        const ImVec2 navStart=ImGui::GetCursorScreenPos();
+        const float navPadX=collapsed?5.f*scale:20.f;
+        const float toggleHeight=(std::max)(28.f,ImGui::GetFrameHeight());
+        const float navBodyY=navStart.y+(collapsed?6.f*scale:16.f)+toggleHeight+rowGap;
+        ImGui::SetCursorScreenPos(ImVec2(navStart.x+navPadX,navStart.y+(collapsed?6.f*scale:16.f)));
+        if(ImGui::Button(collapsed?">##Expand":"<##Collapse",ImVec2((std::max)(1.f,navWidth-navPadX*2),toggleHeight))) {
             preferences.sidebarCollapsed=!preferences.sidebarCollapsed;
             Preferences::Save();
         }
-        ImGui::SetItemTooltip("%s",zh?"展开 / 收起导航":"Expand / collapse navigation");
+        ImGui::SetItemTooltip("%s",collapsed?(zh?"展开导航":"Expand navigation"):(zh?"收起导航":"Collapse navigation"));
+        ImGui::SetCursorScreenPos(ImVec2(navStart.x,navBodyY));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,Theme::kColShell1);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(navPadX,0));
+        ImGui::BeginChild("BusinessNavigation",ImVec2(navWidth,(std::max)(1.f,height-cardHeight-(navBodyY-navStart.y)-rowGap)),ImGuiChildFlags_AlwaysUseWindowPadding,
+            collapsed?ImGuiWindowFlags_NoScrollbar:ImGuiWindowFlags_None);
         const char* group=nullptr;
         for(int order=0;order<int(model.pages.size());++order) {
             const int i=model.pages.size()==16?(order==12?15:order>12?order-1:order):order;
@@ -145,7 +262,7 @@ void Render(Model& model, const std::function<void()>& save,
             const auto& page=model.pages[i];
             if(!group||std::strcmp(group,page.group)!=0) {
                 if(group)ImGui::Dummy(ImVec2(0,10));
-                if(!preferences.sidebarCollapsed)ImGui::TextDisabled("%s",page.group);
+                if(!collapsed)ImGui::TextDisabled("%s",page.group);
                 group=page.group;
             }
             ImGui::PushID(i);
@@ -157,14 +274,18 @@ void Render(Model& model, const std::function<void()>& save,
             ImGui::PopStyleColor();
             auto* nav=ImGui::GetWindowDrawList();
             const auto color=selected?Theme::kColAccent:Theme::kColTextDim;
-            Icon(nav,ImVec2(p.x+8,p.y+7),i,color);
-            if(!preferences.sidebarCollapsed)nav->AddText(ImVec2(p.x+34,p.y+((std::max)(32.f,ImGui::GetFrameHeight()+4)-ImGui::GetFontSize())*.5f),selected?Theme::kColText:Theme::kColTextDim,page.label);
+            const float rowHeight=(std::max)(32.f,ImGui::GetFrameHeight()+4);
+            Icon(nav,ImVec2(p.x+(collapsed?(rowWidth-18.f)*.5f:8.f),p.y+(rowHeight-18.f)*.5f),i,color);
+            if(!collapsed)nav->AddText(ImVec2(p.x+34,p.y+(rowHeight-ImGui::GetFontSize())*.5f),selected?Theme::kColText:Theme::kColTextDim,page.label);
             if(selected)nav->AddRectFilled(p,ImVec2(p.x+2,p.y+(std::max)(32.f,ImGui::GetFrameHeight()+4)),Theme::kColAccent,1);
             ImGui::SetItemTooltip("%s / %s",page.group,page.label);
             ImGui::PopID();
         }
         ImGui::EndChild();
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
+        AccountCard(navWidth,cardHeight,cardScale,collapsed,zh);
+        ImGui::EndGroup();
         ImGui::SameLine(0,16);
         ImGui::BeginChild("PageBody",ImVec2(0,height));
         Search::currentPage=model.selected;

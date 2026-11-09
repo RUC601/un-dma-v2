@@ -2870,52 +2870,58 @@ static void DrawHeroStrip() {
     ImGui::SetItemTooltip("%s",L("Browse all heroes"));
 }
 
-static void DrawHeroContextToolbar(float saveWidth, float height) {
+struct HeroContextToolbarLayout {
+    std::string current;
+    std::string follow;
+    ID3D11ShaderResourceView* avatar = nullptr;
+    float avatarWidth = 0;
+    float currentWidth = 0;
+    float followWidth = 0;
+    bool detected = false;
+};
+
+static HeroContextToolbarLayout MeasureHeroContextToolbar(float height) {
+    HeroContextToolbarLayout layout;
     const uint64_t heroId = DetectedLocalHeroId();
     const std::string detectedName = HeroDisplayNameForId(heroId);
-    const std::string current = std::string(L("Current")) + ": " + L(detectedName.c_str());
+    layout.current = std::string(L("Current")) + ": " + L(detectedName.c_str());
     const HeroOption* hero = FindHeroOptionById(heroId);
-    auto* avatar = hero ? HeroAvatarForOption(*hero) : nullptr;
-    const float avatarSize = height - 12.0f;
-    const float avatarWidth = avatar ? avatarSize + 8.0f : 0.0f;
-    const float currentWidth = avatarWidth + ImGui::CalcTextSize(current.c_str()).x;
+    layout.avatar = hero ? HeroAvatarForOption(*hero) : nullptr;
+    layout.avatarWidth = layout.avatar ? height - 12.0f + 8.0f : 0.0f;
+    layout.currentWidth = layout.avatarWidth + ImGui::CalcTextSize(layout.current.c_str()).x;
+    layout.detected = heroId != 0;
     const bool following = UI::state.followDetectedHero;
     const bool chinese = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
-    std::string followLabel = L("Follow current hero");
-    followLabel += chinese ? (following ? "  /  开" : "  /  关") : (following ? "  /  On" : "  /  Off");
-    const float followWidth = ImGui::CalcTextSize(followLabel.c_str()).x + 32.0f;
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
-    const float right = ImGui::GetWindowContentRegionMax().x;
-    const float toolbarWidth = currentWidth + followWidth + saveWidth + gap * 2;
-    const float toolbarX = (std::max)(ImGui::GetWindowContentRegionMin().x, right - toolbarWidth);
-    if (ImGui::GetItemRectMax().x + 24.0f <= ImGui::GetWindowPos().x + toolbarX)
-        ImGui::SameLine(toolbarX);
-    else
-        ImGui::SetCursorPosX(toolbarX);
+    layout.follow = L("Follow current hero");
+    layout.follow += chinese ? (following ? "  /  开" : "  /  关") : (following ? "  /  On" : "  /  Off");
+    layout.followWidth = ImGui::CalcTextSize(layout.follow.c_str()).x + 32.0f;
+    return layout;
+}
 
+static void DrawHeroContextToolbar(float height, bool stacked) {
+    const auto layout = MeasureHeroContextToolbar(height);
+    const bool following = UI::state.followDetectedHero;
     const ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(currentWidth, height));
+    ImGui::Dummy(ImVec2(layout.currentWidth, height));
     auto* draw = ImGui::GetWindowDrawList();
-    if (avatar) {
+    if (layout.avatar) {
+        const float avatarSize = height - 12.0f;
         const ImVec2 imageMin(pos.x, pos.y + 6.0f);
         const ImVec2 imageMax(pos.x + avatarSize, pos.y + 6.0f + avatarSize);
-        draw->AddImageRounded(reinterpret_cast<ImTextureID>(avatar), imageMin, imageMax,
+        draw->AddImageRounded(reinterpret_cast<ImTextureID>(layout.avatar), imageMin, imageMax,
             ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4.0f);
         draw->AddRect(imageMin, imageMax, IM_COL32(255, 255, 255, 25), 4.0f);
     }
-    draw->AddText(ImVec2(pos.x + avatarWidth, pos.y + (height - ImGui::GetTextLineHeight()) * .5f),
-        heroId ? kColTextMuted : kColTextDim, current.c_str());
-    if (ImGui::GetItemRectMax().x + gap + followWidth <= ImGui::GetWindowPos().x + right)
-        ImGui::SameLine();
-    else
-        ImGui::SetCursorPosX((std::max)(ImGui::GetWindowContentRegionMin().x, right - followWidth - saveWidth - gap));
+    draw->AddText(ImVec2(pos.x + layout.avatarWidth, pos.y + (height - ImGui::GetTextLineHeight()) * .5f),
+        layout.detected ? kColTextMuted : kColTextDim, layout.current.c_str());
+    if (!stacked) ImGui::SameLine();
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(.72f,.17f,.29f,1));
     ImGui::PushStyleColor(ImGuiCol_Button, following ? ImVec4(.38f,.08f,.14f,1) : ImVec4(.18f,.09f,.12f,1));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.49f,.11f,.20f,1));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.58f,.12f,.23f,1));
-    if (ImGui::Button((followLabel + "###FollowCurrentHero").c_str(), ImVec2(followWidth, height))) {
+    if (ImGui::Button((layout.follow + "###FollowCurrentHero").c_str(), ImVec2(layout.followWidth, height))) {
         UI::state.followDetectedHero = !following;
         if (UI::state.followDetectedHero) {
             s_lastSyncedDetectedHeroId = 0;
@@ -2999,6 +3005,9 @@ void UI::Render() {
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
     model.brandIcon = reinterpret_cast<ImTextureID>(s_logoTexture);
+    const auto toolbar = MeasureHeroContextToolbar((std::max)(30.0f, ImGui::GetFrameHeight()));
+    model.headerWidth = toolbar.currentWidth + ImGui::GetStyle().ItemSpacing.x + toolbar.followWidth;
+    model.headerColumnWidth = (std::max)(toolbar.currentWidth, toolbar.followWidth);
     Workspace::Render(model, [] {
         SetPersistenceStatus(OW::Config::SaveAllConfig(OW::Config::ConfigPath()), T(UiText::SavedAllChanges));
     }, [&](int selected) {

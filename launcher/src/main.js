@@ -20,8 +20,8 @@ document.querySelectorAll('[data-language]').forEach(b=>b.onclick=async()=>{lang
 function closeUpdate(focus=false){$('update-panel').hidden=true;$('update').ariaExpanded='false';if(focus)$('update').focus();}
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('.unf-language'))closeLanguage();if(!e.target.closest('#update-panel')&&!e.target.closest('#update'))closeUpdate();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('update-panel').hidden)closeUpdate(true);else closeLanguage(true);}});
-async function authorize(){if(launching)return;launching=true;$('error').hidden=true;$('unf-authorize').disabled=true;try{await invoke('authorize');}catch(e){error(e);}finally{launching=false;$('unf-authorize').disabled=false;}}
-$('unf-authorize').onclick=authorize;$('unf-form').onsubmit=e=>{e.preventDefault();authorize();};
+async function authorize(){if(launching)return;launching=true;$('error').hidden=true;$('unf-authorize').disabled=true;try{await invoke('authorize',{username:$('unf-account').value});}catch(e){error(e);}finally{launching=false;$('unf-authorize').disabled=false;}}
+$('unf-form').onsubmit=e=>{e.preventDefault();authorize();};
 $('close').onclick=()=>invoke('close_launcher').catch(error);
 $('update').onclick=()=>{const open=$('update-panel').hidden;$('update-panel').hidden=!open;$('update').ariaExpanded=String(open);};
 function renderUpdate(s){

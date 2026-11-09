@@ -717,7 +717,8 @@ namespace KeyState {
             image.clear();
             return false;
         }
-        image.resize(std::min<size_t>(image.size(), bytesRead));
+        // Partial reads count resident bytes across the image, not a contiguous
+        // prefix. Keep its RVA extent so RIP-relative targets retain their offsets.
         return true;
     }
 

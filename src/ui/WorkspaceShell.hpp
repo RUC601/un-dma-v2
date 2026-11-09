@@ -14,9 +14,11 @@ struct Model {
     std::string status;
     bool saveFailed = false;
     ImTextureID brandIcon = 0;
+    float headerWidth = 0;
+    float headerColumnWidth = 0;
 };
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
             const std::function<void(ImDrawList*, ImVec2, float)>& footer,
-            const std::function<void(float, float)>& header = {});
+            const std::function<void(float, bool)>& header = {});
 }

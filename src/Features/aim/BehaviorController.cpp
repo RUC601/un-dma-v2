@@ -4385,7 +4385,9 @@ namespace AimbotDetail {
         const bool activationOngoing=UsesReleaseKeyUpExecution()
             ? IsAimActivationKeyDown()||state.releasePending : IsAimKeyPressed();
         const bool unfinishedCharge=state.releaseOwnedDown||state.releasePending||chargedAimPreset.has_value();
-        if((!activationOngoing&&unfinishedCharge)||OW::Config::reloading||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
+        // Reload pauses ordinary held fire without acquiring the release-shot rearm latch.
+        const bool reloadCancelsCharge=OW::Config::reloading&&(state.releaseConfigured||unfinishedCharge);
+        if((!activationOngoing&&unfinishedCharge)||reloadCancelsCharge||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
            !AimModeStructureCurrent()||
            (OW::Config::IsMagneticTriggerBehavior(OW::Config::View_aimBehavior())&&IsAimKeyPressed()&&TrackingHoldTimedOut(state))||
            OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) CancelConfiguredAimShot(state);
