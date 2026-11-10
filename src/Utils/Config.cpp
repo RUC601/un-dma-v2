@@ -2985,7 +2985,6 @@ namespace OW { namespace Config {
             gameOutlines = false;
             gameOutlineVisibleOnly = false;
             gameOutlineRainbow = false;
-            gameOutlineColorGain = 1.f;
             draw_skel = false;            // default: incomplete skeleton overlay is opt-in
             draw_avatar = true;           // default: preserve box avatar overlay
             draw_hitbox = false;          // default: hitbox overlay is opt-in
@@ -6354,9 +6353,6 @@ namespace OW { namespace Config {
             gameOutlines = ReadBool(ini, section, "gameOutlines", false);
             gameOutlineVisibleOnly = ReadBool(ini, section, "gameOutlineVisibleOnly", false);
             gameOutlineRainbow = ReadBool(ini, section, "gameOutlineRainbow", false);
-            gameOutlineColorGain = ReadFixedFloat(ini, section, "gameOutlineColorGain", 1.f);
-            if (!std::isfinite(gameOutlineColorGain)) gameOutlineColorGain = 1.f;
-            gameOutlineColorGain = std::clamp(gameOutlineColorGain, .1f, 3.f);
             draw_skel = ReadBool(ini, section, "draw_skel", draw_skel);
             draw_avatar = ReadBool(ini, section, "draw_avatar", draw_avatar);
             draw_hitbox = ReadBool(ini, section, "draw_hitbox", draw_hitbox);
@@ -7165,7 +7161,6 @@ namespace OW { namespace Config {
             WriteBoolValue(path, "Global", "gameOutlines", gameOutlines);
             WriteBoolValue(path, "Global", "gameOutlineVisibleOnly", gameOutlineVisibleOnly);
             WriteBoolValue(path, "Global", "gameOutlineRainbow", gameOutlineRainbow);
-            WriteFixedFloatValue(path, "Global", "gameOutlineColorGain", gameOutlineColorGain);
             WriteBoolValue(path, "Global", "draw_skel", draw_skel);
             WriteBoolValue(path, "Global", "draw_avatar", draw_avatar);
             WriteBoolValue(path, "Global", "draw_hitbox", draw_hitbox);

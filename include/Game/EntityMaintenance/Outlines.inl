@@ -26,7 +26,7 @@
                 if (!enabled && !state.Active() && !brightness.owned) continue;
                 const auto& color = actor.Vis ? OW::Config::enargb : OW::Config::invisnenargb;
                 const uint32_t packed = OW::EdOutline::AnimatedColor(color.x, color.y, color.z,
-                    OW::Config::gameOutlineColorGain, OW::Config::gameOutlineRainbow, GetTickCount64());
+                    OW::Config::gameOutlineRainbow, GetTickCount64());
                 const bool outlineDue = supported && state.Due(outlineNow, enabled, actor.Vis, packed, OW::Config::gameOutlineRainbow);
                 if ((!outlineDue && !brightnessDue) || !outlineBudget) continue;
                 if (!actor.HasUsableBody(outlineNow, processSceneGeneration)) continue;

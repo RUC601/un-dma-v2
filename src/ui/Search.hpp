@@ -55,7 +55,6 @@ inline constexpr Entry entries[]{
     {"Font",12},
     {"Game Outlines",5},
     {"Rainbow Color",5},
-    {"Color Gain",5},
     {"Outline Brightness (alpha multiplier)",5},
     {"Health Threshold",2},
     {"Hero Status",5},

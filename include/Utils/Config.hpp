@@ -1107,7 +1107,6 @@ namespace OW { namespace Config {
     inline bool gameOutlines    = false;
     inline bool gameOutlineVisibleOnly = false;
     inline bool gameOutlineRainbow = false;
-    inline float gameOutlineColorGain = 1.f;
     inline bool draw_skel       = false;
     inline bool draw_avatar     = true;
     inline bool draw_hitbox     = false;

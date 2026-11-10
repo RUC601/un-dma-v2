@@ -93,8 +93,6 @@ void OutlineControls() {
     ImGui::SetItemTooltip("%s",L("Hidden"));
     SettingRow("Visible Only");UICheckbox("##outlineVisibleOnly",&OW::Config::gameOutlineVisibleOnly);
     SettingRow("Rainbow Color");UICheckbox("##outlineRainbow",&OW::Config::gameOutlineRainbow);
-    SettingRow("Color Gain");PushControlWidth();UISlider("##outlineGain",&OW::Config::gameOutlineColorGain,.1f,3.f,Number(2,"x"));ImGui::PopItemWidth();
-    ImGui::TextWrapped("%s",L("RGB gain clips at 255 per channel; this is not HDR glow intensity."));
 #ifndef UNLEASHED_OBSERVATION_ONLY
     namespace Brightness = OW::OutlineBrightness;
     static float brightnessDraft = 2.f;

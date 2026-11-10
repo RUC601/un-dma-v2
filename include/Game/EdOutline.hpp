@@ -22,7 +22,7 @@ inline uint32_t Color(float r, float g, float b) {
     auto byte = [](float v) { return uint32_t((std::isfinite(v) ? std::clamp(v, 0.f, 1.f) : 0.f) * 255.f); };
     return 0xFF000000u | byte(r) | (byte(g) << 8) | (byte(b) << 16);
 }
-inline uint32_t AnimatedColor(float r, float g, float b, float gain, bool rainbow, uint64_t nowMs) {
+inline uint32_t AnimatedColor(float r, float g, float b, bool rainbow, uint64_t nowMs) {
     if (rainbow) {
         const float h = float(nowMs % 8000) * (6.f / 8000.f);
         const auto channel = [h](float offset) {
@@ -30,8 +30,7 @@ inline uint32_t AnimatedColor(float r, float g, float b, float gain, bool rainbo
         };
         r = channel(0); g = channel(4); b = channel(2);
     }
-    gain = std::isfinite(gain) ? std::clamp(gain, .1f, 3.f) : 1.f;
-    return Color(r * gain, g * gain, b * gain);
+    return Color(r, g, b);
 }
 inline bool Pointer(uint64_t p) { return p >= 0x10000 && p <= 0x00007FFFFFFFF000ULL; }
 struct Target {
