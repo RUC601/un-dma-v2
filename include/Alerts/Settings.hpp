@@ -79,7 +79,7 @@ inline const std::string& UltimateMessage(const Settings& settings, uint64_t her
 Settings Normalize(Settings settings);
 Settings GetSettings();
 Settings GetRuntimeSettings();
-void SetRuntimeHero(uint64_t hero);
+Settings SetRuntimeHero(uint64_t hero);
 void SetSettings(Settings settings);
 bool ObserveSkillHero(uint64_t hero);
 bool ObserveUltimateHero(uint64_t hero);

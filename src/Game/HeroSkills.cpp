@@ -3741,9 +3741,9 @@ namespace {
         const bool rightDown = rightSample.down;
         const auto leftSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Primary));
         const unsigned cancelInputs = (leftSample.available && leftSample.down ? 1u : 0u) |
-            (AimbotDetail::IsInputVkDown(VK_LSHIFT) ? 2u : 0u) |
-            (AimbotDetail::IsInputVkDown('E') ? 4u : 0u) |
-            (AimbotDetail::IsInputVkDown('Q') ? 8u : 0u);
+            (AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ability1)) ? 2u : 0u) |
+            (AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ability2)) ? 4u : 0u) |
+            (AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ultimate)) ? 8u : 0u);
         if (rightDown && cancelInputs && !runtime.charge.blocked) {
             Diagnostics::Info("doomfist.punch blocked reason=cancel_input keys=0x%X elapsedMs=%llu",
                 cancelInputs, runtime.charge.charging ? now-runtime.charge.startedMs : 0);

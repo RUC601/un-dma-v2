@@ -436,10 +436,10 @@ void entity_thread() {
 
         V2::Acquisition::Wait(nextProcessTick, entityProcessPeriod);
 
-        SampleAcquisitionCamera();
-        V2::Maps::Sample();
         const auto pipelineCycleStartedAt = std::chrono::steady_clock::now();
         const Diagnostics::DmaReadStats pipelineDmaStart = Diagnostics::SnapshotDmaReadStats();
+        SampleAcquisitionCamera();
+        V2::Maps::Sample();
         Diagnostics::EntityPipelineProcessStats pipelineStats{};
         Diagnostics::EntityLifecycleStats& lifecycleStats = pipelineStats.lifecycle;
 
@@ -1242,12 +1242,16 @@ void entity_thread() {
             }
             if (dynamicCacheIt != dynamicEntityCache.end() && dynamicCacheIt->second.valid) {
                 uint64_t identityPointer=0,currentId=0;
-                if(!SDK->read_range(ComponentParent+0x30,&identityPointer,sizeof(identityPointer)))continue;
+                const bool pointerRead = SDK->read_range(ComponentParent+0x30,&identityPointer,sizeof(identityPointer));
                 identityPointer&=0xFFFFFFFFFFFFFFC0;
-                if(!identityPointer||!SDK->read_range(identityPointer+0x10,&currentId,sizeof(currentId)))continue;
-                if(currentId!=dynamicCacheIt->second.entityId) {
-                    dynamicEntityCache.erase(dynamicCacheIt);continue;
+                const bool identityRead = pointerRead && identityPointer &&
+                    SDK->read_range(identityPointer+0x10,&currentId,sizeof(currentId));
+                if (!identityRead || currentId != dynamicCacheIt->second.entityId) {
+                    dynamicEntityCache.erase(dynamicCacheIt);
+                    dynamicCacheIt = dynamicEntityCache.end();
                 }
+            }
+            if (dynamicCacheIt != dynamicEntityCache.end() && dynamicCacheIt->second.valid) {
                 ++lifecycleStats.dynamicCacheReusedCount;
                 DynamicEntityCache& cachedDynamic = dynamicCacheIt->second;
                 if (cachedDynamic.meshBase &&
@@ -1329,13 +1333,14 @@ void entity_thread() {
             if (!componentCacheHit) {
                 ScopedPipelinePhaseTimer specialTimer(pipelineStats.phase.entitySpecialProbeMs);
                 uint64_t ptrValue = 0;
-                if (!componentHeader.ReadParentOffset(0x30, ptrValue))
-                    if(!SDK->read_range(ComponentParent+0x30,&ptrValue,sizeof(ptrValue)))continue;
+                // Object classification is optional; a short read must still reach player rebuild.
+                const bool pointerRead = componentHeader.ReadParentOffset(0x30, ptrValue) ||
+                    SDK->read_range(ComponentParent+0x30,&ptrValue,sizeof(ptrValue));
                 uint64_t Ptr = ptrValue & 0xFFFFFFFFFFFFFFC0;
-                if (Ptr && Ptr < 0xFFFFFFFFFFFFFFEF) {
+                if (pointerRead && Ptr && Ptr < 0xFFFFFFFFFFFFFFEF) {
                     uint64_t EntityID=0;
-                    if(!SDK->read_range(Ptr+0x10,&EntityID,sizeof(EntityID)))continue;
-                    if(V2::VisualSettings::ObjectIndex(EntityID)>=0) {
+                    if(SDK->read_range(Ptr+0x10,&EntityID,sizeof(EntityID)) &&
+                        V2::VisualSettings::ObjectIndex(EntityID)>=0) {
                         OW::hpanddy hpdyentity{};
                         hpdyentity.scene_generation=processSceneGeneration;
                         hpdyentity.entityid = EntityID;

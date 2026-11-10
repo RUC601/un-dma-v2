@@ -272,6 +272,26 @@ fn wait_parent(pid: u32) -> Result<(), String> {
     }
     Ok(())
 }
+fn wait_ready(child: &mut std::process::Child, ack: &Path, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    while !ack.exists() {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err("Updated launcher failed before ready".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Updated launcher did not acknowledge ready".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+fn stop_failed_restart(child: &mut std::process::Child) -> Result<(), String> {
+    if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        child.kill().map_err(|e| e.to_string())?;
+    }
+    child.wait().map_err(|e| e.to_string())?;
+    Ok(())
+}
 fn apply(plan: &Plan) -> Result<(), String> {
     let root = plan.root.canonicalize().map_err(|e| e.to_string())?;
     let staged = plan.staged.canonicalize().map_err(|e| e.to_string())?;
@@ -312,6 +332,7 @@ fn apply(plan: &Plan) -> Result<(), String> {
         }
     }
     let mut touched = Vec::new();
+    let mut restarted = None;
     let result = (|| {
         for name in &files {
             let relative = safe_path(name)?;
@@ -327,28 +348,21 @@ fn apply(plan: &Plan) -> Result<(), String> {
         }
         manifest(&root, &plan.version)?;
         let ack = staged.join("restart-ready");
-        let mut child = Command::new(root.join("unleashed-launcher.exe"))
+        let child = Command::new(root.join("unleashed-launcher.exe"))
             .current_dir(&root)
             .arg("--update-ack")
             .arg(&ack)
             .spawn()
             .map_err(|e| e.to_string())?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !ack.exists() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                return Err("Updated launcher failed before ready".into());
-            }
-            if Instant::now() > deadline {
-                return Err(
-                    "Updated launcher did not acknowledge ready; backup retained for recovery"
-                        .into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Ok(())
+        restarted = Some(child);
+        wait_ready(restarted.as_mut().unwrap(), &ack, Duration::from_secs(30))
     })();
     if result.is_err() {
+        if let Some(child) = restarted.as_mut() {
+            stop_failed_restart(child).map_err(|e| format!(
+                "Cannot stop failed launcher before rollback: {e}; recover from {}", backup.display()
+            ))?;
+        }
         let mut errors = Vec::new();
         for name in touched.iter().rev() {
             let relative = safe_path(name)?;

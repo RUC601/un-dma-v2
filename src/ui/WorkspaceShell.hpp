@@ -16,6 +16,7 @@ struct Model {
     ImTextureID brandIcon = 0;
     float headerWidth = 0;
     float headerColumnWidth = 0;
+    float statusAge = 0;
 };
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,

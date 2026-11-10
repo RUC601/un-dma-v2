@@ -75,7 +75,7 @@ void UI::AimbotPage() {
         selectedHero = &kHeroOptions[state.selectedTypeIndex];
         const bool isGlobal = selectedHero->heroId == 0;
         activePreset = isGlobal
-            ? MakeCurrentHeroActionPreset(slotKind)
+            ? OW::Config::GetSystemHeroPreset()
             : GetHeroActionPresetOrDefault(slotKind, selectedHero->heroId, state.aimHeroSegActive);
         activeScopeRequirement = OW::Config::AimScopeRequirement::All;
         if (!isGlobal) {
@@ -384,7 +384,7 @@ void UI::AimbotPage() {
     if(presetChanged) OW::Config::StoreHeroBehaviorMode(activePreset);
     if (selectedHero->heroId == 0) {
         if (presetChanged)
-            ApplyHeroActionPresetToGlobals(slotKind, activePreset);
+            OW::Config::SetSystemAimPreset(activePreset);
     } else {
         if (presetChanged) {
             SetHeroActionPreset(slotKind, selectedHero->heroId, state.aimHeroSegActive, activePreset);

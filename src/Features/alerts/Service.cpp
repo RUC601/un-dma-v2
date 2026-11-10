@@ -1,5 +1,6 @@
 #include "Alerts/Service.hpp"
 #include "Speech.hpp"
+#include "Game/HeroSettings.hpp"
 #include <Windows.h>
 #include <atomic>
 #include <condition_variable>
@@ -41,17 +42,27 @@ void Run(std::stop_token stop) {
     std::unordered_map<std::string, AudioClip> clips;
     std::deque<std::string> warmup;
     std::unordered_set<std::string> editedMessages, retiredMessages;
+    std::shared_ptr<const HeroSettings::Store> configured;
+    std::unordered_set<std::string> configuredMessages;
     uint64_t attemptedRetry = retry.load();
     uint64_t warmAfter = 0;
     while (!stop.stop_requested()) {
+        const auto store = HeroSettings::Snapshot();
+        if (store != configured) {
+            auto messages = Messages(store->defaults.alerts);
+            for (const auto& [hero, value] : store->heroes)
+                messages.merge(Messages(value.alerts));
+            for (const auto& message : configuredMessages)
+                if (!messages.contains(message)) retiredMessages.insert(message);
+            std::erase_if(retiredMessages, [&](const auto& message) { return messages.contains(message); });
+            configuredMessages = std::move(messages);
+            configured = store;
+        }
         const auto settings = GetRuntimeSettings();
         if (!prepared || *prepared != settings || attemptedRetry != retry.load()) {
             attemptedRetry = retry.load();
             const auto current = Messages(settings);
             if (prepared) {
-                const auto previous = Messages(*prepared);
-                for (const auto& message : previous)
-                    if (!current.contains(message)) retiredMessages.insert(message);
                 for (size_t i = 0; i < settings.rules.size(); ++i)
                     if (settings.rules[i].message != prepared->rules[i].message)
                         editedMessages.insert(settings.rules[i].message);
@@ -64,7 +75,6 @@ void Run(std::stop_token stop) {
                     if (!rule.message.empty() && !UltimateForHero(settings, rule.hero))
                         editedMessages.insert(settings.ultimateMessage);
             }
-            std::erase_if(retiredMessages, [&](const auto& message) { return current.contains(message); });
             std::erase_if(editedMessages, [&](const auto& message) { return !current.contains(message); });
             if (!prepared || prepared->voice != settings.voice) clips.clear();
             else std::erase_if(clips, [&](const auto& item) { return !current.contains(item.first); });
@@ -90,7 +100,8 @@ void Run(std::stop_token stop) {
         }
         std::erase_if(editedMessages, [&](const auto& message) { return clips.contains(message); });
         if (editedMessages.empty() && !retiredMessages.empty() &&
-            GetTickCount64() >= warmAfter && GetRuntimeSettings() == settings) {
+            GetTickCount64() >= warmAfter && GetRuntimeSettings() == settings &&
+            HeroSettings::Snapshot() == configured) {
             for (const auto& message : retiredMessages) RemoveSpeechCache(message);
             retiredMessages.clear();
         }

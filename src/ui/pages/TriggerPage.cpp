@@ -70,7 +70,7 @@ void UI::TriggerPage() {
         selectedHero = &kHeroOptions[state.selectedTypeIndex];
         const bool isGlobal = selectedHero->heroId == 0;
         activePreset = isGlobal
-            ? MakeCurrentHeroActionPreset(slotKind)
+            ? OW::Config::GetSystemHeroPreset()
             : GetHeroActionPresetOrDefault(slotKind, selectedHero->heroId, state.triggerHeroSegActive);
     };
     refreshActivePreset();
@@ -211,7 +211,7 @@ void UI::TriggerPage() {
 
     if (selectedHero->heroId == 0) {
         if (presetChanged)
-            ApplyHeroActionPresetToGlobals(slotKind, activePreset);
+            OW::Config::SetSystemTriggerPreset(activePreset);
     } else {
         if (presetChanged) {
             SetHeroActionPreset(slotKind, selectedHero->heroId, state.triggerHeroSegActive, activePreset);

@@ -2728,7 +2728,7 @@ namespace AimbotDetail {
             if (local.HeroID == OW::eHero::HERO_HANJO) {
                 charge = readult(local.SkillBase + 0x40, 0xB, 0x2A5) * 100.0f;
             } else if (local.HeroID == OW::eHero::HERO_WIDOWMAKER) {
-                charge = IsInputVkDown(VK_RBUTTON)
+                charge = IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Secondary))
                     ? readult(local.SkillBase + 0x40, 0xB, 0x2567) * 100.0f
                     : 0.0f;
             }
@@ -3697,7 +3697,8 @@ namespace AimbotDetail {
                 break;
             if (AimSessionTimedOut(sessionStartedTick, "flick"))
                 break;
-            if (LocalEntity().HeroID == OW::eHero::HERO_WIDOWMAKER && !IsInputVkDown(VK_RBUTTON)) {
+            if (LocalEntity().HeroID == OW::eHero::HERO_WIDOWMAKER &&
+                !IsInputVkDown(V2::HeroSettings::Key(LocalEntity().HeroID, V2::HeroSettings::Action::Secondary))) {
                 Diagnostics::Aim("flick no_move reason=widow_scope_not_held");
                 if (ordinaryFlick) PauseOrdinaryFlickMovement(state);
                 OW::RuntimeWorkerSleep(1);
@@ -3893,7 +3894,8 @@ namespace AimbotDetail {
         c_entity local = LocalEntity();
         if (connectionEpoch == 0 ||
             !OW::ProcessConnection::IsConnected() ||
-            !OW::Config::GenjiBlade || !IsInputVkDown('Q') ||
+            !OW::Config::GenjiBlade ||
+            !IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ultimate)) ||
             local.HeroID != OW::eHero::HERO_GENJI ||
             local.ultimate != 100.f) {
             return;

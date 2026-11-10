@@ -67,14 +67,16 @@ Settings Normalize(Settings settings) {
 }
 Settings GetSettings() { std::lock_guard lock(settingsMutex); return currentSettings; }
 Settings GetRuntimeSettings() {
-    const auto hero=V2::HeroSettings::Get(runtimeHero.load(std::memory_order_acquire));
+    const auto store=V2::HeroSettings::Snapshot();
+    const auto found=store->heroes.find(runtimeHero.load(std::memory_order_acquire));
+    const auto& hero=found==store->heroes.end()?store->defaults:found->second;
     auto settings=hero.alerts;
     const auto shared=GetSettings();
     settings.voice=shared.voice;settings.volume=shared.volume;settings.outputDevice=shared.outputDevice;
     if(!hero.alertsEnabled)settings.skillEnabled=settings.ultimateEnabled=false;
     return settings;
 }
-void SetRuntimeHero(uint64_t hero) {
+Settings SetRuntimeHero(uint64_t hero) {
     runtimeHero.store(hero,std::memory_order_release);
     const auto settings=GetRuntimeSettings();
     uint64_t mask=0;
@@ -84,6 +86,7 @@ void SetRuntimeHero(uint64_t hero) {
     if(settings.ultimateEnabled)for(size_t i=0;i<kPlayableHeroCount;++i)
         if(UltimateHeroEnabled(settings,OW::GameData::kHeroIds[i].value))mask|=uint64_t{1}<<i;
     observedUltimates.store(mask,std::memory_order_release);
+    return settings;
 }
 void SetSettings(Settings settings) {
     settings=Normalize(std::move(settings));

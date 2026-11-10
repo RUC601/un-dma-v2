@@ -958,8 +958,7 @@ void V2::Visuals::DrawFrame()
     DrawOverlayInfo(frameEntitySnapshot(), frameDynamicEntitySnapshot().size());
     if (viewMatricesFresh && V2::HeroSettings::Snapshot()->display.world.enabled)
         DrawHealthPacks(frameDynamicEntitySnapshot());
-    if (OW::Config::draw_fov)
-        DrawFovCircle(frameLocalSnapshot());
+    DrawFovCircle(frameLocalSnapshot());
     if (OW::Config::drawTrackingDeadzones)
         DrawTrackingDeadzoneCircles(frameLocalSnapshot());
     DrawCrosshair();

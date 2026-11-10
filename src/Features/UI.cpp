@@ -870,12 +870,14 @@ static ImDrawListSplitter g_gbDrawSplitter;
 static uint64_t s_lastSyncedDetectedHeroId = 0;
 static std::string s_configSaveStatus;
 static double s_configSaveStatusUntil = 0.0;
+static double s_configSaveStatusStarted = 0.0;
 static bool s_configSaveFailed = false;
 
 void SetPersistenceStatus(bool saved, const char* successText) {
     s_configSaveFailed = !saved;
     s_configSaveStatus = saved ? std::string(successText) : OW::Config::LastPersistenceError();
-    s_configSaveStatusUntil = saved ? ImGui::GetTime() + 4.0 : 0.0;
+    s_configSaveStatusStarted = ImGui::GetTime();
+    s_configSaveStatusUntil = saved ? s_configSaveStatusStarted + 4.0 : 0.0;
 }
 
 void UI::AutoSave(bool flush) {
@@ -2808,11 +2810,6 @@ static void DrawRuntimeStatusStrip(ImDrawList* dl, const ImVec2& pos, float widt
             "%s  %s", region, connection);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s\n%s\n%s", summary, readiness, nextStep);
-        ImGui::SameLine();
-        if (!s_configSaveStatus.empty()) {
-            ImGui::TextColored(s_configSaveFailed ? ImVec4(1.0f,.4f,.3f,1) : ImVec4(.7f,.73f,.77f,1),
-                               "%s", s_configSaveStatus.c_str());
-        }
         ImGui::PopClipRect();
         ImGui::SetCursorScreenPos(ImVec2(pos.x + width - diagnosticWidth - 4.0f, pos.y + 3.0f));
         if (ImGui::Button(T(UiText::SubDiagnostics), ImVec2(diagnosticWidth, ControlHeight()))) {
@@ -3004,6 +3001,7 @@ void UI::Render() {
     };
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
+    model.statusAge = float(ImGui::GetTime() - s_configSaveStatusStarted);
     model.brandIcon = reinterpret_cast<ImTextureID>(s_logoTexture);
     const auto toolbar = MeasureHeroContextToolbar((std::max)(30.0f, ImGui::GetFrameHeight()));
     model.headerWidth = toolbar.currentWidth + ImGui::GetStyle().ItemSpacing.x + toolbar.followWidth;

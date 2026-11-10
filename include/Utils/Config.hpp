@@ -1799,6 +1799,9 @@ namespace OW { namespace Config {
     void ApplyHeroPresetToGlobals(const HeroPreset& preset);
     void ApplyHeroAimPresetToGlobals(const HeroPreset& preset);
     void ApplyHeroTriggerPresetToGlobals(const HeroPreset& preset);
+    HeroPreset GetSystemHeroPreset();
+    void SetSystemAimPreset(const HeroPreset& preset);
+    void SetSystemTriggerPreset(const HeroPreset& preset);
     bool SaveHeroConfig(const std::string& path);
     bool SaveHeroConfigForHero(const std::string& path, uint64_t heroId);
     void LoadHeroConfig(const std::string& path);

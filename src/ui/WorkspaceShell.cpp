@@ -10,6 +10,52 @@
 
 namespace UI::Workspace {
 namespace {
+void StatusToast(const Model& model, float scale) {
+    if (model.status.empty()) return;
+    const float fadeIn = std::clamp(model.statusAge / .20f, 0.f, 1.f);
+    const float fadeOut = model.saveFailed ? 1.f : std::clamp((4.f - model.statusAge) / .15f, 0.f, 1.f);
+    const float alpha = (std::min)(fadeIn, fadeOut);
+    if (alpha <= 0.f) return;
+
+    const auto* viewport = ImGui::GetMainViewport();
+    const float margin = 16.f * scale;
+    const float width = (std::min)(300.f * scale, viewport->WorkSize.x - margin * 2);
+    const float textWidth = (std::max)(1.f, width - 58.f * scale);
+    const auto textSize = ImGui::CalcTextSize(model.status.c_str(), nullptr, false, textWidth);
+    const float height = (std::max)(48.f * scale, textSize.y + 28.f * scale);
+    const ImVec2 pos(viewport->WorkPos.x + viewport->WorkSize.x - margin - width,
+                     viewport->WorkPos.y + viewport->WorkSize.y - margin - height);
+    const ImVec2 end(pos.x + width, pos.y + height);
+    auto color = [alpha](ImU32 value) {
+        auto rgba = ImGui::ColorConvertU32ToFloat4(value);
+        rgba.w *= alpha;
+        return ImGui::GetColorU32(rgba);
+    };
+    // Foreground drawing keeps save feedback outside the layout and mouse hit testing.
+    auto* draw = ImGui::GetForegroundDrawList();
+    const ImU32 accent = model.saveFailed ? IM_COL32(255, 145, 110, 255) : Theme::kColAccent;
+    draw->AddRectFilled(ImVec2(pos.x, pos.y + 3.f * scale), ImVec2(end.x, end.y + 3.f * scale),
+                        color(IM_COL32(0, 0, 0, 55)), 8.f * scale);
+    draw->AddRectFilled(pos, end, color(Theme::kColPanel), 8.f * scale);
+    draw->AddRect(pos, end, color(Theme::kColStroke), 8.f * scale);
+    const ImVec2 badge(pos.x + 23.f * scale, pos.y + height * .5f);
+    draw->AddCircleFilled(badge, 11.f * scale, color(Theme::kColControl), 24);
+    if (model.saveFailed) {
+        draw->AddLine(ImVec2(badge.x, badge.y - 5.f * scale), ImVec2(badge.x, badge.y + scale), color(accent), 1.5f * scale);
+        draw->AddCircleFilled(ImVec2(badge.x, badge.y + 5.f * scale), scale, color(accent));
+    } else {
+        draw->AddLine(ImVec2(badge.x - 5.f * scale, badge.y), ImVec2(badge.x - scale, badge.y + 4.f * scale), color(accent), 1.5f * scale);
+        draw->AddLine(ImVec2(badge.x - scale, badge.y + 4.f * scale), ImVec2(badge.x + 6.f * scale, badge.y - 4.f * scale), color(accent), 1.5f * scale);
+    }
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(pos.x + 44.f * scale, pos.y + (height - textSize.y) * .5f),
+                  color(Theme::kColTextMuted), model.status.c_str(), nullptr, textWidth);
+    if (!model.saveFailed) {
+        const float remaining = std::clamp(1.f - model.statusAge / 4.f, 0.f, 1.f);
+        draw->AddRectFilled(ImVec2(pos.x + 8.f * scale, end.y - 3.f * scale),
+                            ImVec2(pos.x + 8.f * scale + (width - 16.f * scale) * remaining, end.y - scale), color(accent), scale);
+    }
+}
+
 void Icon(ImDrawList* draw, ImVec2 p, int index, ImU32 color) {
     const float x=p.x+9, y=p.y+9;
     if(index==0) {
@@ -213,24 +259,6 @@ void Render(Model& model, const std::function<void()>& save,
         const float bottom=(std::max)({rowHeight,searchY+rowHeight,headerBottom,saveY+rowHeight});
         ImGui::SetCursorScreenPos(ImVec2(brand.x,brand.y+bottom));
         ImGui::Dummy(ImVec2(0,0));
-        if(V2::Launcher::enabled && V2::Launcher::updatePhase!="idle" && V2::Launcher::updatePhase!="current" && !V2::Launcher::updatePhase.empty()) {
-            if(V2::Launcher::updatePhase=="ready") {
-                if(ImGui::SmallButton(zh?"重启并更新":"Restart and update"))V2::Launcher::RequestInstall();
-            } else if(V2::Launcher::updatePhase=="downloading") {
-                ImGui::Text("%s %s",zh?"正在下载更新":"Downloading update",V2::Launcher::updateVersion.c_str());
-                if(V2::Launcher::total)ImGui::ProgressBar(float(V2::Launcher::received)/float(V2::Launcher::total),ImVec2(180,3));
-            } else if(V2::Launcher::updatePhase=="error") {
-                if(ImGui::SmallButton(zh?"重试更新":"Retry update"))V2::Launcher::RequestCheck();
-                ImGui::SetItemTooltip("%s",V2::Launcher::updateError.c_str());
-            } else if(V2::Launcher::updatePhase=="available") {
-                if(ImGui::SmallButton(zh?"下载更新":"Download update"))V2::Launcher::RequestDownload();
-            }
-        }
-        if(!model.status.empty()) {
-            if(model.saveFailed) ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.65f,.5f,1));
-            ImGui::TextWrapped("%s",model.status.c_str());
-            if(model.saveFailed) ImGui::PopStyleColor();
-        }
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -295,5 +323,6 @@ void Render(Model& model, const std::function<void()>& save,
     }
     ImGui::End();
     ImGui::PopStyleVar();
+    StatusToast(model, scale);
 }
 }

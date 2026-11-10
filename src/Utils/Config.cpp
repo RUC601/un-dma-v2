@@ -631,6 +631,8 @@ namespace OW { namespace Config {
         int CurrentAimMode();
         HeroPreset MakeHeroAimPresetFromCurrentUnlocked();
         HeroPreset MakeHeroTriggerPresetFromCurrentUnlocked();
+        HeroPreset gSystemHeroFallback{};
+        bool gSystemHeroFallbackReady = false;
         TriggerPreset ValidateTriggerPresetValue(TriggerPreset preset);
         HeroPreset ValidateHeroPresetValue(HeroPreset preset);
 
@@ -7027,6 +7029,43 @@ namespace OW { namespace Config {
         return MakeHeroTriggerPresetFromCurrentUnlocked();
     }
 
+    HeroPreset GetSystemHeroPreset()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return gSystemHeroFallbackReady ? gSystemHeroFallback : MakeHeroPresetFromCurrentUnlocked();
+    }
+
+    void SetSystemAimPreset(const HeroPreset& rawPreset)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        ScopedConfigAuthority authority;
+        const auto preset = ValidateHeroPresetValue(rawPreset);
+        if (!gSystemHeroFallbackReady)
+            gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
+        const auto trigger = gSystemHeroFallback.trigger;
+        gSystemHeroFallback = preset;
+        gSystemHeroFallback.trigger = trigger;
+        gSystemHeroFallback.trigger.action = preset.trigger.action;
+        ApplyHeroAimPresetUnlocked(preset);
+        gSystemHeroFallbackReady = true;
+    }
+
+    void SetSystemTriggerPreset(const HeroPreset& rawPreset)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        ScopedConfigAuthority authority;
+        const auto preset = ValidateHeroPresetValue(rawPreset);
+        if (!gSystemHeroFallbackReady)
+            gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
+        gSystemHeroFallback.trigger = preset.trigger;
+        gSystemHeroFallback.aimPlan = preset.aimPlan;
+        gSystemHeroFallback.hitbox = preset.hitbox;
+        gSystemHeroFallback.prediction = preset.prediction;
+        gSystemHeroFallback.targetTeam = preset.targetTeam;
+        ApplyHeroTriggerPresetUnlocked(preset);
+        gSystemHeroFallbackReady = true;
+    }
+
     void NormalizeHeroPresets()
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -7076,6 +7115,11 @@ namespace OW { namespace Config {
             SaveAimbotSettingsUnlocked(path);
             SaveAimMethodSettingsUnlocked(path);
             SaveOutputSettingsUnlocked(path);
+            // The active hero view is transient. Persist the independent global default.
+            rapidjson::Document defaults;
+            auto value = HeroPresetToJson(gSystemHeroFallbackReady
+                ? gSystemHeroFallback : MakeHeroPresetFromCurrentUnlocked(), defaults.GetAllocator());
+            WriteStringValue(path, kAimbotSection, "globalDefaultsJson", ModeJson::Encode(value).c_str());
 
             WriteBoolValue(path, "Global", "draw_hp_pack", draw_hp_pack);
             WriteBoolValue(path, "Global", "crosscircle", crosscircle);
@@ -7224,6 +7268,10 @@ namespace OW { namespace Config {
             automatic.altFireHealth=AutoRMBhealth;automatic.altFireDistance=AutoRMBdistance;
             automatic.defensiveHealth=SkillHealth;automatic.repeatIntervalMs=Shoottime;
             V2::HeroSettings::Migrate(automatic,V2::Alerts::GetSettings());
+            rapidjson::Document defaults;
+            defaults.Parse(ReadString(ini, kAimbotSection, "globalDefaultsJson", "{}").c_str());
+            if (!defaults.HasParseError() && defaults.IsObject() && !defaults.ObjectEmpty())
+                ApplyHeroPresetUnlocked(ReadHeroPresetJson(defaults, MakeHeroPresetFromCurrentUnlocked(), false, false));
         }
 
         void ApplySystemConfigMigrationDefaultsUnlocked(int fileVersion)
@@ -7267,8 +7315,6 @@ namespace OW { namespace Config {
             if (TryGetHeroPresetFromStore(HeroPresetSlotKind::Trigger, heroId, preset))
                 ApplyHeroTriggerPresetUnlocked(preset);
         }
-
-        HeroPreset gSystemHeroFallback{};
 
     } // anonymous namespace
 
@@ -7458,6 +7504,7 @@ namespace OW { namespace Config {
         ResetAimbotDefaultsUnlocked();
         ResetAimMethodDefaultsUnlocked();
         ResetGlobalDefaultsUnlocked();
+        gSystemHeroFallbackReady = false;
 
         IniFile ini;
         if (!LoadIniFile(path, ini)) {
@@ -7467,6 +7514,7 @@ namespace OW { namespace Config {
                 "%s is missing or unreadable; using all documented defaults.",
                 path.c_str());
             gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
+            gSystemHeroFallbackReady = true;
             ApplyLoadedHeroPresetsUnlocked(heroId);
             ValidateUnlocked();
             DumpUnlocked(Diagnostics::LogLevel::Debug);
@@ -7481,6 +7529,7 @@ namespace OW { namespace Config {
                 fileVersion, kCurrentConfigVersion);
             migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr, &heroDocument);
             gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
+            gSystemHeroFallbackReady = true;
             ApplyLoadedHeroPresetsUnlocked(heroId);
             ValidateUnlocked();
             DumpUnlocked(Diagnostics::LogLevel::Debug);
@@ -7500,6 +7549,7 @@ namespace OW { namespace Config {
             ApplySystemConfigMigrationDefaultsUnlocked(fileVersion);
         migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument, true);
         gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
+        gSystemHeroFallbackReady = true;
         ApplyLoadedHeroPresetsUnlocked(heroId);
         ValidateUnlocked();
         const bool migratedModes = heroDocument.IsNull() || ReadJsonInt(heroDocument, "version", 1) < 19;

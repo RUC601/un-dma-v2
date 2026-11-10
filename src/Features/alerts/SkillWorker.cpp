@@ -42,10 +42,9 @@ void SkillWorker() {
             if(previousHero!=frame->local.HeroID||previousActor!=frame->local.actor_generation) {
                 detector.Reset();previousHero=frame->local.HeroID;previousActor=frame->local.actor_generation;
             }
-            SetRuntimeHero(frame->local.HeroID);
+            const auto settings = SetRuntimeHero(frame->local.HeroID);
             const auto now = GetTickCount();
             std::vector<SkillObservation> samples;
-            const auto settings = GetRuntimeSettings();
             for (const auto& entity : frame->entities) {
                 if (settings.skillEnabled) {
                     for (size_t i = 0; i < kDefinitions.size(); ++i)
