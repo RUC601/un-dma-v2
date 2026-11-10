@@ -249,6 +249,11 @@
                     rosterEntry.respawnWatchStartedTick=now;
                     rosterEntry.respawnLastScanRequestTick=0;rosterEntry.respawnFirstScanRequested=false;
                     RuntimeTrace::Emit(RuntimeTrace::EntityMissing,rosterEntity.address,rosterEntity.actor_generation,rosterEntity.anchor_sample_tick_ms,now);
+                    Diagnostics::Info("[V2-MISSING] actor=0x%llX hero=0x%llX member=%d body=%d alive=%d death_known=%d dead=%d anchor_age_ms=%u death_age_ms=%u cache_age_ms=%u",
+                        rosterEntity.address,rosterEntity.HeroID,int(actualMember),int(rosterEntity.body_valid),
+                        int(rosterEntity.Alive),int(rosterEntity.death_known),int(rosterEntity.is_dead),
+                        uint32_t(now-rosterEntity.anchor_sample_tick_ms),uint32_t(now-rosterEntity.death_sample_tick_ms),
+                        uint32_t(now-rosterEntry.baseUpdateTick));
                 }
                 rosterEntity.roster_state = OW::EntityRosterState::Missing;
             }

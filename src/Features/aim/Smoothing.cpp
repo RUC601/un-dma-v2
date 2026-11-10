@@ -133,13 +133,13 @@ namespace OW {
             return target.DistTo(lastTarget) > kRetargetAngleThreshold;
         }
 
-        float EstimateMovePixels(const Vector3& angleDelta) {
+        float EstimateMoveCounts(const Vector3& angleDelta) {
             const float sensitivity = Config::OutputYawCountsPerRadian();
             const float pitchSensitivity = Config::OutputPitchCountsPerRadian();
             const float pitchScale = std::clamp(Config::View_aimbotPitchScale(), 0.1f, 3.0f);
-            const float pixelX = -angleDelta.Y * sensitivity;
-            const float pixelY = angleDelta.X * pitchSensitivity * pitchScale;
-            return sqrtf(pixelX * pixelX + pixelY * pixelY);
+            const float countX = -angleDelta.Y * sensitivity;
+            const float countY = angleDelta.X * pitchSensitivity * pitchScale;
+            return sqrtf(countX * countX + countY * countY);
         }
 
         Vector3 ApplyOvershootCurveTarget(const Vector3& local, const Vector3& target) {
@@ -153,16 +153,16 @@ namespace OW {
             }
 
             state.lastTarget = target;
-            const float resetPixels = std::clamp(Config::aimOvershootResetPixels, 1.0f, 250.0f);
-            if (EstimateMovePixels(state.offset) > resetPixels)
+            const float resetCounts = std::clamp(Config::aimOvershootResetPixels, 1.0f, 250.0f);
+            if (EstimateMoveCounts(state.offset) > resetCounts)
                 state.offset = Vector3{};
 
             const Vector3 adjusted = target + state.offset;
-            Diagnostics::Aim("smooth.overshoot apply offset=(%.9f,%.9f,%.9f) offset_pixels=%.3f local=(%.9f,%.9f,%.9f) target=(%.9f,%.9f,%.9f) adjusted=(%.9f,%.9f,%.9f)",
+            Diagnostics::Aim("smooth.overshoot apply offset=(%.9f,%.9f,%.9f) offset_counts=%.3f local=(%.9f,%.9f,%.9f) target=(%.9f,%.9f,%.9f) adjusted=(%.9f,%.9f,%.9f)",
                 state.offset.X,
                 state.offset.Y,
                 state.offset.Z,
-                EstimateMovePixels(state.offset),
+                EstimateMoveCounts(state.offset),
                 local.X,
                 local.Y,
                 local.Z,
@@ -183,12 +183,12 @@ namespace OW {
 
             OvershootState& state = GetOvershootState();
             const float gain = std::clamp(Config::aimOvershootGain, 0.0f, 1.0f);
-            const float resetPixels = std::clamp(Config::aimOvershootResetPixels, 1.0f, 250.0f);
+            const float resetCounts = std::clamp(Config::aimOvershootResetPixels, 1.0f, 250.0f);
             state.offset = (state.offset + outputDelta * gain) * 0.82f;
-            if (EstimateMovePixels(state.offset) > resetPixels)
+            if (EstimateMoveCounts(state.offset) > resetCounts)
                 state.offset = Vector3{};
 
-            Diagnostics::Aim("smooth.overshoot commit output_delta=(%.9f,%.9f,%.9f) gain=%.3f offset=(%.9f,%.9f,%.9f) offset_pixels=%.3f resetPixels=%.3f",
+            Diagnostics::Aim("smooth.overshoot commit output_delta=(%.9f,%.9f,%.9f) gain=%.3f offset=(%.9f,%.9f,%.9f) offset_counts=%.3f resetCounts=%.3f",
                 outputDelta.X,
                 outputDelta.Y,
                 outputDelta.Z,
@@ -196,8 +196,8 @@ namespace OW {
                 state.offset.X,
                 state.offset.Y,
                 state.offset.Z,
-                EstimateMovePixels(state.offset),
-                resetPixels);
+                EstimateMoveCounts(state.offset),
+                resetCounts);
         }
 
         float ClampIntegralComponent(float value, float maxIntegral) {

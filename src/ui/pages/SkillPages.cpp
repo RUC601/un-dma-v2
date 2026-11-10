@@ -141,10 +141,12 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::Image(reinterpret_cast<ImTextureID>(icon), ImVec2(24.0f, 24.0f));
         ImGui::SameLine(0.0f, 8.0f);
     }
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s / %s",
+    if (!hasControl(OW::HeroSkillControls::PausePolicy)) {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s / %s",
                        L(OW::HeroSkillCategoryName(definition.category)),
                        L(OW::HeroSkillInputActionName(definition.inputAction)));
+    }
 
     if (hasControl(OW::HeroSkillControls::Enabled)) {
         SettingRow("Enabled", kAimbotRightLabelWidth);
@@ -160,6 +162,37 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     const bool hasAbsoluteHealth = hasControl(OW::HeroSkillControls::HealthAbsolute);
     const bool hasAbsoluteEnemyHealth = hasControl(OW::HeroSkillControls::EnemyHealthAbsolute);
     const bool hasPunchAssist = hasControl(OW::HeroSkillControls::PunchAssist);
+    if (hasControl(OW::HeroSkillControls::PausePolicy)) {
+        SettingRow("Pause Aim", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##pauseAim", &settings.pauseAim);
+        SettingRow("Pause Trigger", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##pauseTrigger", &settings.pauseTrigger);
+        SettingRow("Pause Other Skills", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##pauseSkills", &settings.pauseSkills);
+        ImGui::TextWrapped("%s", L("Pauses assists during the active defensive skill. Rocket Punch pauses while the secondary-fire key is held. Your enabled settings are restored when the state ends."));
+        if (changed) OW::Config::SetHeroSkillSettings(heroId, definition.skillId, settings);
+        ImGui::PopID();
+        return changed;
+    }
+    if (hasControl(OW::HeroSkillControls::DefensiveConditions)) {
+        SettingRow("Low Health Condition", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##healthTrigger", &settings.healthTriggerEnabled);
+        SettingRow("Incoming Threat Condition", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##threatTrigger", &settings.threatTriggerEnabled);
+        ImGui::TextUnformatted(L("Normal Skill Threats"));
+        for (size_t i = 0; i < OW::SkillConditions::kNormalThreats.size(); ++i) {
+            bool selected = (settings.normalThreatMask & (1 << i)) != 0;
+            if (UICheckbox(L(OW::SkillConditions::kNormalThreats[i].label), &selected)) {
+                settings.normalThreatMask ^= 1 << i;
+                changed = true;
+            }
+        }
+        ImGui::TextWrapped("%s", L("Ultimate threats are waiting for verified activation signals."));
+    }
+    if (std::string(definition.skillId) == "transcendence")
+        ImGui::TextWrapped("%s", L("Automatic Transcendence is waiting for a verified enemy ultimate activation signal. Enemy charge alone does not trigger it."));
+    if (hasControl(OW::HeroSkillControls::GroupCondition) && settings.radius <= 0)
+        ImGui::TextWrapped("%s", L("Set the verified effect radius before enabling automatic group healing. A zero radius does not cast."));
     const bool hasSkillOutputKey = !hasSequenceControls && !hasComboAction && !hasPunchAssist &&
         (hasControl(OW::HeroSkillControls::Key) || hasPitchControls ||
          hasPhaseTiming || hasHealthThreshold || hasAbsoluteHealth ||
@@ -202,7 +235,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     }
 
     if (hasAbsoluteHealth) {
-        SettingRow("Max Health", kAimbotRightLabelWidth);
+        SettingRow("Current HP Threshold", kAimbotRightLabelWidth);
         PushControlWidth();
         changed |= UISlider("##skillSelfMaxHealth", &settings.healthThreshold, 0.0f, 500.0f, Number(0, " HP"));
         ImGui::PopItemWidth();
@@ -333,7 +366,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         }
         ImGui::PopItemWidth();
 
-        if (definition.heroId == OW::GameData::MakeHeroId(0x13B)) {
+        {
             SettingRow("Priority", kAimbotRightLabelWidth);
             PushControlWidth();
             const char* priorities[] = {L("FOV"), L("Health"), L("Distance")};
@@ -344,6 +377,19 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             PushControlWidth();
             changed |= UISlider("##skillAssistanceDelay", &settings.assistanceDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
             ImGui::PopItemWidth();
+        }
+        SettingRow("Require Visible", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##skillRequireVisible", &settings.requireVisible);
+        SettingRow("Allow Invisible Sombra", kAimbotRightLabelWidth);
+        changed |= UICheckbox("##skillStealth", &settings.allowInvisibleSombra);
+        SettingRow("Target Roles", kAimbotRightLabelWidth);
+        const char* roleNames[] = {L("Damage"), L("Tank"), L("Support")};
+        for (int i = 0; i < 3; ++i) {
+            bool selected = (settings.targetRoleMask & (1 << i)) != 0;
+            ImGui::PushID(i);
+            if (UICheckbox(roleNames[i], &selected)) { settings.targetRoleMask ^= 1 << i; changed = true; }
+            ImGui::PopID();
+            if (i != 2) ImGui::SameLine();
         }
         SettingRow("Draw FOV", kAimbotRightLabelWidth);
         changed |= UICheckbox("##skillDrawFov", &settings.drawSkillFov);

@@ -77,15 +77,21 @@ void UI::TriggerPage() {
 
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.triggerHeroSegActive);
 
-    slotEnabledChanged |= UIActionSlotEnabledCheckbox(slotKind, *selectedHero, "##triggerSlotEnabled", kAimbotHeroLabelWidth);
+    // One UI switch controls both legacy gates; merely viewing an old slot never changes it.
+    bool triggerEnabled = activePreset.trigger.enabled && (selectedHero->heroId == 0 ||
+        IsHeroActionSlotEnabled(slotKind, selectedHero->heroId, state.triggerHeroSegActive));
+    SettingRow("Enable Trigger", kAimbotHeroLabelWidth);
+    if (UICheckbox("##triggerEnabled", &triggerEnabled)) {
+        activePreset.trigger.enabled = triggerEnabled;
+        if (selectedHero->heroId != 0)
+            OW::Config::SetHeroTriggerSlotEnabled(selectedHero->heroId, state.triggerHeroSegActive, triggerEnabled);
+        presetChanged = slotEnabledChanged = true;
+    }
     ImGui::Spacing();
 
     UITwoColumns([&]() {
         UIGroupBox("Trigger Slot");
         {
-            SettingRow("Enable Trigger", kAimbotLeftLabelWidth);
-            presetChanged |= UICheckbox("##triggerSlotEnable", &activePreset.trigger.enabled);
-
             SettingRow("Action", kAimbotLeftLabelWidth);
             PushControlWidth();
             presetChanged |= UIAttackActionSelect("##triggerSlotAction", &activePreset.trigger.action, selectedHero->heroId);

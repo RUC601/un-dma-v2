@@ -6,8 +6,10 @@
 #include "Game/Overwatch.hpp"
 #include "Game/map/MapReader.hpp"
 #include "Game/SkillCooldownTimers.hpp"
+#include "Game/HeroSkills.hpp"
 #include "Alerts/Settings.hpp"
 #include "Renderer/VisualSettings.hpp"
+#include "Game/OutlineBrightness.hpp"
 
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
@@ -411,6 +413,12 @@ void entity_thread() {
         if (processSceneGeneration!=currentSceneGeneration || criticalBatchFusionActive != lastCriticalBatchFusionActive ||
             connectionEpoch != lastConnectionEpoch ||
             runtimeProfile != lastRuntimeProfile) {
+            if (connectionEpoch != lastConnectionEpoch || runtimeProfile != lastRuntimeProfile) {
+                OW::OutlineBrightness::Disable();
+                OW::OutlineBrightness::AppliedCount = 0;
+                OW::OutlineBrightness::FailureCount = 0;
+                OW::OutlineBrightness::RestoreCount = 0;
+            }
             componentBaseCache.clear();
             dynamicEntityCache.clear();
             entityRoster.clear();
@@ -692,6 +700,7 @@ void entity_thread() {
             static_cast<size_t>(teamNameRefreshBudgetPerCycle);
         size_t skillRefreshBudget =
             static_cast<size_t>(skillRefreshBudgetPerCycle);
+        const auto skillObservationNeeds = OW::HeroSkillObservationNeeds();
         size_t skeletonRefreshBudget =
             static_cast<size_t>(skeletonRefreshBudgetPerCycle);
         const size_t skeletonBudgetForCycle=skeletonRefreshBudget;
@@ -867,14 +876,7 @@ void entity_thread() {
                     continue;
                 }
 
-                const DWORD refreshInterval = cached.alive
-                    ? OW::kEntityLiveComponentRefreshMs
-                    : OW::kEntityDeadComponentRefreshMs;
-                if (processLoopTick - cached.baseUpdateTick >= refreshInterval) {
-                    RuntimeTrace::Emit(RuntimeTrace::EntityReject,componentParent,cached.baseUpdateTick,processLoopTick,14);
-                    continue;
-                }
-
+                // Scheduled component renewal must not stop identity-checked hot samples while it waits for its turn.
                 const bool refreshHealth =
                     !cached.healthValid ||
                     processLoopTick - cached.healthUpdateTick >= OW::kEntityHealthIntervalMs;
@@ -1013,7 +1015,13 @@ void entity_thread() {
             if(!item.reads.VelocityRead()){rejectHot(4);continue;}
             // Hero changes and respawns go through full identity reconciliation below.
             if((next.Alive && !entry.entity.Alive) || (item.reads.HeroRead() &&
-                item.reads.hero.heroid!=0 && item.reads.hero.heroid!=next.HeroID)){rejectHot(11);continue;}
+                item.reads.hero.heroid!=0 && item.reads.hero.heroid!=next.HeroID)) {
+                const float identityChange[] = {float(item.reads.hero.heroid & 0xFFFFFF),
+                    float(next.HeroID & 0xFFFFFF), float(next.Alive), float(entry.entity.Alive)};
+                RuntimeTrace::Emit(RuntimeTrace::EntityReject,item.componentParent,item.readStartedTick,
+                    item.readCompletedTick,11,identityChange,4);
+                continue;
+            }
             if(item.reads.HeroRead()) {
                 cached.heroId=next.HeroID;cached.heroValid=true;cached.heroUpdateTick=processLoopTick;
             }
@@ -2155,6 +2163,7 @@ void entity_thread() {
             if (refreshNameTeam && !consumeCycleBudget(teamNameRefreshBudget))
                 refreshNameTeam = false;
             const DWORD skillInterval =
+                skillObservationNeeds.Fast(entity.HeroID) ||
                 V2::Alerts::ObserveSkillHero(entity.HeroID) || V2::Alerts::ObserveUltimateHero(entity.HeroID)
                     ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs;
             size_t skillField = slowCache.skillRefreshCursor % 3;
@@ -2171,7 +2180,8 @@ void entity_thread() {
                 refreshSkillStatus = false;
             const bool refreshLocalSkillStatus =
                 !slowCache.localSkillValid ||
-                slowNow - slowCache.localSkillUpdateTick >= OW::kEntityLocalSkillIntervalMs;
+                slowNow - slowCache.localSkillUpdateTick >=
+                    (skillObservationNeeds.localSkills ? 25u : OW::kEntityLocalSkillIntervalMs);
             std::string name;
             if (refreshNameTeam) {
                 const auto heroLookupStartedAt = std::chrono::steady_clock::now();
@@ -2531,6 +2541,7 @@ void entity_thread() {
                     }
                     entity.skill1act = slowCache.skill1act;
                     entity.skill2act = slowCache.skill2act;
+                    entity.skill_active_tick_ms = slowCache.skillActiveTick;
                     publishCooldowns();
                     applyCachedUltimateToEntity(entity, slowCache);
                     if (detailedProcessLog) {
@@ -2678,10 +2689,12 @@ void entity_thread() {
         });
         hpdy_entities.clear();
         for(const auto& [address,dynamic]:dynamicEntityCache) {
-            if(!dynamic.valid || GetTickCount()-dynamic.updateTick>1000 ||
+            if(!dynamic.valid || GetTickCount()-dynamic.updateTick>200 ||
                 !scheduledRawComponents.contains(address))continue;
             OW::hpanddy value{};value.entityid=dynamic.entityId;value.MeshBase=dynamic.meshBase;value.POS=dynamic.pos;
             value.scene_generation=processSceneGeneration;
+            value.object_parent=address;
+            value.position_tick_ms=dynamic.updateTick;
             hpdy_entities.push_back(value);
         }
         const size_t dynamic_count = hpdy_entities.size();
@@ -2872,4 +2885,30 @@ void entity_thread() {
         }
         recordEntityCycle();
     }
+#ifndef UNLEASHED_OBSERVATION_ONLY
+    OW::OutlineBrightness::Disable();
+    uint32_t restorePending = 0;
+    for (auto& [key, record] : entityRoster) {
+        auto& brightness = record->brightnessState;
+        if (!brightness.owned) continue;
+        const auto& actor = record->entity;
+        auto read = [](uint64_t at, void* data, size_t size) { return mem.ReadFreshExact(at, data, size); };
+        auto write = [](uint64_t at, const void* data, size_t size) { return mem.Write(at, data, size); };
+        auto current = [&] {
+            uint32_t match = 0;
+            OW::OutlineBrightness::Target checked{};
+            return OW::ProcessConnection::IsConnected() &&
+                OW::ProcessConnection::ConnectionEpoch() == lastConnectionEpoch &&
+                OW::offset::ActiveProfile() == lastRuntimeProfile &&
+                read(actor.address + OW::offset::Entity_MatchId, &match, 4) && match == actor.match_id &&
+                OW::DecryptComponent(actor.address, 0x5A) == brightness.target.component &&
+                OW::OutlineBrightness::Resolve(brightness.target.component, SDK->dwGameBase,
+                    lastRuntimeProfile, read, checked) && checked == brightness.target;
+        };
+        if (!brightness.Restore(read, write, current)) ++restorePending;
+    }
+    OW::OutlineBrightness::AppliedCount = 0;
+    OW::OutlineBrightness::RestoreCount = restorePending;
+    if (restorePending) Diagnostics::Info("Outline opacity: shutdown restore pending for %u targets.", restorePending);
+#endif
 }

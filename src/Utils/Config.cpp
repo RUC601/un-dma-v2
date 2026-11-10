@@ -2063,6 +2063,8 @@ namespace OW { namespace Config {
             settings.projectileRadius = std::clamp(settings.projectileRadius, 0.0f, 2.0f);
             settings.preFireDelayMs = std::clamp(settings.preFireDelayMs, 0.0f, 1000.0f);
             settings.maxAimTimeMs = std::clamp(settings.maxAimTimeMs, 0.0f, 5000.0f);
+            settings.targetRoleMask &= 7;
+            settings.normalThreatMask &= 15;
             settings.meleeRadius = std::clamp(settings.meleeRadius, 0.0f, 2.0f);
             settings.punchMaxHeightAbove = std::clamp(settings.punchMaxHeightAbove, 0.0f, 5.0f);
             settings.punchMaxHeightBelow = std::clamp(settings.punchMaxHeightBelow, 0.0f, 5.0f);
@@ -2981,6 +2983,9 @@ namespace OW { namespace Config {
             name = false;                 // name labels are no longer shown in the UI
             ult = true;                   // default: true
             gameOutlines = false;
+            gameOutlineVisibleOnly = false;
+            gameOutlineRainbow = false;
+            gameOutlineColorGain = 1.f;
             draw_skel = false;            // default: incomplete skeleton overlay is opt-in
             draw_avatar = true;           // default: preserve box avatar overlay
             draw_hitbox = false;          // default: hitbox overlay is opt-in
@@ -3832,6 +3837,15 @@ namespace OW { namespace Config {
             AddJsonInt(value, "trackingMethod", settings.tracking.method, allocator);
             AddJsonFloat(value, "trackingSmooth", settings.tracking.smooth, allocator);
             AddJsonInt(value, "targetPriority", settings.targetPriority, allocator);
+            AddJsonBool(value, "healthTriggerEnabled", settings.healthTriggerEnabled, allocator);
+            AddJsonBool(value, "threatTriggerEnabled", settings.threatTriggerEnabled, allocator);
+            AddJsonInt(value, "normalThreatMask", settings.normalThreatMask, allocator);
+            AddJsonBool(value, "requireVisible", settings.requireVisible, allocator);
+            AddJsonBool(value, "allowInvisibleSombra", settings.allowInvisibleSombra, allocator);
+            AddJsonInt(value, "targetRoleMask", settings.targetRoleMask, allocator);
+            AddJsonBool(value, "pauseAim", settings.pauseAim, allocator);
+            AddJsonBool(value, "pauseTrigger", settings.pauseTrigger, allocator);
+            AddJsonBool(value, "pauseSkills", settings.pauseSkills, allocator);
             AddJsonFloat(value, "assistanceDelayMs", settings.assistanceDelayMs, allocator);
             AddJsonBool(value, "drawSkillFov", settings.drawSkillFov, allocator);
             AddJsonFloat(value, "skillFovR", settings.skillFovColor.x, allocator);
@@ -4338,6 +4352,15 @@ namespace OW { namespace Config {
                 defaults.tracking.fov,
                 legacyFovApertureValues);
             defaults.targetPriority = ReadJsonInt(value, "targetPriority", defaults.targetPriority);
+            defaults.healthTriggerEnabled = ReadJsonBool(value, "healthTriggerEnabled", defaults.healthTriggerEnabled);
+            defaults.threatTriggerEnabled = ReadJsonBool(value, "threatTriggerEnabled", defaults.threatTriggerEnabled);
+            defaults.normalThreatMask = ReadJsonInt(value, "normalThreatMask", defaults.normalThreatMask);
+            defaults.requireVisible = ReadJsonBool(value, "requireVisible", defaults.requireVisible);
+            defaults.allowInvisibleSombra = ReadJsonBool(value, "allowInvisibleSombra", defaults.allowInvisibleSombra);
+            defaults.targetRoleMask = ReadJsonInt(value, "targetRoleMask", defaults.targetRoleMask);
+            defaults.pauseAim = ReadJsonBool(value, "pauseAim", defaults.pauseAim);
+            defaults.pauseTrigger = ReadJsonBool(value, "pauseTrigger", defaults.pauseTrigger);
+            defaults.pauseSkills = ReadJsonBool(value, "pauseSkills", defaults.pauseSkills);
             defaults.assistanceDelayMs = ReadJsonFloat(value, "assistanceDelayMs", defaults.assistanceDelayMs);
             defaults.drawSkillFov = ReadJsonBool(value, "drawSkillFov", defaults.drawSkillFov);
             defaults.skillFovColor.x = ReadJsonFloat(value, "skillFovR", defaults.skillFovColor.x);
@@ -6329,6 +6352,11 @@ namespace OW { namespace Config {
             name = ReadBool(ini, section, "name", name);
             ult = ReadBool(ini, section, "ult", ult);
             gameOutlines = ReadBool(ini, section, "gameOutlines", false);
+            gameOutlineVisibleOnly = ReadBool(ini, section, "gameOutlineVisibleOnly", false);
+            gameOutlineRainbow = ReadBool(ini, section, "gameOutlineRainbow", false);
+            gameOutlineColorGain = ReadFixedFloat(ini, section, "gameOutlineColorGain", 1.f);
+            if (!std::isfinite(gameOutlineColorGain)) gameOutlineColorGain = 1.f;
+            gameOutlineColorGain = std::clamp(gameOutlineColorGain, .1f, 3.f);
             draw_skel = ReadBool(ini, section, "draw_skel", draw_skel);
             draw_avatar = ReadBool(ini, section, "draw_avatar", draw_avatar);
             draw_hitbox = ReadBool(ini, section, "draw_hitbox", draw_hitbox);
@@ -7135,6 +7163,9 @@ namespace OW { namespace Config {
             WriteBoolValue(path, "Global", "name", name);
             WriteBoolValue(path, "Global", "ult", ult);
             WriteBoolValue(path, "Global", "gameOutlines", gameOutlines);
+            WriteBoolValue(path, "Global", "gameOutlineVisibleOnly", gameOutlineVisibleOnly);
+            WriteBoolValue(path, "Global", "gameOutlineRainbow", gameOutlineRainbow);
+            WriteFixedFloatValue(path, "Global", "gameOutlineColorGain", gameOutlineColorGain);
             WriteBoolValue(path, "Global", "draw_skel", draw_skel);
             WriteBoolValue(path, "Global", "draw_avatar", draw_avatar);
             WriteBoolValue(path, "Global", "draw_hitbox", draw_hitbox);

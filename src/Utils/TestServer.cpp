@@ -3745,6 +3745,9 @@ void AppendOutputMotionJson(std::ostringstream& out, uint64_t capturedAtMs)
             << ",\"delta_y\":null"
             << ",\"delta_pitch_rad\":null"
             << ",\"delta_yaw_rad\":null"
+            << ",\"movement_unit\":\"relative_device_counts\""
+            << ",\"count_x\":null"
+            << ",\"count_y\":null"
             << ",\"pixel_x\":null"
             << ",\"pixel_y\":null"
             << ",\"automove_runtime_ms\":null"
@@ -3792,8 +3795,12 @@ void AppendOutputMotionJson(std::ostringstream& out, uint64_t capturedAtMs)
     AppendNumberOrNull(out, latest.deltaPitchRad);
     out << ",\"delta_yaw_rad\":";
     AppendNumberOrNull(out, latest.deltaYawRad);
-    out << ",\"pixel_x\":" << latest.pixelX
-        << ",\"pixel_y\":" << latest.pixelY
+    // pixel_x/y are compatibility aliases; all four values are device counts.
+    out << ",\"movement_unit\":\"relative_device_counts\""
+        << ",\"count_x\":" << latest.countX
+        << ",\"count_y\":" << latest.countY
+        << ",\"pixel_x\":" << latest.countX
+        << ",\"pixel_y\":" << latest.countY
         << ",\"automove_runtime_ms\":" << latest.automoveRuntimeMs
         << ",\"status\":" << latest.status
         << ",\"split\":" << (latest.split ? "true" : "false")

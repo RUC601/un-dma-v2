@@ -32,7 +32,7 @@ struct AimBehaviorTuning {
     float baseSpeed = 100;
     AimStartLimiterProfile startLimiter{};
     bool moveSplitEnabled = true;
-    int moveSplitMaxPixels = 4;
+    int moveSplitMaxPixels = 4; // Legacy config name: relative device counts.
     int moveSplitDelayUs = 800;
     bool releaseToFire = false;
     bool autoCharge = false;

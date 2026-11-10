@@ -382,6 +382,36 @@ LRESULT WINAPI CanvasWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }
 
 LRESULT WINAPI MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static bool dragging = false;
+    static POINT dragCursor{};
+    static RECT dragWindow{};
+    // Keep rendering during a title drag and avoid the OS outline-only move preview.
+    if (msg == WM_NCLBUTTONDOWN && wParam == HTCAPTION) {
+        GetCursorPos(&dragCursor);
+        GetWindowRect(hWnd, &dragWindow);
+        SetForegroundWindow(hWnd);
+        SetCapture(hWnd);
+        dragging = GetCapture() == hWnd;
+        return 0;
+    }
+    if (msg == WM_MOUSEMOVE && dragging) {
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        SetWindowPos(hWnd, nullptr, dragWindow.left + cursor.x - dragCursor.x,
+            dragWindow.top + cursor.y - dragCursor.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
+    if (msg == WM_LBUTTONUP && dragging) {
+        dragging = false;
+        ReleaseCapture();
+        return 0;
+    }
+    if (msg == WM_CAPTURECHANGED || msg == WM_CANCELMODE) {
+        dragging = false;
+        if (msg == WM_CANCELMODE && GetCapture() == hWnd) ReleaseCapture();
+    }
+    if (msg == WM_NCPAINT || msg == WM_NCACTIVATE)
+        return msg == WM_NCACTIVATE ? TRUE : 0;
     if (msg == WM_NCHITTEST)
         return HitTestBorderlessMenu(hWnd, lParam);
     if (msg == WM_NCCALCSIZE && wParam)

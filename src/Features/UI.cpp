@@ -2750,74 +2750,6 @@ void DrawRuntimeReadinessDetails() {
     CloseGroupBox();
 }
 
-static void DrawRuntimeStatusStrip(ImDrawList* dl, const ImVec2& pos, float width) {
-        const Diagnostics::StatusSnapshot runtimeStatus = Diagnostics::Snapshot();
-        const bool connected = OW::ProcessConnection::IsConnected();
-        const KeyState::KeyStateVkSample keySample = KeyState::SampleVk(VK_LBUTTON);
-        const bool keysReady = keySample.valid && keySample.available;
-        const bool cameraFresh = OW::HasFreshViewMatrices();
-        const V2::Output::OutputRuntimeAppliedState device = V2::Output::RuntimeController().Applied();
-        const bool deviceReady = OW::Config::outputEnabled &&
-            V2::Output::RuntimeController().IsOutputGateOpen() &&
-            device.descriptor.backend != V2::Output::OutputRuntimeBackend::None;
-        const bool mockDevice = deviceReady &&
-            device.descriptor.backend == V2::Output::OutputRuntimeBackend::Mock;
-        const bool chinese = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
-        char readiness[512]{};
-        std::snprintf(readiness, sizeof(readiness), chinese
-            ? "DMA %s   游戏 %s   按键 %s   相机 %s   外设 %s"
-            : "DMA %s   Game %s   Keys %s   Camera %s   Device %s",
-            runtimeStatus.dmaReady ? (chinese ? "就绪" : "ready") : (chinese ? "未就绪" : "unavailable"),
-            connected ? (chinese ? "已连接" : "connected") : (chinese ? "未连接" : "disconnected"),
-            keysReady ? (chinese ? "可用" : "ready") : (chinese ? "不可用" : "unavailable"),
-            cameraFresh ? (chinese ? "新鲜" : "fresh") : (chinese ? "过期" : "stale"),
-            mockDevice ? (chinese ? "模拟" : "mock") : deviceReady ? (chinese ? "就绪" : "ready") :
-                OW::Config::outputEnabled ? (chinese ? "未就绪" : "unavailable") : (chinese ? "未启用" : "disabled"));
-        const char* nextStep = nullptr;
-        if (!runtimeStatus.dmaReady)
-            nextStep = chinese ? "下一步：检查 DMA 连接及设备设置，稍候自动重试或在设置→通用点击重建设备连接。" : "Next: check DMA and device settings, wait for automatic retry or use Settings > General > Rebuild DMA connection.";
-        else if (!connected)
-            nextStep = chinese ? "下一步：打开游戏，或在设置→通用点击重连。" : "Next: start the game, or use Settings > General > Reconnect.";
-        else if (!keysReady)
-            nextStep = chinese ? "下一步：在设置→诊断查看主机按键采样错误。" : "Next: check host key sampling under Settings > Diagnostics.";
-        else if (!cameraFresh)
-            nextStep = chinese ? "下一步：进入游戏场景；若仍未更新，在设置→通用重连。" : "Next: enter a game scene; reconnect if the camera remains stale.";
-        else if (!deviceReady)
-            nextStep = chinese ? "下一步：在设置→KMBox 设置外设并检查连接。" : "Next: configure and check the device under Settings > KMBox.";
-        else if (mockDevice)
-            nextStep = chinese ? "当前外设为模拟设备，未使用真实外设。" : "The active device is a mock; no physical device is in use.";
-        else if (OW::Config::OutputSuppressedByMenu())
-            nextStep = chinese ? "外设就绪；菜单打开时已暂停输出。" : "Device ready; output is paused while this menu is open.";
-        else
-            nextStep = chinese ? "采样及外设就绪；完整状态可在设置→诊断查看。" : "Samples and device ready. See Settings > Diagnostics for details.";
-        const char* summary = !runtimeStatus.dmaReady ? L("DMA unavailable")
-            : !connected ? L("Game disconnected")
-            : !keysReady ? L("Key sampling unavailable")
-            : !cameraFresh ? L("Camera data stale")
-            : !deviceReady ? L(OW::Config::outputEnabled ? "Device unavailable" : "Device disabled")
-            : mockDevice ? L("Mock device")
-            : OW::Config::OutputSuppressedByMenu() ? L("Output paused (menu)")
-            : L("Connected");
-        dl->AddLine(pos, ImVec2(pos.x + width, pos.y), kColStroke);
-        const float diagnosticWidth = (std::max)(98.0f, ImGui::CalcTextSize(T(UiText::SubDiagnostics)).x+20.0f);
-        ImGui::PushClipRect(pos, ImVec2(pos.x + width - diagnosticWidth - 20.0f, pos.y + ImGui::GetFontSize()+16.0f), true);
-        ImGui::SetCursorScreenPos(ImVec2(pos.x + 12.0f, pos.y + 6.0f));
-        const auto layout = V2::Profiles::Snapshot();
-        const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
-        const char* region = matched ? matched->region : "—";
-        const char* connection = connected ? "Connected" : OW::ProcessConnection::IsConnecting() ? "Connecting" : "Disconnected";
-        ImGui::TextColored(connected ? ImVec4(.55f,.84f,.66f,1) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
-            "%s  %s", region, connection);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s\n%s\n%s", summary, readiness, nextStep);
-        ImGui::PopClipRect();
-        ImGui::SetCursorScreenPos(ImVec2(pos.x + width - diagnosticWidth - 4.0f, pos.y + 3.0f));
-        if (ImGui::Button(T(UiText::SubDiagnostics), ImVec2(diagnosticWidth, ControlHeight()))) {
-            UI::state.activeTab = UI::TAB_MISC;
-            UI::state.miscSubTab = 1;
-        }
-}
-
 static void DrawHeroStrip() {
     static int lastSelection = -1;
     const float browseSize = ControlHeight() + 6;
@@ -3002,6 +2934,10 @@ void UI::Render() {
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
     model.statusAge = float(ImGui::GetTime() - s_configSaveStatusStarted);
+    model.connected = OW::ProcessConnection::IsConnected();
+    const auto layout = V2::Profiles::Snapshot();
+    const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
+    if (model.connected && matched) model.region = matched->region;
     model.brandIcon = reinterpret_cast<ImTextureID>(s_logoTexture);
     const auto toolbar = MeasureHeroContextToolbar((std::max)(30.0f, ImGui::GetFrameHeight()));
     model.headerWidth = toolbar.currentWidth + ImGui::GetStyle().ItemSpacing.x + toolbar.followWidth;
@@ -3028,6 +2964,6 @@ void UI::Render() {
         case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break; case 15: DrawHeroKeyPage(); break;
         }
         CloseGroupBox();
-    }, DrawRuntimeStatusStrip, DrawHeroContextToolbar);
+    }, DrawHeroContextToolbar);
     page=model.selected;
 }

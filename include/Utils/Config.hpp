@@ -347,6 +347,7 @@ namespace OW { namespace Config {
     // acceleration now owns the Accel Limited controller tuning.
     inline std::array<float, kAimBehaviorCount> aimBehaviorAcceleration = { 0.1f, 0.1f, 0.1f, 0.1f, 0.1f };
     inline std::array<bool, kAimBehaviorCount> aimBehaviorMoveSplitEnabled = { true, false, false, true, true };
+    // Legacy Pixels names/INI keys below represent relative device counts.
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitMaxPixels = { 4, 50, 50, 4, 4 };
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitDelayUs = { 800, 0, 0, 800, 800 };
     inline std::array<float, kAimMethodCount> aimMethodAngularSpeedScale = {
@@ -536,6 +537,7 @@ namespace OW { namespace Config {
     inline decltype(aimbotTwoStageInnerSmoothScale)& View_aimbotTwoStageInnerSmoothScale();
     inline bool  aimOvershootCurve = false;
     inline float aimOvershootGain = 0.25f;
+    // Legacy name/INI key: device counts, not screen pixels.
     inline float aimOvershootResetPixels = 56.0f;
 
     inline int ClampAimBehaviorIndex(int value)
@@ -1103,6 +1105,9 @@ namespace OW { namespace Config {
     inline bool name            = false;
     inline bool ult             = true;
     inline bool gameOutlines    = false;
+    inline bool gameOutlineVisibleOnly = false;
+    inline bool gameOutlineRainbow = false;
+    inline float gameOutlineColorGain = 1.f;
     inline bool draw_skel       = false;
     inline bool draw_avatar     = true;
     inline bool draw_hitbox     = false;
@@ -1381,7 +1386,7 @@ namespace OW { namespace Config {
 
     // ---- Mouse movement splitting ----
     inline bool moveSplitEnabled = true;       // Enable micro-splitting of mouse moves
-    inline int moveSplitMaxPixels = 4;         // Max pixels per micro-move chunk (1-20)
+    inline int moveSplitMaxPixels = 4;         // Legacy name: relative device counts per micro-move chunk (1-50)
     inline int moveSplitDelayUs = 800;         // Microsecond delay between chunks (100-5000)
 
     // ---- Per-hero aim/trigger presets ----
@@ -1712,6 +1717,15 @@ namespace OW { namespace Config {
         float punchFullChargeMs = 1000.0f;
         float punchMaxHoldMs = 2000.0f; // estimated total hold until automatic release; calibrate in game
         float punchReleaseLeadMs = 80.0f;
+        bool healthTriggerEnabled = true;
+        bool threatTriggerEnabled = true;
+        int normalThreatMask = 15;
+        bool requireVisible = true;
+        bool allowInvisibleSombra = false;
+        int targetRoleMask = 7; // 1 damage, 2 tank, 4 support; unknown roles pass only with all selected.
+        bool pauseAim = true;
+        bool pauseTrigger = true;
+        bool pauseSkills = true;
     };
 
     using HeroSkillPresetStore = std::unordered_map<uint64_t, std::unordered_map<std::string, HeroSkillSettings>>;

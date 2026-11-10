@@ -61,9 +61,9 @@ namespace OW {
         return true;
     }
 
-    int EnqueueOutputPixelMoveForGeneration(
-        int pixelX,
-        int pixelY,
+    int EnqueueOutputCountMoveForGeneration(
+        int countX,
+        int countY,
         int automoveRuntimeMs,
         std::uint64_t expectedGeneration,
         std::uint64_t expectedConnectionEpoch) {
@@ -81,19 +81,19 @@ namespace OW {
         if (!V2::Output::SupportsTimedMove(V2::Output::ActiveRuntimeSnapshot().descriptor)) automoveRuntimeMs=0;
         return V2::Output::DispatchMouseMoveForGeneration(
             expectedGeneration,
-            pixelX,
-            pixelY,
+            countX,
+            countY,
             automoveRuntimeMs);
     }
 
-    int EnqueueOutputPixelMove(
-        int pixelX,
-        int pixelY,
+    int EnqueueOutputCountMove(
+        int countX,
+        int countY,
         int automoveRuntimeMs) {
         const OutputRuntimeState runtime = CurrentOutputRuntimeState();
-        return EnqueueOutputPixelMoveForGeneration(
-            pixelX,
-            pixelY,
+        return EnqueueOutputCountMoveForGeneration(
+            countX,
+            countY,
             automoveRuntimeMs,
             runtime.backendGeneration);
     }
@@ -190,8 +190,8 @@ namespace OW {
                 fallbackScaledPitch,
                 quantizationState,
                 quantization.forceNonZero);
-            const int pixelX = result.pixelX;
-            const int pixelY = result.pixelY;
+            const int countX = result.countX;
+            const int countY = result.countY;
 
             const int callCount = calls.fetch_add(1, std::memory_order_relaxed) + 1;
             Diagnostics::Aim("mouse.convert call=%d delta_rad_pitch=%.9f delta_rad_yaw=%.9f baseCountsPerRad=%.6f yawCountsPerRad=%.6f pitchCountsPerRad=%.6f autoScale=%d syncScale=%.6f pitchScale=%.6f scaled_counts=(yaw=%.9f,pitch=%.9f) fallback_counts=(yaw=%.9f,pitch=%.9f) accum_before=(%.9f,%.9f) counts=(%d,%d) accum_after=(%.9f,%.9f) forced_min_step=%d",
@@ -210,21 +210,21 @@ namespace OW {
                 fallbackScaledPitch,
                 accumBeforeX,
                 accumBeforeY,
-                pixelX,
-                pixelY,
+                countX,
+                countY,
                 quantizationState.residualX,
                 quantizationState.residualY,
                 result.forcedMinimumStep ? 1 : 0);
             if (Config::aimVerboseLog &&
-                (callCount <= 50 || pixelX != 0 || pixelY != 0)) {
+                (callCount <= 50 || countX != 0 || countY != 0)) {
                 std::printf("[OUTPUT] #%d pitch=%.6f yaw=%.6f yawCountsPerRad=%.1f pitchCountsPerRad=%.1f counts=(%d,%d) accum=(%.3f,%.3f)\n",
                     callCount, delta.X, delta.Y, sensitivity, pitchSensitivity,
-                    pixelX, pixelY,
+                    countX, countY,
                     quantizationState.residualX,
                     quantizationState.residualY);
             }
 
-            if (pixelX == 0 && pixelY == 0) {
+            if (countX == 0 && countY == 0) {
                 Diagnostics::Aim("mouse.move early_return reason=zero_counts scaled=(yaw_%.9f,pitch_%.9f) accum_after=(%.9f,%.9f) forced_min_step=%d note=%s",
                     scaledYaw,
                     scaledPitch,
@@ -244,8 +244,8 @@ namespace OW {
                     lastForcedMinimumStepLogTick == 0 ||
                     now - lastForcedMinimumStepLogTick >= 250) {
                     Diagnostics::Aim("mouse.move magnetic_quantize forced_min_step=1 counts=(%d,%d) raw_delta=(%.9f,%.9f) residual=(%.9f,%.9f)",
-                        pixelX,
-                        pixelY,
+                        countX,
+                        countY,
                         quantization.fallbackDirectionDelta.X,
                         quantization.fallbackDirectionDelta.Y,
                         quantizationState.residualX,
@@ -262,29 +262,29 @@ namespace OW {
             // Serial keeps caller-side micro steps because they are emitted independently.
             const bool splitEnabled = splitConfigured &&
                 applied.descriptor.backend != V2::Output::OutputRuntimeBackend::Network;
-            const int maxPixels = Config::AimBehaviorMoveSplitMaxPixels(splitBehavior);
+            const int maxCounts = Config::AimBehaviorMoveSplitMaxPixels(splitBehavior);
             const int delayUs = Config::AimBehaviorMoveSplitDelayUs(splitBehavior);
-            const int absX = std::abs(pixelX);
-            const int absY = std::abs(pixelY);
+            const int absX = std::abs(countX);
+            const int absY = std::abs(countY);
             const int maxComponent = (std::max)(absX, absY);
             const int steps = splitEnabled
-                ? (std::max)(1, (maxComponent + maxPixels - 1) / maxPixels)
+                ? (std::max)(1, (maxComponent + maxCounts - 1) / maxCounts)
                 : 1;
 
             if (steps <= 1) {
-                const int status = EnqueueOutputPixelMoveForGeneration(
-                    pixelX,
-                    pixelY,
+                const int status = EnqueueOutputCountMoveForGeneration(
+                    countX,
+                    countY,
                     automoveRuntimeMs,
                     outputRuntime.backendGeneration,
                     connectionEpoch);
                 result.status = status;
                 result.dispatched = status == success;
-                Diagnostics::Aim("mouse.enqueue transport=%s command=%s pixel=(%d,%d) runtimeMs=%d behavior=%d splitConfigured=%d splitApplied=%d status=%d",
+                Diagnostics::Aim("mouse.enqueue transport=%s command=%s counts=(%d,%d) runtimeMs=%d behavior=%d splitConfigured=%d splitApplied=%d status=%d",
                     OutputTransportName(),
                     automoveRuntimeMs > 0 ? "automove" : "move",
-                    pixelX,
-                    pixelY,
+                    countX,
+                    countY,
                     automoveRuntimeMs,
                     splitBehavior,
                     splitConfigured ? 1 : 0,
@@ -292,25 +292,25 @@ namespace OW {
                     status);
                 OutputMotionTelemetry::RecordMouseMove(
                     delta,
-                    pixelX,
-                    pixelY,
+                    countX,
+                    countY,
                     automoveRuntimeMs,
                     status,
                     false,
                     1);
             } else {
                 // Split into micro-movements
-                Diagnostics::Aim("mouse.move.split total_pixels=(%d,%d) steps=%d max_pixels_per_step=%d delay_us=%d runtimeMs=%d command=%s behavior=%d",
-                    pixelX,
-                    pixelY,
+                Diagnostics::Aim("mouse.move.split total_counts=(%d,%d) steps=%d max_counts_per_step=%d delay_us=%d runtimeMs=%d command=%s behavior=%d",
+                    countX,
+                    countY,
                     steps,
-                    maxPixels,
+                    maxCounts,
                     delayUs,
                     automoveRuntimeMs,
                     automoveRuntimeMs > 0 ? "automove" : "move",
                     splitBehavior);
-                int remainingX = pixelX;
-                int remainingY = pixelY;
+                int remainingX = countX;
+                int remainingY = countY;
                 int lastStatus = 0;
                 int completedSteps = 0;
                 for (int i = 0; i < steps; i++) {
@@ -319,7 +319,7 @@ namespace OW {
                     remainingX -= curX;
                     remainingY -= curY;
 
-                    const int status = EnqueueOutputPixelMoveForGeneration(
+                    const int status = EnqueueOutputCountMoveForGeneration(
                         curX,
                         curY,
                         automoveRuntimeMs,
@@ -354,11 +354,11 @@ namespace OW {
                     }
                 }
                 Diagnostics::Aim("mouse.move.split_complete steps=%d total=(%d,%d)",
-                    completedSteps, pixelX, pixelY);
+                    completedSteps, countX, countY);
                 OutputMotionTelemetry::RecordMouseMove(
                     delta,
-                    pixelX,
-                    pixelY,
+                    countX,
+                    countY,
                     automoveRuntimeMs,
                     lastStatus,
                     true,

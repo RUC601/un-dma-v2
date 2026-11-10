@@ -87,6 +87,7 @@
     };
     struct RosterEntry : ComponentBaseCache {
         OW::EdOutline::State outlineState{};
+        OW::OutlineBrightness::State brightnessState{};
         std::array<uint64_t, 6> outlineIdentity{};
         // Actor state must survive replacing the component-address cache in CacheRebuild.inl.
         DWORD skillUpdateTick = 0;

@@ -251,7 +251,7 @@ namespace OW {
             if (!waitStable() || !readAngle(pitch, before))
                 return 0.0f;
             const int counts = Config::calibrationMovePixels;
-            if (EnqueueOutputPixelMoveForGeneration(pitch ? 0 : counts, pitch ? counts : 0,
+            if (EnqueueOutputCountMoveForGeneration(pitch ? 0 : counts, pitch ? counts : 0,
                     0, outputRuntime.backendGeneration, connectionEpoch) != success ||
                 !waitStable() || !readAngle(pitch, after))
                 return 0.0f;

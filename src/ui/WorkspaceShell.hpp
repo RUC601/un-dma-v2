@@ -17,9 +17,10 @@ struct Model {
     float headerWidth = 0;
     float headerColumnWidth = 0;
     float statusAge = 0;
+    bool connected = false;
+    std::string region;
 };
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
-            const std::function<void(ImDrawList*, ImVec2, float)>& footer,
             const std::function<void(float, bool)>& header = {});
 }

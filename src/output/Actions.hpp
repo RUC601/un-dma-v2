@@ -14,6 +14,7 @@
 #include "output/Quantization.hpp"
 #include "output/MotionTelemetry.hpp"
 
+// All relative movement arguments are device counts, never screen pixels.
 // 业务动作入口：设备代次与连接代次在分发前再次复核，失败不当作成功。
 namespace OW {
     bool DmaKeyToMouseButton(uint32_t key, int& button);
@@ -26,16 +27,16 @@ namespace OW {
         const char* action,
         OutputIntent intent = OutputIntent::Normal);
 
-    int EnqueueOutputPixelMoveForGeneration(
-        int pixelX,
-        int pixelY,
+    int EnqueueOutputCountMoveForGeneration(
+        int countX,
+        int countY,
         int automoveRuntimeMs,
         std::uint64_t expectedGeneration,
         std::uint64_t expectedConnectionEpoch = 0);
 
-    int EnqueueOutputPixelMove(
-        int pixelX,
-        int pixelY,
+    int EnqueueOutputCountMove(
+        int countX,
+        int countY,
         int automoveRuntimeMs);
 
     MouseMoveQuantizationState& DefaultMouseMoveQuantizationState();

@@ -43,15 +43,33 @@
                 }
                 auto& record=componentBaseCache[ComponentParent];
                 if(!record)record=std::make_shared<RosterEntry>();
-                // Keep the pair-bound team lock through moved or unreadable components.
-                // A validated paired body may reuse it; a new pair needs an exact team read.
-                cache.confirmedTeam = record->confirmedTeam;
-                cache.confirmedTeam.known = false;
-                if (record->entity.body_valid && (cache.health != record->health || cache.velocity != record->velocity ||
-                    cache.hero != record->hero || cache.team != record->team || cache.linkParent != record->linkParent)) {
-                    OW::RevokeEntityBodyObservation(record->entity.address, record->entity.actor_generation,
-                        record->entity.body_authority_revision);
-                    record->entity.body_valid = false;
+                cache.matchIdValid = componentSnapshot &&
+                    componentSnapshot->ReadParentOffset(OW::offset::Entity_MatchId, cache.matchId);
+                const auto bases = [](const ComponentBaseCache& value) {
+                    return std::array{value.health, value.link, value.team, value.transform,
+                        value.velocity, value.hero, value.bone, value.rotation, value.rotationLeaf,
+                        value.skill, value.visibility, value.angle, value.enemyAngle, value.stat};
+                };
+                const bool sameComponents = cache.layoutsKnown && record->layoutsKnown &&
+                    cache.linkParent == record->linkParent && cache.matchIdValid && record->matchIdValid &&
+                    cache.matchId == record->matchId && bases(cache) == bases(*record);
+                if (sameComponents) {
+                    // Renew addresses without discarding accepted samples or advancing their timestamps.
+                    record->componentLayout = cache.componentLayout;
+                    record->linkLayout = cache.linkLayout;
+                    record->baseUpdateTick = cache.baseUpdateTick;
+                    record->layoutCheckTick = cache.layoutCheckTick;
+                } else {
+                    // Keep the pair-bound team lock through moved or unreadable components.
+                    // A validated paired body may reuse it; a new pair needs an exact team read.
+                    cache.confirmedTeam = record->confirmedTeam;
+                    cache.confirmedTeam.known = false;
+                    if (record->entity.body_valid && (cache.health != record->health || cache.velocity != record->velocity ||
+                        cache.hero != record->hero || cache.team != record->team || cache.linkParent != record->linkParent)) {
+                        OW::RevokeEntityBodyObservation(record->entity.address, record->entity.actor_generation,
+                            record->entity.body_authority_revision);
+                        record->entity.body_valid = false;
+                    }
+                    static_cast<ComponentBaseCache&>(*record)=std::move(cache);
                 }
-                static_cast<ComponentBaseCache&>(*record)=std::move(cache);
                 cacheIt=componentBaseCache.find(ComponentParent);

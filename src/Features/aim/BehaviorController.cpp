@@ -904,7 +904,7 @@ namespace AimbotDetail {
         const auto sent=OW::SendMouseMove(delta,effective_move_time_ms,options);
         const float yaw=OW::Config::OutputYawCountsPerRadian(), pitch=OW::Config::OutputPitchCountsPerRadian();
         const bool accepted=sent.dispatched && sent.status==0 && yaw>0 && pitch>0;
-        OW::CommitAimMotionCommand(accepted ? Vector3(sent.pixelY/pitch,-sent.pixelX/yaw,0) : Vector3{});
+        OW::CommitAimMotionCommand(accepted ? Vector3(sent.countY/pitch,-sent.countX/yaw,0) : Vector3{});
     }
 
     inline OW::MouseMoveQuantizationResult MoveMagneticTriggerAimDelta(
@@ -938,7 +938,7 @@ namespace AimbotDetail {
         const auto sent=OW::SendMouseMove(delta,effectiveMoveTimeMs,quantization);
         const float yaw=OW::Config::OutputYawCountsPerRadian(), pitch=OW::Config::OutputPitchCountsPerRadian();
         const bool accepted=sent.dispatched && sent.status==0 && yaw>0 && pitch>0;
-        OW::CommitAimMotionCommand(accepted ? Vector3(sent.pixelY/pitch,-sent.pixelX/yaw,0) : Vector3{});
+        OW::CommitAimMotionCommand(accepted ? Vector3(sent.countY/pitch,-sent.countX/yaw,0) : Vector3{});
         return sent;
     }
 
@@ -3268,9 +3268,9 @@ namespace AimbotDetail {
                         hitBeforeMove ? 1 : 0,
                         hitBeforeMove ? 1 : 0,
                         (!hitBeforeMove &&
-                            (preview.pixelX != 0 || preview.pixelY != 0)) ? 1 : 0,
-                        preview.pixelX,
-                        preview.pixelY,
+                            (preview.countX != 0 || preview.countY != 0)) ? 1 : 0,
+                        preview.countX,
+                        preview.countY,
                         preview.forcedMinimumStep ? 1 : 0,
                         hitAfterMove ? 1 : 0,
                         deadzoneDistance,
@@ -3460,8 +3460,8 @@ namespace AimbotDetail {
                         Diagnostics::Aim("magnetic_trigger.tick inside_hit_window=0 forced_min_step=%d mouse_enqueue=%d counts=(%d,%d) hitbox=%.4f deadzoneDistance=%.3f deadzoneScale=%.3f phaseScale=(track=%.3f yaw=%.3f pitch=%.3f) phase=(pause=%d recovery=%d prefire=%d ready=%d) hitAfter=%d",
                             moveResult.forcedMinimumStep ? 1 : 0,
                             moveResult.dispatched ? 1 : 0,
-                            moveResult.pixelX,
-                            moveResult.pixelY,
+                            moveResult.countX,
+                            moveResult.countY,
                             hitWindow,
                             deadzoneDistance,
                             deadzoneDampingScale,
@@ -3476,8 +3476,8 @@ namespace AimbotDetail {
                         lastQuantizationTickLog = quantizationLogNow;
                     }
                     if (phaseFallbackValid &&
-                        moveResult.pixelX == 0 &&
-                        moveResult.pixelY == 0) {
+                        moveResult.countX == 0 &&
+                        moveResult.countY == 0) {
                         Diagnostics::Aim("magnetic_trigger invariant_warning outside_hit_window_zero_counts=1 raw_delta=(%.9f,%.9f,%.9f)",
                             rawDelta.X,
                             rawDelta.Y,
@@ -4042,6 +4042,8 @@ namespace AimbotDetail {
     inline void RunAutoSkill() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return;
+        if (OW::ShouldPauseHeroAssist(ExecutionSource::HeroSkill) ||
+            OW::HasEnabledDefensiveHeroSkill(LocalEntity().HeroID)) return;
         const auto automatic=V2::HeroSettings::Automatic(LocalEntity().HeroID);
         if (!automatic.defensive) return;
 

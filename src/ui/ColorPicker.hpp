@@ -13,7 +13,8 @@ namespace UI {
 inline bool ColorPicker(const char* id, ImVec4& color, const std::function<void()>& details = {}) {
     ImGui::PushID(id);
     bool changed=false;
-    if(ImGui::ColorButton("##swatch",color,ImGuiColorEditFlags_AlphaPreviewHalf,ImVec2(26,17)))
+    const float height=(std::max)(26.f,ImGui::GetFontSize()+10.f);
+    if(ImGui::ColorButton("##swatch",color,ImGuiColorEditFlags_AlphaPreviewHalf,ImVec2(26,height)))
         ImGui::OpenPopup("##colorCard");
 #ifdef IMGUI_ENABLE_TEST_ENGINE
     ImGuiContext& g=*ImGui::GetCurrentContext();

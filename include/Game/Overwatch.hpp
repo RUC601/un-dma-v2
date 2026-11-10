@@ -36,6 +36,7 @@
 #include "Game/EntityMaintenance/FieldDeadline.hpp"
 #include "Game/EntityMaintenance/VisibilitySample.hpp"
 #include "Game/EdOutline.hpp"
+#include "Game/OutlineBrightness.hpp"
 #include "Game/PresentationTiming.hpp"
 #include "Utils/RuntimeTrace.hpp"
 #include "Game/HeroProfileSwitch.hpp"

@@ -6,6 +6,8 @@
 
 namespace OW::MapData {
 // 155284 World/CN/Nexon dumps and forum 516727 p343/p365.
+// DisplayName covers the 37 entries in p343, not a complete game-resource catalogue.
+// Arcade, Assault, Stadium and sub-map variants may legitimately return Unknown + raw ID.
 inline constexpr uint64_t singletonIndex = 0x30;
 inline constexpr uint64_t idOffset = 0x18;
 inline constexpr uint64_t resourceType = 0x0800000000000000ULL;

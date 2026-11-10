@@ -38,6 +38,7 @@
 #include "Game/SDK.hpp"
 #include "Game/RuntimeState.hpp"
 #include "Game/EntityRosterPolicy.hpp"
+#include "Game/WorldObjectIds.hpp"
 #include "Utils/ProcessConnection.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/RuntimeTrace.hpp"
@@ -2009,10 +2010,7 @@ namespace OW {
         };
 
         auto isDynamicEntityId = [](uint64_t entity_id) {
-            return entity_id == 0x400000000000060 ||
-                   entity_id == 0x40000000000480A ||
-                   entity_id == 0x40000000000005F ||
-                   entity_id == 0x400000000002533;
+            return V2::WorldObjects::ObjectIndex(entity_id) >= 0;
         };
 
         const bool cnProfile = offset::UsesProtectedEntityLayout();
@@ -2447,6 +2445,9 @@ namespace OW {
             };
 
             uint32_t cnUniqueId = 0;
+            const auto objectMetadata = recordMetadata.find(possible_common);
+            const bool knownObject = objectMetadata != recordMetadata.end() && objectMetadata->second.poolRead &&
+                isDynamicEntityId(objectMetadata->second.poolId);
             if (cnProfile && cnRecordMatchIdFromHeaderEnabled) {
                 readRecordHeader();
                 observeHeaderMatchId(0, false);
@@ -2462,7 +2463,7 @@ namespace OW {
                         cnUniqueId = SDK->RPM<uint32_t>(
                             possible_common + offset::Entity_MatchId);
                     }
-                    if (cnUniqueId == 0) {
+                    if (cnUniqueId == 0 && !knownObject) {
                         ++scanDetail.recordMatchIdDirectZeroCount;
                         finishRecordBuild();
                         return;
@@ -2477,7 +2478,7 @@ namespace OW {
                     cnUniqueId = SDK->RPM<uint32_t>(
                         possible_common + offset::Entity_MatchId);
                 }
-                if (cnUniqueId == 0) {
+                if (cnUniqueId == 0 && !knownObject) {
                     ++scanDetail.recordMatchIdDirectZeroCount;
                     finishRecordBuild();
                     return;

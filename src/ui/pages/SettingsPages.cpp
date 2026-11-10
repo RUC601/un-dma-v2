@@ -470,7 +470,7 @@ void DrawMiscBehaviorPage() {
     SettingRow(T(UiText::OvershootCurve));UICheckbox("##miscOvershootCurve",&aimOvershootCurve);
     if(aimOvershootCurve) {
         UI::AimPlanEditor::Float("Overshoot Gain","##overshootGain",aimOvershootGain,0,1);
-        UI::AimPlanEditor::Float("Overshoot Reset","##overshootReset",aimOvershootResetPixels,1,250," px");
+        UI::AimPlanEditor::Float("Overshoot Reset","##overshootReset",aimOvershootResetPixels,1,250," counts");
     }
     CloseGroupBox();
     if(ImGui::CollapsingHeader(OW::Config::uiLanguage==1?"兼容方法库":"Legacy methods"))

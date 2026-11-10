@@ -84,7 +84,7 @@ void Icon(ImDrawList* draw, ImVec2 p, int index, ImU32 color) {
     }
 }
 
-void AccountCard(float width, float height, float scale, bool collapsed, bool zh) {
+void AccountCard(const Model& model, float width, float height, float scale, bool collapsed, bool zh) {
     const auto pos = ImGui::GetCursorScreenPos();
     const auto& username = V2::Launcher::username;
     const char* name = username.empty() ? "—" : username.c_str();
@@ -93,8 +93,9 @@ void AccountCard(float width, float height, float scale, bool collapsed, bool zh
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::kColControlHot);
     if (ImGui::Button("##AccountCard", ImVec2(width, height))) ImGui::OpenPopup("##AccountPopup");
     ImGui::PopStyleColor(3);
-    if (collapsed || ImGui::CalcTextSize(name).x > width - 68.0f * scale)
-        ImGui::SetItemTooltip("%s\nTill: Lifetime", name);
+    const char* connection = model.connected ? (zh ? "已连接" : "Connected") : (zh ? "未连接" : "Disconnected");
+    ImGui::SetItemTooltip("%s\nTill: Lifetime\n%s%s%s", name, connection,
+        model.connected && !model.region.empty() ? " · " : "", model.connected ? model.region.c_str() : "");
 
     auto* draw = ImGui::GetWindowDrawList();
     const float cx = pos.x + (collapsed ? width * .5f : 21.0f * scale);
@@ -107,14 +108,25 @@ void AccountCard(float width, float height, float scale, bool collapsed, bool zh
     draw->PathBezierCubicCurveTo(ImVec2(cx + 5.0f * scale, cy + 11.0f * scale),
         ImVec2(cx - 5.0f * scale, cy + 11.0f * scale), ImVec2(cx - 10.0f * scale, cy + 8.0f * scale));
     draw->PathFillConvex(avatar);
+    const ImU32 connectionColor = model.connected ? IM_COL32(113, 211, 151, 255) : IM_COL32(244, 87, 104, 255);
+    const ImVec2 badge(cx + 8.0f * scale, cy + 7.0f * scale);
+    draw->AddCircleFilled(badge, 5.0f * scale, Theme::kColControl, 20);
+    draw->AddCircleFilled(badge, 3.5f * scale, connectionColor, 20);
     if (!collapsed) {
         const float fontSize = ImGui::GetFontSize();
         const float smallSize = fontSize * .82f;
         const float textY = pos.y + (height - fontSize - smallSize - 2.0f) * .5f;
         const float textX = pos.x + 40.0f * scale;
-        draw->PushClipRect(ImVec2(textX, pos.y), ImVec2(pos.x + width - 19.0f * scale, pos.y + height), true);
+        const float textRight = pos.x + width - 22.0f * scale;
+        const float regionWidth = model.connected ? ImGui::GetFont()->CalcTextSizeA(smallSize, width, 0, model.region.c_str()).x : 0;
+        const float nameRight = regionWidth > 0 ? textRight - regionWidth - 8.0f * scale : textRight;
+        draw->PushClipRect(ImVec2(textX, pos.y), ImVec2(nameRight, pos.y + height), true);
         draw->AddText(ImVec2(textX, textY), Theme::kColTextMuted, name);
+        draw->PopClipRect();
+        draw->PushClipRect(ImVec2(textX, pos.y), ImVec2(textRight, pos.y + height), true);
         draw->AddText(ImGui::GetFont(), smallSize, ImVec2(textX, textY + fontSize + 2.0f), Theme::kColTextDim, "Till: Lifetime");
+        if (regionWidth > 0)
+            draw->AddText(ImGui::GetFont(), smallSize, ImVec2(textRight - regionWidth, textY + fontSize - smallSize), connectionColor, model.region.c_str());
         draw->PopClipRect();
         const float x = pos.x + width - 12.0f * scale;
         draw->AddLine(ImVec2(x - 3.0f * scale, cy - 4.0f * scale), ImVec2(x + scale, cy), Theme::kColTextDim, 1.5f * scale);
@@ -135,6 +147,8 @@ void AccountCard(float width, float height, float scale, bool collapsed, bool zh
         ImGui::TextWrapped("%s", name);
         ImGui::PopTextWrapPos();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kColAccent), "Till: Lifetime");
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(connectionColor), "%s%s%s", connection,
+            model.connected && !model.region.empty() ? " · " : "", model.connected ? model.region.c_str() : "");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::BeginDisabled(username.empty());
@@ -151,7 +165,6 @@ void AccountCard(float width, float height, float scale, bool collapsed, bool zh
 }
 void Render(Model& model, const std::function<void()>& save,
             const std::function<void(int)>& body,
-            const std::function<void(ImDrawList*, ImVec2, float)>& footer,
             const std::function<void(float, bool)>& header) {
     const bool zh=OW::Config::uiLanguage==1;
     const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
@@ -262,7 +275,7 @@ void Render(Model& model, const std::function<void()>& save,
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        const float height=(std::max)(100.f,ImGui::GetContentRegionAvail().y-38);
+        const float height=(std::max)(100.f,ImGui::GetContentRegionAvail().y);
         const bool collapsed=preferences.sidebarCollapsed;
         const float navWidth=collapsed?48.f*scale:(std::min)(190.f*scale,width*.27f);
         const float cardScale=collapsed?scale:(std::min)(scale,(std::max)(1.f,navWidth/190.f));
@@ -312,14 +325,13 @@ void Render(Model& model, const std::function<void()>& save,
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
-        AccountCard(navWidth,cardHeight,cardScale,collapsed,zh);
+        AccountCard(model,navWidth,cardHeight,cardScale,collapsed,zh);
         ImGui::EndGroup();
         ImGui::SameLine(0,16);
         ImGui::BeginChild("PageBody",ImVec2(0,height));
         Search::currentPage=model.selected;
         body(model.selected);
         ImGui::EndChild();
-        footer(ImGui::GetWindowDrawList(),ImGui::GetCursorScreenPos(),width);
     }
     ImGui::End();
     ImGui::PopStyleVar();

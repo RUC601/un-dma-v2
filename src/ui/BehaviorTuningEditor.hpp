@@ -81,7 +81,7 @@ inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior) 
     ImGui::PopItemWidth();
     SettingRow("Move Split");changed|=UICheckbox("##split",&t.moveSplitEnabled);
     if(t.moveSplitEnabled) {
-        SettingRow("Split Chunk");PushControlWidth();changed|=UISlider("##chunk",&t.moveSplitMaxPixels,1,50,Number(0," px"));ImGui::PopItemWidth();
+        SettingRow("Split Chunk");PushControlWidth();changed|=UISlider("##chunk",&t.moveSplitMaxPixels,1,50,Number(0," counts"));ImGui::PopItemWidth();
         SettingRow("Split Delay");PushControlWidth();changed|=UISlider("##delay",&t.moveSplitDelayUs,0,10000,Number(0," us"));ImGui::PopItemWidth();
     }
     OW::Config::NormalizeBehaviorTuning(t);return changed;

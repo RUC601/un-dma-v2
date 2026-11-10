@@ -10,8 +10,8 @@ namespace OW::OutputMotionTelemetry {
         uint64_t capturedAtMs = 0;
         float deltaPitchRad = 0.0f;
         float deltaYawRad = 0.0f;
-        int pixelX = 0;
-        int pixelY = 0;
+        int countX = 0;
+        int countY = 0;
         int automoveRuntimeMs = 0;
         int status = 0;
         bool split = false;
@@ -27,8 +27,8 @@ namespace OW::OutputMotionTelemetry {
 
     void RecordMouseMove(
         const Vector3& delta,
-        int pixelX,
-        int pixelY,
+        int countX,
+        int countY,
         int automoveRuntimeMs,
         int status,
         bool split,

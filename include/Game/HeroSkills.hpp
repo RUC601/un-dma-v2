@@ -6,6 +6,7 @@
 #include "Utils/InputLabels.hpp"
 #include "Game/InputOrchestrator.hpp"
 #include "Game/Structs.hpp"
+#include "Game/SkillConditions.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -130,6 +131,12 @@ namespace HeroSkillControls {
     inline constexpr HeroSkillControlFlags ComboAction = 1u << 21;
     inline constexpr HeroSkillControlFlags PunchAssist = 1u << 22;
     inline constexpr HeroSkillControlFlags MeleeRange = 1u << 23;
+    inline constexpr HeroSkillControlFlags PausePolicy = 1u << 24;
+    inline constexpr HeroSkillControlFlags DefensiveConditions = 1u << 25;
+    inline constexpr HeroSkillControlFlags HealthAction = 1u << 26;
+    inline constexpr HeroSkillControlFlags TrajectoryAction = 1u << 27;
+    inline constexpr HeroSkillControlFlags GroupCondition = 1u << 28;
+    inline constexpr HeroSkillControlFlags DefensiveAction = 1u << 29;
 }
 
 namespace HeroSkillHotkey {
@@ -236,6 +243,9 @@ bool AnyInputSequenceActive();
 bool AnyInputSequenceActivationHeld();
 ExecutionToken ActiveInputSequenceToken();
 bool ShouldBlockForActiveSequence(ExecutionSource requester);
+bool ShouldPauseHeroAssist(ExecutionSource requester);
+bool HasEnabledDefensiveHeroSkill(uint64_t heroId);
+SkillConditions::ObservationNeeds HeroSkillObservationNeeds();
 void CancelActiveSkill();
 void ProcessHeroSkills();
 
@@ -632,6 +642,21 @@ inline Config::HeroSkillSettings MakeSigmaAccretionDefaults()
 {
     return MakeProjectileAimSkillDefaults(35.0f, 10.0f, 37.5f, 0.5f, 0.0f,
                                           HeroSkillHotkey::EKey, true);
+}
+
+inline Config::HeroSkillSettings MakeHealthActionDefaults(float hp, float cooldown)
+{
+    Config::HeroSkillSettings settings{};
+    settings.healthThreshold = hp;
+    settings.cooldown = cooldown;
+    return settings;
+}
+
+inline Config::HeroSkillSettings MakePausePolicyDefaults()
+{
+    Config::HeroSkillSettings settings{};
+    settings.enabled = true;
+    return settings;
 }
 
 inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
@@ -1047,6 +1072,94 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
 
         for (const HeroSkillDefinition& definition : kHeroSkillDefinitions)
             result.push_back(definition);
+
+        // New actions reuse the existing runtime and hero action-key mapping.
+        const auto health = [&](uint64_t hero, const char* slug, const char* id,
+                                const char* name, HeroSkillInputAction action, float hp, float cd) {
+            auto settings = MakeHealthActionDefaults(hp, cd);
+            settings.key = settings.skillKey = DefaultHeroSkillOutputHotkey(action);
+            result.push_back({hero, slug, id, name, id, action, HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::HealthAbsolute |
+                HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
+                HeroSkillControls::HealthAction, settings});
+        };
+        health(eHero::HERO_BAPTISTE, "baptiste", "regenerative-burst", "Regenerative Burst", HeroSkillInputAction::Ability1, 120, 12);
+        health(eHero::HERO_JETPACKCAT, "jetpack-cat", "purr", "Purr", HeroSkillInputAction::Ability2, 120, 12);
+        health(eHero::HERO_JUNKERQUEEN, "junker-queen", "commanding-shout", "Commanding Shout", HeroSkillInputAction::Ability1, 200, 10);
+        health(eHero::HERO_MEI, "mei", "cryo-freeze", "Cryo-Freeze", HeroSkillInputAction::Ability1, 100, 12);
+        health(eHero::HERO_MOIRA, "moira", "fade", "Fade", HeroSkillInputAction::Ability1, 80, 6);
+        health(eHero::HERO_ORISA, "orisa", "fortify", "Fortify", HeroSkillInputAction::Ability1, 200, 15.5f);
+        health(eHero::HERO_SOLDIER76, "soldier-76", "biotic-field", "Biotic Field", HeroSkillInputAction::Ability2, 100, 15);
+        health(eHero::HERO_VENTURE, "venture", "burrow", "Burrow", HeroSkillInputAction::Ability1, 100, 8);
+        // No documented health default for Anran: zero leaves the threshold inert.
+        health(eHero::HERO_ANRAN, "anran", "dancing-blaze", "Dancing Blaze", HeroSkillInputAction::Ability2, 0, 8);
+        const auto groupHeal = [&](uint64_t hero, const char* slug, const char* id,
+                                   const char* name, const char* icon, HeroSkillInputAction action, float cd) {
+            auto settings = MakeHealthActionDefaults(0, cd);
+            settings.key = settings.skillKey = DefaultHeroSkillOutputHotkey(action);
+            settings.allyHealthThreshold = 50;
+            settings.minTargets = 2;
+            settings.radius = 0; // No measured range in the supplied screenshots: set before enabling.
+            result.push_back({hero, slug, id, name, icon, action, HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::AllyHealthThreshold |
+                HeroSkillControls::MinTargets | HeroSkillControls::Radius |
+                HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
+                HeroSkillControls::GroupCondition, settings});
+        };
+        groupHeal(eHero::HERO_BAPTISTE, "baptiste", "regenerative-burst-allies", "Regenerative Burst (Allies)",
+            "regenerative-burst", HeroSkillInputAction::Ability1, 12);
+        groupHeal(eHero::HERO_JETPACKCAT, "jetpack-cat", "purr-allies", "Purr (Allies)",
+            "purr", HeroSkillInputAction::Ability2, 12);
+        auto emp = MakeHealthActionDefaults(0, 0);
+        emp.key = emp.skillKey = HeroSkillHotkey::QKey;
+        emp.radius = 15;
+        emp.minTargets = 3;
+        result.push_back({eHero::HERO_SOMBRA, "sombra", "emp", "EMP", "emp",
+            HeroSkillInputAction::Ultimate, HeroSkillCategory::Ultimate,
+            HeroSkillControls::Enabled | HeroSkillControls::MinTargets | HeroSkillControls::Radius |
+            HeroSkillControls::CooldownGuard | HeroSkillControls::GroupCondition, emp});
+        auto meteor = MakeHealthActionDefaults(150, 0);
+        meteor.key = meteor.skillKey = HeroSkillHotkey::QKey;
+        result.push_back({eHero::HERO_DOOMFIST, "doomfist", "meteor-strike", "Meteor Strike", "meteor-strike",
+            HeroSkillInputAction::Ultimate, HeroSkillCategory::Ultimate,
+            HeroSkillControls::Enabled | HeroSkillControls::HealthAbsolute |
+            HeroSkillControls::CooldownGuard | HeroSkillControls::HealthAction, meteor});
+
+        const auto projectile = [&](uint64_t hero, const char* slug, const char* id, const char* name,
+                                    HeroSkillInputAction action, Config::HeroSkillSettings settings) {
+            settings.enemyHealthThreshold = 100;
+            result.push_back({hero, slug, id, name, id, action, HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::Key |
+                HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
+                HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
+                HeroSkillControls::Prediction | HeroSkillControls::TrackingOverlay |
+                HeroSkillControls::TrajectoryAction, settings});
+        };
+        projectile(eHero::HERO_JUNKERQUEEN, "junker-queen", "jagged-blade", "Jagged Blade",
+            HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(20, 6, 35, 0, 0, HeroSkillHotkey::RightMouse, true));
+        projectile(eHero::HERO_ORISA, "orisa", "energy-javelin", "Energy Javelin",
+            HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(40, 6, 70, 0, 304, HeroSkillHotkey::RightMouse, true));
+
+        for (const auto hero : {eHero::HERO_REAPER, eHero::HERO_TRACER, eHero::HERO_MEI,
+                                eHero::HERO_VENTURE, eHero::HERO_DOOMFIST}) {
+            const char* slug = hero == eHero::HERO_REAPER ? "reaper" : hero == eHero::HERO_TRACER ? "tracer"
+                : hero == eHero::HERO_MEI ? "mei" : hero == eHero::HERO_VENTURE ? "venture" : "doomfist";
+            result.push_back({hero, slug, "assist-pause", "Pause Assists During Skills", nullptr,
+                HeroSkillInputAction::PrimaryFire, HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::PausePolicy, MakePausePolicyDefaults()});
+        }
+        for (auto& definition : result) {
+            const std::string id = definition.skillId;
+            if (id == "sleep-dart" || id == "chain-hook" || id == "pulse-bomb" ||
+                id == "helix-rockets" || id == "sticky-bombs" || id == "whip-shot" || id == "accretion")
+                definition.controls |= HeroSkillControls::TrajectoryAction;
+            if (id == "wraith-form" || id == "recall" || id == "transcendence")
+                definition.controls |= HeroSkillControls::DefensiveAction;
+            if (id == "wraith-form" || id == "recall")
+                definition.controls |= HeroSkillControls::DefensiveConditions;
+        }
 
         for (const HeroSkillHeroEntry& hero : kHeroSkillAutoMeleeHeroes) {
             result.push_back({

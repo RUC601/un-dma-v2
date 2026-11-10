@@ -11,6 +11,7 @@ struct DiscoveryState {
     std::vector<std::pair<uint64_t,uint64_t>> pendingPairs;
     std::vector<uint64_t> knownLinks;
     std::vector<uint64_t> validationLinks;
+    std::unordered_set<uint64_t> worldObjects;
     std::vector<OW::EntityRosterPolicy::Discovery> validatedProofs;
     size_t pairCursor=0, publishedPairCount=0, knownCursor=0;
     size_t validationCursor=0;
@@ -115,6 +116,14 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     if(state.pairCursor<state.pendingPairs.size()) {
         discoveryOperation="new_binding";
         const auto pair=state.pendingPairs[state.pairCursor++];
+        uint64_t objectId=0;
+        const auto read=[](uint64_t at,void* data,size_t size){return OW::SDK->read_range(at,data,size);};
+        if(pair.first==pair.second && V2::WorldObjects::ReadId(pair.first,read,objectId)) {
+            state.worldObjects.insert(pair.first);
+            // Objects have no player binding proof and never gain actor-deletion authority.
+            PublishDiscovery(state,{pair},{},false);
+            return;
+        }
         std::vector<OW::EntityRosterPolicy::Discovery> proofs;
         auto pairs=OW::ProbePriorityActor(pair.second,OW::entityScanTopology,false,nullptr,nullptr,&proofs);
         if(!pairs.empty()) {
@@ -129,7 +138,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     if(!state.scan) {
         if(state.lastScan && now-state.lastScan<250)return;
         state.started=std::chrono::steady_clock::now();state.lastScan=now;
-        state.proofs.clear();state.pendingPairs.clear();state.pairCursor=0;state.publishedPairCount=0;
+        state.proofs.clear();state.pendingPairs.clear();state.worldObjects.clear();state.pairCursor=0;state.publishedPairCount=0;
         state.validationLinks.clear();state.validatedProofs.clear();state.validationCursor=0;
         state.validating=false;state.bindingsComplete=false;
         state.scan=std::make_unique<OW::EntityScanTask>(OW::BeginEntityScan());
@@ -155,8 +164,9 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     if(!state.validating) {
         state.validating=true;
         state.bindingsComplete=OW::entityScanComplete && state.topology.member_ids_complete;
-        for(const auto& pair:pairs)state.validationLinks.push_back(pair.second);
+        for(const auto& pair:pairs)if(!state.worldObjects.contains(pair.first))state.validationLinks.push_back(pair.second);
         for(const auto& [parent,header]:OW::entityScanHeaders) {
+            if(state.worldObjects.contains(parent))continue;
             uint64_t linkBits=0,heroBits=0;
             const auto linkType=OW::offset::Active().typeLink,heroType=OW::offset::Active().typeHeroId;
             if((header.ReadParentOffset(0x110+8ull*(linkType>>6),linkBits) && (linkBits&(1ull<<(linkType&63)))) ||

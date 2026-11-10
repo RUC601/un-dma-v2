@@ -1,4 +1,5 @@
 #include "ui/Search.hpp"
+#include "Game/OutlineBrightness.hpp"
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -70,7 +71,9 @@ bool StyleDetails(Style& style,Element element) {
 }
 bool ElementRow(Settings& settings,Element element,bool& enabled) {
     const int index=int(element);ImGui::PushID(index);
-    const float labelWidth=(std::max)(100.f,ImGui::GetContentRegionAvail().x-138);
+    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
+    const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
     SettingRow(V2::VisualSettings::kElementNames[index],labelWidth);
     bool changed=UICheckbox("##enabled",&enabled);
     auto& style=settings.elements[index];
@@ -78,9 +81,42 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
     ImGui::SetItemTooltip("%s",L("Visible"));
     ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
     ImGui::SetItemTooltip("%s",L("Hidden"));
-    ImGui::SameLine();if(ImGui::SmallButton("..."))ImGui::OpenPopup("##details");
+    ImGui::SameLine();if(ImGui::Button("...",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
     if(ImGui::BeginPopup("##details")){changed|=StyleDetails(style,element);ImGui::EndPopup();}
     ImGui::PopID();return changed;
+}
+void OutlineControls() {
+    SettingRow("Game Outlines");UICheckbox("##gameOutlines",&OW::Config::gameOutlines);
+    ImGui::SameLine();UI::ColorPicker("outlineVisible",OW::Config::enargb);
+    ImGui::SetItemTooltip("%s",L("Visible"));
+    ImGui::SameLine();UI::ColorPicker("outlineHidden",OW::Config::invisnenargb);
+    ImGui::SetItemTooltip("%s",L("Hidden"));
+    SettingRow("Visible Only");UICheckbox("##outlineVisibleOnly",&OW::Config::gameOutlineVisibleOnly);
+    SettingRow("Rainbow Color");UICheckbox("##outlineRainbow",&OW::Config::gameOutlineRainbow);
+    SettingRow("Color Gain");PushControlWidth();UISlider("##outlineGain",&OW::Config::gameOutlineColorGain,.1f,3.f,Number(2,"x"));ImGui::PopItemWidth();
+    ImGui::TextWrapped("%s",L("RGB gain clips at 255 per channel; this is not HDR glow intensity."));
+#ifndef UNLEASHED_OBSERVATION_ONLY
+    namespace Brightness = OW::OutlineBrightness;
+    static float brightnessDraft = 2.f;
+    const auto brightnessCommand = Brightness::Snapshot();
+    SettingRow("Outline Brightness (alpha multiplier)");
+    const float buttonWidth = ImGui::CalcTextSize(L("Apply")).x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetNextItemWidth((std::max)(80.f, ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x));
+    ImGui::InputFloat("##outlineAlphaDraft", &brightnessDraft, 0.f, 0.f, "%.7g");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!Brightness::Valid(brightnessDraft) || !OW::Config::gameOutlines);
+    if (ImGui::Button(L("Apply"))) Brightness::Submit(brightnessDraft);
+    ImGui::EndDisabled();
+    if (!Brightness::Valid(brightnessDraft)) ImGui::TextWrapped("%s", L("Enter a finite multiplier of zero or greater."));
+    if (brightnessCommand.enabled || Brightness::RestoreCount.load()) {
+        if (ImGui::Button(L("Restore Brightness"))) Brightness::Disable();
+        ImGui::SameLine();
+        ImGui::Text("%s %.7g", L("Committed Multiplier"), brightnessCommand.value);
+        ImGui::Text("%s %u / %s %u / %s %u", L("Applied Targets"), Brightness::AppliedCount.load(),
+            L("Failed Targets"), Brightness::FailureCount.load(), L("Restore Pending"), Brightness::RestoreCount.load());
+    } else ImGui::TextWrapped("%s", L("Edit the number, then click Apply to write."));
+    ImGui::TextWrapped("%s", L("Alpha multiplier; supports scientific notation. Fully opaque outlines stop brightening at alpha 255."));
+#endif
 }
 void Card(const char* title,const std::function<void()>& content) {
     ImGui::PushID(title);
@@ -171,7 +207,7 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
         changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);
         changed|=ElementRow(settings,Element::Crosshair,OW::Config::crosscircle);
-        SettingRow("Game Outlines (unverified)");UICheckbox("##gameOutlines",&OW::Config::gameOutlines);
+        OutlineControls();
     });
     Card("World",[&]{
         auto& world=settings.world;
@@ -232,7 +268,7 @@ void DrawThemeGeneralPage() {
         });
         ImGui::PopID();
     }
-    Card("Game Outlines (unverified)",[&]{UIColorEdit("Visible Fill",&OW::Config::enargb);UIColorEdit("Hidden Fill",&OW::Config::invisnenargb);UIColorEdit("Target Fill",&OW::Config::targetargb);UIColorEdit("Ally Fill",&OW::Config::allyargb);});
+    Card("Game Outlines",[]{OutlineControls();});
     if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
 }
 

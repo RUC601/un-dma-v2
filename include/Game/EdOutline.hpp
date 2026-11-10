@@ -22,6 +22,17 @@ inline uint32_t Color(float r, float g, float b) {
     auto byte = [](float v) { return uint32_t((std::isfinite(v) ? std::clamp(v, 0.f, 1.f) : 0.f) * 255.f); };
     return 0xFF000000u | byte(r) | (byte(g) << 8) | (byte(b) << 16);
 }
+inline uint32_t AnimatedColor(float r, float g, float b, float gain, bool rainbow, uint64_t nowMs) {
+    if (rainbow) {
+        const float h = float(nowMs % 8000) * (6.f / 8000.f);
+        const auto channel = [h](float offset) {
+            return std::clamp(std::abs(std::fmod(h + offset, 6.f) - 3.f) - 1.f, 0.f, 1.f);
+        };
+        r = channel(0); g = channel(4); b = channel(2);
+    }
+    gain = std::isfinite(gain) ? std::clamp(gain, .1f, 3.f) : 1.f;
+    return Color(r * gain, g * gain, b * gain);
+}
 inline bool Pointer(uint64_t p) { return p >= 0x10000 && p <= 0x00007FFFFFFFF000ULL; }
 struct Target {
     uint64_t component = 0, parameter = 0, color = 0;
@@ -51,9 +62,9 @@ struct State {
     bool parameterOwned = false, colorOwned = false, attempted = false, lastVisible = false, restoring = false;
     uint32_t lastColor = 0;
     bool Active() const { return parameterOwned || colorOwned; }
-    bool Due(uint32_t now, bool enabled, bool visible, uint32_t color) const {
+    bool Due(uint32_t now, bool enabled, bool visible, uint32_t color, bool animated = false) const {
         return (!enabled && Active() && (!restoring || int32_t(now - nextAttempt) >= 0)) || (enabled && (!attempted || visible != lastVisible ||
-            color != lastColor || int32_t(now - nextAttempt) >= 0));
+            (!animated && color != lastColor) || int32_t(now - nextAttempt) >= 0));
     }
     template<class Read, class Write, class Current>
     bool Restore(Read read, Write write, Current current) {
@@ -73,9 +84,9 @@ struct State {
         return a && b;
     }
     template<class Read, class Write, class Current>
-    bool Apply(Target next, bool visible, uint32_t color, uint32_t now, Read read, Write write, Current current, bool world = false) {
+    bool Apply(Target next, bool visible, uint32_t color, uint32_t now, Read read, Write write, Current current, bool world = false, uint32_t refreshMs = 500) {
         restoring = false;
-        attempted = true; nextAttempt = now + 500; lastVisible = visible; lastColor = color;
+        attempted = true; nextAttempt = now + refreshMs; lastVisible = visible; lastColor = color;
         // A moved container invalidates old addresses; never restore into a retired allocation.
         if (!(target == next)) { target = next; parameterOwned = colorOwned = false; }
         uint64_t oldParameter = 0;

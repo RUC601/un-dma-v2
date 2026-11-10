@@ -8,6 +8,8 @@
                 const bool refreshDue=!record.baseUpdateTick ||
                     processLoopTick-record.baseUpdateTick>=refreshInterval;
                 bool layoutChanged = false;
+                bool layoutReadable = true;
+                bool matchChanged = false;
                 if (!bindingChanged && (!record.layoutCheckTick ||
                     processLoopTick-record.layoutCheckTick >= OW::kEntityDeadComponentRefreshMs)) {
                     OW::EntityHeaderSnapshot componentCheck{}, linkCheck{};
@@ -17,14 +19,18 @@
                         (ComponentParent == LinkParent ? (linkCheck=componentCheck, true) : linkCheck.Read(LinkParent)) &&
                         componentCheck.ReadComponentLayout(componentLayout) && linkCheck.ReadComponentLayout(linkLayout) &&
                         componentCheck.ReadParentOffset(OW::offset::Entity_MatchId, match);
-                    layoutChanged = !read || !record.layoutsKnown || componentLayout != record.componentLayout ||
-                        linkLayout != record.linkLayout || (record.matchIdValid && record.matchId != match);
-                    record.layoutCheckTick = processLoopTick;
+                    layoutReadable = read;
+                    if (read) {
+                        matchChanged = record.matchIdValid && record.matchId != match;
+                        layoutChanged = !record.layoutsKnown || componentLayout != record.componentLayout ||
+                            linkLayout != record.linkLayout || matchChanged;
+                        record.layoutCheckTick = processLoopTick;
+                    }
                 }
-                if(bindingChanged || layoutChanged || refreshDue) {
+                if(bindingChanged || layoutChanged || (refreshDue && layoutReadable)) {
                     if(bindingChanged)++lifecycleStats.componentCacheInvalidateLinkChangeCount;
                     else ++lifecycleStats.componentCacheInvalidateIntervalCount;
-                    if (bindingChanged || layoutChanged) {
+                    if (bindingChanged || matchChanged) {
                         OW::RevokeEntityBodyObservation(record.entity.address, record.entity.actor_generation,
                             record.entity.body_authority_revision);
                         record.entity.body_valid = false;

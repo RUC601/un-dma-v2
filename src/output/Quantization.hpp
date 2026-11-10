@@ -29,9 +29,10 @@ namespace OW {
         bool forceNonZero = false;
     };
 
+    // Integer relative device counts; residuals are fractional counts.
     struct MouseMoveQuantizationResult {
-        int pixelX = 0;
-        int pixelY = 0;
+        int countX = 0;
+        int countY = 0;
         int status = 0;
         bool forcedMinimumStep = false;
         bool dispatched = false;
@@ -111,12 +112,12 @@ namespace OW {
 
         state.residualX += scaledX;
         state.residualY += scaledY;
-        result.pixelX = static_cast<int>(state.residualX);
-        result.pixelY = static_cast<int>(state.residualY);
-        state.residualX -= static_cast<float>(result.pixelX);
-        state.residualY -= static_cast<float>(result.pixelY);
+        result.countX = static_cast<int>(state.residualX);
+        result.countY = static_cast<int>(state.residualY);
+        state.residualX -= static_cast<float>(result.countX);
+        state.residualY -= static_cast<float>(result.countY);
 
-        if (!forceNonZero || result.pixelX != 0 || result.pixelY != 0)
+        if (!forceNonZero || result.countX != 0 || result.countY != 0)
             return result;
 
         // Pick the minimum-step axis from the current error, not from an older
@@ -138,11 +139,11 @@ namespace OW {
             forceX = true;
 
         if (forceX) {
-            result.pixelX = candidateX > 0.0f ? 1 : -1;
+            result.countX = candidateX > 0.0f ? 1 : -1;
             state.residualX = 0.0f;
             state.lastForcedAxis = 0;
         } else {
-            result.pixelY = candidateY > 0.0f ? 1 : -1;
+            result.countY = candidateY > 0.0f ? 1 : -1;
             state.residualY = 0.0f;
             state.lastForcedAxis = 1;
         }

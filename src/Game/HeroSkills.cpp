@@ -13,6 +13,7 @@
 #include "Game/Target.hpp"
 #include "Game/ProjectilePhysics.hpp"
 #include "Game/SkillCooldownTimers.hpp"
+#include "Game/SkillConditions.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
@@ -179,16 +180,6 @@ namespace {
         bool jumpDown = false;
     };
 
-    struct CandidateEntity {
-        uint64_t entityAddress = 0;
-        int entityIndex = -1;
-        float distance = 0.0f;
-        float vitalityPercent = 0.0f;
-        float angularOffset = 0.0f;
-        Vector3 position{};
-        Vector3 velocity{};
-    };
-
     struct TrajectoryParams {
         float speed = 60.0f;
         float maxRange = 45.0f;
@@ -218,15 +209,12 @@ namespace {
         float vitalityPercent = 0.0f;
         float fovScore = 0.0f;
         float hitWindow = 0.0f;
+        int threatSlot = -1;
         Vector3 rawAimPoint{};
         Vector3 aimPoint{};
     };
 
-    struct SkillAimSessionRuntime {
-        bool active = false;
-        bool blockedUntilRelease = false;
-        Clock::time_point started{};
-    };
+    using SkillAimSessionRuntime = SkillConditions::AimSession;
 
     struct AmmoGuardSample {
         int ammo = -1;
@@ -290,6 +278,7 @@ namespace {
     // access to the mutable hero runtime containers across that boundary.
     std::mutex g_heroSkillRuntimeMutex;
     std::unordered_map<std::string, Clock::time_point> g_lastActionExecutions;
+    std::unordered_map<int, Clock::time_point> g_lastOutputActions;
     std::unordered_map<std::string, Clock::time_point> g_lastSkillGuardLogs;
     std::unordered_map<std::string, AmmoGuardLogState> g_lastAmmoGuardSamples;
     std::unordered_map<std::string, ZaryaAmmoProbeRuntime> g_zaryaAmmoProbes;
@@ -302,7 +291,55 @@ namespace {
     std::atomic<bool> g_anyInputSequenceActivationHeld{ false };
     std::uint64_t g_lastTimedOutputGeneration = 0;
     bool g_lastTimedOutputGateOpen = false;
-    uint64_t g_lastHeroId = 0;
+    SkillConditions::BodyIdentity g_lastSkillBody{};
+    struct ThreatState {
+        SkillConditions::BodyIdentity body{};
+        std::array<SkillConditions::ActiveEvent, 2> events{};
+        uint32_t observed = 0;
+    };
+    std::unordered_map<uint64_t, ThreatState> g_defensiveThreats;
+
+    SkillConditions::BodyIdentity SkillBodyIdentity(const c_entity& entity) {
+        return {entity.address, entity.HeroID, entity.actor_generation,
+            entity.connection_epoch, entity.scene_generation, entity.body_absence_revision};
+    }
+
+    void ObserveDefensiveThreats() {
+        const uint32_t now = GetTickCount();
+        for (const auto& entity : TargetingDetail::SnapshotEntities()) {
+            if (!entity.address || !entity.HasUsableBody(now, EntitySceneGeneration())) continue;
+            auto& state = g_defensiveThreats[entity.address];
+            const auto body = SkillBodyIdentity(entity);
+            if (state.body != body) { state = {}; state.body = body; }
+            state.observed = now;
+            for (size_t slot = 0; slot < 2; ++slot)
+                if (entity.skill_active_tick_ms[slot] && uint32_t(now - entity.skill_active_tick_ms[slot]) <= 250)
+                    state.events[slot].Observe(slot == 0 ? entity.skill1act : entity.skill2act);
+        }
+        for (auto it = g_defensiveThreats.begin(); it != g_defensiveThreats.end();) {
+            if (uint32_t(now - it->second.observed) > 250) it = g_defensiveThreats.erase(it);
+            else ++it;
+        }
+    }
+
+    unsigned HeroStatePauseMask(const c_entity& local) {
+        const uint32_t now = GetTickCount();
+        if (!local.HasUsableBody(now, EntitySceneGeneration())) return SkillConditions::NoPause;
+        // Keep a previously observed active pause until a successful inactive
+        // sample arrives. A failed/late status read must not resume firing.
+        const bool first = local.skill1act;
+        const bool second = local.skill2act;
+        const bool punchHeld = local.HeroID == eHero::HERO_DOOMFIST &&
+            AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Secondary));
+        unsigned mask = SkillConditions::StatePause(local.HeroID, first, second, punchHeld);
+        if (!mask) return mask;
+        const auto settings = Config::GetHeroSkillSettings(local.HeroID, "assist-pause", MakePausePolicyDefaults());
+        if (!settings.enabled) return SkillConditions::NoPause;
+        if (!settings.pauseAim) mask &= ~SkillConditions::Aim;
+        if (!settings.pauseTrigger) mask &= ~SkillConditions::Trigger;
+        if (!settings.pauseSkills) mask &= ~SkillConditions::Skills;
+        return mask;
+    }
 
     struct RocketPunchRuntime {
         DoomfistPunch::ChargeSession charge{};
@@ -1289,14 +1326,14 @@ namespace {
             runtime.initialAngles.Y * kRadToDeg);
     }
 
-    // Rough pixels-per-degree constant for fast viewpoint moves.
+    // Rough device-counts-per-degree constant for fast viewpoint moves.
     // Bypasses sensitivity calibration and move-splitting — we just want raw speed.
-    constexpr float kViewpointPixelsPerDegree = 18.0f;
+    constexpr float kViewpointCountsPerDegree = 18.0f;
 
     void FastRawMouseMove(float pitchDeg, float yawDeg)
     {
-        const int px = static_cast<int>(std::lround(yawDeg * kViewpointPixelsPerDegree));
-        const int py = static_cast<int>(std::lround(pitchDeg * kViewpointPixelsPerDegree));
+        const int px = static_cast<int>(std::lround(yawDeg * kViewpointCountsPerDegree));
+        const int py = static_cast<int>(std::lround(pitchDeg * kViewpointCountsPerDegree));
 
         if (px == 0 && py == 0)
             return;
@@ -1355,6 +1392,8 @@ namespace {
     struct ScopedTrackingConfig {
         Config::ScopedLocalConfigOverride configOverride;
         float previousSelectedFov = Config::selectedAimFovDeg;
+        bool previousAimPlanEnabled = Config::targetAimPlanEnabled;
+        Config::SlotTargetRules previousTargetRules = Config::slotTargetRules;
         explicit ScopedTrackingConfig(const Config::HeroSkillTrackingParams& params)
         {
             Config::HeroPreset overlay=Config::MakeHeroPresetFromCurrent();
@@ -1374,10 +1413,16 @@ namespace {
             overlay.hitbox=params.hitbox;
             Config::StoreHeroBehaviorMode(overlay);
             Config::ApplyLocalHeroAimPreset(overlay);
+            Config::targetAimPlanEnabled = false;
+            Config::slotTargetRules.active = false;
             // Custom skill targeting can bypass GetVector3/PublishSelectedAimPlan.
             Config::selectedAimFovDeg = Config::View_Fov();
         }
-        ~ScopedTrackingConfig() { Config::selectedAimFovDeg = previousSelectedFov; }
+        ~ScopedTrackingConfig() {
+            Config::selectedAimFovDeg = previousSelectedFov;
+            Config::targetAimPlanEnabled = previousAimPlanEnabled;
+            Config::slotTargetRules = previousTargetRules;
+        }
     };
 
     void RunTrackingOverlayTick(const std::string& skillId,
@@ -1472,60 +1517,26 @@ namespace {
     float VitalityPercent(const c_entity& entity)
     {
         if (!std::isfinite(entity.PlayerHealth) || entity.PlayerHealth <= 0.0f)
-            return 0.0f;
+            return 100.0f;
 
         float maxHealth = entity.PlayerHealthMax;
         if (!std::isfinite(maxHealth) || maxHealth <= 0.0f)
             maxHealth = entity.MaxHealth;
         if (!std::isfinite(maxHealth) || maxHealth <= 0.0f)
-            return std::clamp(entity.PlayerHealth, 0.0f, 100.0f);
+            return 100.0f;
 
         return std::clamp((entity.PlayerHealth / maxHealth) * 100.0f, 0.0f, 100.0f);
     }
 
-    float ApproximateAngularOffsetDegrees(const Vector3& position)
+    TrajectoryParams GetTrajectoryParams(const HeroSkillDefinition& definition)
     {
-        Matrix view{}, viewXor{};
-        GetViewMatricesSnapshot(view, viewXor);
-        (void)viewXor;
-
-        Vector2 projected{};
-        if (!view.WorldToScreen(position, &projected, Vector2(WX, WY)))
-            return 0.0f;
-
-        const Vector2 crosshair = TargetingDetail::CrosshairCenter();
-        const float width = WX > 0.0f ? WX : static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
-        const float height = WY > 0.0f ? WY : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-        const float diagonal = std::sqrt(width * width + height * height);
-        if (diagonal <= 0.0f)
-            return 0.0f;
-
-        return (crosshair.Distance(projected) / diagonal) * 90.0f;
-    }
-
-    TrajectoryParams GetTrajectoryParams(const char* skillId)
-    {
-        const std::string skill = skillId ? skillId : "";
-        TrajectoryParams params = [&]() -> TrajectoryParams {
-            if (skill == "sleep-dart")
-                return { 60.0f, 45.0f, 0.0f, 0.2f, 320.0f };
-            if (skill == "chain-hook")
-                return { 62.0f, 20.0f, 0.0f, 0.5f, 100.0f };
-            if (skill == "pulse-bomb")
-                return { 15.0f, 5.0f, 0.0f, 0.0f, 0.0f };
-            if (skill == "helix-rockets")
-                return { 50.0f, 40.0f, 0.0f, 0.32f, 0.0f };
-            if (skill == "sticky-bombs")
-                return { 50.0f, 35.0f, 0.0f, 0.2f, 0.0f };
-            if (skill == "whip-shot")
-                return { 80.0f, 20.0f, 0.0f, 0.3f, 0.0f };
-            if (skill == "accretion")
-                return { 37.5f, 35.0f, 0.0f, 0.5f, 0.0f };
-            return { 60.0f, 40.0f, 0.0f, 0.0f, 0.0f };
-        }();
-        if (const auto* physics = FindProjectilePhysicsProfile(skill)) {
-            if (physics->referenceSpeed > 0.0f && skill != "pulse-bomb" && skill != "accretion")
-                params.speed = physics->referenceSpeed;
+        const auto& defaults = definition.defaultSettings;
+        TrajectoryParams params{defaults.projectileSpeed, defaults.distance,
+            defaults.projectileGravity ? 9.8f : 0.f, defaults.projectileRadius, defaults.preFireDelayMs};
+        const std::string id = definition.skillId;
+        if (const auto* physics = FindProjectilePhysicsProfile(
+                id == "energy-javelin" ? "orisa_energy_javelin" : id)) {
+            if (params.speed <= 0) params.speed = physics->referenceSpeed;
             params.gravity = physics->gravityAcceleration;
             params.launchDirectionUpBias = physics->launchDirectionUpBias;
             params.preFireDelayMs = (std::max)(params.preFireDelayMs, physics->castDelayMs);
@@ -1551,79 +1562,7 @@ namespace {
         return runtime;
     }
 
-    Vector3 ComputePredictedPosition(const Vector3& targetPos,
-                                     const Vector3& targetVel,
-                                     const Vector3& srcPos,
-                                     float projectileSpeed,
-                                     float gravity, float launchDirectionUpBias, float preFireDelayMs)
-    {
-        if (!IsFiniteVector(targetPos) || !IsFiniteVector(targetVel) ||
-            !IsFiniteVector(srcPos) || projectileSpeed <= 0.0f) {
-            return targetPos;
-        }
 
-        const Vector3 preFireTarget = ApplyTargetMotionPreFireDelay(
-            targetPos, targetVel, preFireDelayMs, 1000.0f);
-        const BallisticIntercept intercept = SolveBallisticIntercept(
-            srcPos, preFireTarget, targetVel, projectileSpeed, gravity);
-        return intercept.solved ? CompensateProjectileLaunchBias(
-            srcPos, intercept.aimPoint, launchDirectionUpBias) : targetPos;
-    }
-
-    CandidateEntity FindBestCandidate(const Config::HeroSkillSettings& settings, float maxRange)
-    {
-        CandidateEntity best{};
-        if (!std::isfinite(maxRange) || maxRange <= 0.0f)
-            return best;
-
-        const c_entity local = TargetingDetail::SnapshotLocalEntity();
-        const Vector3 source = SourcePositionForAction(local);
-        if (!IsUsablePosition(source))
-            return best;
-
-        const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
-        const int requiredTargets = (std::max)(1, settings.minTargets);
-        int matchingTargets = 0;
-        float bestDistance = maxRange;
-
-        for (size_t index = 0; index < snapshot.size(); ++index) {
-            const c_entity& entity = snapshot[index];
-            if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
-                continue;
-            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
-                continue;
-            if ((entity.imort || entity.barrprot) && !Config::switch_team)
-                continue;
-
-            const Vector3 position = CandidatePositionForAction(entity);
-            if (!IsUsablePosition(position))
-                continue;
-
-            const float distance = source.DistTo(position);
-            if (!std::isfinite(distance) || distance > maxRange)
-                continue;
-
-            const float vitality = VitalityPercent(entity);
-            if (vitality > settings.enemyHealthThreshold)
-                continue;
-
-            ++matchingTargets;
-            if (best.entityIndex < 0 || distance < bestDistance) {
-                bestDistance = distance;
-                best.entityAddress = entity.address;
-                best.entityIndex = static_cast<int>(index);
-                best.distance = distance;
-                best.vitalityPercent = vitality;
-                best.angularOffset = ApproximateAngularOffsetDegrees(position);
-                best.position = position;
-                best.velocity = entity.velocity;
-            }
-        }
-
-        if (matchingTargets < requiredTargets)
-            return CandidateEntity{};
-        return best;
-    }
 
     Vector3 SkillAimPointForEntity(c_entity& entity, int boneSetting)
     {
@@ -1704,7 +1643,7 @@ namespace {
                 continue;
             if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
                 continue;
-            if ((entity.imort || entity.barrprot) && !Config::switch_team)
+            if (entity.imort || entity.barrprot)
                 continue;
             if (entity.skill1act && entity.HeroID == eHero::HERO_VENTURE)
                 continue;
@@ -1796,7 +1735,14 @@ namespace {
             c_entity entity = snapshot[index];
             if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
                 continue;
-            if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
+            if (settings.requireVisible && !entity.Vis)
+                continue;
+            if (!std::isfinite(entity.PlayerHealth) || entity.PlayerHealth <= 0 ||
+                !std::isfinite(entity.PlayerHealthMax) || entity.PlayerHealthMax <= 0) continue;
+            if (!SkillConditions::RoleAllowed(entity.HeroID, settings.targetRoleMask))
+                continue;
+            if (entity.HeroID == eHero::HERO_SOMBRA && !settings.allowInvisibleSombra &&
+                (!entity.sombraStealthKnown || entity.sombraStealth))
                 continue;
             if ((entity.imort || entity.barrprot) && !Config::switch_team)
                 continue;
@@ -1822,8 +1768,6 @@ namespace {
                 rawDistance > effectiveRange) {
                 continue;
             }
-
-            ++matchingTargets;
 
             Vector3 aimPoint = rawAimPoint;
             if (settings.prediction && projectile.speed > 0.0f) {
@@ -1854,6 +1798,8 @@ namespace {
                     &fovScore)) {
                 continue;
             }
+
+            ++matchingTargets;
 
             const float priorityScore = settings.targetPriority == 1 ? vitality
                 : settings.targetPriority == 2 ? aimedDistance : fovScore;
@@ -2008,13 +1954,18 @@ namespace {
         OutputControl control{};
         if (vk <= 0 || !TryMapVkToOutputControl(vk, control))
             return false;
+        const auto previous = g_lastOutputActions.find(vk);
+        if (previous != g_lastOutputActions.end() && Clock::now() - previous->second < kActionPulseDebounce)
+            return false;
 
         duration = (std::max)(duration, kBriefPulse);
-        return TimedOutputScheduler().ScheduleTimedHold(
+        const bool scheduled = TimedOutputScheduler().ScheduleTimedHold(
             runtimeKey,
             OutputOwnerSource::HeroTimedAction,
             { control },
             duration);
+        if (scheduled) g_lastOutputActions[vk] = Clock::now();
+        return scheduled;
     }
 
     int MappedMouseButton(V2::HeroSettings::Action action) {
@@ -2975,31 +2926,14 @@ namespace {
 
     bool IsRuntimeActionDefinition(const HeroSkillDefinition& definition)
     {
-        const std::string skill = definition.skillId ? definition.skillId : "";
-        return skill == "sleep-dart" ||
-            skill == "chain-hook" ||
-            skill == "rocket-punch" ||
-            skill == "pulse-bomb" ||
-            skill == "recall" ||
-            skill == "wraith-form" ||
-            skill == "transcendence" ||
-            skill == "helix-rockets" ||
-            skill == "sticky-bombs" ||
-            skill == "whip-shot" ||
-            skill == "accretion";
+        return SkillControls(definition, HeroSkillControls::TrajectoryAction) ||
+            SkillControls(definition, HeroSkillControls::HealthAction) ||
+            SkillControls(definition, HeroSkillControls::DefensiveAction);
     }
 
     bool IsAutoMeleeDefinition(const HeroSkillDefinition& definition)
     {
         return std::string(definition.skillId ? definition.skillId : "") == "auto-melee";
-    }
-
-    bool IsDefensiveResponseDefinition(const HeroSkillDefinition& definition)
-    {
-        const std::string skill = definition.skillId ? definition.skillId : "";
-        return skill == "wraith-form" ||
-            skill == "recall" ||
-            skill == "transcendence";
     }
 
     bool SkillCooldownReadySentinel(float cooldown)
@@ -3020,6 +2954,12 @@ namespace {
         if (!settings.cooldownGuard)
             return false;
 
+        // Secondary projectiles are not Ability 2. Their release latch and
+        // explicit local interval work without pretending to know an active slot.
+        if (SkillControls(definition, HeroSkillControls::TrajectoryAction) &&
+            definition.inputAction == HeroSkillInputAction::SecondaryFire)
+            return false;
+
         const auto rules = CooldownTimers::ForHero(local.HeroID);
         auto timerCooling = [&](size_t activeSlot) -> std::optional<bool> {
             for (size_t slot = 0; slot < rules.size(); ++slot) {
@@ -3034,10 +2974,14 @@ namespace {
         case HeroSkillInputAction::PrimaryFire:
             return Config::reloading;
         case HeroSkillInputAction::Ability1:
+            if (SkillControls(definition, HeroSkillControls::HealthAction) &&
+                SkillConditions::FreshActive(local.skill1act, local.skill_active_tick_ms[0], GetTickCount())) return true;
             if (const auto cooling = timerCooling(0)) return *cooling;
             return SkillCooldownActive(local.skill1act, local.skillcd1);
         case HeroSkillInputAction::Ability2:
         case HeroSkillInputAction::SecondaryFire:
+            if (SkillControls(definition, HeroSkillControls::HealthAction) &&
+                SkillConditions::FreshActive(local.skill2act, local.skill_active_tick_ms[1], GetTickCount())) return true;
             if (const auto cooling = timerCooling(1)) return *cooling;
             return SkillCooldownActive(local.skill2act, local.skillcd2);
         case HeroSkillInputAction::Ultimate:
@@ -3439,131 +3383,25 @@ namespace {
         return true;
     }
 
-    bool AdvanceSkillAimSession(const std::string& runtimeKey,
-                                bool held,
-                                float maxAimTimeMs)
-    {
-        SkillAimSessionRuntime& runtime = g_skillAimSessions[runtimeKey];
-        if (!held) {
-            runtime = {};
-            return false;
-        }
-        if (runtime.blockedUntilRelease)
-            return false;
-
-        const Clock::time_point now = Clock::now();
-        if (!runtime.active) {
-            runtime.active = true;
-            runtime.started = now;
-        }
-
-        const float limitMs = std::clamp(
-            std::isfinite(maxAimTimeMs) ? maxAimTimeMs : 650.0f,
-            0.0f,
-            5000.0f);
-        if (limitMs <= 0.0f)
-            return true;
-
-        const float elapsedMs = static_cast<float>(
-            std::chrono::duration_cast<std::chrono::microseconds>(now - runtime.started).count()) /
-            1000.0f;
-        if (elapsedMs <= limitMs)
-            return true;
-
-        runtime.active = false;
-        runtime.blockedUntilRelease = true;
-        Diagnostics::Aim(
-            "skill.aim_timeout skill=%s elapsedMs=%.3f limitMs=%.3f blockedUntilRelease=1",
-            runtimeKey.c_str(),
-            elapsedMs,
-            limitMs);
-        return false;
-    }
-
     bool EvaluateTrajectoryAction(const std::string& runtimeKey,
                                    const HeroSkillDefinition& definition,
                                    const Config::HeroSkillSettings& settings,
                                    const TrajectoryParams& params)
     {
-        const bool held = IsActivationKeyHeld(settings.key);
-        if (SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
-            if (!AdvanceSkillAimSession(runtimeKey, held, settings.maxAimTimeMs))
-                return false;
-            const auto& session = g_skillAimSessions.at(runtimeKey);
-            const float elapsedMs = std::chrono::duration<float, std::milli>(Clock::now() - session.started).count();
-            if (elapsedMs < settings.assistanceDelayMs)
-                return false;
-        } else if (!held) {
-            return false;
-        }
-
-        if (SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
-            const SkillProjectileRuntime projectile =
-                ResolveSkillProjectileRuntime(settings, params);
-            ScopedTrackingConfig trackingOverride(settings.tracking);
-            const SkillAimCandidate candidate = FindBestSkillAimCandidate(settings, projectile);
-            if (!candidate.valid)
-                return false;
-
-            if (!MoveSkillAimAndCheckReady(runtimeKey, settings, candidate, projectile))
-                return false;
-
-            if (IsActionDebounced(runtimeKey))
-                return false;
-
-            const int vk = SkillOutputVk(settings);
-            if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
-                return false;
-
-            MarkActionExecuted(runtimeKey);
-            g_skillAimSessions.erase(runtimeKey);
-            Diagnostics::Info("Hero skill aimed trajectory fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f fovScore=%.2f hitWindow=%.3f projectileSpeed=%.1f preFireMs=%.1f vk=%d",
-                definition.skillId ? definition.skillId : "",
-                candidate.entityIndex,
-                candidate.distance,
-                candidate.vitalityPercent,
-                candidate.fovScore,
-                candidate.hitWindow,
-                projectile.speed,
-                projectile.preFireDelayMs,
-                vk);
-            return true;
-        }
-
-        const float effectiveRange = settings.distance > 0.0f
-            ? (std::min)(settings.distance, params.maxRange)
-            : params.maxRange;
-
-        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
-        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
-            return false;
-
-        const c_entity local = TargetingDetail::SnapshotLocalEntity();
-        const Vector3 source = SourcePositionForAction(local);
-        Vector3 targetPosition = candidate.position;
-        if (settings.prediction) {
-            targetPosition = ComputePredictedPosition(
-                candidate.position,
-                candidate.velocity,
-                source,
-                params.speed,
-                params.gravity, params.launchDirectionUpBias, params.preFireDelayMs);
-        }
-
-        if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
-            return false;
-
-        const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
-            return false;
-
+        auto& session = g_skillAimSessions[runtimeKey];
+        const auto input = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
+        if (!session.Advance(input.down, GetTickCount64(),
+                settings.assistanceDelayMs, settings.maxAimTimeMs, input.available)) return false;
+        const auto projectile = ResolveSkillProjectileRuntime(settings, params);
+        ScopedTrackingConfig trackingOverride(settings.tracking);
+        const auto candidate = FindBestSkillAimCandidate(settings, projectile);
+        if (!candidate.valid || !MoveSkillAimAndCheckReady(runtimeKey, settings, candidate, projectile) ||
+            IsActionDebounced(runtimeKey)) return false;
+        if (!StartTimedHotkey(runtimeKey, SkillOutputVk(settings), kBriefPulse)) return false;
         MarkActionExecuted(runtimeKey);
-        Diagnostics::Info("Hero skill trajectory action fired. skill=%s targetIndex=%d distance=%.2f hp=%.1f offset=%.2f",
-            definition.skillId ? definition.skillId : "",
-            candidate.entityIndex,
-            candidate.distance,
-            candidate.vitalityPercent,
-            candidate.angularOffset);
+        session.Block();
+        Diagnostics::Info("Hero skill aimed trajectory fired. skill=%s targetIndex=%d distance=%.2f projectileSpeed=%.1f",
+            definition.skillId, candidate.entityIndex, candidate.distance, projectile.speed);
         return true;
     }
 
@@ -3829,12 +3667,11 @@ namespace {
                                        const Config::HeroSkillSettings& settings,
                                        const c_entity& local)
     {
-        if (!std::isfinite(local.PlayerHealth) || local.PlayerHealth <= 0.0f)
-            return false;
-
         const bool absolute = SkillControls(definition, HeroSkillControls::HealthAbsolute);
         const float currentHealth = absolute ? local.PlayerHealth : VitalityPercent(local);
-        if (currentHealth > settings.healthThreshold || IsActionDebounced(runtimeKey))
+        if (!settings.healthTriggerEnabled || !SkillConditions::HealthAtOrBelow(
+                local.PlayerHealth, local.PlayerHealthMax, settings.healthThreshold, absolute) ||
+            IsActionDebounced(runtimeKey))
             return false;
 
         const int vk = SkillOutputVk(settings);
@@ -3854,17 +3691,18 @@ namespace {
     bool IsThreatSkillActiveForDefensiveResponse(const std::string& skillId, const c_entity& entity)
     {
         if (skillId == "wraith-form" || skillId == "recall") {
-            return (entity.HeroID == eHero::HERO_ANA && entity.skill1act) ||
-                (entity.HeroID == eHero::HERO_ROADHOG && entity.skill1act) ||
-                (entity.HeroID == eHero::HERO_SIGMA && entity.skill2act) ||
-                (entity.HeroID == eHero::HERO_BRIGITTE && entity.skill1act);
+            const uint32_t now = GetTickCount();
+            const int index = SkillConditions::NormalThreatIndex(entity.HeroID);
+            if (index < 0) return false;
+            const auto slot = SkillConditions::kNormalThreats[index].slot;
+            return SkillConditions::FreshActive(slot == 0 ? entity.skill1act : entity.skill2act,
+                entity.skill_active_tick_ms[slot], now);
         }
 
         if (skillId == "transcendence") {
-            const bool threatHero =
-                entity.HeroID == eHero::HERO_SOMBRA ||
-                entity.HeroID == eHero::HERO_REINHARDT;
-            return threatHero && std::isfinite(entity.ultimate) && entity.ultimate >= 99.0f;
+            // EMP/Earthshatter activation is not present in the published snapshot.
+            // Charge alone must not spend our ultimate; enable when that signal exists.
+            return false;
         }
 
         return false;
@@ -3922,6 +3760,13 @@ namespace {
                 continue;
             if (!IsThreatSkillActiveForDefensiveResponse(skillId, entity))
                 continue;
+            const int threatIndex = SkillConditions::NormalThreatIndex(entity.HeroID);
+            if (threatIndex < 0 || !(settings.normalThreatMask & (1 << threatIndex))) continue;
+            const int activeSlot = SkillConditions::kNormalThreats[threatIndex].slot;
+            const unsigned responder = skillId == "wraith-form" ? 1u : skillId == "recall" ? 2u : 4u;
+            const auto event = g_defensiveThreats.find(entity.address);
+            if (event == g_defensiveThreats.end() || event->second.body != SkillBodyIdentity(entity) ||
+                !event->second.events[activeSlot].CanRespond(responder)) continue;
             if ((skillId == "wraith-form" || skillId == "recall") &&
                 !IsEnemyFacingLocalHorizontal(entity, local)) {
                 continue;
@@ -3938,6 +3783,7 @@ namespace {
             if (distance < bestDistance) {
                 outCandidate = {};
                 outCandidate.valid = true;
+                outCandidate.threatSlot = activeSlot;
                 outCandidate.entity = entity;
                 outCandidate.entityIndex = static_cast<int>(index);
                 outCandidate.entityKey = entity.address ? entity.address : entity.LinkBase;
@@ -3962,17 +3808,14 @@ namespace {
 
         const std::string skillId = definition.skillId ? definition.skillId : "";
         bool healthTrigger = false;
-        if (SkillControls(definition, HeroSkillControls::HealthAbsolute) ||
-            SkillControls(definition, HeroSkillControls::HealthThreshold)) {
-            if (std::isfinite(local.PlayerHealth) && local.PlayerHealth > 0.0f) {
-                const bool absolute = SkillControls(definition, HeroSkillControls::HealthAbsolute);
-                const float currentHealth = absolute ? local.PlayerHealth : VitalityPercent(local);
-                healthTrigger = currentHealth <= settings.healthThreshold;
-            }
+        if (settings.healthTriggerEnabled && (SkillControls(definition, HeroSkillControls::HealthAbsolute) ||
+            SkillControls(definition, HeroSkillControls::HealthThreshold))) {
+            healthTrigger = SkillConditions::HealthAtOrBelow(local.PlayerHealth, local.PlayerHealthMax,
+                settings.healthThreshold, SkillControls(definition, HeroSkillControls::HealthAbsolute));
         }
 
         SkillAimCandidate threat{};
-        const bool threatTrigger = FindDefensiveThreatCandidate(skillId, settings, local, threat);
+        const bool threatTrigger = settings.threatTriggerEnabled && FindDefensiveThreatCandidate(skillId, settings, local, threat);
         if (!healthTrigger && !threatTrigger)
             return false;
 
@@ -3981,6 +3824,11 @@ namespace {
             return false;
 
         MarkActionExecuted(runtimeKey);
+        if (threatTrigger && threat.threatSlot >= 0) {
+            const auto event = g_defensiveThreats.find(threat.entity.address);
+            if (event != g_defensiveThreats.end()) event->second.events[threat.threatSlot].Respond(
+                skillId == "wraith-form" ? 1u : skillId == "recall" ? 2u : 4u);
+        }
         Diagnostics::Info("Hero skill defensive response fired. skill=%s reason=%s targetIndex=%d hero=0x%llX distance=%.2f localHp=%.1f threshold=%.1f vk=%d",
             skillId.c_str(),
             healthTrigger ? "health" : "threat",
@@ -3993,48 +3841,35 @@ namespace {
         return true;
     }
 
-    bool EvaluateChargedConditionAction(const std::string& runtimeKey,
-                                        const HeroSkillDefinition& definition,
-                                        const Config::HeroSkillSettings& settings)
+    bool EvaluateGroupConditionAction(const std::string& runtimeKey,
+                                      const HeroSkillDefinition& definition,
+                                      const Config::HeroSkillSettings& settings,
+                                      const c_entity& local)
     {
-        if (!IsActivationKeyHeld(settings.key))
-            return false;
-
-        const c_entity local = TargetingDetail::SnapshotLocalEntity();
-        if (!std::isfinite(local.ultimate) || local.ultimate < 100.0f)
-            return false;
-
-        const TrajectoryParams params = GetTrajectoryParams(definition.skillId);
-        const float effectiveRange = settings.distance > 0.0f
-            ? (std::min)(settings.distance, params.maxRange)
-            : params.maxRange;
-        const CandidateEntity candidate = FindBestCandidate(settings, effectiveRange);
-        if (candidate.entityIndex < 0 || IsActionDebounced(runtimeKey))
-            return false;
-
+        if (!local.team_known || !std::isfinite(settings.radius) || settings.radius <= 0 ||
+            IsActionDebounced(runtimeKey)) return false;
         const Vector3 source = SourcePositionForAction(local);
-        Vector3 targetPosition = candidate.position;
-        if (settings.prediction) {
-            targetPosition = ComputePredictedPosition(
-                candidate.position,
-                candidate.velocity,
-                source,
-                params.speed,
-                params.gravity, params.launchDirectionUpBias, params.preFireDelayMs);
+        if (!IsUsablePosition(source)) return false;
+        const bool allies = SkillControls(definition, HeroSkillControls::AllyHealthThreshold);
+        int count = 0;
+        for (const auto& target : TargetingDetail::SnapshotEntities()) {
+            if (!target.team_known || !target.address || target.address == local.address ||
+                !target.HasUsableBody(GetTickCount(), EntitySceneGeneration()) ||
+                !std::isfinite(target.PlayerHealth) || target.PlayerHealth <= 0 ||
+                target.Team == allies || (settings.requireVisible && !target.Vis)) continue;
+            if (!allies && (target.imort || target.barrprot)) continue;
+            if (allies && !SkillConditions::HealthAtOrBelow(target.PlayerHealth, target.PlayerHealthMax,
+                    settings.allyHealthThreshold, false)) continue;
+            const auto position = CandidatePositionForAction(target);
+            if (!IsUsablePosition(position)) continue;
+            const float distance = source.DistTo(position);
+            if (std::isfinite(distance) && distance <= settings.radius) ++count;
         }
-        if (!IsUsablePosition(targetPosition) || source.DistTo(targetPosition) > effectiveRange)
+        if (count < settings.minTargets || !StartTimedHotkey(runtimeKey, SkillOutputVk(settings), kBriefPulse))
             return false;
-
-        const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
-            return false;
-
         MarkActionExecuted(runtimeKey);
-        Diagnostics::Info("Hero skill charged-condition action fired. skill=%s targetIndex=%d distance=%.2f ultimate=%.1f",
-            definition.skillId ? definition.skillId : "",
-            candidate.entityIndex,
-            candidate.distance,
-            local.ultimate);
+        Diagnostics::Info("Hero skill group action fired. skill=%s allies=%d count=%d radius=%.1f",
+            definition.skillId, allies, count, settings.radius);
         return true;
     }
 
@@ -4062,11 +3897,11 @@ namespace {
         if (viewpoint != g_viewpoints.end())
             CancelViewpoint(skillId, viewpoint->second, "disabled_or_inactive");
 
-        g_lastActionExecutions.erase(skillId);
+        // Temporary guards and disable/re-enable must retain the cast interval.
         g_lastSkillGuardLogs.erase(skillId);
         g_lastAmmoGuardSamples.erase(skillId);
         g_zaryaAmmoProbes.erase(skillId);
-        g_skillAimSessions.erase(skillId);
+        if (cancelTimedAction) g_skillAimSessions[skillId].Block();
     }
 
     std::string RuntimeSkillKey(uint64_t heroId, const char* skillId)
@@ -4093,6 +3928,7 @@ ExecutionToken ActiveInputSequenceToken()
 
 bool ShouldBlockForActiveSequence(ExecutionSource requester)
 {
+    if (ShouldPauseHeroAssist(requester)) return true;
     if (requester == ExecutionSource::SequenceInternal)
         return false;
     if (g_rocketPunchOwnsAim.load(std::memory_order_acquire))
@@ -4105,6 +3941,40 @@ bool ShouldBlockForActiveSequence(ExecutionSource requester)
     return ShouldYieldToExecution(
         MakeExecutionToken(requester),
         MakeExecutionToken(ExecutionSource::SequenceInternal, sequenceClaimsExecution));
+}
+
+bool ShouldPauseHeroAssist(ExecutionSource requester)
+{
+    const unsigned mask = HeroStatePauseMask(TargetingDetail::SnapshotLocalEntity());
+    const unsigned bit = requester == ExecutionSource::GlobalAim ? SkillConditions::Aim
+        : requester == ExecutionSource::Trigger ? SkillConditions::Trigger : SkillConditions::Skills;
+    return (mask & bit) != 0;
+}
+
+bool HasEnabledDefensiveHeroSkill(uint64_t heroId)
+{
+    for (const auto& definition : AllHeroSkillDefinitions()) {
+        if (!IsHeroSkillDefinitionActiveForRuntime(definition, heroId)) continue;
+        const std::string id = definition.skillId;
+        if (!SkillControls(definition, HeroSkillControls::HealthAction) && id != "wraith-form" && id != "recall") continue;
+        if (Config::GetHeroSkillSettings(heroId, id, definition.defaultSettings).enabled) return true;
+    }
+    return false;
+}
+
+SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
+{
+    SkillConditions::ObservationNeeds needs{};
+    needs.localHero = TargetingDetail::SnapshotLocalEntity().HeroID;
+    for (const auto& definition : AllHeroSkillDefinitions()) {
+        if (!IsHeroSkillDefinitionActiveForRuntime(definition, needs.localHero)) continue;
+        const auto settings = Config::GetHeroSkillSettings(needs.localHero, definition.skillId, definition.defaultSettings);
+        if (!settings.enabled) continue;
+        needs.localSkills |= settings.cooldownGuard || SkillControls(definition, HeroSkillControls::PausePolicy);
+        const std::string id = definition.skillId;
+        needs.enemyThreats |= settings.threatTriggerEnabled && (id == "wraith-form" || id == "recall");
+    }
+    return needs;
 }
 
 void RunInputSequence(const std::string& skillId,
@@ -4453,6 +4323,8 @@ void CancelActiveSkillStateLocked()
     TimedOutputScheduler().CancelSource(OutputOwnerSource::Viewpoint);
     TimedOutputScheduler().CancelSource(OutputOwnerSource::GenjiCombo);
     g_lastActionExecutions.clear();
+    g_lastOutputActions.clear();
+    g_defensiveThreats.clear();
     g_zaryaAmmoProbes.clear();
     g_skillAimSessions.clear();
     RefreshAnyInputSequenceActive();
@@ -4512,19 +4384,21 @@ void ProcessHeroSkills()
 
     const c_entity localSnapshot = TargetingDetail::SnapshotLocalEntity();
     const uint64_t heroId = localSnapshot.HeroID;
-    if(!localSnapshot.HasUsableBody(GetTickCount(),EntitySceneGeneration())) {
+    if(!localSnapshot.HasUsableBody(GetTickCount(),EntitySceneGeneration()) ||
+       !std::isfinite(localSnapshot.PlayerHealth) || localSnapshot.PlayerHealth <= 0) {
         CancelActiveSkillStateLocked();
         (void)RetryPendingPhysicalMouseMaskLeases();
         return;
     }
-    if (heroId != g_lastHeroId) {
-        // A hero switch is an explicit ownership boundary for all producers.
+    const auto bodyIdentity = SkillBodyIdentity(localSnapshot);
+    if (bodyIdentity != g_lastSkillBody) {
+        // A hero/body/scene switch is an ownership boundary for all producers.
         // Stop the old hero's independent sequence worker first; otherwise it
         // can reacquire output in the gap after a global CancelAll.
         CancelActiveSkillStateLocked();
         TimedOutputScheduler().CancelAllAndJoin(
             OutputActionCancelReason::RuntimeChanged);
-        g_lastHeroId = heroId;
+        g_lastSkillBody = bodyIdentity;
     }
 
     // Retry only after invalid producers have been cancelled. This prevents a
@@ -4539,6 +4413,10 @@ void ProcessHeroSkills()
 
     bool processedAnyForHero = false;
     bool anySequenceActivationHeld = false;
+    ObserveDefensiveThreats();
+    const unsigned pause = HeroStatePauseMask(localSnapshot);
+    if (pause & SkillConditions::Aim) TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
+    if (pause & SkillConditions::Trigger) TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
     for (const HeroSkillDefinition& definition : AllHeroSkillDefinitions()) {
         if (!IsHeroSkillDefinitionActiveForRuntime(definition, heroId))
             continue;
@@ -4549,6 +4427,24 @@ void ProcessHeroSkills()
             heroId,
             definition.skillId ? definition.skillId : "",
             definition.defaultSettings);
+
+        const bool aimedProjectile = SkillControls(definition, HeroSkillControls::TrackingOverlay) &&
+            SkillControls(definition, HeroSkillControls::Prediction) &&
+            !SkillControls(definition, HeroSkillControls::SequenceSteps) &&
+            !SkillControls(definition, HeroSkillControls::ComboAction);
+        // Observe release even while a cooldown prevents execution.
+        if (aimedProjectile) {
+            const auto input = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
+            if (!input.available) g_skillAimSessions[skillKey].Block();
+            else if (!input.down) g_skillAimSessions[skillKey].Advance(false, GetTickCount64(), 0, settings.maxAimTimeMs);
+        }
+
+        if (SkillControls(definition, HeroSkillControls::PausePolicy)) continue;
+
+        if ((pause & SkillConditions::Skills) && !SkillControls(definition, HeroSkillControls::PunchAssist)) {
+            CancelSkill(skillKey, true);
+            continue;
+        }
 
         if (!settings.enabled) {
             CancelSkill(skillKey, true);
@@ -4572,6 +4468,12 @@ void ProcessHeroSkills()
         }();
         settings.runtimeOutputVk=V2::HeroSettings::Key(heroId,mappedAction);
         settings.runtimeJumpVk=V2::HeroSettings::Key(heroId,MappedAction::Jump);
+
+        if (definition.inputAction == HeroSkillInputAction::Ultimate &&
+            (!std::isfinite(localSnapshot.ultimate) || localSnapshot.ultimate < 100.f)) {
+            CancelSkill(skillKey, false);
+            continue;
+        }
 
         if (IsZaryaReloadAmmoProbeDefinition(definition)) {
             UpdateZaryaAmmoProbe(skillKey, settings, localSnapshot);
@@ -4603,6 +4505,7 @@ void ProcessHeroSkills()
         if (!sequenceActive && !genjiComboActive &&
             IsInRechargeInterval(definition, settings, localSnapshot)) {
             CancelSkill(skillKey, false);
+            if (aimedProjectile && IsActivationKeyHeld(settings.key)) g_skillAimSessions[skillKey].Block();
             if (ShouldLogSkillGuard(skillKey)) {
                 Diagnostics::Aim("skill.cooldown_guard block skill=%s input=%d reloading=%d skillcd1=%.3f skillcd2=%.3f ultimate=%.1f",
                     skillKey.c_str(),
@@ -4617,11 +4520,19 @@ void ProcessHeroSkills()
 
         if (!sequenceActive && !genjiComboActive &&
             IsManualCooldownActive(skillKey, settings)) {
+            if (aimedProjectile && IsActivationKeyHeld(settings.key)) g_skillAimSessions[skillKey].Block();
             if (ShouldLogSkillGuard(skillKey)) {
                 Diagnostics::Aim("skill.manual_cooldown block skill=%s cooldown=%.3f",
                     skillKey.c_str(),
                     settings.cooldown);
             }
+            continue;
+        }
+
+        const auto sharedCast = g_lastOutputActions.find(settings.runtimeOutputVk);
+        if (!sequenceActive && !genjiComboActive && sharedCast != g_lastOutputActions.end() &&
+            Clock::now() - sharedCast->second < std::chrono::duration<float>(settings.cooldown)) {
+            if (aimedProjectile && IsActivationKeyHeld(settings.key)) g_skillAimSessions[skillKey].Block();
             continue;
         }
 
@@ -4656,19 +4567,21 @@ void ProcessHeroSkills()
             RunViewpointController(skillKey, settings);
         }
 
+        if (SkillControls(definition, HeroSkillControls::GroupCondition)) {
+            EvaluateGroupConditionAction(skillKey, definition, settings, localSnapshot);
+            continue;
+        }
+
         if (!IsRuntimeActionDefinition(definition))
             continue;
 
-        if (IsDefensiveResponseDefinition(definition)) {
+        if (SkillControls(definition, HeroSkillControls::DefensiveAction)) {
             EvaluateDefensiveResponseAction(skillKey, definition, settings, localSnapshot);
         } else if (SkillControls(definition, HeroSkillControls::HealthThreshold) ||
                    SkillControls(definition, HeroSkillControls::HealthAbsolute)) {
             EvaluateHealthThresholdAction(skillKey, definition, settings, localSnapshot);
-        } else if (definition.category == HeroSkillCategory::Ultimate &&
-                   !SkillControls(definition, HeroSkillControls::TrackingOverlay)) {
-            EvaluateChargedConditionAction(skillKey, definition, settings);
         } else {
-            EvaluateTrajectoryAction(skillKey, definition, settings, GetTrajectoryParams(definition.skillId));
+            EvaluateTrajectoryAction(skillKey, definition, settings, GetTrajectoryParams(definition));
         }
     }
 
@@ -4707,7 +4620,16 @@ bool RunHeroSkillRuntimeStopSelfTest()
     };
     // Establish the current scheduler generation before seeding active ownership.
     ProcessHeroSkills();
+    auto& request = g_skillAimSessions[key];
+    request.Advance(false, 10, 0, 650);
+    const bool acquisitionStarted = request.Advance(true, 20, 0, 650);
+    MarkActionExecuted(key);
+    CancelSkill(key, false);
+    bool guardsPreserveState = acquisitionStarted && request.active && g_lastActionExecutions.contains(key);
+    CancelSkill(key, true);
+    guardsPreserveState &= !request.Advance(true, 30, 0, 650);
     bool ok = !RuntimeWorkersRunning() && seed();
+    ok &= guardsPreserveState;
     Config::HeroSkillSettings settings{};
     settings.key = -1;
     ok &= RunViewpointController(key, settings) == HeroSkillRunState::Cancelled && released();

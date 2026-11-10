@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include "Game/WorldObjectIds.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -13,19 +14,9 @@ struct Style {
     ImVec4 visible{1,1,1,1},hidden{1,.25f,.3f,1},target{1,.85f,.2f,1},ally{.3f,1,.6f,1};
     float size=14,thickness=1.5f,offsetX=0,offsetY=0;
 };
-struct ObjectType {const char* name;uint64_t id;};
-inline constexpr std::array kObjects{
-    ObjectType{"Health Packs",0x40000000000005Full},ObjectType{"Ashe Dynamite",0x400000000002533ull},
-    ObjectType{"Torb Turret",0x4000000000028B7ull},ObjectType{"Sym Turret",0x400000000002658ull},
-    ObjectType{"Junkrat Trap",0x40000000000103Bull},ObjectType{"Junkrat Mine",0x400000000000F9Bull},
-    ObjectType{"Widow Mine",0x4000000000000AEull},ObjectType{"Healing Pylon",0x400000000004BCAull},
-    ObjectType{"Immortality Field",0x4000000000029A9ull},ObjectType{"B.O.B.",0x4000000000025C3ull},
-    ObjectType{"Junkrat Tire",0},ObjectType{"Bastion Ultimate",0x400000000003EFDull}};
-inline int ObjectIndex(uint64_t id) {
-    if(id==0x400000000000060ull||id==0x40000000000480Aull)return 0;
-    for(int i=0;i<int(kObjects.size());++i)if(kObjects[i].id&&kObjects[i].id==id)return i;
-    return -1;
-}
+using WorldObjects::ObjectType;
+using WorldObjects::kObjects;
+using WorldObjects::ObjectIndex;
 struct World {
     bool enabled=false,box=false,name=true,icon=true,distance=true;
     float maxDistance=150,size=18;
