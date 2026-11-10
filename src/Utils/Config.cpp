@@ -2037,6 +2037,8 @@ namespace OW { namespace Config {
             settings.tracking.method = ClampAimMethodIndex(settings.tracking.method);
             settings.tracking.smooth = std::clamp(settings.tracking.smooth, 0.0f, 100.0f);
             settings.tracking.speedScale = std::clamp(settings.tracking.speedScale, 0.0f, 100.0f);
+            settings.tracking.yawScale = std::clamp(std::isfinite(settings.tracking.yawScale) ? settings.tracking.yawScale : 100.f,0.f,200.f);
+            settings.tracking.pitchScale = std::clamp(std::isfinite(settings.tracking.pitchScale) ? settings.tracking.pitchScale : 100.f,0.f,200.f);
             settings.targetPriority = std::clamp(settings.targetPriority, 0, 2);
             settings.assistanceDelayMs = std::clamp(std::isfinite(settings.assistanceDelayMs) ? settings.assistanceDelayMs : 0.0f, 0.0f, 1000.0f);
             float* skillColor = &settings.skillFovColor.x;
@@ -2064,7 +2066,9 @@ namespace OW { namespace Config {
             settings.preFireDelayMs = std::clamp(settings.preFireDelayMs, 0.0f, 1000.0f);
             settings.maxAimTimeMs = std::clamp(settings.maxAimTimeMs, 0.0f, 5000.0f);
             settings.targetRoleMask &= 7;
-            settings.normalThreatMask &= 15;
+            settings.normalThreatMask &= (1 << OW::SkillConditions::kNormalThreats.size())-1;
+            settings.moveForwardMs = std::clamp(settings.moveForwardMs,50,1000);
+            settings.jumpLeadMs = std::clamp(settings.jumpLeadMs,0,500);
             settings.meleeRadius = std::clamp(settings.meleeRadius, 0.0f, 2.0f);
             settings.punchMaxHeightAbove = std::clamp(settings.punchMaxHeightAbove, 0.0f, 5.0f);
             settings.punchMaxHeightBelow = std::clamp(settings.punchMaxHeightBelow, 0.0f, 5.0f);
@@ -3839,6 +3843,9 @@ namespace OW { namespace Config {
             AddJsonBool(value, "healthTriggerEnabled", settings.healthTriggerEnabled, allocator);
             AddJsonBool(value, "threatTriggerEnabled", settings.threatTriggerEnabled, allocator);
             AddJsonInt(value, "normalThreatMask", settings.normalThreatMask, allocator);
+            AddJsonBool(value,"automaticAim",settings.automaticAim,allocator);
+            AddJsonInt(value,"moveForwardMs",settings.moveForwardMs,allocator);
+            AddJsonInt(value,"jumpLeadMs",settings.jumpLeadMs,allocator);
             AddJsonBool(value, "requireVisible", settings.requireVisible, allocator);
             AddJsonBool(value, "allowInvisibleSombra", settings.allowInvisibleSombra, allocator);
             AddJsonInt(value, "targetRoleMask", settings.targetRoleMask, allocator);
@@ -3853,6 +3860,8 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "skillFovA", settings.skillFovColor.w, allocator);
             AddJsonFloat(value, "trackingFov", settings.tracking.fov, allocator);
             AddJsonInt(value, "trackingBone", settings.tracking.bone, allocator);
+            AddJsonFloat(value,"trackingYawScale",settings.tracking.yawScale,allocator);
+            AddJsonFloat(value,"trackingPitchScale",settings.tracking.pitchScale,allocator);
             AddJsonFloat(value, "trackingHitboxScale", settings.tracking.hitbox, allocator);
             AddJsonFloat(value, "meleeRadius", settings.meleeRadius, allocator);
             AddJsonBool(value, "sequencePhaseAwareTracking", settings.sequencePhaseAwareTracking, allocator);
@@ -4354,6 +4363,9 @@ namespace OW { namespace Config {
             defaults.healthTriggerEnabled = ReadJsonBool(value, "healthTriggerEnabled", defaults.healthTriggerEnabled);
             defaults.threatTriggerEnabled = ReadJsonBool(value, "threatTriggerEnabled", defaults.threatTriggerEnabled);
             defaults.normalThreatMask = ReadJsonInt(value, "normalThreatMask", defaults.normalThreatMask);
+            defaults.automaticAim=ReadJsonBool(value,"automaticAim",defaults.automaticAim);
+            defaults.moveForwardMs=ReadJsonInt(value,"moveForwardMs",defaults.moveForwardMs);
+            defaults.jumpLeadMs=ReadJsonInt(value,"jumpLeadMs",defaults.jumpLeadMs);
             defaults.requireVisible = ReadJsonBool(value, "requireVisible", defaults.requireVisible);
             defaults.allowInvisibleSombra = ReadJsonBool(value, "allowInvisibleSombra", defaults.allowInvisibleSombra);
             defaults.targetRoleMask = ReadJsonInt(value, "targetRoleMask", defaults.targetRoleMask);
@@ -4367,6 +4379,8 @@ namespace OW { namespace Config {
             defaults.skillFovColor.z = ReadJsonFloat(value, "skillFovB", defaults.skillFovColor.z);
             defaults.skillFovColor.w = ReadJsonFloat(value, "skillFovA", defaults.skillFovColor.w);
             defaults.tracking.bone = ReadJsonInt(value, "trackingBone", defaults.tracking.bone);
+            defaults.tracking.yawScale=ReadJsonFloat(value,"trackingYawScale",defaults.tracking.yawScale);
+            defaults.tracking.pitchScale=ReadJsonFloat(value,"trackingPitchScale",defaults.tracking.pitchScale);
             defaults.meleeRadius = ReadJsonFloat(value, "meleeRadius", defaults.meleeRadius);
             defaults.tracking.hitbox = ReadJsonHitboxScaleCompat(
                 value,
@@ -5311,6 +5325,21 @@ namespace OW { namespace Config {
             return false;
         }
 
+        void MigrateLegacyGenjiSkillUnlocked(const IniFile* ini) {
+            const uint64_t hero=eHero::HERO_GENJI;
+            if(!ini || !KeyExists(*ini,"Genji","AutoShiftGenji")) return;
+            const auto existing=heroSkillPresets.find(hero);
+            if(existing!=heroSkillPresets.end() && existing->second.contains("auto-swift-strike")) return;
+            for(const auto& definition:AllHeroSkillDefinitions()) {
+                if(definition.heroId!=hero || std::string(definition.skillId)!="auto-swift-strike") continue;
+                auto settings=definition.defaultSettings;
+                settings.enabled=ReadBool(*ini,"Genji","AutoShiftGenji",false);
+                heroSkillPresets[hero]["auto-swift-strike"]=settings;
+                gLastHeroConfigNeedsSave=true;
+                return;
+            }
+        }
+
         bool LoadHeroConfigOrMigrateUnlocked(const std::string& heroConfigPath, const IniFile* legacyIni,
                                              const rapidjson::Document* prepared = nullptr,
                                              bool deferMigrationSave = false)
@@ -5320,6 +5349,7 @@ namespace OW { namespace Config {
             const auto& document = prepared ? *prepared : read;
             if (!document.IsNull()) {
                 if(!LoadHeroConfigUnlocked(heroConfigPath, document))return false;
+                MigrateLegacyGenjiSkillUnlocked(legacyIni);
                 if (!gLastHeroConfigNeedsSave || deferMigrationSave) return true;
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 gLastHeroConfigNeedsSave = !saved;
@@ -5330,6 +5360,7 @@ namespace OW { namespace Config {
             heroSkillPresets.clear();
             if (legacyIni && IniHasHeroPresetSections(*legacyIni)) {
                 LoadHeroPresetsUnlocked(*legacyIni);
+                MigrateLegacyGenjiSkillUnlocked(legacyIni);
                 if (deferMigrationSave) { gLastHeroConfigNeedsSave = true; return true; }
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
@@ -7418,13 +7449,18 @@ namespace OW { namespace Config {
     {
         std::lock_guard<std::mutex> lock(mutex);
         ScopedConfigAuthority authority(false);
+        // The explicit skill card wins, including enabled=false. Old INI-only
+        // profiles retain their switch while the legacy producer is retired.
+        HeroSkillSettings fallback = defaultSettings;
+        if ((heroId & 0xffff) == 0x029 && skillId == "auto-swift-strike")
+            fallback.enabled = AutoShiftGenji;
         const auto hero = heroSkillPresets.find(heroId);
         if (hero == heroSkillPresets.end())
-            return ValidateHeroSkillSettingsValue(defaultSettings);
+            return ValidateHeroSkillSettingsValue(fallback);
 
         const auto skill = hero->second.find(skillId);
         if (skill == hero->second.end())
-            return ValidateHeroSkillSettingsValue(defaultSettings);
+            return ValidateHeroSkillSettingsValue(fallback);
 
         return ValidateHeroSkillSettingsValue(skill->second);
     }

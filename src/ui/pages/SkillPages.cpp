@@ -181,6 +181,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         changed |= UICheckbox("##threatTrigger", &settings.threatTriggerEnabled);
         ImGui::TextUnformatted(L("Normal Skill Threats"));
         for (size_t i = 0; i < OW::SkillConditions::kNormalThreats.size(); ++i) {
+            if(!OW::SkillConditions::kNormalThreats[i].incoming) continue;
             bool selected = (settings.normalThreatMask & (1 << i)) != 0;
             if (UICheckbox(L(OW::SkillConditions::kNormalThreats[i].label), &selected)) {
                 settings.normalThreatMask ^= 1 << i;
@@ -188,6 +189,31 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             }
         }
         ImGui::TextWrapped("%s", L("Ultimate threats are waiting for verified activation signals."));
+    }
+    if(definition.automation==OW::SkillAutomation::NormalInterrupt) {
+        ImGui::TextWrapped("%s",L("Interrupts use fresh skill activation samples; hit timing still needs in-game verification. Ultimate interrupts await activation signals."));
+        ImGui::TextUnformatted(L("Normal Skill Threats"));
+        for(size_t i=0;i<OW::SkillConditions::kNormalThreats.size();++i) {
+            if(OW::SkillConditions::kNormalThreats[i].interruptWindowMs<=0) continue;
+            bool selected=(settings.normalThreatMask & (1<<i))!=0;
+            if(UICheckbox(L(OW::SkillConditions::kNormalThreats[i].label),&selected)) {
+                settings.normalThreatMask^=1<<i;changed=true;
+            }
+        }
+    }
+    if(definition.automation==OW::SkillAutomation::NormalInterrupt ||
+       definition.automation==OW::SkillAutomation::LowEnemyHealth) {
+        SettingRow("Aim Before Casting",kAimbotRightLabelWidth);
+        changed|=UICheckbox("##autoSkillAim",&settings.automaticAim);
+    }
+    if(definition.automation==OW::SkillAutomation::RecastReturn)
+        ImGui::TextWrapped("%s",L("Recasts the mapped Ability 1 only after a freshly observed deployment. Does not deploy a return point at low health."));
+    if(definition.automation==OW::SkillAutomation::EmreJump) {
+        SettingRow("Forward Duration",kAimbotRightLabelWidth);PushControlWidth();
+        changed|=UISlider("##emreMoveMs",&settings.moveForwardMs,50.f,1000.f,Number(0," ms"));ImGui::PopItemWidth();
+        SettingRow("Grenade To Movement Delay",kAimbotRightLabelWidth);PushControlWidth();
+        changed|=UISlider("##emreLeadMs",&settings.jumpLeadMs,0.f,500.f,Number(0," ms"));ImGui::PopItemWidth();
+        ImGui::TextWrapped("%s",L("Press once: throw E at the ground, use Shift and move forward, then jump. Timing is adjustable and needs in-game calibration."));
     }
     if (std::string(definition.skillId) == "transcendence")
         ImGui::TextWrapped("%s", L("Automatic Transcendence is waiting for a verified enemy ultimate activation signal. Enemy charge alone does not trigger it."));
@@ -340,9 +366,13 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     }
 
     if (hasTrackingOverlay && settings.enabled) {
+        const bool canMoveAim=definition.automation==OW::SkillAutomation::None ||
+            (settings.automaticAim && (definition.automation==OW::SkillAutomation::LowEnemyHealth ||
+                definition.automation==OW::SkillAutomation::NormalInterrupt));
         ImGui::Spacing();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Skill Aim"));
 
+        if(canMoveAim) {
         SettingRow("Aim Behavior", kAimbotRightLabelWidth);
         PushControlWidth();
         if (UISelect("##skillTrackingBehavior", &settings.tracking.aimBehavior,
@@ -365,7 +395,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             changed = true;
         }
         ImGui::PopItemWidth();
-
+        }
         {
             SettingRow("Priority", kAimbotRightLabelWidth);
             PushControlWidth();
@@ -396,10 +426,18 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::SameLine();
         changed |= UI::ColorPicker("skillFovColor", settings.skillFovColor);
 
+        if(canMoveAim) {
         SettingRow("Speed Scale", kAimbotRightLabelWidth);
         PushControlWidth();
         changed |= UISlider("##skillTrackingSpeedScale", &settings.tracking.speedScale, 0.0f, 100.0f, Number(0, " %"));
         ImGui::PopItemWidth();
+        if(hasControl(OW::HeroSkillControls::TrajectoryAction) || definition.automation!=OW::SkillAutomation::None) {
+            SettingRow("Horizontal Motion Scale",kAimbotRightLabelWidth);PushControlWidth();
+            changed|=UISlider("##skillYawScale",&settings.tracking.yawScale,0.f,200.f,Number(0," %"));ImGui::PopItemWidth();
+            SettingRow("Vertical Motion Scale",kAimbotRightLabelWidth);PushControlWidth();
+            changed|=UISlider("##skillPitchScale",&settings.tracking.pitchScale,0.f,200.f,Number(0," %"));ImGui::PopItemWidth();
+        }
+        }
 
         SettingRow("FOV (deg)", kAimbotRightLabelWidth);
         PushControlWidth();
@@ -506,7 +544,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             PushControlWidth();
             changed |= UISlider("##skillPreFireDelay", &settings.preFireDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
             ImGui::PopItemWidth();
-
+        }
+        if (hasControl(OW::HeroSkillControls::Prediction) || hasControl(OW::HeroSkillControls::TrajectoryAction)) {
             SettingRow("Max Aim Time", kAimbotRightLabelWidth);
             PushControlWidth();
             changed |= UISlider("##skillMaxAimTime", &settings.maxAimTimeMs, 0.0f, 5000.0f, Number(0, " ms"));

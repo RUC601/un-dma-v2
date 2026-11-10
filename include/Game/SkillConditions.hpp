@@ -9,11 +9,18 @@ struct NormalThreat {
     uint16_t hero;
     unsigned slot;
     const char* label;
+    float interruptWindowMs = 0;
+    bool incoming = true;
 };
-inline constexpr std::array<NormalThreat, 4> kNormalThreats{{
-    {0x13b, 0, "Ana Sleep Dart"}, {0x040, 0, "Roadhog Chain Hook"},
-    {0x23b, 1, "Sigma Accretion"}, {0x195, 0, "Brigitte Whip Shot"}
+inline constexpr std::array<NormalThreat, 6> kNormalThreats{{
+    {0x13b, 0, "Ana Sleep Dart",320}, {0x040, 0, "Roadhog Chain Hook",100},
+    {0x23b, 1, "Sigma Accretion",650}, {0x195, 0, "Brigitte Whip Shot",0},
+    {0x004, 1, "Mercy Resurrect",1750,false}, {0x206,1,"Echo Focusing Beam",2000,false}
 }};
+inline bool InterruptCanArrive(const NormalThreat& threat,uint32_t elapsed,float arrivalMs) {
+    return std::isfinite(arrivalMs) && arrivalMs>=0 &&
+        elapsed+arrivalMs+50 < threat.interruptWindowMs;
+}
 inline int NormalThreatIndex(uint64_t hero) {
     for (size_t i = 0; i < kNormalThreats.size(); ++i)
         if ((hero & 0xffff) == kNormalThreats[i].hero) return static_cast<int>(i);
@@ -62,6 +69,18 @@ inline unsigned StatePause(uint64_t hero, bool firstActive, bool secondActive, b
     }
 }
 using BodyIdentity = std::array<uint64_t, 6>;
+struct AutomaticAimWindow {
+    BodyIdentity target{};
+    uint64_t started = 0;
+    bool active = false, expired = false;
+    bool Ready(const BodyIdentity& next, uint64_t now, float delay, float limit) {
+        if (!active || target != next) { target=next;started=now;active=true;expired=false; }
+        const auto elapsed=now-started;
+        if (limit>0 && elapsed>limit) expired=true;
+        return !expired && elapsed>=delay;
+    }
+    void Reset() { *this={}; }
+};
 struct ObservationNeeds {
     uint64_t localHero = 0;
     bool localSkills = false;
@@ -109,4 +128,17 @@ inline unsigned Role(uint64_t hero) {
 inline bool RoleAllowed(uint64_t hero, unsigned mask) {
     return mask == 7 || (Role(hero) & mask) != 0;
 }
+struct RecastWindow {
+    bool known = false, active = false, spent = false;
+    uint64_t started = 0, lastObserved = 0;
+    void Observe(bool readable, bool next, uint64_t now) {
+        if (!readable) return;
+        if (lastObserved && now-lastObserved>250) { known=false;started=0; }
+        lastObserved=now;
+        if (!known) { known = true; active = next; spent = next; return; }
+        if (!next) { active = false; spent = false; started = 0; return; }
+        if (!active) { active = true; spent = false; started = now; }
+    }
+    bool Ready(uint64_t now) const { return active && !spent && started && now-started >= 170 && now-started <= 5500; }
+};
 }

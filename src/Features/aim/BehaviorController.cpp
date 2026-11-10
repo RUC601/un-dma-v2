@@ -1,4 +1,4 @@
-#include "Game/HeroSettings.hpp"
+﻿#include "Game/HeroSettings.hpp"
 #ifdef UNLEASHED_SELF_TESTS
 #include "output/MockBackend.hpp"
 #endif
@@ -3994,51 +3994,6 @@ namespace AimbotDetail {
         }
     }
 
-    inline void RunAutoShiftGenji() {
-        if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
-            return;
-        const std::uint64_t connectionEpoch =
-            OW::ProcessConnection::ConnectionEpoch();
-        const std::uint64_t outputTransitionEpoch =
-            OW::RuntimeOutputTransitionEpoch();
-        if (connectionEpoch == 0 || !OW::ProcessConnection::IsConnected())
-            return;
-        if (!OW::Config::AutoShiftGenji) return;
-
-        const Vector3 vec = OW::GetVector3(false);
-            OW::AimCandidateConfig selectedSettings9(OW::Config::selectedAimHero);
-        c_entity target{};
-        if (IsZeroVector(vec) || !CurrentTarget(target)) return;
-        if (target.imort || target.barrprot) return;
-        if (target.HeroID == 0x16dd || target.HeroID == 0x16ee) return;
-
-        const c_entity local = LocalEntity();
-        if (local.skillcd1) return;
-
-        const float dist = CameraPosition().DistTo(vec);
-        AimData aim = BuildAimData(
-            vec,
-            false,
-            OW::Config::AimBehaviorSmoothInput(0, OW::Config::View_Tracking_smooth()),
-            OW::Config::AimBehaviorAcceleration(0));
-        if (OW::Config::health <= 50.f && dist <= 15.f) {
-            if (OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, vec, 1.f))
-                OW::PulseAction(OW::GameAction::Ability1, 40);
-        } else if (OW::Config::health <= 80.f && dist >= 15.f && dist <= 17.f) {
-            if (OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, vec, 1.f)) {
-                if (OW::ActionOutputSucceeded(OW::PulseAction(OW::GameAction::Ability1))) {
-                    OW::RuntimeWorkerSleep(500);
-                    if (OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices() &&
-                        OW::ProcessConnection::IsConnected() &&
-                        OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
-                        OW::RuntimeOutputTransitionMatches(outputTransitionEpoch)) {
-                        OW::PulseAction(OW::GameAction::Melee);
-                    }
-                }
-            }
-        }
-    }
-
     inline void RunAutoSkill() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return;
@@ -4344,7 +4299,6 @@ namespace AimbotDetail {
         RunAutoScaleFov();
         RunAutoMelee();
         RunAutoRmb();
-        RunAutoShiftGenji();
         RunAutoSkill();
         RunAutoShootCooldown();
         ResetShootStateOnRelease(state);

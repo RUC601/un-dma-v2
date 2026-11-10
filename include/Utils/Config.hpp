@@ -1666,6 +1666,8 @@ namespace OW { namespace Config {
         int bone = kAimBoneChest;
         float hitbox = 0.0f;     // percentage of resolved bone+projectile window; 0 disables the gate
         int aimBehaviorPresetId = -1;
+        float yawScale = 100.0f;
+        float pitchScale = 100.0f;
     };
 
     struct HeroSkillSettings {
@@ -1725,6 +1727,9 @@ namespace OW { namespace Config {
         bool pauseAim = true;
         bool pauseTrigger = true;
         bool pauseSkills = true;
+        bool automaticAim = true;
+        int moveForwardMs = 300;
+        int jumpLeadMs = 50;
     };
 
     using HeroSkillPresetStore = std::unordered_map<uint64_t, std::unordered_map<std::string, HeroSkillSettings>>;

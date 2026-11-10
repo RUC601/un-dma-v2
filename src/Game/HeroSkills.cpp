@@ -35,6 +35,8 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <functional>
 
 namespace OW {
 namespace {
@@ -295,6 +297,8 @@ namespace {
     struct ThreatState {
         SkillConditions::BodyIdentity body{};
         std::array<SkillConditions::ActiveEvent, 2> events{};
+        std::array<std::unordered_set<std::string>, 2> responders{};
+        std::array<uint32_t,2> samples{},started{};
         uint32_t observed = 0;
     };
     std::unordered_map<uint64_t, ThreatState> g_defensiveThreats;
@@ -314,7 +318,19 @@ namespace {
             state.observed = now;
             for (size_t slot = 0; slot < 2; ++slot)
                 if (entity.skill_active_tick_ms[slot] && uint32_t(now - entity.skill_active_tick_ms[slot]) <= 250)
-                    state.events[slot].Observe(slot == 0 ? entity.skill1act : entity.skill2act);
+                {
+                    const bool active = slot == 0 ? entity.skill1act : entity.skill2act;
+                    const auto sampled=entity.skill_active_tick_ms[slot];
+                    if(state.samples[slot] && uint32_t(sampled-state.samples[slot])>250) {
+                        state.events[slot]={};state.responders[slot].clear();state.started[slot]=0;
+                    }
+                    if(state.events[slot].observed && !state.events[slot].active && active)
+                        state.started[slot]=sampled;
+                    if(!active)state.started[slot]=0;
+                    state.samples[slot]=sampled;
+                    if (!active) state.responders[slot].clear();
+                    state.events[slot].Observe(active);
+                }
         }
         for (auto it = g_defensiveThreats.begin(); it != g_defensiveThreats.end();) {
             if (uint32_t(now - it->second.observed) > 250) it = g_defensiveThreats.erase(it);
@@ -1534,8 +1550,10 @@ namespace {
         TrajectoryParams params{defaults.projectileSpeed, defaults.distance,
             defaults.projectileGravity ? 9.8f : 0.f, defaults.projectileRadius, defaults.preFireDelayMs};
         const std::string id = definition.skillId;
+        const std::string physicsId = definition.castGroup && *definition.castGroup ? definition.castGroup : id;
         if (const auto* physics = FindProjectilePhysicsProfile(
-                id == "energy-javelin" ? "orisa_energy_javelin" : id)) {
+                physicsId == "energy-javelin" ? "orisa_energy_javelin" :
+                physicsId == "particle-bomb" ? "zarya_particle_cannon_alt" : physicsId)) {
             if (params.speed <= 0) params.speed = physics->referenceSpeed;
             params.gravity = physics->gravityAcceleration;
             params.launchDirectionUpBias = physics->launchDirectionUpBias;
@@ -1694,7 +1712,10 @@ namespace {
 
     SkillAimCandidate FindBestSkillAimCandidate(const Config::HeroSkillSettings& settings,
                                                 const SkillProjectileRuntime& projectile,
-                                                float minRange = 0.0f)
+                                                float minRange = 0.0f,
+                                                bool absoluteHealth = false,
+                                                const std::function<bool(const c_entity&)>& filter = {},
+                                                bool reticleOnly = false)
     {
         SkillAimCandidate best{};
         const float effectiveRange = settings.distance > 0.0f
@@ -1711,6 +1732,8 @@ namespace {
         const Vector3 source = SourcePositionForAction(local);
         if (!IsUsablePosition(source))
             return best;
+        Vector3 observedAngles{};
+        if (reticleOnly && !TryReadCurrentViewAngles(observedAngles)) return best;
 
         const std::vector<c_entity> snapshot = TargetingDetail::SnapshotEntities();
         const int requiredTargets = (std::max)(1, settings.minTargets);
@@ -1733,6 +1756,7 @@ namespace {
 
         for (size_t index = 0; index < snapshot.size(); ++index) {
             c_entity entity = snapshot[index];
+            if (filter && !filter(entity)) continue;
             if (!TargetingDetail::IsSelectableCandidate(entity, 0, local))
                 continue;
             if (settings.requireVisible && !entity.Vis)
@@ -1748,7 +1772,7 @@ namespace {
                 continue;
 
             const float vitality = VitalityPercent(entity);
-            if (vitality > settings.enemyHealthThreshold)
+            if ((absoluteHealth ? entity.PlayerHealth : vitality) > settings.enemyHealthThreshold)
                 continue;
 
             int selectedBoneId = BONE_CHEST;
@@ -1799,6 +1823,9 @@ namespace {
                 continue;
             }
 
+            const float hitWindow=ResolveSkillHitWindow(entity,selectedBoneId,projectile,settings.tracking.hitbox);
+            if (reticleOnly && !OW::in_range(observedAngles,DirectionToAimEuler(aimPoint-source),source,aimPoint,hitWindow))
+                continue;
             ++matchingTargets;
 
             const float priorityScore = settings.targetPriority == 1 ? vitality
@@ -1828,6 +1855,12 @@ namespace {
         if (matchingTargets < requiredTargets)
             return SkillAimCandidate{};
         return best;
+    }
+
+    Vector3 ScaleSkillAimStep(const Vector3& current,const Vector3& command,
+                             const Config::HeroSkillTrackingParams& tracking) {
+        return {current.X+(command.X-current.X)*tracking.pitchScale/100.f,
+            current.Y+NormalizeAngle(command.Y-current.Y)*tracking.yawScale/100.f,command.Z};
     }
 
     bool MoveSkillAimAndCheckReady(const std::string& runtimeKey,
@@ -1867,9 +1900,10 @@ namespace {
 
         bool hitAfterMove = hitBeforeMove;
         if (!AimbotDetail::IsZeroVector(aim.smoothed_angle)) {
-            AimbotDetail::MoveAimDelta(aim.local_angle, aim.smoothed_angle);
+            const auto output=ScaleSkillAimStep(aim.local_angle,aim.smoothed_angle,settings.tracking);
+            AimbotDetail::MoveAimDelta(aim.local_angle, output);
             hitAfterMove = OW::in_range(
-                aim.smoothed_angle,
+                output,
                 aim.target_angle,
                 aim.local_pos,
                 candidate.aimPoint,
@@ -3394,7 +3428,8 @@ namespace {
                 settings.assistanceDelayMs, settings.maxAimTimeMs, input.available)) return false;
         const auto projectile = ResolveSkillProjectileRuntime(settings, params);
         ScopedTrackingConfig trackingOverride(settings.tracking);
-        const auto candidate = FindBestSkillAimCandidate(settings, projectile);
+        const auto candidate = FindBestSkillAimCandidate(settings, projectile, 0,
+            SkillControls(definition, HeroSkillControls::EnemyHealthAbsolute));
         if (!candidate.valid || !MoveSkillAimAndCheckReady(runtimeKey, settings, candidate, projectile) ||
             IsActionDebounced(runtimeKey)) return false;
         if (!StartTimedHotkey(runtimeKey, SkillOutputVk(settings), kBriefPulse)) return false;
@@ -3690,10 +3725,10 @@ namespace {
 
     bool IsThreatSkillActiveForDefensiveResponse(const std::string& skillId, const c_entity& entity)
     {
-        if (skillId == "wraith-form" || skillId == "recall") {
+        if (skillId == "wraith-form" || skillId == "recall" || skillId == "dancing-blaze") {
             const uint32_t now = GetTickCount();
             const int index = SkillConditions::NormalThreatIndex(entity.HeroID);
-            if (index < 0) return false;
+            if (index < 0 || !SkillConditions::kNormalThreats[index].incoming) return false;
             const auto slot = SkillConditions::kNormalThreats[index].slot;
             return SkillConditions::FreshActive(slot == 0 ? entity.skill1act : entity.skill2act,
                 entity.skill_active_tick_ms[slot], now);
@@ -3767,7 +3802,7 @@ namespace {
             const auto event = g_defensiveThreats.find(entity.address);
             if (event == g_defensiveThreats.end() || event->second.body != SkillBodyIdentity(entity) ||
                 !event->second.events[activeSlot].CanRespond(responder)) continue;
-            if ((skillId == "wraith-form" || skillId == "recall") &&
+            if ((skillId == "wraith-form" || skillId == "recall" || skillId == "dancing-blaze") &&
                 !IsEnemyFacingLocalHorizontal(entity, local)) {
                 continue;
             }
@@ -3873,8 +3908,11 @@ namespace {
         return true;
     }
 
+    #include "HeroSkillAutomation.inl"
+
     void CancelSkill(const std::string& skillId, bool cancelTimedAction)
     {
+        if (cancelTimedAction) CancelAutomation(skillId);
         if (g_rocketPunch.maskKey == skillId + ":physical_rmb_mask")
             CancelRocketPunch();
         if (cancelTimedAction) {
@@ -3928,6 +3966,9 @@ ExecutionToken ActiveInputSequenceToken()
 
 bool ShouldBlockForActiveSequence(ExecutionSource requester)
 {
+    if (g_specialOwnsAim.load(std::memory_order_acquire)) return true;
+    if (g_automaticOwnsAim.load(std::memory_order_acquire) &&
+        (requester==ExecutionSource::GlobalAim || requester==ExecutionSource::Trigger)) return true;
     if (ShouldPauseHeroAssist(requester)) return true;
     if (requester == ExecutionSource::SequenceInternal)
         return false;
@@ -3956,7 +3997,8 @@ bool HasEnabledDefensiveHeroSkill(uint64_t heroId)
     for (const auto& definition : AllHeroSkillDefinitions()) {
         if (!IsHeroSkillDefinitionActiveForRuntime(definition, heroId)) continue;
         const std::string id = definition.skillId;
-        if (!SkillControls(definition, HeroSkillControls::HealthAction) && id != "wraith-form" && id != "recall") continue;
+        if (!SkillControls(definition, HeroSkillControls::HealthAction) && id != "wraith-form" && id != "recall" &&
+            definition.automation!=SkillAutomation::RecastReturn) continue;
         if (Config::GetHeroSkillSettings(heroId, id, definition.defaultSettings).enabled) return true;
     }
     return false;
@@ -3970,9 +4012,11 @@ SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
         if (!IsHeroSkillDefinitionActiveForRuntime(definition, needs.localHero)) continue;
         const auto settings = Config::GetHeroSkillSettings(needs.localHero, definition.skillId, definition.defaultSettings);
         if (!settings.enabled) continue;
-        needs.localSkills |= settings.cooldownGuard || SkillControls(definition, HeroSkillControls::PausePolicy);
+        needs.localSkills |= settings.cooldownGuard || SkillControls(definition, HeroSkillControls::PausePolicy) ||
+            definition.automation==SkillAutomation::RecastReturn;
         const std::string id = definition.skillId;
-        needs.enemyThreats |= settings.threatTriggerEnabled && (id == "wraith-form" || id == "recall");
+        needs.enemyThreats |= settings.threatTriggerEnabled && (id == "wraith-form" || id == "recall" || id == "dancing-blaze");
+        needs.enemyThreats |= definition.automation==SkillAutomation::NormalInterrupt && settings.normalThreatMask!=0;
     }
     return needs;
 }
@@ -4299,6 +4343,9 @@ namespace {
 
 void CancelActiveSkillStateLocked()
 {
+    for(auto& [key,state]:g_superJumps)CancelSuperJump(key,state);
+    g_superJumps.clear();g_returnWindow={};
+    g_automaticAimWindows.clear();g_automaticOwnsAim.store(false,std::memory_order_release);
     CancelRocketPunch();
     g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
 
@@ -4413,7 +4460,13 @@ void ProcessHeroSkills()
 
     bool processedAnyForHero = false;
     bool anySequenceActivationHeld = false;
+    g_automaticOwnsAim.store(false,std::memory_order_release);
     ObserveDefensiveThreats();
+    if(heroId==eHero::HERO_MIZUKI) {
+        const auto tick=localSnapshot.skill_active_tick_ms[0];
+        const auto age=uint32_t(GetTickCount()-tick);
+        g_returnWindow.Observe(tick && age<=250,localSnapshot.skill1act,GetTickCount64()-age);
+    }
     const unsigned pause = HeroStatePauseMask(localSnapshot);
     if (pause & SkillConditions::Aim) TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
     if (pause & SkillConditions::Trigger) TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
@@ -4429,9 +4482,9 @@ void ProcessHeroSkills()
             definition.defaultSettings);
 
         const bool aimedProjectile = SkillControls(definition, HeroSkillControls::TrackingOverlay) &&
-            SkillControls(definition, HeroSkillControls::Prediction) &&
+            SkillControls(definition, HeroSkillControls::TrajectoryAction) &&
             !SkillControls(definition, HeroSkillControls::SequenceSteps) &&
-            !SkillControls(definition, HeroSkillControls::ComboAction);
+            !SkillControls(definition, HeroSkillControls::ComboAction) && definition.automation==SkillAutomation::None;
         // Observe release even while a cooldown prevents execution.
         if (aimedProjectile) {
             const auto input = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
@@ -4468,6 +4521,16 @@ void ProcessHeroSkills()
         }();
         settings.runtimeOutputVk=V2::HeroSettings::Key(heroId,mappedAction);
         settings.runtimeJumpVk=V2::HeroSettings::Key(heroId,MappedAction::Jump);
+
+        if(g_specialOwnsAim.load(std::memory_order_acquire) && definition.automation!=SkillAutomation::EmreJump) {
+            CancelSkill(skillKey,true);continue;
+        }
+        if(definition.automation==SkillAutomation::RecastReturn) {
+            EvaluateReturn(skillKey,settings,localSnapshot);continue;
+        }
+        if(definition.automation==SkillAutomation::EmreJump) {
+            EvaluateSuperJump(skillKey,definition,settings,localSnapshot);continue;
+        }
 
         if (definition.inputAction == HeroSkillInputAction::Ultimate &&
             (!std::isfinite(localSnapshot.ultimate) || localSnapshot.ultimate < 100.f)) {
@@ -4539,6 +4602,10 @@ void ProcessHeroSkills()
         if (IsAmmoGuardBlocking(skillKey, settings, localSnapshot)) {
             CancelSkill(skillKey, false);
             continue;
+        }
+
+        if(definition.automation!=SkillAutomation::None) {
+            EvaluateAutomaticAim(skillKey,definition,settings);continue;
         }
 
         if (IsAutoMeleeDefinition(definition)) {
@@ -4650,6 +4717,7 @@ bool RunHeroSkillRuntimeStopSelfTest()
     ProcessHeroSkills();
     ok &= V2::Output::MockHardwareMgr.Snapshot().maskedButtons == 0 &&
         !g_rocketPunchOwnsAim.load(std::memory_order_acquire);
+    #include "HeroSkillAutomationSelfTest.inl"
     CancelActiveSkill();
     g_viewpoints.erase(key);
     return ok;

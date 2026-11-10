@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <tuple>
 
 namespace OW {
 
@@ -157,6 +158,11 @@ namespace HeroSkillHotkey {
     inline constexpr int None = 14;
 }
 
+enum class SkillAutomation {
+    None, Reticle, LowEnemyHealth, NormalInterrupt, FollowAim,
+    RecastReturn, EmreJump
+};
+
 struct HeroSkillDefinition {
     uint64_t heroId;
     const char* heroSlug;
@@ -170,6 +176,8 @@ struct HeroSkillDefinition {
     RuntimeVariantRequirement variantRequirement = RuntimeVariantRequirement::None;
     const char* variantId = "";
     const char* replacesSkillId = "";
+    SkillAutomation automation = SkillAutomation::None;
+    const char* castGroup = ""; // Manual/automatic variants spend the same ability.
 };
 
 inline constexpr bool HasHeroSkillControl(const HeroSkillDefinition& definition,
@@ -1141,6 +1149,86 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
         projectile(eHero::HERO_ORISA, "orisa", "energy-javelin", "Energy Javelin",
             HeroSkillInputAction::SecondaryFire,
             MakeProjectileAimSkillDefaults(40, 6, 70, 0, 304, HeroSkillHotkey::RightMouse, true));
+
+        // Data notes and per-source values: docs/un-dma-v2/SKILL_IMPLEMENTATION_20261111.zh-CN.md.
+        projectile(eHero::HERO_MIZUKI, "mizuki", "binding-chain", "Binding Chain", HeroSkillInputAction::Ability2,
+            MakeProjectileAimSkillDefaults(20,12,60,0.3f,0,HeroSkillHotkey::EKey));
+        projectile(eHero::HERO_SIERRA, "sierra", "tracking-shot", "Tracking Shot", HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(60,10,140,0,0,HeroSkillHotkey::RightMouse));
+        projectile(eHero::HERO_BASTION, "bastion", "a-36-tactical-grenade", "Tactical Grenade", HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(35,8,40,0,0,HeroSkillHotkey::RightMouse,true));
+        projectile(eHero::HERO_ZARYA, "zarya", "particle-bomb", "Particle Bomb Assist", HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(40,1,25,0,0,HeroSkillHotkey::RightMouse,true));
+        projectile(eHero::HERO_GENJI, "genji", "manual-fan", "Manual Fan", HeroSkillInputAction::SecondaryFire,
+            MakeProjectileAimSkillDefaults(10,0.85f,75,0.125f,0,HeroSkillHotkey::RightMouse));
+        projectile(eHero::HERO_SOMBRA,"sombra","cyberspace","Cyberspace Assist",HeroSkillInputAction::Ability1,
+            MakeProjectileAimSkillDefaults(30,13,50,0.3f,450,HeroSkillHotkey::LeftShift));
+        auto coach=MakeProjectileAimSkillDefaults(15,10,0,0,160,HeroSkillHotkey::LeftShift);
+        coach.prediction=false;
+        projectile(eHero::HERO_ASHE,"ashe","coach-gun","Coach Gun Assist",HeroSkillInputAction::Ability1,coach);
+        result.back().controls &= ~HeroSkillControls::Prediction;
+        for (auto& d : result) {
+            if (std::string(d.skillId)=="swift-strike") {
+                d.controls |= HeroSkillControls::TrackingOverlay | HeroSkillControls::EnemyHealthAbsolute | HeroSkillControls::TrajectoryAction;
+                d.controls &= ~(HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Prediction);
+                d.defaultSettings = MakeProjectileAimSkillDefaults(15,8,0,0,0,HeroSkillHotkey::LeftShift);
+                d.defaultSettings.prediction = false;
+                d.defaultSettings.enemyHealthThreshold = 70;
+                d.castGroup = "swift-strike";
+            }
+        }
+        auto addAuto = [&](uint64_t hero,const char* source,const char* id,const char* name,SkillAutomation mode) {
+            for (size_t i=0;i<result.size();++i) {
+                if(result[i].heroId!=hero || std::string(result[i].skillId)!=source) continue;
+                auto copy=result[i];
+                copy.skillId=id;copy.displayName=name;copy.automation=mode;copy.castGroup=source;
+                copy.defaultSettings.enabled=false;
+                if(mode==SkillAutomation::NormalInterrupt)copy.defaultSettings.normalThreatMask=55;
+                copy.controls &= ~HeroSkillControls::Key;
+                result.push_back(copy);return;
+            }
+        };
+        addAuto(eHero::HERO_GENJI,"swift-strike","auto-swift-strike","Auto Swift Strike",SkillAutomation::LowEnemyHealth);
+        addAuto(eHero::HERO_GENJI,"manual-fan","auto-fan","Auto Fan",SkillAutomation::Reticle);
+        addAuto(eHero::HERO_ROADHOG,"chain-hook","reticle-hook","On-target Chain Hook",SkillAutomation::Reticle);
+        addAuto(eHero::HERO_SIERRA,"tracking-shot","tracking-shot-follow","Tracking Shot Follow-up",SkillAutomation::FollowAim);
+        for (const auto& spec : std::array{
+            std::tuple{eHero::HERO_ANA,"sleep-dart","auto-sleep-normal","Sleep Dart Interrupt (Skills)"},
+            std::tuple{eHero::HERO_ROADHOG,"chain-hook","auto-hook-normal","Chain Hook Interrupt (Skills)"},
+            std::tuple{eHero::HERO_ORISA,"energy-javelin","auto-javelin-normal","Javelin Interrupt (Skills)"},
+            std::tuple{eHero::HERO_SIGMA,"accretion","auto-rock-normal","Accretion Interrupt (Skills)"}}) {
+            addAuto(std::get<0>(spec),std::get<1>(spec),std::get<2>(spec),std::get<3>(spec),SkillAutomation::NormalInterrupt);
+        }
+        addAuto(eHero::HERO_MIZUKI,"binding-chain","auto-binding-chain","Auto Binding Chain",SkillAutomation::LowEnemyHealth);
+        for (auto& d : result) if(std::string(d.skillId)=="auto-binding-chain")d.defaultSettings.enemyHealthThreshold=100;
+        auto returnSettings=MakeHealthActionDefaults(100,0.5f);
+        returnSettings.key=returnSettings.skillKey=HeroSkillHotkey::LeftShift;
+        result.push_back({eHero::HERO_MIZUKI,"mizuki","katashiro-return","Katashiro Return","katashiro-return",
+            HeroSkillInputAction::Ability1,HeroSkillCategory::Skill,
+            HeroSkillControls::Enabled | HeroSkillControls::HealthAbsolute,returnSettings});
+        result.back().automation=SkillAutomation::RecastReturn;
+        auto jump=MakeZaryaPropelJumpDefaults();jump.cooldown=12;jump.cooldownGuard=true;
+        jump.key=HeroSkillHotkey::Mouse4;jump.skillKey=HeroSkillHotkey::EKey;
+        result.push_back({eHero::HERO_EMRE,"emre","super-jump","Super Jump","cyber-frag",HeroSkillInputAction::Ability2,
+            HeroSkillCategory::Skill,HeroSkillControls::Enabled | HeroSkillControls::Key | HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown,jump});
+        result.back().automation=SkillAutomation::EmreJump;
+        // Current healing radius from Overlab; old explicit user values remain authoritative.
+        for (auto& d : result) {
+            if(std::string(d.skillId)=="regenerative-burst-allies")d.defaultSettings.radius=12;
+            if(std::string(d.skillId)=="purr-allies")d.defaultSettings.radius=10;
+            if(std::string(d.skillId)=="deflect") {
+                d.controls = HeroSkillControls::Enabled | HeroSkillControls::HealthThreshold |
+                    HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown | HeroSkillControls::HealthAction;
+                d.defaultSettings.healthThreshold=60;
+                d.defaultSettings.cooldown=8;
+            }
+            if(std::string(d.skillId)=="dancing-blaze") {
+                d.controls |= HeroSkillControls::DefensiveAction | HeroSkillControls::DefensiveConditions |
+                    HeroSkillControls::Distance;
+                d.defaultSettings.normalThreatMask=2; // Only hook is requested for this response.
+                d.defaultSettings.distance=20;
+            }
+        }
 
         for (const auto hero : {eHero::HERO_REAPER, eHero::HERO_TRACER, eHero::HERO_MEI,
                                 eHero::HERO_VENTURE, eHero::HERO_DOOMFIST}) {
