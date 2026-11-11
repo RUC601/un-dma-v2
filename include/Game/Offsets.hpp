@@ -105,6 +105,8 @@ namespace OW {
             uint64_t registryLockRva = 0;
             uint32_t imageTimestamp = 0;
             uint32_t imageSize = 0;
+            uint32_t typeItemTransform = 0;
+            uint32_t typeItemTransformAlt = 0;
         };
 
         // =========================================================================
@@ -401,6 +403,8 @@ namespace OW {
             .registryLockRva = Cn155284::entityLock,
             .imageTimestamp = Cn155284::timestamp,
             .imageSize = Cn155284::imageSize,
+            .typeItemTransform = 4,
+            .typeItemTransformAlt = 0x2A,
         };
 
         inline constexpr RuntimeOffsetProfile kWorld155284RuntimeProfile{
@@ -438,6 +442,8 @@ namespace OW {
             .registryLockRva = 0x419B3D0,
             .imageTimestamp = 0x6AEBEABB,
             .imageSize = 0x4876000,
+            .typeItemTransform = 4,
+            .typeItemTransformAlt = 0x2A,
         };
 
         // 155284KB shares the protected transforms and table layout with 155284N.

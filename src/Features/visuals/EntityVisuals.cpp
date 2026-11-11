@@ -1613,35 +1613,41 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             drewAny = true;
         }
 
-        if (OW::Config::healthbar) {
+        if (OW::Config::healthbar || OW::Config::healthbar2) {
             const auto& style=elementStyle(VisualElement::Health);
             const float ratio=entity.PlayerHealthMax>0?std::clamp(entity.PlayerHealth/entity.PlayerHealthMax,0.f,1.f):0;
             auto* draw=ImGui::GetForegroundDrawList();
-            const float x=left-7+style.offsetX,y=top+style.offsetY;
-            draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+style.thickness+1,y+bottom-top+1),IM_COL32(0,0,0,200));
-            draw->AddRectFilled(ImVec2(x,y+(bottom-top)*(1-ratio)),ImVec2(x+style.thickness,y+bottom-top),elementColor(VisualElement::Health));
-            OverlayRenderDetail::DrawStackedResourceBar(entity, left - 13.0f, top, bottom - top, visualOpacity);
-            drewAny = true;
-        }
-
-        if (OW::Config::healthbar2) {
-            const auto& style=elementStyle(VisualElement::Resources);
-            const float maximum=entity.MaxHealth+entity.MaxArmorHealth+entity.MaxBarrierHealth;
-            if(maximum>0&&std::isfinite(maximum)) {
-                const float barWidth=style.size*5,barHeight=style.thickness*3;
-                const float x=centerX-barWidth*.5f+style.offsetX,y=top-9+style.offsetY;
-                auto* draw=ImGui::GetForegroundDrawList();draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+barWidth+1,y+barHeight+1),IM_COL32(0,0,0,200));
-                const float current[]={entity.MinHealth,entity.MinArmorHealth,entity.MinBarrierHealth};
-                const float maxima[]={entity.MaxHealth,entity.MaxArmorHealth,entity.MaxBarrierHealth};
-                float cursor=x;auto tint=ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Resources));
-                for(int pool=0;pool<3;++pool)if(maxima[pool]>0) {
-                    const float segment=barWidth*maxima[pool]/maximum,fill=segment*std::clamp(current[pool]/maxima[pool],0.f,1.f);
-                    auto color=tint;const float shade=1.f-pool*.16f;color.x*=shade;color.y*=shade;color.z*=shade;
-                    draw->AddRectFilled(ImVec2(cursor,y),ImVec2(cursor+fill,y+barHeight),ImGui::ColorConvertFloat4ToU32(color));
-                    cursor+=segment;draw->AddLine(ImVec2(cursor,y),ImVec2(cursor,y+barHeight),IM_COL32(0,0,0,180));
+            const float thickness=style.thickness;
+            if(display.healthBarStyle==1) {
+                const float x=left-5+style.offsetX,y=top+style.offsetY;
+                draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+thickness+1,y+bottom-top+1),IM_COL32(0,0,0,200));
+                draw->AddRectFilled(ImVec2(x,y+(bottom-top)*(1-ratio)),ImVec2(x+thickness,y+bottom-top),elementColor(VisualElement::Health));
+            } else {
+                const float barWidth=display.healthBarStyle==2?width:style.size*5;
+                const float barHeight=display.healthBarStyle==2?thickness:thickness*3;
+                const float x=centerX-barWidth*.5f+style.offsetX,y=top-barHeight-4+style.offsetY;
+                draw->AddRectFilled(ImVec2(x-1,y-1),ImVec2(x+barWidth+1,y+barHeight+1),IM_COL32(0,0,0,200));
+                if(display.healthBarStyle==2) {
+                    draw->AddRectFilled(ImVec2(x,y),ImVec2(x+barWidth*ratio,y+barHeight),elementColor(VisualElement::Health));
+                } else {
+                    const float maximum=entity.MaxHealth+entity.MaxArmorHealth+entity.MaxBarrierHealth;
+                    const float current[]={entity.MinHealth,entity.MinArmorHealth,entity.MinBarrierHealth};
+                    const float maxima[]={entity.MaxHealth,entity.MaxArmorHealth,entity.MaxBarrierHealth};
+                    const ImU32 colors[]={IM_COL32(245,245,245,255),IM_COL32(255,150,35,255),IM_COL32(70,170,255,255)};
+                    float cursor=x;
+                    if(maximum>0 && std::isfinite(maximum))for(int pool=0;pool<3;++pool)if(maxima[pool]>0) {
+                        const float segment=barWidth*maxima[pool]/maximum,fill=segment*std::clamp(current[pool]/maxima[pool],0.f,1.f);
+                        auto tint=ImGui::ColorConvertU32ToFloat4(colors[pool]);tint.w=visualOpacity;
+                        draw->AddRectFilled(ImVec2(cursor,y),ImVec2(cursor+fill,y+barHeight),ImGui::ColorConvertFloat4ToU32(tint));
+                        cursor+=segment;
+                    }
+                    if(maximum>0)for(int tick=1;tick<(std::min)(int(maximum/25),80);++tick) {
+                        const float tickX=x+barWidth*(tick*25.f/maximum);
+                        draw->AddLine(ImVec2(tickX,y),ImVec2(tickX,y+barHeight),IM_COL32(0,0,0,150));
+                    }
                 }
-                drewAny=true;
             }
+            drewAny=true;
         }
 
         if (OW::Config::drawline) {

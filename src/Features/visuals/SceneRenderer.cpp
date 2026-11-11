@@ -6,6 +6,8 @@
 #include "Game/HeroSkills.hpp"
 #include "Game/FovGeometry.hpp"
 #include "Renderer/Renderer.hpp"
+#include "Renderer/IconManager.hpp"
+#include "Features/UiLabels.hpp"
 #include "Utils/Diagnostics.hpp"
 #include <algorithm>
 #include <cmath>
@@ -879,6 +881,35 @@ namespace {
         }
     }
 
+    static void DrawWorldObjectIcon(int type, const ImVec2& center, float size, ImU32 color) {
+        auto* draw=ImGui::GetForegroundDrawList();
+        const auto& objectType=V2::WorldObjects::kObjects[type];
+        if(objectType.group==V2::WorldObjects::Group::Health) {
+            const float arm=size*.4f,bar=(std::max)(1.f,size*.13f);
+            draw->AddRectFilled(ImVec2(center.x-arm,center.y-bar),ImVec2(center.x+arm,center.y+bar),color);
+            draw->AddRectFilled(ImVec2(center.x-bar,center.y-arm),ImVec2(center.x+bar,center.y+arm),color);
+            return;
+        }
+        if(objectType.iconHero[0] && objectType.iconName[0]) {
+            if(auto* manager=Render::GetIconManager()) {
+                const std::string key=std::string(objectType.iconHero)+"/"+objectType.iconName;
+                auto* texture=manager->GetIcon(key);
+                if(!texture) {
+                    manager->LoadAbilityIcons(objectType.iconHero,{objectType.iconName});
+                    texture=manager->GetIcon(key);
+                }
+                if(texture) {
+                    Render::DrawIcon(texture,ImVec2(center.x-size*.5f,center.y-size*.5f),ImVec2(size,size),color);
+                    return;
+                }
+            }
+        }
+        const float radius=(std::max)(3.f,size*.3f);
+        const ImVec2 corners[]{ImVec2(center.x,center.y-radius),ImVec2(center.x+radius,center.y),
+            ImVec2(center.x,center.y+radius),ImVec2(center.x-radius,center.y)};
+        draw->AddPolyline(corners,4,color,ImDrawFlags_Closed,1.5f);
+    }
+
     static void DrawHealthPacks(const std::vector<OW::hpanddy>& objects) {
         const auto settings=V2::HeroSettings::Snapshot();const auto& world=settings->display.world;
         if(!world.enabled)return;
@@ -888,16 +919,35 @@ namespace {
             const int type=V2::VisualSettings::ObjectIndex(object.entityid);
             if(type<0||!world.types[type]||object.scene_generation!=OW::EntitySceneGeneration()||
                 !object.position_tick_ms||uint32_t(now-object.position_tick_ms)>200)continue;
+            const auto& objectType=V2::WorldObjects::kObjects[type];
+            using V2::WorldObjects::Group;
+            if((objectType.group==Group::Deployable&&!world.deployables)||
+                (objectType.group==Group::Projectile&&!world.projectiles))continue;
+            const bool statusFresh=object.status_tick_ms&&uint32_t(now-object.status_tick_ms)<=200;
+            if(world.hideTeam&&objectType.group!=Group::Health&&statusFresh&&object.team_known&&
+                local.team_known&&object.team_key&&object.team_key!=(1u<<0x1B)&&object.team_key==local.team_key)continue;
             const OW::Vector3 position(object.POS.x,object.POS.y,object.POS.z);
             const float distance=local.pos.DistTo(position);
             if(world.maxDistance>0&&distance>world.maxDistance)continue;
             OW::Vector2 screen{};if(!view.WorldToScreen(position,&screen,OW::Vector2(CanvasWidth(),CanvasHeight())))continue;
             const auto color=ImGui::ColorConvertFloat4ToU32(world.colors[type]);auto* draw=ImGui::GetForegroundDrawList();
-            if(world.box)draw->AddRect(ImVec2(screen.X-world.size*.5f,screen.Y-world.size*.5f),ImVec2(screen.X+world.size*.5f,screen.Y+world.size*.5f),color,2,0,1.5f);
-            if(world.icon)draw->AddCircleFilled(ImVec2(screen.X,screen.Y),3.5f,color,20);
-            std::string label=world.name?V2::VisualSettings::kObjects[type].name:"";
+            if(world.box)draw->AddRect(ImVec2(screen.X-world.iconSize*.5f,screen.Y-world.iconSize*.5f),ImVec2(screen.X+world.iconSize*.5f,screen.Y+world.iconSize*.5f),color,2,0,1.5f);
+            if(world.icon)DrawWorldObjectIcon(type,ImVec2(screen.X,screen.Y),world.iconSize,color);
+            std::string label=world.name?UI::UiLabel(objectType.name,OW::Config::uiLanguage==1):"";
             if(world.distance)label+=(label.empty()?"":" ")+std::to_string(int(distance))+" m";
-            if(!label.empty())Render::DrawStrokeText(ImVec2(screen.X+7,screen.Y-world.size*.5f),color,label.c_str(),world.size);
+            const bool healthFresh=statusFresh&&object.health_known&&std::isfinite(object.health)&&
+                std::isfinite(object.health_max)&&object.health>=0&&object.health_max>0;
+            if(world.healthText&&healthFresh) {
+                char healthText[48]{};std::snprintf(healthText,sizeof(healthText),"%.0f / %.0f",object.health,object.health_max);
+                label+=(label.empty()?"":" ")+std::string(healthText);
+            }
+            if(!label.empty())Render::DrawStrokeText(ImVec2(screen.X+(world.icon||world.box?world.iconSize*.5f+5:0),screen.Y-world.size*.5f),color,label.c_str(),world.size);
+            if(world.health&&healthFresh) {
+                const float width=(std::max)(24.f,world.iconSize),left=screen.X-width*.5f;
+                const float top=screen.Y+(world.icon||world.box?world.iconSize*.5f:world.size*.5f)+4;
+                draw->AddRectFilled(ImVec2(left-1,top-1),ImVec2(left+width+1,top+4),IM_COL32(0,0,0,190),1);
+                draw->AddRectFilled(ImVec2(left,top),ImVec2(left+width*std::clamp(object.health/object.health_max,0.f,1.f),top+3),color);
+            }
         }
     }
 

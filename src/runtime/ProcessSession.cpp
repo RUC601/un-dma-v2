@@ -21,7 +21,7 @@ using V2::Output::ReleaseOutputMouseStateForShutdown;
 namespace {
 constexpr const char* kTargetProcessName = "Overwatch.exe";
 constexpr DWORD kProcessScanIntervalMs = 1000;
-constexpr DWORD kHeroSkillRuntimeIntervalMs = 16;
+constexpr DWORD kHeroSkillRuntimeIntervalMs = 4;
 std::atomic<bool> g_ProcessConnectionThreadRunning{false};
 WorkerGroup g_Workers;
 std::thread g_ProcessConnectionThread;

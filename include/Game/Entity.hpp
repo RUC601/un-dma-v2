@@ -74,6 +74,7 @@ namespace OW {
         // --- Health ---
         float PlayerHealth      = 0.f;
         float PlayerHealthMax   = 0.f;
+        uint32_t health_sample_tick_ms = 0;
         float MinHealth         = 0.f;
         float MaxHealth         = 0.f;
         float MinArmorHealth    = 0.f;

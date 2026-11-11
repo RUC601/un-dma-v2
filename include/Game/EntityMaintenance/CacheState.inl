@@ -142,6 +142,11 @@
         uintptr_t meshBase = 0;
         XMFLOAT3 pos{};
         DWORD updateTick = 0, lastAttemptTick = 0;
+        uint32_t positionOffset = 0x200;
+        DWORD statusTick = 0, statusAttemptTick = 0;
+        uint32_t teamKey = 0;
+        bool teamKnown = false, healthKnown = false;
+        float health = 0, healthMax = 0;
     };
     std::unordered_map<uint64_t, DynamicEntityCache> dynamicEntityCache{};
     dynamicEntityCache.reserve(64);

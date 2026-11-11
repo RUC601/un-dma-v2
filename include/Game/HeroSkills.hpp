@@ -160,7 +160,7 @@ namespace HeroSkillHotkey {
 
 enum class SkillAutomation {
     None, Reticle, LowEnemyHealth, NormalInterrupt, FollowAim,
-    RecastReturn, EmreJump
+    RecastReturn, EmreJump, GenjiBlade, RecentDamageDeflect, HealthSurvival, ShieldBash
 };
 
 struct HeroSkillDefinition {
@@ -1101,6 +1101,22 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
         health(eHero::HERO_VENTURE, "venture", "burrow", "Burrow", HeroSkillInputAction::Ability1, 100, 8);
         // No documented health default for Anran: zero leaves the threshold inert.
         health(eHero::HERO_ANRAN, "anran", "dancing-blaze", "Dancing Blaze", HeroSkillInputAction::Ability2, 0, 8);
+        // Pure 1106 0xE5520 / 0xE4DD0. The common health default is 40%.
+        const auto survival = [&](uint64_t hero, const char* slug, const char* id,
+                                  const char* name, HeroSkillInputAction action, float interval) {
+            auto settings = MakeHealthActionDefaults(40, interval);
+            settings.key = settings.skillKey = DefaultHeroSkillOutputHotkey(action);
+            result.push_back({hero,slug,id,name,id,action,
+                action == HeroSkillInputAction::Ultimate ? HeroSkillCategory::Ultimate : HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::HealthThreshold |
+                HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown | HeroSkillControls::HealthAction,settings});
+            result.back().automation = SkillAutomation::HealthSurvival;
+        };
+        survival(eHero::HERO_WINSTON,"winston","barrier-projector","Barrier Projector",HeroSkillInputAction::Ability2,10);
+        survival(eHero::HERO_ZARYA,"zarya","particle-barrier","Particle Barrier",HeroSkillInputAction::Ability1,12);
+        survival(eHero::HERO_ROADHOG,"roadhog","take-a-breather","Take a Breather (Tap)",HeroSkillInputAction::Ability2,4);
+        survival(eHero::HERO_SIGMA,"sigma","kinetic-grasp","Kinetic Grasp",HeroSkillInputAction::Ability1,12);
+        survival(eHero::HERO_ZENYATTA,"zenyatta","transcendence-self","Transcendence (Self Health)",HeroSkillInputAction::Ultimate,1);
         const auto groupHeal = [&](uint64_t hero, const char* slug, const char* id,
                                    const char* name, const char* icon, HeroSkillInputAction action, float cd) {
             auto settings = MakeHealthActionDefaults(0, cd);
@@ -1136,12 +1152,17 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
         const auto projectile = [&](uint64_t hero, const char* slug, const char* id, const char* name,
                                     HeroSkillInputAction action, Config::HeroSkillSettings settings) {
             settings.enemyHealthThreshold = 100;
-            result.push_back({hero, slug, id, name, id, action, HeroSkillCategory::Skill,
+            HeroSkillDefinition definition{hero, slug, id, name, id, action, HeroSkillCategory::Skill,
                 HeroSkillControls::Enabled | HeroSkillControls::Key |
                 HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
                 HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
                 HeroSkillControls::Prediction | HeroSkillControls::TrackingOverlay |
-                HeroSkillControls::TrajectoryAction, settings});
+                HeroSkillControls::TrajectoryAction, settings};
+            const auto existing = std::find_if(result.begin(),result.end(),[&](const auto& item) {
+                return item.heroId == hero && std::string(item.skillId) == id;
+            });
+            if (existing == result.end()) result.push_back(definition);
+            else *existing = definition;
         };
         projectile(eHero::HERO_JUNKERQUEEN, "junker-queen", "jagged-blade", "Jagged Blade",
             HeroSkillInputAction::SecondaryFire,
@@ -1166,7 +1187,9 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
         auto coach=MakeProjectileAimSkillDefaults(15,10,0,0,160,HeroSkillHotkey::LeftShift);
         coach.prediction=false;
         projectile(eHero::HERO_ASHE,"ashe","coach-gun","Coach Gun Assist",HeroSkillInputAction::Ability1,coach);
-        result.back().controls &= ~HeroSkillControls::Prediction;
+        for (auto& definition : result)
+            if (definition.heroId == eHero::HERO_ASHE && std::string(definition.skillId) == "coach-gun")
+                definition.controls &= ~HeroSkillControls::Prediction;
         for (auto& d : result) {
             if (std::string(d.skillId)=="swift-strike") {
                 d.controls |= HeroSkillControls::TrackingOverlay | HeroSkillControls::EnemyHealthAbsolute | HeroSkillControls::TrajectoryAction;
@@ -1188,6 +1211,18 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
                 result.push_back(copy);return;
             }
         };
+        auto blade = MakeProjectileAimSkillDefaults(20,0,0,0,0,HeroSkillHotkey::QKey);
+        blade.key = HeroSkillHotkey::QKey;
+        blade.prediction = false;
+        blade.enemyHealthThreshold = 100;
+        blade.tracking.aimBehavior = Config::kAimBehaviorTracking;
+        blade.tracking.fov = Config::kMaxFovDeg;
+        blade.tracking.speedScale = 80;
+        blade.targetPriority = 2;
+        result.push_back({eHero::HERO_GENJI,"genji","dragonblade","Dragonblade Assist","dragonblade",
+            HeroSkillInputAction::Ultimate,HeroSkillCategory::Ultimate,
+            HeroSkillControls::Enabled | HeroSkillControls::Distance | HeroSkillControls::TrackingOverlay,blade});
+        result.back().automation = SkillAutomation::GenjiBlade;
         addAuto(eHero::HERO_GENJI,"swift-strike","auto-swift-strike","Auto Swift Strike",SkillAutomation::LowEnemyHealth);
         addAuto(eHero::HERO_GENJI,"manual-fan","auto-fan","Auto Fan",SkillAutomation::Reticle);
         addAuto(eHero::HERO_ROADHOG,"chain-hook","reticle-hook","On-target Chain Hook",SkillAutomation::Reticle);
@@ -1229,6 +1264,26 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
                 d.defaultSettings.distance=20;
             }
         }
+
+        auto damageDeflect = MakeHealthActionDefaults(65, 8);
+        damageDeflect.key = damageDeflect.skillKey = HeroSkillHotkey::EKey;
+        damageDeflect.distance = 20;
+        result.push_back({eHero::HERO_GENJI,"genji","deflect-recent-damage","Deflect (Recent Damage)","deflect",
+            HeroSkillInputAction::Ability2,HeroSkillCategory::Skill,
+            HeroSkillControls::Enabled | HeroSkillControls::HealthThreshold | HeroSkillControls::Distance |
+            HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown | HeroSkillControls::HealthAction,
+            damageDeflect});
+        result.back().automation = SkillAutomation::RecentDamageDeflect;
+        result.back().castGroup = "deflect";
+
+        auto bash = MakeProjectileAimSkillDefaults(8.5f,5,0,0,0,HeroSkillHotkey::LeftMouse);
+        bash.prediction = false;
+        bash.enemyHealthThreshold = 100;
+        result.push_back({eHero::HERO_BRIGITTE,"brigitte","shield-bash","Shield Bash (On Target)","shield-bash",
+            HeroSkillInputAction::PrimaryFire,HeroSkillCategory::Skill,
+            HeroSkillControls::Enabled | HeroSkillControls::Distance | HeroSkillControls::Cooldown |
+            HeroSkillControls::TrackingOverlay,bash});
+        result.back().automation = SkillAutomation::ShieldBash;
 
         for (const auto hero : {eHero::HERO_REAPER, eHero::HERO_TRACER, eHero::HERO_MEI,
                                 eHero::HERO_VENTURE, eHero::HERO_DOOMFIST}) {

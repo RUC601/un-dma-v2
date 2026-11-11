@@ -73,7 +73,9 @@ void Overlay::RestoreFromTaskbar() {
 
 void Overlay::ToggleMenu() {
     // 收起状态下的一次 Home 是“恢复整层”，不能只翻转 Menu，也不能随后再把刚恢复的菜单关掉。
-    if (m_minimizedToTaskbar) {
+    // Windows 的“显示桌面”等操作可能绕过 SC_MINIMIZE，必须同时检查实际窗口状态。
+    if (m_minimizedToTaskbar || IsIconic(m_menuHWnd) || IsIconic(m_canvasHWnd)) {
+        m_minimizedToTaskbar = true;
         RestoreFromTaskbar();
         return;
     }

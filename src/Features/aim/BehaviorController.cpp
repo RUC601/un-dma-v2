@@ -3886,75 +3886,6 @@ namespace AimbotDetail {
         if (ordinaryFlick) PauseOrdinaryFlickMovement(state);
     }
 
-    inline void RunGenjiBlade() {
-        const std::uint64_t connectionEpoch =
-            OW::ProcessConnection::ConnectionEpoch();
-        const std::uint64_t outputTransitionEpoch =
-            OW::RuntimeOutputTransitionEpoch();
-        c_entity local = LocalEntity();
-        if (connectionEpoch == 0 ||
-            !OW::ProcessConnection::IsConnected() ||
-            !OW::Config::GenjiBlade ||
-            !IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ultimate)) ||
-            local.HeroID != OW::eHero::HERO_GENJI ||
-            local.ultimate != 100.f) {
-            return;
-        }
-
-        OW::Config::Qstarttime = GetTickCount();
-        OW::Config::Qtime = OW::Config::Qstarttime;
-        OW::Config::lastenemy = -1;
-        OW::RuntimeWorkerSleep(1000);
-
-        int detecttoggle = 0;
-        int first = 1;
-        float speed = 0.f;
-        while (OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices() &&
-               OW::Config::GenjiBlade &&
-               OW::ProcessConnection::IsConnected() &&
-               OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
-               OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
-               (OW::Config::Qtime - OW::Config::Qstarttime) <= 7000) {
-            OW::consumerFrame=OW::SnapshotFrame();
-            local = LocalEntity();
-            speed = !local.skillcd1 ? OW::Config::View_Tracking_smooth() : OW::Config::bladespeed;
-            OW::Config::Qtime = GetTickCount();
-
-            const Vector3 vec = OW::GetVector3forgenji();
-            if (!IsZeroVector(vec)) {
-                const float dist = CameraPosition().DistTo(vec);
-                if (dist > 20.f) continue;
-
-                AimData aim = BuildAimData(
-                    vec,
-                    false,
-                    OW::Config::AimBehaviorSmoothInput(0, speed),
-                    OW::Config::AimBehaviorAcceleration(0));
-                if (!IsZeroVector(aim.smoothed_angle)) {
-                    const float dist2 = CameraPosition().DistTo(vec);
-                    if ((!local.skillcd1 && dist2 < 20.f) || dist2 < 7.f) {
-                        MoveAimDelta(aim.local_angle, aim.smoothed_angle);
-                    }
-                    if (OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices() &&
-                        !local.skillcd1 && OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, vec, 0.8f)) {
-                        if (detecttoggle && !first) {
-                            detecttoggle = 0;
-                            OW::RuntimeWorkerSleep(50);
-                            continue;
-                        }
-                        if (OW::ActionOutputSucceeded(OW::PulseAction(OW::GameAction::Ability1, 70)))
-                            first = 0;
-                    }
-                    if (OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, vec, 1.f) && dist2 < 5.f)
-                        ClickMouseButton(0);
-                    if (local.skillcd1 != 0 && !detecttoggle) detecttoggle = 1;
-                }
-            }
-            OW::RuntimeWorkerSleep(1);
-            OW::Config::lastenemy = OW::Config::Targetenemyi;
-        }
-    }
-
     inline void RunAutoMelee() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return;
@@ -4285,12 +4216,6 @@ namespace AimbotDetail {
         RunConfiguredAimBehavior(state, origin_sens);
         if(!HasEntitySnapshot()) return;
 
-        if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
-            ObserveReleaseFireInput(state);
-            ResetShootStateOnRelease(state);
-            return;
-        }
-        RunGenjiBlade();
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices()) {
             ObserveReleaseFireInput(state);
             ResetShootStateOnRelease(state);

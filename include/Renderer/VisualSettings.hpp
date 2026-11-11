@@ -19,7 +19,8 @@ using WorldObjects::kObjects;
 using WorldObjects::ObjectIndex;
 struct World {
     bool enabled=false,box=false,name=true,icon=true,distance=true;
-    float maxDistance=150,size=18;
+    bool hideTeam=false,health=false,healthText=false,deployables=true,projectiles=true;
+    float maxDistance=150,size=18,iconSize=24;
     std::array<bool,kObjects.size()> types{};
     std::array<ImVec4,kObjects.size()> colors=[] {std::array<ImVec4,kObjects.size()> values;values.fill(ImVec4(.8f,.9f,1,1));return values;}();
 };
@@ -32,6 +33,7 @@ struct Settings {
     bool enabled=true,enemies=true,allies=true,visibleOnly=false,dynamicFont=false;
     bool worldUltimate=false,prediction=false,offscreen=false;
     int boxType=0,nameType=0;
+    int healthBarStyle=1;
     std::array<Style,int(Element::Count)> elements=[] {std::array<Style,int(Element::Count)> values{};
         values[int(Element::Avatar)].size=24;values[int(Element::Skills)].size=18;
         values[int(Element::Health)].visible=ImVec4(.2f,1,.35f,1);return values;}();

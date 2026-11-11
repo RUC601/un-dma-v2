@@ -334,6 +334,9 @@ namespace OW {
         uint64_t  entityid = 0;
         uintptr_t MeshBase = 0;
         XMFLOAT3  POS = {};
+        uint32_t status_tick_ms = 0, team_key = 0;
+        bool team_known = false, health_known = false;
+        float health = 0, health_max = 0;
     };
 
 } // namespace OW

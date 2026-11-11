@@ -421,6 +421,7 @@ namespace OW { namespace Config {
         int id = -1;
         std::string name = "Dynamic FOV";
         bool smooth = true;
+        float worldDiameterM = 0.0f; // Positive: exact angular curve for a fixed world-space diameter.
         int pointCount = 5;
         std::array<DynamicFovPoint, kMaxDynamicFovPoints> points{{
             { 0.0f, 180.0f },
@@ -764,6 +765,7 @@ namespace OW { namespace Config {
         if (preset.name.size() > 63)
             preset.name.resize(63);
 
+        preset.worldDiameterM = std::isfinite(preset.worldDiameterM) ? std::clamp(preset.worldDiameterM, 0.0f, 50.0f) : 0.0f;
         preset.pointCount = std::clamp(preset.pointCount, 2, kMaxDynamicFovPoints);
         for (int index = 0; index < preset.pointCount; ++index) {
             preset.points[static_cast<size_t>(index)].distanceM =
@@ -795,6 +797,10 @@ namespace OW { namespace Config {
     {
         const DynamicFovPreset preset = ValidateDynamicFovPresetValue(rawPreset);
         const float distance = ClampDynamicFovDistanceM(distanceM);
+        if (preset.worldDiameterM > 0.0f) {
+            const float worldDistance = std::isfinite(distanceM) ? (std::max)(0.0f, distanceM) : 0.0f;
+            return ClampFovDeg(RAD2DEG(std::atan2(preset.worldDiameterM * 0.5f, worldDistance)));
+        }
         if (preset.pointCount < 2)
             return ClampFovDeg(fallbackFovDeg);
 
@@ -1670,6 +1676,8 @@ namespace OW { namespace Config {
         float pitchScale = 100.0f;
     };
 
+    enum AutoMeleeHealthMode { kMeleeAnyHealth = 0, kMeleeHealthPercent = 1, kMeleeHealthAbsolute = 2 };
+
     struct HeroSkillSettings {
         bool enabled = false;
         int key = 0;
@@ -1684,6 +1692,8 @@ namespace OW { namespace Config {
         int minTargets = 1;
         float radius = 0.0f;
         float meleeRadius = 0.35f; // extra world-space tolerance around every melee bone
+        int meleeHealthMode = kMeleeHealthAbsolute; // Missing legacy field preserves the HP threshold.
+        float meleeHealthPercent = 50.0f;
         std::vector<HeroSkillSequenceStep> sequenceSteps{};
         HeroSkillTrackingParams tracking{};
         bool sequencePhaseAwareTracking = false;
@@ -2224,7 +2234,7 @@ namespace OW { namespace Config {
     template<class T> inline bool ConfigEqual(const std::vector<T>& a, const std::vector<T>& b);
 
     inline bool ConfigEqual(const DynamicFovPoint& a, const DynamicFovPoint& b) { return ConfigEqual(a.distanceM, b.distanceM) && ConfigEqual(a.fovDeg, b.fovDeg); }
-    inline bool ConfigEqual(const DynamicFovPreset& a, const DynamicFovPreset& b) { return ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.smooth, b.smooth) && ConfigEqual(a.pointCount, b.pointCount) && ConfigEqual(a.points, b.points); }
+    inline bool ConfigEqual(const DynamicFovPreset& a, const DynamicFovPreset& b) { return ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.smooth, b.smooth) && ConfigEqual(a.worldDiameterM, b.worldDiameterM) && ConfigEqual(a.pointCount, b.pointCount) && ConfigEqual(a.points, b.points); }
     inline bool ConfigEqual(const AimMethodPreset& a, const AimMethodPreset& b) { return static_cast<const AimPlan::Motion&>(a) == static_cast<const AimPlan::Motion&>(b) && ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.method, b.method) && ConfigEqual(a.angularSpeedScale, b.angularSpeedScale) && ConfigEqual(a.pidP, b.pidP) && ConfigEqual(a.pidI, b.pidI) && ConfigEqual(a.pidD, b.pidD) && ConfigEqual(a.pidMaxIntegral, b.pidMaxIntegral) && ConfigEqual(a.pidDeadzone, b.pidDeadzone) && ConfigEqual(a.bezierControlPoints, b.bezierControlPoints) && ConfigEqual(a.bezierCurvature, b.bezierCurvature) && ConfigEqual(a.bezierSpeed, b.bezierSpeed) && ConfigEqual(a.piecewiseNearDegrees, b.piecewiseNearDegrees) && ConfigEqual(a.piecewiseMidDegrees, b.piecewiseMidDegrees) && ConfigEqual(a.piecewiseFarDegrees, b.piecewiseFarDegrees) && ConfigEqual(a.piecewiseNearScale, b.piecewiseNearScale) && ConfigEqual(a.piecewiseMidScale, b.piecewiseMidScale) && ConfigEqual(a.piecewiseFarScale, b.piecewiseFarScale) && ConfigEqual(a.accelLimitedAcceleration, b.accelLimitedAcceleration) && ConfigEqual(a.constantAngularSpeedDeg, b.constantAngularSpeedDeg) && ConfigEqual(a.hybridConstantSpeedDeg, b.hybridConstantSpeedDeg) && ConfigEqual(a.hybridMaxSpeedDeg, b.hybridMaxSpeedDeg) && ConfigEqual(a.hybridAccelerationDeg, b.hybridAccelerationDeg) && ConfigEqual(a.hybridDecelerationDeg, b.hybridDecelerationDeg) && ConfigEqual(a.hybridNearRadiusDeg, b.hybridNearRadiusDeg) && ConfigEqual(a.hybridTargetMotionGain, b.hybridTargetMotionGain) && ConfigEqual(a.hybridSuddenMotionBoost, b.hybridSuddenMotionBoost) && ConfigEqual(a.hybridDeadzoneDeg, b.hybridDeadzoneDeg); }
     inline bool ConfigEqual(const AimStartLimiterProfile& a, const AimStartLimiterProfile& b) { return a.enabled == b.enabled && a.initialCapDegPerSec == b.initialCapDegPerSec && a.capRiseDegPerSec2 == b.capRiseDegPerSec2 && a.restartOnTargetChange == b.restartOnTargetChange; }
     inline bool ConfigEqual(const AimBehaviorPreset& a, const AimBehaviorPreset& b) { return static_cast<const AimBehaviorTuning&>(a)==static_cast<const AimBehaviorTuning&>(b) && a.motion==b.motion && ConfigEqual(a.id, b.id) && ConfigEqual(a.name, b.name) && ConfigEqual(a.defaultBehavior, b.defaultBehavior) && ConfigEqual(a.behavior, b.behavior) && ConfigEqual(a.method, b.method) && ConfigEqual(a.methodPresetId, b.methodPresetId) && ConfigEqual(a.baseSpeed, b.baseSpeed) && ConfigEqual(a.startLimiter, b.startLimiter) && ConfigEqual(a.moveSplitEnabled, b.moveSplitEnabled) && ConfigEqual(a.moveSplitMaxPixels, b.moveSplitMaxPixels) && ConfigEqual(a.moveSplitDelayUs, b.moveSplitDelayUs); }

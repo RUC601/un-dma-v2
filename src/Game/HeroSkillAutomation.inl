@@ -4,6 +4,104 @@ SkillConditions::RecastWindow g_returnWindow;
 std::atomic<bool> g_specialOwnsAim{false};
 std::atomic<bool> g_automaticOwnsAim{false};
 std::unordered_map<std::string,SkillConditions::AutomaticAimWindow> g_automaticAimWindows;
+struct GenjiBladeRuntime {
+    GenjiAssist::BladeWindow window;
+    SkillConditions::AutomaticAimWindow target;
+    std::string key;
+    uint64_t lastSwing = 0;
+};
+GenjiBladeRuntime g_genjiBlade;
+std::atomic<bool> g_genjiBladeOwnsAim{false};
+
+void CancelGenjiBlade() {
+    if (!g_genjiBlade.key.empty()) {
+        TimedOutputScheduler().Cancel(g_genjiBlade.key + ":dash");
+        TimedOutputScheduler().Cancel(g_genjiBlade.key + ":swing");
+        g_skillAimMotions.erase(g_genjiBlade.key);
+    }
+    g_genjiBlade = {};
+    g_genjiBladeOwnsAim.store(false,std::memory_order_release);
+}
+
+bool IsSkillAimConfirmed(const SkillAimCandidate& candidate);
+
+bool EvaluateSurvivalAction(const std::string& key, const HeroSkillDefinition& definition,
+                            const Config::HeroSkillSettings& settings, const c_entity& local) {
+    const auto now = GetTickCount();
+    if (!local.health_sample_tick_ms || uint32_t(now-local.health_sample_tick_ms)>250) return false;
+    if (definition.inputAction == HeroSkillInputAction::Ultimate) {
+        if (!local.display_ultimate_tick || uint32_t(now-local.display_ultimate_tick)>250 ||
+            !std::isfinite(local.ultimate) || local.ultimate<100) return false;
+    } else {
+        const size_t slot = definition.inputAction == HeroSkillInputAction::Ability1 ? 0 : 1;
+        if (!local.skill_active_tick_ms[slot] || uint32_t(now-local.skill_active_tick_ms[slot])>250 ||
+            (slot == 0 ? local.skill1act : local.skill2act)) return false;
+    }
+    return EvaluateHealthThresholdAction(key,definition,settings,local);
+}
+
+bool EvaluateRecentDamageDeflect(const std::string& key, const HeroSkillDefinition& definition,
+                                const Config::HeroSkillSettings& settings, const c_entity& local) {
+    const auto now = GetTickCount();
+    if (!g_recentDamage.Ready(now) || !settings.healthTriggerEnabled ||
+        !SkillConditions::HealthAtOrBelow(local.PlayerHealth,local.PlayerHealthMax,settings.healthThreshold,false) ||
+        !local.skill_active_tick_ms[1] || uint32_t(now-local.skill_active_tick_ms[1])>250 || local.skill2act ||
+        IsActionDebounced(key) || !std::isfinite(settings.distance) || settings.distance<=0) return false;
+    const auto source = SourcePositionForAction(local);
+    if (!IsUsablePosition(source)) return false;
+    for (const auto& target : TargetingDetail::SnapshotEntities()) {
+        if (!TargetingDetail::IsSelectableCandidate(target,0,local) || !target.Vis) continue;
+        const auto point = CandidatePositionForAction(target);
+        if (!IsUsablePosition(point)) continue;
+        const float distance = source.DistTo(point);
+        if (!std::isfinite(distance) || distance>settings.distance) continue;
+        if (!StartTimedHotkey(key,SkillOutputVk(settings),kBriefPulse)) return false;
+        MarkActionExecuted(key);
+        Diagnostics::Info("Hero skill recent-damage deflect fired. skill=%s hp=%.1f damage=%.1f distance=%.2f",
+            definition.skillId,local.PlayerHealth,g_recentDamage.damage,distance);
+        g_recentDamage.ClearDamage();
+        return true;
+    }
+    return false;
+}
+
+void EvaluateGenjiBlade(const std::string& key, const Config::HeroSkillSettings& settings,
+                       const c_entity& local) {
+    const auto input = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Ultimate));
+    const auto now = GetTickCount64();
+    const bool wasActive = g_genjiBlade.window.active;
+    const bool ready = g_genjiBlade.window.Advance(input.down,input.available,local.ultimate,now);
+    if (!g_genjiBlade.window.active) {
+        if (wasActive || !input.available) CancelGenjiBlade();
+        return;
+    }
+    g_genjiBlade.key = key;
+    g_genjiBladeOwnsAim.store(true,std::memory_order_release);
+    if (!wasActive) {
+        ResetAimSmoothingState();
+        Diagnostics::Info("Genji blade assist started from manual ultimate input.");
+        TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
+        TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
+    }
+    if (!ready) return;
+    ScopedTrackingConfig tracking(settings.tracking);
+    SkillProjectileRuntime projectile{};
+    projectile.maxRange = (std::min)(20.f,settings.distance);
+    auto candidate = FindBestSkillAimCandidate(settings,projectile);
+    if (!candidate.valid) { g_genjiBlade.target.Reset(); return; }
+    if (!g_genjiBlade.target.Ready(SkillBodyIdentity(candidate.entity),now,settings.assistanceDelayMs,0)) return;
+    // Rigel turns toward a dash target or a nearby swing target. UN verifies
+    // the observed camera before sending either mapped action.
+    candidate.hitWindow = (std::min)(candidate.hitWindow,0.8f);
+    MoveSkillAimAndCheckReady(key,settings,candidate,projectile);
+    if (!IsSkillAimConfirmed(candidate)) return;
+    if (candidate.distance > GenjiAssist::kSwingRange) {
+        TryStartGenjiDash(key + ":dash",V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Ability1),local);
+    } else if (!g_genjiBlade.lastSwing || now - g_genjiBlade.lastSwing >= GenjiAssist::kSwingMs) {
+        if (StartTimedHotkey(key + ":swing",V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Primary),kBriefPulse))
+            g_genjiBlade.lastSwing = now;
+    }
+}
 struct SuperJumpRuntime {
     SkillConditions::AimSession request;
     int phase = 0;
@@ -43,6 +141,10 @@ bool EvaluateAutomaticAim(const std::string& key, const HeroSkillDefinition& def
                           const Config::HeroSkillSettings& settings) {
     const auto kind = definition.automation;
     auto& window=g_automaticAimWindows[key];
+    if (kind == SkillAutomation::ShieldBash) {
+        const auto input = KeyState::SampleVk(V2::HeroSettings::Key(definition.heroId,V2::HeroSettings::Action::Secondary));
+        if (!input.available || !input.down) { window.Reset(); return false; }
+    }
     // A manual skill request or a running combo keeps its existing target.
     if (g_automaticOwnsAim.load(std::memory_order_acquire) || AnyInputSequenceActive() || g_rocketPunchOwnsAim.load(std::memory_order_acquire) ||
         std::any_of(g_skillAimSessions.begin(),g_skillAimSessions.end(),[](const auto& item){return item.second.active;})) {
@@ -79,9 +181,12 @@ bool EvaluateAutomaticAim(const std::string& key, const HeroSkillDefinition& def
         if (!MoveSkillAimAndCheckReady(key, settings, candidate, projectile)) return false;
     }
     // Check observed view, not a command which is still queued on the device.
-    if (!IsSkillAimConfirmed(candidate) || IsActionDebounced(key) ||
-        !StartTimedHotkey(key, SkillOutputVk(settings), kBriefPulse)) return false;
-    MarkActionExecuted(key);
+    if (!IsSkillAimConfirmed(candidate) || IsActionDebounced(key)) return false;
+    const auto local = TargetingDetail::SnapshotLocalEntity();
+    const bool genjiDash = definition.heroId == eHero::HERO_GENJI && definition.inputAction == HeroSkillInputAction::Ability1;
+    if (!(genjiDash ? TryStartGenjiDash(key,SkillOutputVk(settings),local)
+                   : StartTimedHotkey(key,SkillOutputVk(settings),kBriefPulse))) return false;
+    RecordTrajectoryCast(key,definition,settings);
     window.Reset();
     if (kind == SkillAutomation::NormalInterrupt) {
         const int index = SkillConditions::NormalThreatIndex(candidate.entity.HeroID);

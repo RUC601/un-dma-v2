@@ -157,8 +157,25 @@ void Preview(const Settings& settings) {
     if(OW::Config::drawbattletag)text(Element::BattleTag,cx,top-40,"Player");
     if(OW::Config::draw_avatar){auto* icons=Render::GetIconManager();auto* image=icons?icons->LoadHeroAvatar("ana"):nullptr;const float size=style(Element::Avatar).size;
         if(image){const auto a=position(Element::Avatar,cx-size*.5f,top-size-10);draw->AddImageRounded(reinterpret_cast<ImTextureID>(image),a,ImVec2(a.x+size,a.y+size),ImVec2(0,0),ImVec2(1,1),color(Element::Avatar),4);}}
-    if(OW::Config::healthbar){const auto a=position(Element::Health,left-7,top);const float w=style(Element::Health).thickness;draw->AddRectFilled(a,ImVec2(a.x+w,a.y+bottom-top),kColControl);draw->AddRectFilled(ImVec2(a.x,a.y+40),ImVec2(a.x+w,a.y+bottom-top),color(Element::Health));}
-    if(OW::Config::healthbar2){const auto a=position(Element::Resources,cx-style(Element::Resources).size*2.5f,top-9);draw->AddRectFilled(a,ImVec2(a.x+style(Element::Resources).size*5,a.y+style(Element::Resources).thickness*3),kColControl);draw->AddRectFilled(a,ImVec2(a.x+style(Element::Resources).size*4,a.y+style(Element::Resources).thickness*3),color(Element::Resources));}
+    if(OW::Config::healthbar || OW::Config::healthbar2) {
+        const auto& st=style(Element::Health);
+        if(settings.healthBarStyle==1) {
+            const auto a=position(Element::Health,left-5,top);
+            draw->AddRectFilled(a,ImVec2(a.x+st.thickness,a.y+bottom-top),kColControl);
+            draw->AddRectFilled(ImVec2(a.x,a.y+40),ImVec2(a.x+st.thickness,a.y+bottom-top),color(Element::Health));
+        } else {
+            const float w=settings.healthBarStyle==2?right-left:st.size*5,h=st.thickness*(settings.healthBarStyle==2?1:3);
+            const auto a=position(Element::Health,cx-w*.5f,top-h-4);
+            draw->AddRectFilled(a,ImVec2(a.x+w,a.y+h),kColControl);
+            if(settings.healthBarStyle==2)draw->AddRectFilled(a,ImVec2(a.x+w*.8f,a.y+h),color(Element::Health));
+            else {
+                draw->AddRectFilled(a,ImVec2(a.x+w*.5f,a.y+h),IM_COL32(245,245,245,255));
+                draw->AddRectFilled(ImVec2(a.x+w*.5f,a.y),ImVec2(a.x+w*.7f,a.y+h),IM_COL32(255,150,35,255));
+                draw->AddRectFilled(ImVec2(a.x+w*.7f,a.y),ImVec2(a.x+w*.8f,a.y+h),IM_COL32(70,170,255,255));
+                for(int i=1;i<10;++i)draw->AddLine(ImVec2(a.x+w*i/10,a.y),ImVec2(a.x+w*i/10,a.y+h),IM_COL32(0,0,0,150));
+            }
+        }
+    }
     if(settings.worldUltimate)text(Element::Ultimate,right+18,top,"67%");
     if(OW::Config::skillinfo){const float size=style(Element::Skills).size;for(int i=0;i<2;++i){const auto a=position(Element::Skills,right+8+i*(size+3),top+20);draw->AddRect(a,ImVec2(a.x+size,a.y+size),color(Element::Skills),3,0,style(Element::Skills).thickness);draw->AddText(ImGui::GetFont(),size*.67f,ImVec2(a.x+2,a.y+2),color(Element::Skills),i?"--":"4");}}
     if(OW::Config::dist)text(Element::Distance,cx,bottom+4,"14 m");
@@ -192,8 +209,15 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Name,OW::Config::name);
         const char* names[]={"Hero Name","BattleTag","Hero / BattleTag"};SettingRow("Name Type");PushControlWidth();changed|=UISelect("##nameType",&settings.nameType,names,3);ImGui::PopItemWidth();
         changed|=ElementRow(settings,Element::BattleTag,OW::Config::drawbattletag);
-        changed|=ElementRow(settings,Element::Health,OW::Config::healthbar);
-        changed|=ElementRow(settings,Element::Resources,OW::Config::healthbar2);
+        bool healthEnabled=OW::Config::healthbar || OW::Config::healthbar2;
+        changed|=ElementRow(settings,Element::Health,healthEnabled);
+        OW::Config::healthbar=healthEnabled;OW::Config::healthbar2=false;
+        const bool zh=OW::Config::uiLanguage==1;
+        const char* styles[]={zh?"1 · ED 侧边细条":"1 · ED side line",zh?"2 · 框上方横条":"2 · Above box",zh?"3 · 游戏分类血条":"3 · Game resource pools"};
+        int healthStyle=settings.healthBarStyle-1;
+        SettingRow(zh?"血条样式":"Health Bar Style");PushControlWidth();
+        if(UISelect("##healthBarStyle",&healthStyle,styles,3)){settings.healthBarStyle=healthStyle+1;changed=true;}
+        ImGui::PopItemWidth();
         changed|=ElementRow(settings,Element::Distance,OW::Config::dist);
         changed|=ElementRow(settings,Element::Avatar,OW::Config::draw_avatar);
         changed|=ElementRow(settings,Element::Ultimate,settings.worldUltimate);
@@ -215,12 +239,31 @@ void UI::VisualsPage() {
         SettingRow("Name");changed|=UICheckbox("##worldName",&world.name);
         SettingRow("Icon");changed|=UICheckbox("##worldIcon",&world.icon);
         SettingRow("Distance");changed|=UICheckbox("##worldDistance",&world.distance);
+        SettingRow("Hide Friendly Objects");changed|=UICheckbox("##worldHideTeam",&world.hideTeam);
+        SettingRow("Health Bar");changed|=UICheckbox("##worldHealth",&world.health);
+        SettingRow("Health Text");changed|=UICheckbox("##worldHealthText",&world.healthText);
         SettingRow("Max Distance");PushControlWidth();changed|=UISlider("##worldMaxDistance",&world.maxDistance,0,1000,Number(0," m"));ImGui::PopItemWidth();
-        SettingRow("Size");PushControlWidth();changed|=UISlider("##worldSize",&world.size,6,80,Number(0," px"));ImGui::PopItemWidth();
-        for(int i=0;i<int(V2::VisualSettings::kObjects.size());++i){ImGui::PushID(i);const auto label=std::string(L(V2::VisualSettings::kObjects[i].name))+(i==0?"":" *");SettingRow(label.c_str());
-            ImGui::BeginDisabled(V2::VisualSettings::kObjects[i].id==0);
-            changed|=UICheckbox("##object",&world.types[i]);ImGui::SameLine();changed|=UI::ColorPicker("color",world.colors[i]);ImGui::EndDisabled();
-            ImGui::SetItemTooltip("%s",i==0?L("Existing capture; live verification required"):L("Candidate identification; live verification required"));ImGui::PopID();}
+        SettingRow("Font Size");PushControlWidth();changed|=UISlider("##worldSize",&world.size,6,80,Number(0," px"));ImGui::PopItemWidth();
+        SettingRow("Icon Size");PushControlWidth();changed|=UISlider("##worldIconSize",&world.iconSize,6,80,Number(0," px"));ImGui::PopItemWidth();
+        const auto group=[&](const char* title,V2::WorldObjects::Group category,bool* enabled) {
+            ImGui::Spacing();
+            if(!ImGui::CollapsingHeader(L(title),ImGuiTreeNodeFlags_DefaultOpen))return;
+            ImGui::PushID(title);
+            if(enabled){SettingRow("Enabled");changed|=UICheckbox("##groupEnabled",enabled);}
+            for(int i=0;i<int(V2::VisualSettings::kObjects.size());++i) {
+                const auto& objectType=V2::VisualSettings::kObjects[i];
+                if(objectType.group!=category)continue;
+                ImGui::PushID(i);SettingRow(L(objectType.name));
+                ImGui::BeginDisabled(objectType.id==0||(enabled&&!*enabled));
+                changed|=UICheckbox("##object",&world.types[i]);ImGui::SameLine();changed|=UI::ColorPicker("color",world.colors[i]);ImGui::EndDisabled();
+                ImGui::SetItemTooltip("%s",objectType.id==0?L("Identity unavailable"):L("Candidate identification; live verification required"));
+                ImGui::PopID();
+            }
+            ImGui::PopID();
+        };
+        group("Health Packs",V2::WorldObjects::Group::Health,nullptr);
+        group("Deployables",V2::WorldObjects::Group::Deployable,&world.deployables);
+        group("Projectiles",V2::WorldObjects::Group::Projectile,&world.projectiles);
     });
     ImGui::EndChild();
     if(columns)ImGui::SameLine(0,16);

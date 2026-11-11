@@ -1,6 +1,7 @@
 #pragma once
 #include "game/entities/RegistryResolver.hpp"
 #include "Game/RegionalLayout.hpp"
+#include "Game/SkillRead.hpp"
 #include "memory/PeSections.hpp"
 #include "Utils/RegionEnvironment.hpp"
 #include <Windows.h>
@@ -1637,8 +1638,7 @@ namespace OW {
                 uint64_t pool=0,id=0;
                 if(header.ReadParentOffset(offset::Entity_PoolPtr,pool) && IsPlausibleUserPointer(pool & ~0x3full) &&
                     SDK->read_range((pool & ~0x3full)+offset::Pool_PoolId,&id,sizeof(id)))
-                    knownDynamic=id==0x400000000000060 || id==0x40000000000480A ||
-                        id==0x40000000000005F || id==0x400000000002533;
+                    knownDynamic=V2::WorldObjects::ObjectIndex(id)>=0;
             }
             if (heroComponent && !knownDynamic) {
                 const auto base = DecryptComponent(parent, offset::Active().typeHeroId, &header);
@@ -3708,23 +3708,13 @@ namespace OW {
         }
         if (!skillList) return false;
 
-        uint64_t listEntry = skillList + 0x20 * ((id & 0xF) + 1);
-        uint64_t structList = SDK->RPM<uint64_t>(listEntry);
-        if (!structList) return false;
-
-        int32_t listIndex = (index == 0) ? 0 : SDK->RPM<int32_t>(listEntry + 0x8) - 1;
-        if (listIndex < 0 || listIndex >= 0xFF) return false;
-
-        uint64_t skillEntry = structList + 0x10 * listIndex;
-        if (SDK->RPM<uint16_t>(skillEntry) == id) {
-            uint64_t skill = SDK->RPM<uint64_t>(skillEntry + 0x8);
-            if (!skill) return false;
-            uint8_t state = 0;
-            const bool ok = SDK->read_range(skill + 0x48, &state, sizeof(state));
-            if (readable) *readable = ok;
-            return ok && state == 1;
-        }
-        return false;
+        const auto result = SkillRead::FindInBucket(skillList + 0x20 * ((id & 0xF) + 1), id,
+            [](uint64_t address, void* bytes, size_t size) { return SDK->read_range(address, bytes, size); });
+        if (result.status != SkillRead::Status::Found || !SkillRead::UserRange(result.address, 0x49)) return false;
+        uint8_t state = 0;
+        const bool ok = SDK->read_range(result.address + 0x48, &state, sizeof(state)) && state <= 1;
+        if (readable) *readable = ok;
+        return ok && state == 1;
     }
 
     inline uintptr_t SkillStructCheck(uint64_t a1, uint16_t a2) {
@@ -3757,24 +3747,9 @@ namespace OW {
             v6 = SDK->RPM<uint64_t>(v7 + 0xB8);
         }
     LABEL_6:
-        uint16_t v8 = v3[1];
-        uint64_t v9 = 32 * ((v3[1] & 0xF) + 1);
-        const uint32_t entryCount = SDK->RPM<uint32_t>(v9 + v6 + 8);
-        if (entryCount == 0 || entryCount >= 0xFF) return 0;
-
-        const uint64_t listBase = SDK->RPM<uint64_t>(v9 + v6);
-        if (!listBase) return 0;
-
-        for (uint32_t remaining = entryCount; remaining > 0; --remaining) {
-            const uint64_t entry = listBase + 16ull * (remaining - 1);
-            if (SDK->RPM<uint16_t>(entry) != v8)
-                continue;
-
-            uint64_t v13 = SDK->RPM<uint64_t>(entry + 8);
-            if (!v13) return 0;
-            return v13;
-        }
-        return 0;
+        const auto result = SkillRead::FindInBucket(v6 + 32 * ((v3[1] & 0xF) + 1), v3[1],
+            [](uint64_t address, void* bytes, size_t size) { return SDK->read_range(address, bytes, size); });
+        return result.status == SkillRead::Status::Found ? result.address : 0;
     }
 
     inline bool IsSkillActivate1(uint64_t base, uint16_t skillIdx, uint16_t skillIdx2) {
@@ -3782,8 +3757,9 @@ namespace OW {
         uint16_t skillId[15] = { skillIdx, skillIdx2 };
         skillStruct.m128_u64[1] = base + 0xD0;
         uint64_t skill = FnSkillStruct(&skillStruct, skillId);
-        if (!skill) return false;
-        return SDK->RPM<uint8_t>(skill + 0x48) == 1;
+        if (!SkillRead::UserRange(skill, 0x49)) return false;
+        uint8_t state = 0;
+        return SDK->read_range(skill + 0x48, &state, sizeof(state)) && state == 1;
     }
 
     inline float GetSkill(uint64_t base, uint16_t skillIdx, uint16_t skillIdx2, uint16_t offset) {

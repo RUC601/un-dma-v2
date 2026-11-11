@@ -93,6 +93,7 @@
                 }
                 entity.PlayerHealth = componentCache.playerHealth;
                 entity.PlayerHealthMax = componentCache.playerHealthMax;
+                entity.health_sample_tick_ms = componentCache.healthValid ? componentCache.healthUpdateTick : 0;
                 entity.MinHealth = componentCache.minHealth;
                 entity.MaxHealth = componentCache.maxHealth;
                 entity.MinArmorHealth = componentCache.minArmorHealth;

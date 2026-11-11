@@ -785,11 +785,18 @@ void DrawMiscDynamicFovPage() {
         static int lastPresetId = -2;
         static char presetName[64] = "Dynamic FOV";
         static OW::Config::DynamicFovPreset draft{};
+        static uint64_t lastProfileGeneration = 0;
+        const auto generation = OW::Config::configLoadGeneration.load(std::memory_order_acquire);
+        if (generation != lastProfileGeneration) {
+            lastPresetId = -2;
+            lastProfileGeneration = generation;
+        }
 
         OW::Config::DynamicFovPreset* selectedPreset =
             OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
         if (lastPresetId != selectedPresetId) {
             if (selectedPreset) {
+                draft = *selectedPreset;
                 CopyPresetNameToBuffer(selectedPreset->name, presetName);
             } else {
                 draft = OW::Config::DynamicFovPreset{};
@@ -803,6 +810,7 @@ void DrawMiscDynamicFovPage() {
         if (UISelectDynamicFovPreset("##miscDynamicFovPreset", &selectedPresetId, true)) {
             selectedPreset = OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
             if (selectedPreset) {
+                draft = *selectedPreset;
                 CopyPresetNameToBuffer(selectedPreset->name, presetName);
             } else {
                 draft = OW::Config::DynamicFovPreset{};
@@ -813,22 +821,24 @@ void DrawMiscDynamicFovPage() {
         ImGui::PopItemWidth();
 
         selectedPreset = OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
-        OW::Config::DynamicFovPreset& editPreset = selectedPreset ? *selectedPreset : draft;
+        OW::Config::DynamicFovPreset& editPreset = draft;
 
         SettingRow("Preset Name");
         PushControlWidth();
-        if (ImGui::InputText("##miscDynamicFovName", presetName, IM_ARRAYSIZE(presetName)))
-            editPreset.name = NormalizeUiPresetName(presetName, "Dynamic FOV", -1);
+        ImGui::InputText("##miscDynamicFovName", presetName, IM_ARRAYSIZE(presetName));
         ImGui::PopItemWidth();
 
+        SettingRow(OW::Config::uiLanguage == 1 ? "覆盖宽度（米）" : "Coverage width (m)");
+        PushControlWidth();
+        ImGui::DragFloat("##worldDiameterM", &editPreset.worldDiameterM, 0.05f, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("%s", OW::Config::uiLanguage == 1 ? "0：编辑曲线节点；大于 0：按距离保持固定的覆盖宽度。" : "0 edits curve points; a positive value keeps this world-space width at every distance.");
+        ImGui::PopItemWidth();
         SettingRow("Smooth Curve");
         UICheckbox("##miscDynamicFovSmooth", &editPreset.smooth);
 
         UI::DynamicFovEditor(editPreset);
 
         editPreset = OW::Config::ValidateDynamicFovPresetValue(editPreset);
-        if (selectedPreset)
-            CopyPresetNameToBuffer(selectedPreset->name, presetName);
 
         const float preview5 = OW::Config::EvaluateDynamicFovPreset(editPreset, 5.0f, OW::Config::kDefaultFovDeg);
         const float preview10 = OW::Config::EvaluateDynamicFovPreset(editPreset, 10.0f, OW::Config::kDefaultFovDeg);
@@ -846,6 +856,12 @@ void DrawMiscDynamicFovPage() {
         ImGui::TextColored(ImVec4(0.78f, 0.84f, 0.92f, 1.0f), "%s", preview);
 
         ImGui::Spacing();
+        if (selectedPreset && UIActionButton(OW::Config::uiLanguage == 1 ? "更新预设" : "Update Preset", 112.0f)) {
+            editPreset.name = NormalizeUiPresetName(presetName, "Dynamic FOV", -1);
+            editPreset.id = selectedPresetId;
+            *selectedPreset = OW::Config::ValidateDynamicFovPresetValue(editPreset);
+        }
+        if (selectedPreset) ImGui::SameLine(0.0f, 8.0f);
         if (UIActionButton(T(UiText::SaveNew), 92.0f)) {
             OW::Config::DynamicFovPreset preset = editPreset;
             preset.id = NextDynamicFovPresetId();

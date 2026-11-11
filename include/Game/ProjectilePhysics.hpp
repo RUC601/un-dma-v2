@@ -16,7 +16,7 @@ struct ProjectilePhysicsProfile {
 // Pluz manual data, 2023-12-27: https://workshop.codes/wiki/articles/projectile-data-table
 // Complete raw records/unknowns/world radii stay in research/pluz-ballistics-20261104.
 // Historical skill IDs are explicit; no new actions are created by this catalog.
-inline constexpr std::array<ProjectilePhysicsProfile, 50> kProjectilePhysicsProfiles = {{
+inline constexpr std::array<ProjectilePhysicsProfile, 51> kProjectilePhysicsProfiles = {{
     { "biotic-grenade", 30.0f, 9.84f, 0.0f, 0.0f },
     { "jagged-blade", 35.0f, 8.5f, 0.02f, 0.0f },
     { "junkrat_frag_launcher", 25.0f, 12.35f, 0.075f, 0.0f },
@@ -44,6 +44,7 @@ inline constexpr std::array<ProjectilePhysicsProfile, 50> kProjectilePhysicsProf
     { "sigma_hyperspheres", 49.7f, 5.95f, 0.0f, 0.0f },
     { "accretion", 37.4f, 18.35f, 0.1f, 640.0f },
     { "ravenous-vortex", 30.0f, 9.75f, 0.0f, 496.0f },
+    { "ramattra_void_accelerator", 80.0f, 0.0f, 0.0f, 0.0f },
     { "venom-mine", 20.0f, 9.84f, 0.0f, 192.0f },
     { "ana_biotic_rifle_hip", 0.0f, 0.0f, 0.0f, 0.0f },
     { "sleep-dart", 0.0f, 0.0f, 0.0f, 0.0f },

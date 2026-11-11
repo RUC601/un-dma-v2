@@ -10,6 +10,7 @@ template<class Allocator> inline rapidjson::Value Encode(const Settings& setting
     boolean("enabled",settings.enabled);boolean("enemies",settings.enemies);boolean("allies",settings.allies);boolean("visibleOnly",settings.visibleOnly);
     boolean("dynamicFont",settings.dynamicFont);boolean("worldUltimate",settings.worldUltimate);boolean("prediction",settings.prediction);boolean("offscreen",settings.offscreen);
     boolean("pauseOnChat",settings.pauseOnChat);boolean("pauseOnFocusLoss",settings.pauseOnFocusLoss);
+    out.AddMember("healthBarStyle",settings.healthBarStyle,allocator);
     out.AddMember("boxType",settings.boxType,allocator);out.AddMember("nameType",settings.nameType,allocator);
     auto text=[&](const char* key,const std::string& value){rapidjson::Value v;v.SetString(value.c_str(),allocator);out.AddMember(rapidjson::StringRef(key),v,allocator);};
     out.AddMember("infoX",settings.infoX,allocator);out.AddMember("infoY",settings.infoY,allocator);out.AddMember("infoScale",settings.infoScale,allocator);
@@ -26,7 +27,9 @@ template<class Allocator> inline rapidjson::Value Encode(const Settings& setting
     radar.AddMember("enemy",color(settings.radar.enemy),allocator);radar.AddMember("ally",color(settings.radar.ally),allocator);out.AddMember("radar",radar,allocator);
     const auto& w=settings.world;rapidjson::Value world(rapidjson::kObjectType),types(rapidjson::kArrayType),colors(rapidjson::kArrayType);
     world.AddMember("enabled",w.enabled,allocator);world.AddMember("box",w.box,allocator);world.AddMember("name",w.name,allocator);world.AddMember("icon",w.icon,allocator);world.AddMember("distance",w.distance,allocator);
-    world.AddMember("maxDistance",w.maxDistance,allocator);world.AddMember("size",w.size,allocator);
+    world.AddMember("hideTeam",w.hideTeam,allocator);world.AddMember("health",w.health,allocator);world.AddMember("healthText",w.healthText,allocator);
+    world.AddMember("deployables",w.deployables,allocator);world.AddMember("projectiles",w.projectiles,allocator);
+    world.AddMember("maxDistance",w.maxDistance,allocator);world.AddMember("size",w.size,allocator);world.AddMember("iconSize",w.iconSize,allocator);
     for(size_t i=0;i<w.types.size();++i){types.PushBack(bool(w.types[i]),allocator);colors.PushBack(color(w.colors[i]),allocator);}
     world.AddMember("types",types,allocator);world.AddMember("colors",colors,allocator);out.AddMember("world",world,allocator);return out;
 }
@@ -39,6 +42,7 @@ inline Settings Decode(const rapidjson::Value& root,Settings settings={}) {
     boolean(root,"enabled",settings.enabled);boolean(root,"enemies",settings.enemies);boolean(root,"allies",settings.allies);boolean(root,"visibleOnly",settings.visibleOnly);
     boolean(root,"dynamicFont",settings.dynamicFont);boolean(root,"worldUltimate",settings.worldUltimate);boolean(root,"prediction",settings.prediction);boolean(root,"offscreen",settings.offscreen);
     boolean(root,"pauseOnChat",settings.pauseOnChat);boolean(root,"pauseOnFocusLoss",settings.pauseOnFocusLoss);
+    if(root.HasMember("healthBarStyle")&&root["healthBarStyle"].IsInt())settings.healthBarStyle=std::clamp(root["healthBarStyle"].GetInt(),1,3);
     if(root.HasMember("boxType")&&root["boxType"].IsInt())settings.boxType=std::clamp(root["boxType"].GetInt(),0,2);
     if(root.HasMember("nameType")&&root["nameType"].IsInt())settings.nameType=std::clamp(root["nameType"].GetInt(),0,2);
     if(root.HasMember("font")&&root["font"].IsString()&&root["font"].GetStringLength()<1024)settings.font=root["font"].GetString();
@@ -51,7 +55,9 @@ inline Settings Decode(const rapidjson::Value& root,Settings settings={}) {
         boolean(v,"allies",r.allies);boolean(v,"rotate",r.rotate);color(v,"enemy",r.enemy);color(v,"ally",r.ally);}
     if(root.HasMember("world")&&root["world"].IsObject()){const auto& v=root["world"];auto& w=settings.world;
         boolean(v,"enabled",w.enabled);boolean(v,"box",w.box);boolean(v,"name",w.name);boolean(v,"icon",w.icon);boolean(v,"distance",w.distance);
-        number(v,"maxDistance",w.maxDistance,0,1000);number(v,"size",w.size,6,80);
+        boolean(v,"hideTeam",w.hideTeam);boolean(v,"health",w.health);boolean(v,"healthText",w.healthText);
+        boolean(v,"deployables",w.deployables);boolean(v,"projectiles",w.projectiles);
+        number(v,"maxDistance",w.maxDistance,0,1000);number(v,"size",w.size,6,80);number(v,"iconSize",w.iconSize,6,80);
         if(v.HasMember("types")&&v["types"].IsArray())for(unsigned i=0;i<v["types"].Size()&&i<w.types.size();++i)if(v["types"][i].IsBool())w.types[i]=v["types"][i].GetBool();
         if(v.HasMember("colors")&&v["colors"].IsArray())for(unsigned i=0;i<v["colors"].Size()&&i<w.colors.size();++i) {
             const auto& a=v["colors"][i];if(!a.IsArray()||a.Size()!=4)continue;

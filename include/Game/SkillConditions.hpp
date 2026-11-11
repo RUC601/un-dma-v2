@@ -32,9 +32,11 @@ struct AimSession {
     bool active = false;
     bool blockedUntilRelease = true;
     uint64_t startedMs = 0;
+    std::array<uint64_t, 6> target{};
+    int boneId = -1;
     bool Advance(bool held, uint64_t now, float delayMs, float maxMs, bool available = true) {
         if (!available) { Block(); return false; }
-        if (!held) { active = false; blockedUntilRelease = false; startedMs = 0; return false; }
+        if (!held) { active = false; blockedUntilRelease = false; startedMs = 0; target = {}; boneId = -1; return false; }
         if (blockedUntilRelease) return false;
         if (!active) { active = true; startedMs = now; }
         const auto elapsed = now - startedMs;
@@ -42,7 +44,19 @@ struct AimSession {
         if (limit > 0 && elapsed > limit) { Block(); return false; }
         return elapsed >= (std::clamp)(std::isfinite(delayMs) ? delayMs : 0.f, 0.f, 1000.f);
     }
-    void Block() { active = false; blockedUntilRelease = true; }
+    void Block() { active = false; blockedUntilRelease = true; target = {}; boneId = -1; }
+};
+
+struct CastConfirmation {
+    uint32_t submittedTick = 0;
+    bool sawInactive = true;
+    bool Confirmed(bool active, uint32_t sampleTick, uint32_t now) {
+        if (!sampleTick || uint32_t(now - sampleTick) > 250 ||
+            uint32_t(sampleTick - submittedTick) >= 700) return false;
+        if (!active) sawInactive = true;
+        return active && sawInactive;
+    }
+    bool Expired(uint32_t now) const { return uint32_t(now - submittedTick) >= 700; }
 };
 
 inline bool HealthAtOrBelow(float hp, float maximum, float threshold, bool absolute) {
@@ -53,6 +67,30 @@ inline bool HealthAtOrBelow(float hp, float maximum, float threshold, bool absol
 inline bool FreshActive(bool active, uint32_t sample, uint32_t now) {
     return active && sample != 0 && uint32_t(now - sample) <= 250;
 }
+// Pure 1106 0xE5710 / 0xE59C0, conservative mode: 5% recent loss,
+// expiring 450 ms after the last loss. Feed only successful health samples.
+struct RecentDamage {
+    float health = 0, maximum = 0, damage = 0;
+    uint32_t sampled = 0, lastLoss = 0;
+    void Reset() { *this = {}; }
+    void ClearDamage() { damage = 0; lastLoss = 0; }
+    void Observe(float hp, float max, uint32_t sample, uint32_t now) {
+        if (!sample || uint32_t(now - sample) > 250 || !std::isfinite(hp) || hp <= 0 ||
+            !std::isfinite(max) || max <= 0 || hp > max) { Reset(); return; }
+        if (sample == sampled) return;
+        if (sampled && int32_t(sample - sampled) < 0) { Reset(); return; }
+        if (!sampled || uint32_t(sample - sampled) > 250 || max != maximum) {
+            Reset(); health = hp; maximum = max; sampled = sample; return;
+        }
+        if (lastLoss && uint32_t(sample - lastLoss) > 450) ClearDamage();
+        if (hp < health) { damage += health - hp; lastLoss = sample; }
+        health = hp; maximum = max; sampled = sample;
+    }
+    bool Ready(uint32_t now) const {
+        return sampled && uint32_t(now - sampled) <= 250 && lastLoss &&
+            uint32_t(now - lastLoss) <= 450 && damage >= maximum * .05f;
+    }
+};
 enum PauseMask : unsigned { NoPause = 0, Aim = 1, Trigger = 2, Skills = 4, All = 7 };
 inline unsigned StatePause(uint64_t hero, bool firstActive, bool secondActive, bool secondaryHeld) {
     switch (hero & 0xffff) {

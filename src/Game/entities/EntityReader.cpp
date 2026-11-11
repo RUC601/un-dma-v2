@@ -10,6 +10,8 @@
 #include "Alerts/Settings.hpp"
 #include "Renderer/VisualSettings.hpp"
 #include "Game/OutlineBrightness.hpp"
+#include "Game/WorldObjectRead.hpp"
+#include "Game/HeroSettings.hpp"
 
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
@@ -38,6 +40,17 @@ void entity_thread() {
     double entityCycleHz = 0.0;
 
 #include "Game/EntityMaintenance/CacheState.inl"
+
+    auto worldObjectSnapshot = [&](uint64_t parent, const DynamicEntityCache& cached) {
+        OW::hpanddy value{};
+        value.entityid=cached.entityId;value.MeshBase=cached.meshBase;value.POS=cached.pos;
+        value.object_parent=parent;value.position_tick_ms=cached.updateTick;
+        value.scene_generation=processSceneGeneration;
+        value.status_tick_ms=cached.statusTick;value.team_key=cached.teamKey;
+        value.team_known=cached.teamKnown;value.health_known=cached.healthKnown;
+        value.health=cached.health;value.health_max=cached.healthMax;
+        return value;
+    };
 
     auto readDwordEnv = [](const char* name, DWORD fallback, DWORD minValue, DWORD maxValue) {
         char buffer[32] = {};
@@ -743,6 +756,55 @@ void entity_thread() {
         hotScatterPages.reserve(raw_entities.size() * 4);
 #include "Game/EntityMaintenance/HotRead.inl"
 
+        const auto objectSettings=V2::HeroSettings::Snapshot();
+        const auto& worldSettings=objectSettings->display.world;
+        auto readObjectRange=[&](uint64_t address,void* destination,size_t bytes) {
+            return SDK->read_range(address,destination,bytes);
+        };
+        auto refreshWorldObject=[&](uint64_t parent,DynamicEntityCache& cached,
+                                    const OW::EntityHeaderSnapshot* header) {
+            const auto now=GetTickCount();
+            if(!cached.lastAttemptTick || DWORD(now-cached.lastAttemptTick)>=OW::kEntityProcessIntervalMs) {
+                cached.lastAttemptTick=now;
+                XMFLOAT3 position{};
+                uint64_t component=0;uint32_t positionOffset=0;
+                const auto& profile=offset::Active();
+                const bool positionRead=V2::WorldObjects::ResolvePosition(
+                    V2::WorldObjects::PositionPaths(profile.typeItemTransform,profile.typeItemTransformAlt),
+                    [&](uint32_t type){return OW::DecryptComponent(parent,type,header,true);},
+                    readObjectRange,position,component,positionOffset);
+                if(component!=cached.meshBase || positionOffset!=cached.positionOffset) {
+                    cached.updateTick=0;cached.statusTick=0;cached.statusAttemptTick=0;
+                    cached.teamKnown=false;cached.healthKnown=false;
+                }
+                cached.meshBase=component;
+                cached.positionOffset=positionOffset;
+                if(positionRead){cached.pos=position;cached.updateTick=GetTickCount();}
+            }
+            if(cached.statusAttemptTick && DWORD(now-cached.statusAttemptTick)<100)return;
+            cached.statusAttemptTick=now;
+            cached.teamKnown=false;cached.healthKnown=false;cached.statusTick=0;
+            const int index=V2::WorldObjects::ObjectIndex(cached.entityId);
+            if(index<0 || V2::WorldObjects::kObjects[index].group==V2::WorldObjects::Group::Health)return;
+            const auto& profile=offset::Active();
+            if(worldSettings.hideTeam) {
+                const auto base=OW::DecryptComponent(parent,profile.typeTeam,header,true);
+                uint32_t flags=0;
+                if(base && readObjectRange(base+offset::Team_FlagsOffset,&flags,sizeof(flags))) {
+                    cached.teamKey=offset::TeamComparisonKeyFromFlags(flags);
+                    cached.teamKnown=OW::EntityRosterPolicy::ValidTeamKey(cached.teamKey);
+                }
+            }
+            if(worldSettings.health || worldSettings.healthText) {
+                const auto base=OW::DecryptComponent(parent,profile.typeHealth,header,true);
+                OW::health_fields_t raw{};OW::HealthPayloadSummary health{};
+                if(base && readHealthFields(base,raw) && OW::TryParseHealthPayload(raw,health) && health.total_max>0) {
+                    cached.health=health.total;cached.healthMax=health.total_max;cached.healthKnown=true;
+                }
+            }
+            if(cached.teamKnown || cached.healthKnown)cached.statusTick=GetTickCount();
+        };
+
 #include "Game/EntityMaintenance/FailureSample.inl"
 #include "Game/EntityMaintenance/HealthCacheRecovery.inl"
 
@@ -1158,9 +1220,8 @@ void entity_thread() {
             // No source read is permitted while copying the dynamic snapshot.
             std::vector<OW::hpanddy> dynamicSnapshot;
             for(const auto& [address,dynamic]:dynamicEntityCache) {
-                if(!dynamic.valid || GetTickCount()-dynamic.updateTick>1000 || !scheduledRawComponents.contains(address))continue;
-                OW::hpanddy value{};value.entityid=dynamic.entityId;value.MeshBase=dynamic.meshBase;
-                value.POS=dynamic.pos;value.scene_generation=processSceneGeneration;dynamicSnapshot.push_back(value);
+                if(!dynamic.valid || GetTickCount()-dynamic.updateTick>200 || !scheduledRawComponents.contains(address))continue;
+                dynamicSnapshot.push_back(worldObjectSnapshot(address,dynamic));
             }
             size_t hotPublishedCount=0;
             hotFramePublished=OW::TargetingDetail::TryPublishEntitySnapshots(std::move(hotSnapshot),std::move(dynamicSnapshot),connectionEpoch,hotPublishedCount,&processRegistry,processSceneGeneration);
@@ -1249,11 +1310,8 @@ void entity_thread() {
                 dynamicCacheIt = dynamicEntityCache.end();
             }
             if (dynamicCacheIt != dynamicEntityCache.end() && dynamicCacheIt->second.valid) {
-                uint64_t identityPointer=0,currentId=0;
-                const bool pointerRead = SDK->read_range(ComponentParent+0x30,&identityPointer,sizeof(identityPointer));
-                identityPointer&=0xFFFFFFFFFFFFFFC0;
-                const bool identityRead = pointerRead && identityPointer &&
-                    SDK->read_range(identityPointer+0x10,&currentId,sizeof(currentId));
+                uint64_t currentId=0;
+                const bool identityRead = V2::WorldObjects::ReadId(ComponentParent,readObjectRange,currentId);
                 if (!identityRead || currentId != dynamicCacheIt->second.entityId) {
                     dynamicEntityCache.erase(dynamicCacheIt);
                     dynamicCacheIt = dynamicEntityCache.end();
@@ -1262,25 +1320,9 @@ void entity_thread() {
             if (dynamicCacheIt != dynamicEntityCache.end() && dynamicCacheIt->second.valid) {
                 ++lifecycleStats.dynamicCacheReusedCount;
                 DynamicEntityCache& cachedDynamic = dynamicCacheIt->second;
-                if (cachedDynamic.meshBase &&
-                    (cachedDynamic.lastAttemptTick == 0 ||
-                     processLoopTick - cachedDynamic.lastAttemptTick >= OW::kEntityProcessIntervalMs)) {
-                    cachedDynamic.lastAttemptTick=processLoopTick;
-                    OW::velocity_compo_t hpdyVelocity{};
-                    if(SDK->read_range(cachedDynamic.meshBase+0x200,&hpdyVelocity.location,sizeof(hpdyVelocity.location)) &&
-                        std::isfinite(hpdyVelocity.location.x)&&std::isfinite(hpdyVelocity.location.y)&&std::isfinite(hpdyVelocity.location.z) &&
-                        (hpdyVelocity.location.x!=0||hpdyVelocity.location.y!=0||hpdyVelocity.location.z!=0)) {
-                        cachedDynamic.pos=hpdyVelocity.location;cachedDynamic.updateTick=processLoopTick;
-                    }
-                }
-
-                OW::hpanddy hpdyentity{};
-                hpdyentity.scene_generation=processSceneGeneration;
-                hpdyentity.object_parent=ComponentParent;hpdyentity.position_tick_ms=cachedDynamic.updateTick;
-                if(!hpdyentity.position_tick_ms||DWORD(processLoopTick-hpdyentity.position_tick_ms)>200)continue;
-                hpdyentity.entityid = cachedDynamic.entityId;
-                hpdyentity.MeshBase = cachedDynamic.meshBase;
-                hpdyentity.POS = cachedDynamic.pos;
+                refreshWorldObject(ComponentParent,cachedDynamic,nullptr);
+                OW::hpanddy hpdyentity=worldObjectSnapshot(ComponentParent,cachedDynamic);
+                if(!hpdyentity.position_tick_ms||DWORD(GetTickCount()-hpdyentity.position_tick_ms)>200)continue;
                 hpdy_entities.push_back(hpdyentity);
 
                 processStats.dynamic++;
@@ -1340,33 +1382,15 @@ void entity_thread() {
             // Check for special entity IDs (HP packs, Bob, etc.)
             if (!componentCacheHit) {
                 ScopedPipelinePhaseTimer specialTimer(pipelineStats.phase.entitySpecialProbeMs);
-                uint64_t ptrValue = 0;
                 // Object classification is optional; a short read must still reach player rebuild.
-                const bool pointerRead = componentHeader.ReadParentOffset(0x30, ptrValue) ||
-                    SDK->read_range(ComponentParent+0x30,&ptrValue,sizeof(ptrValue));
-                uint64_t Ptr = ptrValue & 0xFFFFFFFFFFFFFFC0;
-                if (pointerRead && Ptr && Ptr < 0xFFFFFFFFFFFFFFEF) {
+                {
                     uint64_t EntityID=0;
-                    if(SDK->read_range(Ptr+0x10,&EntityID,sizeof(EntityID)) &&
-                        V2::VisualSettings::ObjectIndex(EntityID)>=0) {
-                        OW::hpanddy hpdyentity{};
-                        hpdyentity.scene_generation=processSceneGeneration;
-                        hpdyentity.entityid = EntityID;
-                        hpdyentity.MeshBase = OW::DecryptComponent(
-                            ComponentParent, OW::TYPE_VELOCITY, componentSnapshot);
-                        hpdyentity.object_parent=ComponentParent;
-                        XMFLOAT3 position{};
-                        if(!hpdyentity.MeshBase||!SDK->read_range(hpdyentity.MeshBase+0x200,&position,sizeof(position)) ||
-                            !std::isfinite(position.x)||!std::isfinite(position.y)||!std::isfinite(position.z)||
-                            (position.x==0&&position.y==0&&position.z==0))continue;
-                        hpdyentity.POS=position;hpdyentity.position_tick_ms=processLoopTick;
+                    if(V2::WorldObjects::ReadId(ComponentParent,readObjectRange,EntityID)) {
                         DynamicEntityCache dynamicCache{};
                         dynamicCache.linkParent = LinkParent;
                         dynamicCache.valid = true;
                         dynamicCache.entityId = EntityID;
-                        dynamicCache.meshBase = hpdyentity.MeshBase;
-                        dynamicCache.pos = hpdyentity.POS;
-                        dynamicCache.updateTick = dynamicCache.lastAttemptTick = processLoopTick;
+                        refreshWorldObject(ComponentParent,dynamicCache,componentSnapshot);
                         const bool dynamicCacheReplacing =
                             dynamicCacheExpiredByLinkChange ||
                             dynamicEntityCache.find(ComponentParent) != dynamicEntityCache.end();
@@ -1376,7 +1400,7 @@ void entity_thread() {
                             ++lifecycleStats.dynamicCacheCreatedCount;
                         dynamicEntityCache.insert_or_assign(ComponentParent, dynamicCache);
 
-                        hpdy_entities.push_back(hpdyentity);
+                        if(dynamicCache.updateTick)hpdy_entities.push_back(worldObjectSnapshot(ComponentParent,dynamicCache));
                         processStats.dynamic++;
                         continue;
                     }
@@ -2691,11 +2715,7 @@ void entity_thread() {
         for(const auto& [address,dynamic]:dynamicEntityCache) {
             if(!dynamic.valid || GetTickCount()-dynamic.updateTick>200 ||
                 !scheduledRawComponents.contains(address))continue;
-            OW::hpanddy value{};value.entityid=dynamic.entityId;value.MeshBase=dynamic.meshBase;value.POS=dynamic.pos;
-            value.scene_generation=processSceneGeneration;
-            value.object_parent=address;
-            value.position_tick_ms=dynamic.updateTick;
-            hpdy_entities.push_back(value);
+            hpdy_entities.push_back(worldObjectSnapshot(address,dynamic));
         }
         const size_t dynamic_count = hpdy_entities.size();
         processStats.validated = valid_count;

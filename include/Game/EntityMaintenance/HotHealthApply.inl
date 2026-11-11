@@ -22,3 +22,4 @@
                 next.MinArmorHealth=hp.armor;next.MaxArmorHealth=hp.armor_max;
                 next.MinBarrierHealth=hp.barrier;next.MaxBarrierHealth=hp.barrier_max;
             }
+            next.health_sample_tick_ms=cached.healthValid ? cached.healthUpdateTick : 0;

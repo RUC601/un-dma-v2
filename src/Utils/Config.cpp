@@ -1631,7 +1631,7 @@ namespace OW { namespace Config {
             case static_cast<uint64_t>(OW::eHero::HERO_DOOMFIST): {
                 auto secondary = AimSlot("Secondary Flick", kActionSecondary, kAimBehaviorFlick, kKeyMouse5);
                 secondary.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
-                secondary.requireActionHeld = true;
+                secondary.requireActionHeld = false;
                 return {
                     AimSlot("Primary Tracking", kActionPrimary, kAimBehaviorTracking, kKeyLeftMouse),
                     secondary,
@@ -1640,7 +1640,7 @@ namespace OW { namespace Config {
             case static_cast<uint64_t>(OW::eHero::HERO_ORISA): {
                 auto secondary = AimSlot("Secondary Flick", kActionSecondary, kAimBehaviorFlick, kKeyMouse5);
                 secondary.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
-                secondary.requireActionHeld = true;
+                secondary.requireActionHeld = false;
                 return {
                     AimSlot("Primary Tracking", kActionPrimary, kAimBehaviorTracking, kKeyLeftMouse),
                     secondary,
@@ -1652,13 +1652,17 @@ namespace OW { namespace Config {
             case static_cast<uint64_t>(OW::eHero::HERO_DVA):
             case static_cast<uint64_t>(OW::eHero::HERO_SOMBRA):
             case static_cast<uint64_t>(OW::eHero::HERO_WRECKINGBALL):
-            case static_cast<uint64_t>(OW::eHero::HERO_SOJOURN):
             case static_cast<uint64_t>(OW::eHero::HERO_BAPTISTE):
             case static_cast<uint64_t>(OW::eHero::HERO_RAMATTRA):
             case static_cast<uint64_t>(OW::eHero::HERO_LIFEWEAVER):
             case static_cast<uint64_t>(OW::eHero::HERO_HAZARD):
             case static_cast<uint64_t>(OW::eHero::HERO_JUNO):
                 return { AimSlot("Primary Tracking", kActionPrimary, kAimBehaviorTracking, kKeyLeftMouse) };
+            case static_cast<uint64_t>(OW::eHero::HERO_SOJOURN):
+                return {
+                    AimSlot("Primary Tracking", kActionPrimary, kAimBehaviorTracking, kKeyLeftMouse),
+                    AimSlot("Secondary Flick", kActionSecondary, kAimBehaviorFlick, kKeyMouse5),
+                };
             case static_cast<uint64_t>(OW::eHero::HERO_MEI):
                 return { AimSlot("Secondary Flick", kActionSecondary, kAimBehaviorFlick, kKeyMouse5) };
             case static_cast<uint64_t>(OW::eHero::HERO_ANA): {
@@ -1986,6 +1990,10 @@ namespace OW { namespace Config {
             if (!std::isfinite(settings.cooldown)) settings.cooldown = 0.0f;
             if (!std::isfinite(settings.radius)) settings.radius = 0.0f;
             if (!std::isfinite(settings.meleeRadius)) settings.meleeRadius = 0.35f;
+            if (!std::isfinite(settings.meleeHealthPercent)) settings.meleeHealthPercent = 50.0f;
+            if (settings.meleeHealthMode < kMeleeAnyHealth || settings.meleeHealthMode > kMeleeHealthAbsolute)
+                settings.meleeHealthMode = kMeleeHealthAbsolute;
+            settings.meleeHealthPercent = std::clamp(settings.meleeHealthPercent, 0.0f, 100.0f);
             if (!std::isfinite(settings.tracking.smooth)) settings.tracking.smooth = 0.0f;
             if (!std::isfinite(settings.tracking.speedScale)) settings.tracking.speedScale = 100.0f;
             if (!std::isfinite(settings.tracking.fov)) settings.tracking.fov = 0.0f;
@@ -3867,6 +3875,8 @@ namespace OW { namespace Config {
             AddJsonFloat(value,"trackingPitchScale",settings.tracking.pitchScale,allocator);
             AddJsonFloat(value, "trackingHitboxScale", settings.tracking.hitbox, allocator);
             AddJsonFloat(value, "meleeRadius", settings.meleeRadius, allocator);
+            AddJsonInt(value, "meleeHealthMode", settings.meleeHealthMode, allocator);
+            AddJsonFloat(value, "meleeHealthPercent", settings.meleeHealthPercent, allocator);
             AddJsonBool(value, "sequencePhaseAwareTracking", settings.sequencePhaseAwareTracking, allocator);
             AddJsonFloat(value, "sequencePostFirePauseMs", settings.sequencePostFirePauseMs, allocator);
             AddJsonFloat(value, "sequenceRecoveryMs", settings.sequenceRecoveryMs, allocator);
@@ -4385,6 +4395,8 @@ namespace OW { namespace Config {
             defaults.tracking.yawScale=ReadJsonFloat(value,"trackingYawScale",defaults.tracking.yawScale);
             defaults.tracking.pitchScale=ReadJsonFloat(value,"trackingPitchScale",defaults.tracking.pitchScale);
             defaults.meleeRadius = ReadJsonFloat(value, "meleeRadius", defaults.meleeRadius);
+            defaults.meleeHealthMode = ReadJsonInt(value, "meleeHealthMode", defaults.meleeHealthMode);
+            defaults.meleeHealthPercent = ReadJsonFloat(value, "meleeHealthPercent", defaults.meleeHealthPercent);
             defaults.tracking.hitbox = ReadJsonHitboxScaleCompat(
                 value,
                 "trackingHitboxScale",
@@ -5330,16 +5342,19 @@ namespace OW { namespace Config {
 
         void MigrateLegacyGenjiSkillUnlocked(const IniFile* ini) {
             const uint64_t hero=eHero::HERO_GENJI;
-            if(!ini || !KeyExists(*ini,"Genji","AutoShiftGenji")) return;
-            const auto existing=heroSkillPresets.find(hero);
-            if(existing!=heroSkillPresets.end() && existing->second.contains("auto-swift-strike")) return;
-            for(const auto& definition:AllHeroSkillDefinitions()) {
-                if(definition.heroId!=hero || std::string(definition.skillId)!="auto-swift-strike") continue;
-                auto settings=definition.defaultSettings;
-                settings.enabled=ReadBool(*ini,"Genji","AutoShiftGenji",false);
-                heroSkillPresets[hero]["auto-swift-strike"]=settings;
-                gLastHeroConfigNeedsSave=true;
-                return;
+            if (!ini) return;
+            for (const auto& definition : AllHeroSkillDefinitions()) {
+                if (definition.heroId != hero) continue;
+                const std::string id = definition.skillId;
+                const char* legacy = id == "auto-swift-strike" ? "AutoShiftGenji"
+                    : id == "dragonblade" ? "GenjiBlade" : nullptr;
+                if (!legacy || !KeyExists(*ini,"Genji",legacy)) continue;
+                const auto existing = heroSkillPresets.find(hero);
+                if (existing != heroSkillPresets.end() && existing->second.contains(id)) continue;
+                auto settings = definition.defaultSettings;
+                settings.enabled = ReadBool(*ini,"Genji",legacy,false);
+                heroSkillPresets[hero][id] = settings;
+                gLastHeroConfigNeedsSave = true;
             }
         }
 
@@ -5730,6 +5745,7 @@ namespace OW { namespace Config {
             preset.id = ReadInt(ini, section, "id", fallbackIndex + 1);
             preset.name = ReadString(ini, section, "name", NormalizeAimPresetName("", "Dynamic FOV", fallbackIndex).c_str());
             preset.smooth = ReadBool(ini, section, "smooth", preset.smooth);
+            preset.worldDiameterM = ReadFixedFloat(ini, section, "worldDiameterM", preset.worldDiameterM);
             preset.pointCount = ReadInt(ini, section, "pointCount", preset.pointCount);
             for (int index = 0; index < kMaxDynamicFovPoints; ++index) {
                 char distanceKey[32] = {};
@@ -6170,6 +6186,7 @@ namespace OW { namespace Config {
             WriteIntValue(path, section, "id", preset.id);
             WriteStringValue(path, section, "name", preset.name.c_str());
             WriteBoolValue(path, section, "smooth", preset.smooth);
+            WriteFixedFloatValue(path, section, "worldDiameterM", preset.worldDiameterM);
             WriteIntValue(path, section, "pointCount", preset.pointCount);
             for (int index = 0; index < kMaxDynamicFovPoints; ++index) {
                 char distanceKey[32] = {};
@@ -7457,6 +7474,8 @@ namespace OW { namespace Config {
         HeroSkillSettings fallback = defaultSettings;
         if ((heroId & 0xffff) == 0x029 && skillId == "auto-swift-strike")
             fallback.enabled = AutoShiftGenji;
+        if ((heroId & 0xffff) == 0x029 && skillId == "dragonblade")
+            fallback.enabled = GenjiBlade;
         const auto hero = heroSkillPresets.find(heroId);
         if (hero == heroSkillPresets.end())
             return ValidateHeroSkillSettingsValue(fallback);

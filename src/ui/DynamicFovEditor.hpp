@@ -22,6 +22,7 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     const ImVec2 start=ImGui::GetCursorScreenPos();
     const ImVec2 area((std::max)(150.f,ImGui::GetContentRegionAvail().x),220);
     const ImVec2 origin(start.x+38,start.y+12),size(area.x-50,area.y-40);
+    ImGui::BeginDisabled(preset.worldDiameterM > 0);
     ImGui::InvisibleButton("##dynamicFovGraph",area);
     const auto graph=ImGui::GetItemID();
     auto* draw=ImGui::GetWindowDrawList();
@@ -77,7 +78,7 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
         const auto next=screen(distance,EvaluateDynamicFovPreset(preset,distance,kDefaultFovDeg));
         draw->AddLine(previous,next,Theme::kColAccent,2);previous=next;
     }
-    for(int i=0;i<preset.pointCount;++i) {
+    for(int i=0;preset.worldDiameterM<=0 && i<preset.pointCount;++i) {
         const auto p=screen(preset.points[i].distanceM,preset.points[i].fovDeg);
         draw->AddCircleFilled(p,i==selected?6.f:4.f,Theme::kColText,24);
         if(i==selected)draw->AddCircle(p,9,Theme::kColAccent,24,2);
@@ -113,6 +114,7 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     ImGui::SetNextItemWidth(150);
     changed|=ImGui::DragFloat("FOV (deg)",&point.fovDeg,.1f,kMinFovDeg,kMaxFovDeg,"%.2f",ImGuiSliderFlags_AlwaysClamp);
     point.distanceM=std::clamp(point.distanceM,low,high);point.fovDeg=ClampFovDeg(point.fovDeg);
+    ImGui::EndDisabled();
     float preview=storage->GetFloat(ImGui::GetID("previewDistance"),10);
     ImGui::SetNextItemWidth(150);
     if(ImGui::SliderFloat(zh?"预览距离 (m)":"Preview distance (m)",&preview,0,500,"%.1f"))storage->SetFloat(ImGui::GetID("previewDistance"),preview);

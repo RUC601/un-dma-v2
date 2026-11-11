@@ -206,6 +206,23 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         SettingRow("Aim Before Casting",kAimbotRightLabelWidth);
         changed|=UICheckbox("##autoSkillAim",&settings.automaticAim);
     }
+    if (definition.automation == OW::SkillAutomation::GenjiBlade) {
+        ImGui::TextWrapped("%s", L("Manually use the mapped ultimate key at full charge. After drawing the blade, assists aim, dashes beyond 5 m and swings within 5 m. Ends after 7 seconds. Does not cast Q. Timing needs in-game calibration."));
+        if (ImGui::SmallButton(L("Edit hero action keys..."))) UI::state.activeTab=UI::TAB_KEYS;
+    }
+    if (definition.automation == OW::SkillAutomation::RecentDamageDeflect)
+        ImGui::TextWrapped("%s", L("Deflects at low health after recent damage reaches 5% of maximum health, with a visible enemy in range. The damage window expires 450 ms after the last hit. Does not identify incoming projectiles or turn the camera."));
+    if (definition.automation == OW::SkillAutomation::HealthSurvival) {
+        ImGui::TextWrapped("%s", L("Uses the mapped action at low self health. Requires fresh health and ability samples. The interval limits attempts; it does not prove a charge or resource is available."));
+        if (definition.heroId == OW::eHero::HERO_ROADHOG)
+            ImGui::TextWrapped("%s", L("Enable Toggle Take a Breather in the game before using this helper. It taps Ability 2; it does not hold the key through healing."));
+        if (definition.inputAction == OW::HeroSkillInputAction::Ultimate)
+            ImGui::TextWrapped("%s", L("Requires fresh full ultimate charge and low self health. Enemy ultimate detection is a separate condition."));
+    }
+    if (definition.automation == OW::SkillAutomation::ShieldBash)
+        ImGui::TextWrapped("%s", L("Hold the mapped secondary-fire key to raise the shield. Taps primary fire only while a visible enemy is under the crosshair and in range. Does not turn the camera or detect ultimate stuns; the interval limits attempts."));
+    if (definition.heroId == OW::eHero::HERO_GENJI && definition.inputAction == OW::HeroSkillInputAction::Ability1)
+        ImGui::TextWrapped("%s", L("Dash uses fresh activation samples and a bounded retry interval; kill resets and actual recharge are not yet directly readable."));
     if(definition.automation==OW::SkillAutomation::RecastReturn)
         ImGui::TextWrapped("%s",L("Recasts the mapped Ability 1 only after a freshly observed deployment. Does not deploy a return point at low health."));
     if(definition.automation==OW::SkillAutomation::EmreJump) {
@@ -221,8 +238,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::TextWrapped("%s", L("Set the verified effect radius before enabling automatic group healing. A zero radius does not cast."));
     const bool hasSkillOutputKey = !hasSequenceControls && !hasComboAction && !hasPunchAssist &&
         (hasControl(OW::HeroSkillControls::Key) || hasPitchControls ||
-         hasPhaseTiming || hasHealthThreshold || hasAbsoluteHealth ||
-         hasControl(OW::HeroSkillControls::MeleeRange));
+         hasPhaseTiming || hasHealthThreshold || hasAbsoluteHealth);
 
     if (hasControl(OW::HeroSkillControls::Key)) {
         SettingRow("Activation Key", kAimbotRightLabelWidth);
@@ -267,11 +283,27 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::PopItemWidth();
     }
 
-    if (hasAbsoluteEnemyHealth) {
-        SettingRow(hasControl(OW::HeroSkillControls::MeleeRange) ? "Current HP Threshold" : "Max Health",
-                   kAimbotRightLabelWidth);
+    if (hasControl(OW::HeroSkillControls::MeleeRange) && settings.enabled) {
+        const char* modes[] = { "Any target health", "Current health percentage", "Current health amount" };
+        SettingRow("Melee Trigger", kAimbotRightLabelWidth);
         PushControlWidth();
-        changed |= UISlider("##skillEnemyMaxHealth", &settings.enemyHealthThreshold, 0.0f, 300.0f, Number(0, " HP"));
+        changed |= UISelect("##meleeHealthMode", &settings.meleeHealthMode, modes, IM_ARRAYSIZE(modes));
+        ImGui::PopItemWidth();
+        if (settings.meleeHealthMode == OW::Config::kMeleeHealthPercent) {
+            SettingRow("Current HP Percentage Threshold", kAimbotRightLabelWidth);
+            PushControlWidth();
+            changed |= UISlider("##meleeHealthPercent", &settings.meleeHealthPercent, 0.0f, 100.0f, Number(0, "%"));
+            ImGui::PopItemWidth();
+            ImGui::TextWrapped("%s", L("Uses current total HP divided by maximum total HP. Triggers at or below the selected percentage."));
+        }
+    }
+
+    if (hasAbsoluteEnemyHealth && (!hasControl(OW::HeroSkillControls::MeleeRange) ||
+        (settings.enabled && settings.meleeHealthMode == OW::Config::kMeleeHealthAbsolute))) {
+        SettingRow(hasControl(OW::HeroSkillControls::MeleeRange) ? "Current HP Threshold" : "Max Health", kAimbotRightLabelWidth);
+        PushControlWidth();
+        changed |= UISlider("##skillEnemyMaxHealth", &settings.enemyHealthThreshold, 0.0f,
+                            hasControl(OW::HeroSkillControls::MeleeRange) ? 500.0f : 300.0f, Number(0, " HP"));
         ImGui::PopItemWidth();
     }
 
@@ -353,7 +385,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         PushControlWidth();
         changed |= UISlider("##skillMeleeRadius", &settings.meleeRadius, 0.0f, 2.0f, Number(2, " m"));
         ImGui::PopItemWidth();
-        ImGui::TextWrapped("%s", L("Checks the whole body. Expansion allows more crosshair offset; Max Distance still limits reach. Automatically sends the Skill Key when current enemy HP is at or below the threshold. No activation key is needed."));
+        ImGui::TextWrapped("%s", L("Checks the whole body within Max Distance. Current total HP includes remaining health, armor, shields and extra health. Directly writes the game's melee action for 50 ms; no Box keyboard or activation key is needed."));
     }
 
     if (hasControl(OW::HeroSkillControls::Hitbox)) {
@@ -367,6 +399,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
 
     if (hasTrackingOverlay && settings.enabled) {
         const bool canMoveAim=definition.automation==OW::SkillAutomation::None ||
+            definition.automation==OW::SkillAutomation::GenjiBlade ||
             (settings.automaticAim && (definition.automation==OW::SkillAutomation::LowEnemyHealth ||
                 definition.automation==OW::SkillAutomation::NormalInterrupt));
         ImGui::Spacing();
