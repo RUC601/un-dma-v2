@@ -2631,6 +2631,9 @@ namespace OW { namespace Config {
             mode.defaultBehavior = builtin ? behavior : -1;
             mode.name = name;
             mode.behavior = behavior;
+            mode.firePolicy = static_cast<int>(OW::DefaultFirePolicyForBehavior(
+                static_cast<OW::AimBehaviorType>(behavior)));
+            mode.keepFiring = behavior != kAimBehaviorTracking;
             mode.method = method;
             mode.motion = motion;
             mode.motion.method = method;

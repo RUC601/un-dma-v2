@@ -435,7 +435,15 @@ void DrawMiscBehaviorPage() {
     ImGui::PopItemWidth();
     SettingRow("Aim Behavior");PushControlWidth();
     ImGui::BeginDisabled(mode.defaultBehavior >= 0);
-    changed|=UISelect("##modeBehavior",&mode.behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior));ImGui::PopItemWidth();
+    if(UISelect("##modeBehavior",&mode.behavior,kAimBehavior,IM_ARRAYSIZE(kAimBehavior))) {
+        if(!selected) {
+            mode.firePolicy=static_cast<int>(OW::DefaultFirePolicyForBehavior(
+                static_cast<OW::AimBehaviorType>(mode.behavior)));
+            mode.keepFiring=mode.behavior!=kAimBehaviorTracking;
+        }
+        changed=true;
+    }
+    ImGui::PopItemWidth();
     ImGui::EndDisabled();
     ImGui::TextWrapped("%s",L("Edit mode structure and defaults here. Existing Slot parameters stay independent."));
     changed|=UI::BehaviorTuningEditor(mode,mode.behavior);
