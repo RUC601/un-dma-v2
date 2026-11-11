@@ -441,6 +441,7 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Hitbox Scale", "命中范围比例" },
     { "Melee Range Expansion", "近战范围扩展" },
     { "Current HP Threshold", "当前血量阈值" },
+    { "Keyboard action is written to the game action word for about 55 ms; Box keyboard output is not used.", "键盘动作直接写入游戏动作字，保持约 55 毫秒；不使用 Box 键盘输出。" },
     { "Checks the whole body within Max Distance. Current total HP includes remaining health, armor, shields and extra health. Directly writes the game's melee action for 50 ms; no Box keyboard or activation key is needed.", "在最远距离内检查全身。当前总血量包含剩余生命、护甲、护盾和额外生命；直接写入游戏近战动作，保持约 50 毫秒，无需 Box 键盘或启动键。" },
     { "Melee Trigger", "近战触发条件" },
     { "Any target health", "任意血量" },

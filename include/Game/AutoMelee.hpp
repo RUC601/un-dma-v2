@@ -14,15 +14,18 @@ inline constexpr uint64_t kHoldMs = 50;
 
 struct MemoryPulse {
     uint64_t address = 0, startedMs = 0;
+    uint64_t holdMs = kHoldMs;
+    uint32_t mask = kActionMask;
     bool owned = false, releasing = false;
 
     template<class Read, class Write, class Current>
-    bool Start(uint64_t destination, uint64_t now, Read read, Write write, Current current) {
+    bool Start(uint64_t destination, uint64_t now, Read read, Write write, Current current,
+               uint32_t requestedMask = kActionMask, uint64_t requestedHoldMs = kHoldMs) {
         if (owned || !destination || !current()) return false;
         uint32_t value = 0;
-        if (!read(destination, &value, sizeof(value)) || !current() || (value & kActionMask)) return false;
-        address = destination; startedMs = now; owned = true;
-        value |= kActionMask;
+        if (!read(destination, &value, sizeof(value)) || !current() || (value & requestedMask)) return false;
+        address = destination; startedMs = now; holdMs = requestedHoldMs; mask = requestedMask; owned = true;
+        value |= mask;
         // A failed transport can be partial; retain release-only cleanup until checked.
         releasing = !write(address, &value, sizeof(value));
         return !releasing;
@@ -32,11 +35,11 @@ struct MemoryPulse {
     bool Update(uint64_t now, bool keepHolding, Read read, Write write, Current current) {
         if (!owned) return true;
         if (!current()) { *this = {}; return false; } // Never touch a retired body/address.
-        releasing = releasing || !keepHolding || now - startedMs >= kHoldMs;
+        releasing = releasing || !keepHolding || now - startedMs >= holdMs;
         uint32_t value = 0;
         if (!read(address, &value, sizeof(value))) { releasing = true; return false; }
         if (!current()) { *this = {}; return false; }
-        const uint32_t next = releasing ? value & ~kActionMask : value | kActionMask;
+        const uint32_t next = releasing ? value & ~mask : value | mask;
         if (next != value && !write(address, &next, sizeof(next))) { releasing = true; return false; }
         if (releasing) *this = {};
         return true;

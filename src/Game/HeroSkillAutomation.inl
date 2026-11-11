@@ -55,7 +55,7 @@ bool EvaluateRecentDamageDeflect(const std::string& key, const HeroSkillDefiniti
         if (!IsUsablePosition(point)) continue;
         const float distance = source.DistTo(point);
         if (!std::isfinite(distance) || distance>settings.distance) continue;
-        if (!StartTimedHotkey(key,SkillOutputVk(settings),kBriefPulse)) return false;
+        if (!StartSkillOutput(key,definition,settings,local,kBriefPulse)) return false;
         MarkActionExecuted(key);
         Diagnostics::Info("Hero skill recent-damage deflect fired. skill=%s hp=%.1f damage=%.1f distance=%.2f",
             definition.skillId,local.PlayerHealth,g_recentDamage.damage,distance);
@@ -96,7 +96,7 @@ void EvaluateGenjiBlade(const std::string& key, const Config::HeroSkillSettings&
     MoveSkillAimAndCheckReady(key,settings,candidate,projectile);
     if (!IsSkillAimConfirmed(candidate)) return;
     if (candidate.distance > GenjiAssist::kSwingRange) {
-        TryStartGenjiDash(key + ":dash",V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Ability1),local);
+        TryStartGenjiDash(key + ":dash",V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Ability1),local,0x8);
     } else if (!g_genjiBlade.lastSwing || now - g_genjiBlade.lastSwing >= GenjiAssist::kSwingMs) {
         if (StartTimedHotkey(key + ":swing",V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Primary),kBriefPulse))
             g_genjiBlade.lastSwing = now;
@@ -184,8 +184,8 @@ bool EvaluateAutomaticAim(const std::string& key, const HeroSkillDefinition& def
     if (!IsSkillAimConfirmed(candidate) || IsActionDebounced(key)) return false;
     const auto local = TargetingDetail::SnapshotLocalEntity();
     const bool genjiDash = definition.heroId == eHero::HERO_GENJI && definition.inputAction == HeroSkillInputAction::Ability1;
-    if (!(genjiDash ? TryStartGenjiDash(key,SkillOutputVk(settings),local)
-                   : StartTimedHotkey(key,SkillOutputVk(settings),kBriefPulse))) return false;
+    if (!(genjiDash ? TryStartGenjiDash(key,SkillOutputVk(settings),local,0x8)
+                   : StartSkillOutput(key,definition,settings,local,kBriefPulse))) return false;
     RecordTrajectoryCast(key,definition,settings);
     window.Reset();
     if (kind == SkillAutomation::NormalInterrupt) {
@@ -201,7 +201,15 @@ bool EvaluateReturn(const std::string& key, const Config::HeroSkillSettings& set
     if (!SkillConditions::FreshActive(local.skill1act,local.skill_active_tick_ms[0],GetTickCount()) ||
         !g_returnWindow.Ready(GetTickCount64()) ||
         !SkillConditions::HealthAtOrBelow(local.PlayerHealth,local.PlayerHealthMax,settings.healthThreshold,true)) return false;
-    if (!StartTimedHotkey(key,settings.runtimeOutputVk,kBriefPulse)) return false;
+    bool sent = false;
+#ifdef UNLEASHED_SELF_TESTS
+    sent = !mem.IsProcessInitialized()
+        ? StartTimedHotkey(key, settings.runtimeOutputVk, kBriefPulse)
+        : StartSkillMemoryPulse(key, local, 0x8, 55);
+#else
+    sent = StartSkillMemoryPulse(key, local, 0x8, 55);
+#endif
+    if (!sent) return false;
     g_returnWindow.spent = true;
     MarkActionExecuted(key);
     return true;

@@ -427,12 +427,21 @@ namespace {
 
     void RefreshAnyInputSequenceActive();
     bool IsActionDebounced(const std::string& runtimeKey);
-    bool TryStartGenjiDash(const std::string& key, int vk, const c_entity& local);
+    bool TryStartGenjiDash(const std::string& key, int vk, const c_entity& local,
+                           uint32_t memoryMask = 0);
     uint64_t g_lastGenjiDashTry = 0;
     bool ShouldLogSkillGuard(const std::string& runtimeKey);
     void MarkActionExecuted(const std::string& runtimeKey);
     OutputScheduler& TimedOutputScheduler();
     bool TryMapVkToOutputControl(int vk, OutputControl& control);
+    bool StartSkillMemoryPulse(const std::string& runtimeKey, const c_entity& local,
+                               uint32_t actionMask, uint64_t holdMs = 55);
+    uint32_t MemoryMaskForInputAction(HeroSkillInputAction action);
+    bool StartSkillOutput(const std::string& runtimeKey,
+                          const HeroSkillDefinition& definition,
+                          const Config::HeroSkillSettings& settings,
+                          const c_entity& local,
+                          std::chrono::milliseconds duration = std::chrono::milliseconds(20));
     bool ConsumeSequenceAmmoBudgetForStep(const std::string& runtimeKey,
                                           int previousMask,
                                           int nextMask,
@@ -2109,6 +2118,20 @@ namespace {
 
     bool StartTimedHotkey(const std::string& runtimeKey, int vk, std::chrono::milliseconds duration)
     {
+        const auto local = TargetingDetail::SnapshotLocalEntity();
+        if (mem.IsProcessInitialized() && local.HeroID) {
+            const auto key = [&](V2::HeroSettings::Action action) {
+                return V2::HeroSettings::Key(local.HeroID, action);
+            };
+            uint32_t memoryMask = 0;
+            if (vk == key(V2::HeroSettings::Action::Ability1)) memoryMask = 0x8;
+            else if (vk == key(V2::HeroSettings::Action::Ability2)) memoryMask = 0x10;
+            else if (vk == key(V2::HeroSettings::Action::Ability3)) memoryMask = 0x40;
+            else if (vk == key(V2::HeroSettings::Action::Ultimate)) memoryMask = 0x20;
+            else if (vk == key(V2::HeroSettings::Action::Melee)) memoryMask = AutoMelee::kActionMask;
+            if (memoryMask)
+                return StartSkillMemoryPulse(runtimeKey, local, memoryMask, 55);
+        }
         OutputControl control{};
         if (vk <= 0 || !TryMapVkToOutputControl(vk, control))
             return false;
@@ -2127,11 +2150,19 @@ namespace {
         return scheduled;
     }
 
-    bool TryStartGenjiDash(const std::string& key, int vk, const c_entity& local) {
+    bool TryStartGenjiDash(const std::string& key, int vk, const c_entity& local,
+                           uint32_t memoryMask) {
         const auto now = GetTickCount64();
         if (!GenjiAssist::MayTryDash(local.skill1act,local.skill_active_tick_ms[0],
                 GetTickCount(),g_lastGenjiDashTry,now)) return false;
-        if (!StartTimedHotkey(key,vk,std::chrono::milliseconds(40))) return false;
+        if (memoryMask) {
+#ifdef UNLEASHED_SELF_TESTS
+            if (!mem.IsProcessInitialized()) {
+                if (!StartTimedHotkey(key, vk, std::chrono::milliseconds(40))) return false;
+            } else
+#endif
+            if (!StartSkillMemoryPulse(key, local, memoryMask)) return false;
+        } else if (!StartTimedHotkey(key, vk, std::chrono::milliseconds(40))) return false;
         g_lastGenjiDashTry = now;
         return true;
     }
@@ -3590,8 +3621,9 @@ namespace {
             IsActionDebounced(runtimeKey)) return false;
         const auto local = TargetingDetail::SnapshotLocalEntity();
         const bool genjiDash = definition.heroId == eHero::HERO_GENJI && definition.inputAction == HeroSkillInputAction::Ability1;
-        if (!(genjiDash ? TryStartGenjiDash(runtimeKey,SkillOutputVk(settings),local)
-                       : StartTimedHotkey(runtimeKey,SkillOutputVk(settings),kBriefPulse))) return false;
+        if (!(genjiDash ? TryStartGenjiDash(runtimeKey,SkillOutputVk(settings),local,
+                                            MemoryMaskForInputAction(definition.inputAction))
+                       : StartSkillOutput(runtimeKey,definition,settings,local,kBriefPulse))) return false;
         RecordTrajectoryCast(runtimeKey,definition,settings);
         session.Block();
         Diagnostics::Info("Hero skill aimed trajectory fired. skill=%s targetIndex=%d distance=%.2f projectileSpeed=%.1f",
@@ -3648,6 +3680,95 @@ namespace {
             [](uint64_t address, const void* value, size_t bytes) { return mem.Write(address, value, bytes, g_meleeMemoryPid); },
             MeleeMemoryTargetCurrent);
 #endif
+    }
+
+    AutoMelee::MemoryPulse g_skillMemoryPulse;
+    c_entity g_skillMemoryBody;
+    int g_skillMemoryPid = 0;
+    offset::RuntimeProfile g_skillMemoryProfile = offset::kProductRuntimeProfile;
+    std::string g_skillMemoryKey;
+
+    uint32_t MemoryMaskForInputAction(HeroSkillInputAction action) {
+        switch (action) {
+        case HeroSkillInputAction::Ability1: return 0x8;
+        case HeroSkillInputAction::Ability2: return 0x10;
+        case HeroSkillInputAction::Ability3: return 0x40; // candidate from the legacy action-word layout
+        case HeroSkillInputAction::Ultimate: return 0x20;
+        case HeroSkillInputAction::QuickMelee: return AutoMelee::kActionMask;
+        default: return 0;
+        }
+    }
+
+    bool SkillMemoryTargetCurrent() {
+        if (!SDK || !SDK->IsInitialized() || !mem.IsProcessInitialized() || g_skillMemoryPid <= 0 ||
+            mem.GetCurrentProcessId() != g_skillMemoryPid || !ProcessConnection::IsConnected() ||
+            offset::ActiveProfile() != g_skillMemoryProfile ||
+            ProcessConnection::ConnectionEpoch() != g_skillMemoryBody.connection_epoch ||
+            SDK->g_player_controller.load() != g_skillMemoryBody.AngleBase)
+            return false;
+        const auto local = SnapshotFrame()->local;
+        return local.AngleBase == g_skillMemoryBody.AngleBase &&
+            local.LinkParent == g_skillMemoryBody.LinkParent &&
+            local.match_id == g_skillMemoryBody.match_id &&
+            local.body_authority_revision == g_skillMemoryBody.body_authority_revision &&
+            SkillBodyIdentity(local) == SkillBodyIdentity(g_skillMemoryBody) &&
+            local.HasUsableBody(GetTickCount(), EntitySceneGeneration());
+    }
+
+    bool UpdateSkillMemoryPulse(bool keepHolding) {
+        return g_skillMemoryPulse.Update(GetTickCount64(), keepHolding,
+            [](uint64_t address, void* value, size_t bytes) {
+                return mem.ReadFreshExact(address, value, bytes);
+            },
+            [](uint64_t address, const void* value, size_t bytes) {
+                return mem.Write(address, value, bytes, g_skillMemoryPid);
+            },
+            SkillMemoryTargetCurrent);
+    }
+
+    bool StartSkillMemoryPulse(const std::string& runtimeKey, const c_entity& local,
+                               uint32_t actionMask, uint64_t holdMs) {
+#ifdef UNLEASHED_OBSERVATION_ONLY
+        return false;
+#else
+        if (!actionMask || Config::aimDryRun || !local.AngleBase || g_skillMemoryPulse.owned ||
+            (offset::ActiveProfile() != offset::RuntimeProfile::Cn &&
+             offset::ActiveProfile() != offset::RuntimeProfile::World155284 &&
+             offset::ActiveProfile() != offset::RuntimeProfile::Nexon155284))
+            return false;
+        g_skillMemoryBody = local;
+        g_skillMemoryPid = mem.GetCurrentProcessId();
+        g_skillMemoryProfile = offset::ActiveProfile();
+        g_skillMemoryKey = runtimeKey;
+        return g_skillMemoryPulse.Start(
+            local.AngleBase + AutoMelee::kActionOffset,
+            GetTickCount64(),
+            [](uint64_t address, void* value, size_t bytes) {
+                return mem.ReadFreshExact(address, value, bytes);
+            },
+            [](uint64_t address, const void* value, size_t bytes) {
+                return mem.Write(address, value, bytes, g_skillMemoryPid);
+            },
+            SkillMemoryTargetCurrent,
+            actionMask,
+            holdMs);
+#endif
+    }
+
+    bool StartSkillOutput(const std::string& runtimeKey,
+                          const HeroSkillDefinition& definition,
+                          const Config::HeroSkillSettings& settings,
+                          const c_entity& local,
+                          std::chrono::milliseconds duration) {
+        const uint32_t memoryMask = MemoryMaskForInputAction(definition.inputAction);
+        if (memoryMask) {
+#ifdef UNLEASHED_SELF_TESTS
+            if (!mem.IsProcessInitialized())
+                return StartTimedHotkey(runtimeKey, SkillOutputVk(settings), duration);
+#endif
+            return StartSkillMemoryPulse(runtimeKey, local, memoryMask, 55);
+        }
+        return StartTimedHotkey(runtimeKey, SkillOutputVk(settings), duration);
     }
 
     bool EvaluateAutoMeleeAction(const std::string& runtimeKey,
@@ -3920,7 +4041,7 @@ namespace {
             return false;
 
         const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+        if (!StartSkillOutput(runtimeKey, definition, settings, local, kBriefPulse))
             return false;
 
         MarkActionExecuted(runtimeKey);
@@ -4065,7 +4186,7 @@ namespace {
             return false;
 
         const int vk = SkillOutputVk(settings);
-        if (!StartTimedHotkey(runtimeKey, vk, kBriefPulse))
+        if (!StartSkillOutput(runtimeKey, definition, settings, local, kBriefPulse))
             return false;
 
         MarkActionExecuted(runtimeKey);
@@ -4110,7 +4231,7 @@ namespace {
             const float distance = source.DistTo(position);
             if (std::isfinite(distance) && distance <= settings.radius) ++count;
         }
-        if (count < settings.minTargets || !StartTimedHotkey(runtimeKey, SkillOutputVk(settings), kBriefPulse))
+        if (count < settings.minTargets || !StartSkillOutput(runtimeKey, definition, settings, local, kBriefPulse))
             return false;
         MarkActionExecuted(runtimeKey);
         Diagnostics::Info("Hero skill group action fired. skill=%s allies=%d count=%d radius=%.1f",
@@ -4583,6 +4704,7 @@ namespace {
 void CancelActiveSkillStateLocked()
 {
     UpdateMeleeMemoryPulse(false);
+    UpdateSkillMemoryPulse(false);
     CancelGenjiBlade();
     g_lastGenjiDashTry = 0;
     for(auto& [key,state]:g_superJumps)CancelSuperJump(key,state);
@@ -4646,6 +4768,8 @@ void ProcessHeroSkills()
 
     const OutputRuntimeState outputRuntime =
         CurrentOutputRuntimeState();
+    UpdateSkillMemoryPulse(outputRuntime.outputGateOpen && RuntimeWorkersRunning() &&
+        ProcessConnection::IsConnected());
     const bool generationChanged =
         g_lastTimedOutputGeneration != 0 &&
         outputRuntime.backendGeneration != g_lastTimedOutputGeneration;
@@ -4715,15 +4839,13 @@ void ProcessHeroSkills()
     const unsigned pause = HeroStatePauseMask(localSnapshot);
     // Memory melee does not require a Box keyboard or a connected device backend.
     ProcessAutoMeleeMemory(localSnapshot, pause);
-    if (!outputReady) {
+    if (!outputReady)
         g_anyInputSequenceActivationHeld.store(false, std::memory_order_release);
-        (void)RetryPendingPhysicalMouseMaskLeases();
-        return;
-    }
     if (pause & SkillConditions::Aim) TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
     if (pause & SkillConditions::Trigger) TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
     for (const auto& definition : AllHeroSkillDefinitions()) {
         if (definition.automation != SkillAutomation::GenjiBlade || definition.heroId != heroId) continue;
+        if (!outputReady) { CancelGenjiBlade(); continue; }
         const auto settings = Config::GetHeroSkillSettings(heroId,definition.skillId,definition.defaultSettings);
         if (!settings.enabled || (pause & SkillConditions::Skills) || !HasFreshViewMatrices() || Config::aimDryRun)
             CancelGenjiBlade();
@@ -4731,6 +4853,11 @@ void ProcessHeroSkills()
     }
     for (const HeroSkillDefinition& definition : AllHeroSkillDefinitions()) {
         if (!IsHeroSkillDefinitionActiveForRuntime(definition, heroId))
+            continue;
+
+        // Keyboard actions can use the game action word without a Box backend.
+        // Mouse aim/sequence producers still require the normal output gate.
+        if (!outputReady && MemoryMaskForInputAction(definition.inputAction) == 0)
             continue;
 
         processedAnyForHero = true;

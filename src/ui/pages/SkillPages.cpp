@@ -146,6 +146,13 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s / %s",
                        L(OW::HeroSkillCategoryName(definition.category)),
                        L(OW::HeroSkillInputActionName(definition.inputAction)));
+      const bool directGameAction = definition.inputAction == OW::HeroSkillInputAction::Ability1 ||
+          definition.inputAction == OW::HeroSkillInputAction::Ability2 ||
+          definition.inputAction == OW::HeroSkillInputAction::Ability3 ||
+          definition.inputAction == OW::HeroSkillInputAction::Ultimate ||
+          definition.inputAction == OW::HeroSkillInputAction::QuickMelee;
+      if (directGameAction)
+          ImGui::TextWrapped("%s", L("Keyboard action is written to the game action word for about 55 ms; Box keyboard output is not used."));
     }
 
     if (hasControl(OW::HeroSkillControls::Enabled)) {
