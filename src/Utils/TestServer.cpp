@@ -39,6 +39,8 @@
 #include "Utils/Config.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/ProcessConnection.hpp"
+#include "output/Actions.hpp"
+#include "vision/ContourService.hpp"
 
 namespace TestServer {
 namespace {
@@ -48,6 +50,10 @@ constexpr const char* kBindAddress = "127.0.0.1";
 constexpr size_t kMaxRequestBytes = 8192;
 constexpr size_t kTargetHistoryCapacity = 1024;
 constexpr int kTargetHistoryPeriodMs = 8;
+constexpr size_t kMaxClientWorkers = 16;
+constexpr auto kVisionFrameRequestInterval = std::chrono::milliseconds(16);
+std::mutex g_visionFrameRequestMutex;
+std::chrono::steady_clock::time_point g_lastVisionFrameRequest{};
 
 std::mutex g_lifecycleMutex;
 std::thread g_serverThread;
@@ -64,10 +70,16 @@ std::mutex g_clientsMutex;
 std::vector<ClientWorker> g_clients;
 std::atomic<uint16_t> g_port{ 19550 };
 std::atomic<bool> g_allowWildcardCors{ false };
+std::mutex g_testInputMutex;
+std::atomic<bool> g_testInputArmed{ false };
+std::string g_testInputToken;
+bool g_testInputOwnerUsed = false;
+constexpr const char* kTestInputOwner = "test-server.mouse-hold";
 
 struct RequestTarget {
     std::string path;
     std::unordered_map<std::string, std::string> query;
+    std::string method = "GET";
 };
 
 struct EntityQuery {
@@ -1911,7 +1923,7 @@ std::optional<RequestTarget> ParseRequestTarget(const std::string& request)
         return std::nullopt;
 
     const std::string method = requestLine.substr(0, methodEnd);
-    if (method != "GET")
+    if (method != "GET" && method != "POST")
         return RequestTarget{ "__method_not_allowed__", {} };
 
     const size_t targetStart = methodEnd + 1;
@@ -1922,10 +1934,126 @@ std::optional<RequestTarget> ParseRequestTarget(const std::string& request)
     std::string target = requestLine.substr(targetStart, targetEnd - targetStart);
     const size_t queryStart = target.find('?');
     RequestTarget parsed{};
+    parsed.method = method;
     parsed.path = queryStart == std::string::npos ? target : target.substr(0, queryStart);
     if (queryStart != std::string::npos)
         parsed.query = ParseQuery(target.substr(queryStart + 1));
     return parsed;
+}
+
+std::string TestInputEnvironment(const char* name)
+{
+    char value[256]{};
+    const DWORD count = GetEnvironmentVariableA(name, value, DWORD(sizeof(value)));
+    return count > 0 && count < sizeof(value) ? std::string(value, count) : std::string{};
+}
+
+void ArmTestInputFromEnvironment(bool wildcardCors)
+{
+    std::lock_guard lock(g_testInputMutex);
+    g_testInputToken.clear();
+    g_testInputArmed.store(false, std::memory_order_release);
+    const auto token = TestInputEnvironment("UN_DMA_TEST_INPUT_TOKEN");
+    const bool validToken = token.size() >= 32 && token.size() <= 128 &&
+        std::all_of(token.begin(), token.end(), [](unsigned char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        });
+    if (!wildcardCors && TestInputEnvironment("UN_DMA_TEST_INPUT_ARM") == "1" && validToken) {
+        g_testInputToken = token;
+        g_testInputArmed.store(true, std::memory_order_release);
+        Diagnostics::Info("[TEST_INPUT] Bounded localhost input armed for this server session.");
+    }
+}
+
+void DisarmTestInput()
+{
+    // Serialize disarming with submission so a concurrent HTTP worker cannot
+    // create a new hold after shutdown has cancelled the diagnostic owner.
+    std::lock_guard lock(g_testInputMutex);
+    g_testInputArmed.store(false, std::memory_order_release);
+    g_testInputToken.clear();
+    if (g_testInputOwnerUsed) {
+        OW::RuntimeOutputScheduler().Cancel(kTestInputOwner);
+        g_testInputOwnerUsed = false;
+    }
+}
+
+std::string BuildTestInputJson(const RequestTarget& target, int& statusCode)
+{
+    auto error = [&](int code, const char* message) {
+        statusCode = code;
+        std::ostringstream out;
+        AppendErrorBody(out, code, message);
+        return out.str();
+    };
+    if (target.method != "POST") return error(405, "Diagnostic input requires POST");
+    std::lock_guard lock(g_testInputMutex);
+    const auto token = target.query.find("token");
+    if (!g_testInputArmed.load(std::memory_order_acquire) || token == target.query.end() ||
+        token->second != g_testInputToken) return error(403, "Diagnostic input is not armed or token is invalid");
+    const auto actionIt = target.query.find("action");
+    if (actionIt == target.query.end()) return error(400, "Missing diagnostic action");
+    const auto& action = actionIt->second;
+    if (action != "left-hold" && action != "mouse-hold" && action != "release" && action != "move")
+        return error(400, "Unknown diagnostic action");
+    const auto dryIt = target.query.find("dry_run");
+    if (dryIt != target.query.end() && dryIt->second != "0" && dryIt->second != "1")
+        return error(400, "dry_run must be 0 or 1");
+    const bool dryRun = dryIt != target.query.end() && dryIt->second == "1";
+    const auto integer = [&](const char* key, int minimum, int maximum, int& value) {
+        const auto found = target.query.find(key);
+        if (found == target.query.end() || found->second.empty() || found->second.size() > 8) return false;
+        const auto& text = found->second;
+        const size_t firstDigit = text.front() == '-' ? 1 : 0;
+        if (firstDigit == text.size() || !std::all_of(text.begin() + firstDigit, text.end(),
+                [](unsigned char c) { return c >= '0' && c <= '9'; })) return false;
+        const long parsed = std::strtol(text.c_str(), nullptr, 10);
+        if (parsed < minimum || parsed > maximum) return false;
+        value = static_cast<int>(parsed);
+        return true;
+    };
+    const bool mouseHold = action == "left-hold" || action == "mouse-hold";
+    int durationMs = 0, dx = 0, dy = 0, button = 0;
+    if (mouseHold && !integer("duration_ms", 1, 3000, durationMs))
+        return error(400, "duration_ms must be an integer from 1 to 3000");
+    if (action == "mouse-hold" && (!integer("button", 0, 4, button) ||
+            (button != 0 && button != 3 && button != 4)))
+        return error(400, "button must be 0 (left), 3 (Mouse4), or 4 (Mouse5)");
+    if (action == "move" && (!integer("dx", -100, 100, dx) || !integer("dy", -100, 100, dy)))
+        return error(400, "dx and dy must be integers from -100 to 100");
+    bool accepted = true;
+    int outputStatus = 0;
+    if (!dryRun) {
+        if (action == "release") {
+            if (g_testInputOwnerUsed) OW::RuntimeOutputScheduler().Cancel(kTestInputOwner);
+        } else {
+            const auto runtime = OW::CurrentOutputRuntimeState();
+            if (!g_running.load(std::memory_order_acquire) || !runtime.outputGateOpen ||
+                !ProcessConnection::IsConnected()) return error(409, "Runtime output or process connection is not ready");
+            if (mouseHold) {
+                auto& scheduler = OW::RuntimeOutputScheduler();
+                if (scheduler.IsActive(kTestInputOwner)) return error(409, "A diagnostic hold is already active");
+                g_testInputOwnerUsed = true;
+                accepted = scheduler.ScheduleTimedHold(kTestInputOwner, OW::OutputOwnerSource::Test,
+                    {{OW::OutputControlKind::MouseButton, static_cast<uint16_t>(button)}}, std::chrono::milliseconds(durationMs));
+            } else {
+                outputStatus = OW::EnqueueOutputCountMoveForGeneration(dx, dy, 0,
+                    runtime.backendGeneration, ProcessConnection::ConnectionEpoch());
+                accepted = outputStatus == 0;
+            }
+        }
+    }
+    // Never log the URL, token, or unvalidated client strings.
+    Diagnostics::Info("[TEST_INPUT] at_ms=%llu caller=localhost action=%s button=%d duration_ms=%d dx=%d dy=%d dry_run=%d accepted=%d status=%d",
+        static_cast<unsigned long long>(TimestampMs()), action.c_str(), button, durationMs, dx, dy,
+        dryRun ? 1 : 0, accepted ? 1 : 0, outputStatus);
+    statusCode = accepted ? 200 : 409;
+    std::ostringstream out;
+    out << "{\"accepted\":" << (accepted ? "true" : "false") << ",\"dry_run\":" << (dryRun ? "true" : "false")
+        << ",\"action\":\"" << action << "\",\"duration_ms\":" << durationMs
+        << ",\"button\":" << button
+        << ",\"dx\":" << dx << ",\"dy\":" << dy << ",\"output_status\":" << outputStatus << '}';
+    return out.str();
 }
 
 bool ParseBool(const std::string& value, bool fallback)
@@ -2032,7 +2160,9 @@ std::string BuildHealthJson()
     AppendHexOrNull(out, OW::ProcessConnection::ConnectedBaseAddress());
     out << ",\"status_text\":";
     AppendJsonString(out, OW::ProcessConnection::StatusText());
-    out << "},\"test_server\":{\"read_only\":true,\"write_armed\":false,\"bind\":";
+    const bool inputArmed = g_testInputArmed.load(std::memory_order_acquire);
+    out << "},\"test_server\":{\"read_only\":" << (inputArmed ? "false" : "true")
+        << ",\"write_armed\":" << (inputArmed ? "true" : "false") << ",\"bind\":";
     AppendJsonString(out, kBindAddress);
     out << ",\"port\":" << g_port.load(std::memory_order_acquire) << ",\"cors_mode\":";
     AppendJsonString(out, g_allowWildcardCors.load(std::memory_order_acquire) ? "wildcard" : "disabled");
@@ -3945,7 +4075,9 @@ std::string BuildTargetHistoryJson(const std::unordered_map<std::string, std::st
 std::string BuildJsonForTarget(const RequestTarget& target, int& statusCode)
 {
     statusCode = 200;
-    if (target.path == "__method_not_allowed__") {
+    if (target.path == "/api/test-input")
+        return BuildTestInputJson(target, statusCode);
+    if (target.path == "__method_not_allowed__" || target.method != "GET") {
         statusCode = 405;
         std::ostringstream out;
         AppendErrorBody(out, statusCode, "Only GET is supported");
@@ -3977,8 +4109,12 @@ const char* StatusText(int statusCode)
     switch (statusCode) {
     case 200: return "OK";
     case 400: return "Bad Request";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 409: return "Conflict";
+    case 429: return "Too Many Requests";
+    case 503: return "Service Unavailable";
     default: return "Internal Server Error";
     }
 }
@@ -3997,21 +4133,85 @@ bool SendAll(SOCKET socketHandle, const std::string& data)
     return true;
 }
 
-void SendHttpResponse(SOCKET clientSocket, int statusCode, const std::string& body)
+bool EncodeVisionFrameBmp(const V2::Vision::Frame& frame, std::string& body)
+{
+    body.clear();
+    if (frame.width <= 0 || frame.height <= 0 || frame.width > 8192 || frame.height > 8192)
+        return false;
+    const auto pixelCount = static_cast<size_t>(frame.width) * frame.height;
+    if (pixelCount > 33554432 || frame.pixels.size() != pixelCount * 4)
+        return false;
+    constexpr size_t headerBytes = 54;
+    body.assign(headerBytes + frame.pixels.size(), '\0');
+    const auto put16 = [&](size_t at, uint16_t value) {
+        for (size_t i = 0; i < 2; ++i) body[at + i] = static_cast<char>(value >> (i * 8));
+    };
+    const auto put32 = [&](size_t at, uint32_t value) {
+        for (size_t i = 0; i < 4; ++i) body[at + i] = static_cast<char>(value >> (i * 8));
+    };
+    body[0] = 'B'; body[1] = 'M';
+    put32(2, static_cast<uint32_t>(body.size()));
+    put32(10, headerBytes);
+    put32(14, 40); // BITMAPINFOHEADER, uncompressed 32-bit BGRA.
+    put32(18, static_cast<uint32_t>(frame.width));
+    put32(22, static_cast<uint32_t>(-frame.height)); // Source rows are top-down.
+    put16(26, 1);
+    put16(28, 32);
+    put32(34, static_cast<uint32_t>(frame.pixels.size()));
+    std::copy(frame.pixels.begin(), frame.pixels.end(), body.begin() + headerBytes);
+    return true;
+}
+
+std::string BuildVisionFrameResponse(int& statusCode, std::string& contentType, std::string& headers)
+{
+    contentType = "application/json; charset=utf-8";
+    headers.clear();
+    const auto unavailable = [&](const char* message) {
+        statusCode = 503;
+        std::ostringstream out;
+        AppendErrorBody(out, statusCode, message);
+        return out.str();
+    };
+    V2::Vision::Settings settings;
+    const auto frame = V2::Vision::GetService().Snapshot(settings);
+    if (!frame)
+        return unavailable("Capture is stopped, starting, failed, or has no fresh frame; start capture in UN or use --capture-screen");
+    std::string body;
+    if (!EncodeVisionFrameBmp(*frame, body))
+        return unavailable("Capture frame dimensions or pixel storage are invalid");
+    const double sampledAtMs = V2::Vision::MonotonicMs();
+    if (!V2::Vision::IsFresh(*frame, settings, sampledAtMs))
+        return unavailable("Capture frame expired while preparing the response");
+    std::ostringstream metadata;
+    metadata.imbue(std::locale::classic());
+    metadata << std::fixed << std::setprecision(3)
+        << "X-UN-Frame-Sequence: " << frame->sequence << "\r\n"
+        << "X-UN-Frame-Epoch: " << frame->epoch << "\r\n"
+        << "X-UN-Frame-Arrival-Ms: " << frame->arrivalMs << "\r\n"
+        << "X-UN-Frame-Age-Ms: " << sampledAtMs - frame->arrivalMs << "\r\n"
+        << "X-UN-Frame-Sampled-At-Ms: " << sampledAtMs << "\r\n"
+        << "X-UN-Frame-Settings-Revision: " << frame->settingsRevision << "\r\n";
+    headers = metadata.str();
+    contentType = "image/bmp";
+    statusCode = 200;
+    return body;
+}
+
+void SendHttpResponse(SOCKET clientSocket, int statusCode, const std::string& body,
+    const std::string& contentType = "application/json; charset=utf-8", const std::string& extraHeaders = {})
 {
     std::ostringstream response;
     response.imbue(std::locale::classic());
     response << "HTTP/1.1 " << statusCode << ' ' << StatusText(statusCode) << "\r\n"
-        << "Content-Type: application/json; charset=utf-8\r\n"
+        << "Content-Type: " << contentType << "\r\n"
         << "Content-Length: " << body.size() << "\r\n"
         << "Connection: close\r\n"
         << "Cache-Control: no-store\r\n";
-    if (statusCode == 405)
-        response << "Allow: GET\r\n";
     if (g_allowWildcardCors.load(std::memory_order_acquire))
         response << "Access-Control-Allow-Origin: *\r\n";
-    response << "\r\n" << body;
-    SendAll(clientSocket, response.str());
+    response << extraHeaders << "\r\n";
+    if (SendAll(clientSocket, response.str()))
+        SendAll(clientSocket, body);
 }
 
 void HandleClient(SOCKET clientSocket, const std::shared_ptr<std::atomic<bool>>& runFlag)
@@ -4039,17 +4239,35 @@ void HandleClient(SOCKET clientSocket, const std::shared_ptr<std::atomic<bool>>&
 
     int statusCode = 200;
     std::string body;
+    std::string contentType = "application/json; charset=utf-8", extraHeaders;
+    std::unique_lock<std::mutex> visionRequestLock;
     const std::optional<RequestTarget> target = ParseRequestTarget(request);
     if (!target) {
         statusCode = 400;
         std::ostringstream out;
         AppendErrorBody(out, statusCode, "Malformed HTTP request");
         body = out.str();
+    } else if (target->path == "/api/vision/frame.bmp" && target->method == "GET") {
+        // Keep at most one large frame encoding/transmission alive. A slow
+        // image reader must not multiply full-resolution buffers or block the
+        // acquisition thread; other telemetry workers remain independent.
+        visionRequestLock = std::unique_lock<std::mutex>(g_visionFrameRequestMutex, std::try_to_lock);
+        const auto now = std::chrono::steady_clock::now();
+        if (!visionRequestLock.owns_lock() ||
+            now - g_lastVisionFrameRequest < kVisionFrameRequestInterval) {
+            statusCode = 429;
+            std::ostringstream out;
+            AppendErrorBody(out, statusCode, "Capture frame export is busy or polled faster than 16 ms");
+            body = out.str();
+        } else {
+            g_lastVisionFrameRequest = now;
+            body = BuildVisionFrameResponse(statusCode, contentType, extraHeaders);
+        }
     } else {
         body = BuildJsonForTarget(*target, statusCode);
     }
 
-    SendHttpResponse(clientSocket, statusCode, body);
+    SendHttpResponse(clientSocket, statusCode, body, contentType, extraHeaders);
 }
 
 void HandleClientAndClose(SOCKET clientSocket, std::shared_ptr<std::atomic<bool>> runFlag,
@@ -4095,6 +4313,12 @@ void ServerLoop(SOCKET listenSocket, std::shared_ptr<std::atomic<bool>> runFlag,
         if (!runFlag->load(std::memory_order_acquire)) {
             closesocket(clientSocket);
             break;
+        }
+        if (g_clients.size() >= kMaxClientWorkers) {
+            // Accepted sockets have no request worker or large buffers yet.
+            // Closing here bounds slow-header clients as well as image polls.
+            closesocket(clientSocket);
+            continue;
         }
         auto done = std::make_shared<std::atomic<bool>>(false);
         g_clients.push_back({clientSocket, done,
@@ -4172,6 +4396,7 @@ bool Start(const Options& options)
 
     g_port.store(options.port, std::memory_order_release);
     g_allowWildcardCors.store(options.allowWildcardCors, std::memory_order_release);
+    ArmTestInputFromEnvironment(options.allowWildcardCors);
     g_listenSocket = listenSocket;
     g_runFlag = std::make_shared<std::atomic<bool>>(true);
     {
@@ -4194,6 +4419,8 @@ void Stop()
     {
         if (!g_running.exchange(false, std::memory_order_acq_rel))
             return;
+
+        DisarmTestInput();
 
         if (g_runFlag)
             g_runFlag->store(false, std::memory_order_release);
@@ -4238,6 +4465,96 @@ bool IsRunning()
 #ifdef UNLEASHED_SELF_TESTS
 int RunLifecycleSelfTest()
 {
+    // Decode the exported BMP fields and compare row bytes against a known
+    // two-row image; no capture device is opened by these boundary checks.
+    {
+        V2::Vision::Frame frame;
+        frame.width = frame.height = 2;
+        frame.pixels = {0,0,255,255, 0,255,0,255, 255,0,0,255, 255,255,255,255};
+        std::string bmp;
+        if (!EncodeVisionFrameBmp(frame, bmp) || bmp.size() != 70 || bmp.substr(0,2) != "BM") return 1;
+        const auto u32 = [&](size_t at) {
+            uint32_t value = 0;
+            for (size_t i = 0; i < 4; ++i)
+                value |= uint32_t(static_cast<unsigned char>(bmp[at + i])) << (i * 8);
+            return value;
+        };
+        if (u32(2) != 70 || u32(10) != 54 || u32(14) != 40 || u32(18) != 2 ||
+            u32(22) != static_cast<uint32_t>(-2) || bmp[26] != 1 || bmp[28] != 32 || u32(34) != 16) return 1;
+        for (size_t i = 0; i < frame.pixels.size(); ++i)
+            if (static_cast<unsigned char>(bmp[54 + i]) != frame.pixels[i]) return 1;
+        frame.pixels.pop_back();
+        if (EncodeVisionFrameBmp(frame, bmp) || !bmp.empty()) return 1;
+        frame.width = 0;
+        if (EncodeVisionFrameBmp(frame, bmp)) return 1;
+        frame.width = frame.height = 8192;
+        if (EncodeVisionFrameBmp(frame, bmp)) return 1;
+        int statusCode = 0;
+        std::string contentType, headers;
+        (void)BuildVisionFrameResponse(statusCode, contentType, headers);
+        if (statusCode != 503 || contentType != "application/json; charset=utf-8" || !headers.empty()) return 1;
+        (void)BuildJsonForTarget(RequestTarget{"/api/vision/frame.bmp", {}, "POST"}, statusCode);
+        if (statusCode != 405) return 1;
+        std::printf("TestServer capture export: BMP layout, pixels, bounds, unavailable frame and method checks passed (no capture).\n");
+    }
+    // Exercise the HTTP method/authentication/bounds policy without scheduling
+    // any output or opening DMA/serial devices. Valid cases are dry-runs only.
+    {
+        const std::string testToken(32, 'a');
+        struct InputPolicyReset { ~InputPolicyReset() { DisarmTestInput(); } } reset;
+        g_testInputToken = testToken;
+        g_testInputArmed.store(true, std::memory_order_release);
+        struct Case { const char* method; const char* query; int expected; };
+        constexpr Case cases[] = {
+            {"GET", "action=left-hold&duration_ms=1", 405},
+            {"PUT", "action=left-hold&duration_ms=1", 405},
+            {"POST", "action=left-hold&duration_ms=1&dry_run=1", 200},
+            {"POST", "action=left-hold&duration_ms=3000&dry_run=1", 200},
+            {"POST", "action=left-hold&duration_ms=0&dry_run=1", 400},
+            {"POST", "action=left-hold&duration_ms=3001&dry_run=1", 400},
+            {"POST", "action=left-hold&duration_ms=999999999999&dry_run=1", 400},
+            {"POST", "action=left-hold&duration_ms=1.5&dry_run=1", 400},
+            {"POST", "action=left-hold&duration_ms=1&dry_run=yes", 400},
+            {"POST", "action=mouse-hold&button=0&duration_ms=1&dry_run=1", 200},
+            {"POST", "action=mouse-hold&button=3&duration_ms=3000&dry_run=1", 200},
+            {"POST", "action=mouse-hold&button=4&duration_ms=3000&dry_run=1", 200},
+            {"POST", "action=mouse-hold&button=1&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=2&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=-1&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=5&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=3.0&duration_ms=1&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=3&duration_ms=0&dry_run=1", 400},
+            {"POST", "action=mouse-hold&button=4&duration_ms=3001&dry_run=1", 400},
+            {"POST", "action=move&dx=-100&dy=100&dry_run=1", 200},
+            {"POST", "action=move&dx=101&dy=0&dry_run=1", 400},
+            {"POST", "action=move&dx=0&dry_run=1", 400},
+            {"POST", "action=release&dry_run=1", 200},
+            {"POST", "action=unknown&dry_run=1", 400},
+        };
+        for (const auto& item : cases) {
+            const auto parsed = ParseRequestTarget(std::string(item.method) +
+                " /api/test-input?token=" + testToken + "&" + item.query + " HTTP/1.1\r\n\r\n");
+            int statusCode = 0;
+            if (!parsed) return 1;
+            (void)BuildJsonForTarget(*parsed, statusCode);
+            if (statusCode != item.expected || g_testInputOwnerUsed) return 1;
+        }
+        int statusCode = 0;
+        RequestTarget request{"/api/test-input", {{"action", "release"}, {"dry_run", "1"}}, "POST"};
+        (void)BuildJsonForTarget(request, statusCode);
+        if (statusCode != 403) return 1;
+        request.query["token"] = "wrong";
+        (void)BuildJsonForTarget(request, statusCode);
+        if (statusCode != 403) return 1;
+        request.query["token"] = testToken;
+        g_testInputArmed.store(false, std::memory_order_release);
+        (void)BuildJsonForTarget(request, statusCode);
+        if (statusCode != 403) return 1;
+        (void)BuildJsonForTarget(RequestTarget{"/api/health", {}, "POST"}, statusCode);
+        if (statusCode != 405) return 1;
+        std::printf("TestServer bounded input policy: 29 checks passed (no device output).\n");
+    }
     // Legacy environment toggles must not misreport the fixed production policy.
     const auto profileBefore = OW::offset::ActiveProfile();
     for (const char* flag : {"0", "1"}) {

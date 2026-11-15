@@ -21,6 +21,7 @@ namespace HeroSkillDetail {
 enum class SequenceWorkerExitReason : std::uint8_t {
     Running,
     StopRequested,
+    ActivationReleased,
     RuntimeChanged,
     AmmoBudget,
     OutputFailure
@@ -81,10 +82,9 @@ constexpr SkeletonBoneMask TrackingBoneMaskForSelection(int aimBone)
     }
 }
 
-// At 100% the linear controller applies the complete angular error on every
-// hero-skill tick. Ashe's alternating scoped/unscoped output can therefore
-// cross the target on every sample. Keep the shipped feedback gain damped.
-inline constexpr float kAsheFirePatternTrackingSpeedScale = 40.0f;
+// The dedicated KOI controller carries its own gain; the skill speed is a
+// neutral multiplier rather than the old linear-controller damping factor.
+inline constexpr float kAsheFirePatternTrackingSpeedScale = 100.0f;
 
 } // namespace HeroSkillDetail
 
@@ -293,7 +293,7 @@ inline Config::HeroSkillSettings MakeAsheComboSequenceDefaults()
     settings.radius = 0.0f;
     settings.tracking = {
         Config::kAimBehaviorTracking,
-        6,
+        9,
         0.0f,
         HeroSkillDetail::kAsheFirePatternTrackingSpeedScale,
         Config::kDefaultFovDeg,
@@ -302,46 +302,17 @@ inline Config::HeroSkillSettings MakeAsheComboSequenceDefaults()
     };
     settings.sequencePhaseAwareTracking = true;
     settings.sequencePostFirePauseMs = 35.0f;
-    settings.sequenceRecoveryMs = 90.0f;
-    settings.sequencePostFireYawScale = 0.35f;
+    settings.sequenceRecoveryMs = 0.0f;
+    settings.sequencePostFireYawScale = 1.0f;
     settings.sequencePostFirePitchScale = 0.0f;
-    settings.sequencePreFireBoostWindowMs = 45.0f;
-    settings.sequencePreFireBoostScale = 1.35f;
+    settings.sequencePreFireBoostWindowMs = 0.0f;
+    settings.sequencePreFireBoostScale = 1.0f;
     settings.ammoGuard = true;
     settings.ammoGuardReserve = 1;
 
-    // Locked backend Ashe fire pattern. This timing was tuned live and is no
-    // longer exposed as editable UI steps. mask bit0=left, bit1=right.
-    settings.sequenceSteps = {
-        { 0x01,  49 },
-        { 0x02, 140 },
-        { 0x03,  70 },
-        { 0x02,  70 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00,  45 },
-        { 0x02, 140 },
-        { 0x03,  70 },
-        { 0x02,  70 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00,  47 },
-        { 0x02, 140 },
-        { 0x03,  70 },
-        { 0x02,  70 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-        { 0x00, 183 },
-        { 0x01,  49 },
-    };
+    // AsheCombo::Runner owns semantic actions and checkpoint release handling.
+    // Generic button tables remain available to other heroes only.
+    settings.sequenceSteps.clear();
     return settings;
 }
 

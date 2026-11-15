@@ -448,7 +448,7 @@ void DrawMiscBehaviorPage() {
     changed|=UI::BehaviorTuningEditor(mode,mode.behavior);
     changed|=UI::AimPlanEditor::Motion(mode.motion);
     mode.method=mode.motion.method;mode.methodPresetId=-1;
-    const bool modeListFull = std::count_if(View_aimBehaviorPresets().begin(), View_aimBehaviorPresets().end(),
+    const bool modeListFull = std::count_if(Read_aimBehaviorPresets().begin(), Read_aimBehaviorPresets().end(),
         [](const auto& p) { return p.defaultBehavior < 0; }) >= 64;
     ImGui::BeginDisabled(modeListFull);
     if(UIActionButton(L("Save as new mode"),140.f)) {
@@ -729,6 +729,10 @@ void DrawMiscMethodPage() {
             UI::ResponseCurveEditor(selectedPreset?selectedPreset->responseCurve:defaults);
             ImGui::EndDisabled();break;
         }
+        case 9:
+            drawAngularSpeed("##methodKoiAngularSpeed");
+            ImGui::TextWrapped("%s", L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
+            break;
         default:
             break;
         }
@@ -791,8 +795,8 @@ void DrawMiscDynamicFovPage() {
             lastProfileGeneration = generation;
         }
 
-        OW::Config::DynamicFovPreset* selectedPreset =
-            OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
+        const OW::Config::DynamicFovPreset* selectedPreset =
+            OW::Config::FindDynamicFovPreset(selectedPresetId);
         if (lastPresetId != selectedPresetId) {
             if (selectedPreset) {
                 draft = *selectedPreset;
@@ -807,7 +811,7 @@ void DrawMiscDynamicFovPage() {
         SettingRow("Preset");
         PushControlWidth();
         if (UISelectDynamicFovPreset("##miscDynamicFovPreset", &selectedPresetId, true)) {
-            selectedPreset = OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
+            selectedPreset = OW::Config::FindDynamicFovPreset(selectedPresetId);
             if (selectedPreset) {
                 draft = *selectedPreset;
                 CopyPresetNameToBuffer(selectedPreset->name, presetName);
@@ -819,7 +823,7 @@ void DrawMiscDynamicFovPage() {
         }
         ImGui::PopItemWidth();
 
-        selectedPreset = OW::Config::FindMutableDynamicFovPreset(selectedPresetId);
+        selectedPreset = OW::Config::FindDynamicFovPreset(selectedPresetId);
         OW::Config::DynamicFovPreset& editPreset = draft;
 
         SettingRow("Preset Name");
@@ -858,7 +862,8 @@ void DrawMiscDynamicFovPage() {
         if (selectedPreset && UIActionButton(OW::Config::uiLanguage == 1 ? "更新预设" : "Update Preset", 112.0f)) {
             editPreset.name = NormalizeUiPresetName(presetName, "Dynamic FOV", -1);
             editPreset.id = selectedPresetId;
-            *selectedPreset = OW::Config::ValidateDynamicFovPresetValue(editPreset);
+            if (auto* destination = OW::Config::FindMutableDynamicFovPreset(selectedPresetId))
+                *destination = OW::Config::ValidateDynamicFovPresetValue(editPreset);
         }
         if (selectedPreset) ImGui::SameLine(0.0f, 8.0f);
         if (UIActionButton(T(UiText::SaveNew), 92.0f)) {

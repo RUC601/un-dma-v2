@@ -120,7 +120,7 @@ inline std::vector<SlotBehaviorConfig> ReadConfigs(const Value& value) {
         }
         if(v.IsObject()&&v.HasMember("motions")&&v["motions"].IsArray()) for(const auto& m:v["motions"].GetArray()) {
             const auto motion=ReadMotion(m);
-            if(c.motions.size()<9&&!std::any_of(c.motions.begin(),c.motions.end(),[&](const auto& old){return old.method==motion.method;})) c.motions.push_back(motion);
+            if(c.motions.size()<AimPlan::kMotionMethodCount&&!std::any_of(c.motions.begin(),c.motions.end(),[&](const auto& old){return old.method==motion.method;})) c.motions.push_back(motion);
         }
         result.push_back(std::move(c));
     } return result;

@@ -8,6 +8,8 @@
 #endif
 
 #include "Game/AimFirePhase.hpp"
+#include "Game/AsheCombo.hpp"
+#include "vision/AsheAmmo.hpp"
 #include "Game/AutoMelee.hpp"
 #include "Game/DoomfistPunch.hpp"
 #include "Game/Overwatch.hpp"
@@ -100,11 +102,15 @@ namespace {
         Clock::time_point stepStarted{};
         int stepDurationMs = 0;
         Clock::time_point lastShotStarted{};
+        AsheCombo::Stage asheStage = AsheCombo::Stage::Idle;
+        int asheShot = 0;
+        std::uint64_t submittedShots = 0;
     };
 
     struct SequenceWorkerCompletion {
         std::atomic<SequenceWorkerExitReason> reason{
             SequenceWorkerExitReason::Running };
+        std::atomic<bool> activationHeld{true};
         // Aim must see the phase and its timestamps from the same output step.
         std::mutex timelineMutex;
         SequenceTimeline timeline{};
@@ -121,6 +127,7 @@ namespace {
 
     struct SequenceRuntime {
         bool active = false;
+        int activationKey = -1;
         bool rearmBlockedUntilRelease = false;
         size_t stepIndex = 0;
         int currentMask = 0;
@@ -1306,6 +1313,7 @@ namespace {
         switch (reason) {
         case SequenceWorkerExitReason::Running:       return "running";
         case SequenceWorkerExitReason::StopRequested: return "stop_requested";
+        case SequenceWorkerExitReason::ActivationReleased:return "activation_checkpoint";
         case SequenceWorkerExitReason::RuntimeChanged:return "runtime_changed";
         case SequenceWorkerExitReason::AmmoBudget:    return "ammo_guard_budget";
         case SequenceWorkerExitReason::OutputFailure: return "output_failed";
@@ -1407,6 +1415,140 @@ namespace {
             "Hero skill sequence worker stopped. skill=%s reason=%s",
             skillId.c_str(),
             SequenceWorkerExitReasonName(exitReason));
+    }
+
+    void RunAsheComboWorker(std::stop_token stopToken,
+                            std::string skillId,
+                            int activationKey,
+                            bool ammoGuardEnabled,
+                            int ammoGuardReserve,
+                            std::uint64_t startGeneration,
+                            std::shared_ptr<SequenceWorkerCompletion> completion)
+    {
+        timeBeginPeriod(1);
+        AsheCombo::Runner runner;
+        runner.Start();
+        AsheCombo::AmmoGate ammoGate;
+        if (ammoGuardEnabled && activationKey >= 0)
+            (void)V2::Vision::RequestAsheAmmoCapture();
+        int currentMask = 0;
+        SequenceTimeline timeline;
+        SequenceWorkerExitReason reason = SequenceWorkerExitReason::StopRequested;
+        const auto microseconds = [](Clock::time_point value) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(
+                value.time_since_epoch()).count();
+        };
+        const auto valid = [&] {
+            if (stopToken.stop_requested()) return false;
+            if (!RuntimeWorkersRunning() || !SkillLogicalOutputAllowed() ||
+                Config::Menu.load(std::memory_order_acquire) ||
+                (activationKey >= 0 && !KeyState::SampleVk(
+                    Labels::AimActivationKeyVk(activationKey)).available) ||
+                !SequenceWorkerRuntimeStillValid(startGeneration)) {
+                reason = SequenceWorkerExitReason::RuntimeChanged;
+                return false;
+            }
+            return true;
+        };
+        const auto wait = [&](Clock::time_point until) {
+            while (Clock::now() < until) {
+                if (!valid()) return false;
+                if (until - Clock::now() > std::chrono::milliseconds(2))
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                else std::this_thread::yield();
+            }
+            return valid();
+        };
+        const auto setMask = [&](int nextMask) {
+            if (!valid()) return false;
+            if (!SetSequenceButtonMask(skillId, currentMask, nextMask, startGeneration)) {
+                reason = SequenceWorkerExitReason::OutputFailure;
+                return false;
+            }
+            currentMask = nextMask;
+            return true;
+        };
+        Diagnostics::Info("Ashe KOI combo started. skill=%s scopeMs=%d followupMs=%d clickMs=%d shotClock=submitted_complete_click",
+            skillId.c_str(), AsheCombo::kScopeWaitMs, AsheCombo::kFollowupWaitMs, AsheCombo::kClickHoldMs);
+        while (valid()) {
+            const auto now = Clock::now();
+            // Read the physical key at the actual checkpoint, independently of
+            // main skill-tick latency. Negative keys are the offline test seam.
+            const bool held = activationKey >= 0 ? KeyState::SampleVk(
+                Labels::AimActivationKeyVk(activationKey)).down
+                : completion->activationHeld.load(std::memory_order_acquire);
+            const auto decision = runner.Advance(microseconds(now), held);
+            if (decision.finished) {
+                reason = SequenceWorkerExitReason::ActivationReleased;
+                break;
+            }
+            timeline.asheStage = decision.stage;
+            timeline.asheShot = decision.shot;
+            timeline.stepStarted = now;
+            timeline.stepDurationMs = decision.deadlineUs > 0
+                ? static_cast<int>((std::max)(std::int64_t{0}, decision.deadlineUs - microseconds(now)) / 1000) : 0;
+            completion->Publish(timeline);
+            if (decision.action == AsheCombo::Action::None) {
+                // Poll hard cancellation independently of the ordinary skill
+                // tick. Activation release is read only at runner checkpoints.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            if (decision.action == AsheCombo::Action::Click) {
+                V2::Vision::AsheAmmoSnapshot ammo;
+                bool permitted = false;
+                bool waitingReported = false;
+                const auto ammoWaitStarted = Clock::now();
+                while (valid()) {
+                    ammo = V2::Vision::ReadAsheAmmo(true);
+                    const auto permit = ammoGate.Check(ammoGuardEnabled, ammo.known,
+                        ammo.remaining, ammoGuardReserve, ammo.sequence, ammo.epoch);
+                    if (permit == AsheCombo::ShotPermit::Allow) { permitted = true; break; }
+                    if (permit == AsheCombo::ShotPermit::ReserveReached) {
+                        reason = SequenceWorkerExitReason::AmmoBudget;
+                        break;
+                    }
+                    // Unknown OCR is not an empty/full clip. Wait for actual
+                    // HUD evidence, with immediate release of owned controls
+                    // if the user lets go while this shot is still uncommitted.
+                    const bool stillHeld = activationKey >= 0 ? KeyState::SampleVk(
+                        Labels::AimActivationKeyVk(activationKey)).down
+                        : completion->activationHeld.load(std::memory_order_acquire);
+                    if (!stillHeld) { reason = SequenceWorkerExitReason::ActivationReleased; break; }
+                    if (!waitingReported && Clock::now() - ammoWaitStarted >= std::chrono::milliseconds(150)) {
+                        Diagnostics::Info("Ashe ammo wait. skill=%s shot=%d reason=%s sequence=%llu ageMs=%.1f",
+                            skillId.c_str(), decision.shot, ammo.known ? "awaiting_new_frame" : "hud_unknown",
+                            static_cast<unsigned long long>(ammo.sequence), ammo.ageMs);
+                        waitingReported = true;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (!permitted) break;
+                if (!setMask(currentMask | 0x01)) break;
+                if (!wait(Clock::now() + std::chrono::milliseconds(AsheCombo::kClickHoldMs))) break;
+                if (!setMask(currentMask & ~0x01)) break;
+                // Only the pitch pause follows submitted input. The observed
+                // HUD owns ammunition; rejected game clicks never consume an
+                // estimated bullet or prematurely stop the tail of a clip.
+                timeline.lastShotStarted = Clock::now();
+                ++timeline.submittedShots;
+                ammoGate.Submitted(ammo.sequence, ammo.epoch);
+                completion->Publish(timeline);
+                Diagnostics::Aim("sequence.submitted_shot skill=%s shot=%d total=%llu phase=%d proxy=complete_click",
+                    skillId.c_str(), decision.shot,
+                    static_cast<unsigned long long>(timeline.submittedShots),
+                    static_cast<int>(decision.stage));
+            } else if (!setMask(decision.action == AsheCombo::Action::ScopeDown ? 0x02 : 0x00)) {
+                break;
+            }
+            runner.Complete(microseconds(Clock::now()));
+        }
+        (void)TimedOutputScheduler().Cancel(SequenceOwnerKey(skillId));
+        runner.Cancel();
+        completion->reason.store(reason, std::memory_order_release);
+        timeEndPeriod(1);
+        Diagnostics::Info("Ashe KOI combo stopped. skill=%s reason=%s",
+            skillId.c_str(), SequenceWorkerExitReasonName(reason));
     }
 
     void BeginViewpoint(const std::string& skillId,
@@ -1542,6 +1684,13 @@ namespace {
             overlay.aimPlan.motion.method=overlay.aimMethod;
             Config::ResolveHeroBehaviorMode(overlay);
             overlay.fov=params.fov;overlay.smooth=params.speedScale;
+            // Skill tracking has its own FOV and bone selection. The ordinary
+            // Aim Slot's capture/contour and distance-FOV modes cannot narrow
+            // this scope (or reject every predicted sequence target).
+            overlay.fovMode=Config::kFovModeFixed;
+            overlay.dynamicFovPresetId=-1;
+            overlay.contourEnabled=false;
+            overlay.predictionMode=0;
             overlay.bone=params.bone;overlay.autoBone=params.bone==Config::kAimBoneClosest;
             overlay.aimBoneMask=HeroSkillDetail::TrackingBoneMaskForSelection(params.bone);
             overlay.hitbox=params.hitbox;
@@ -3644,6 +3793,21 @@ namespace {
             return false;
 
         const int reserveAmmo = std::clamp(settings.ammoGuardReserve, 0, 50);
+        if (UsesAsheAmmoBudgetFallback(runtimeKey)) {
+            // The generic skill-list probes are not a confirmed Ashe ammo
+            // field. The capture worker supplies bounded, fresh HUD evidence.
+            const auto observed = V2::Vision::ReadAsheAmmo(local.HeroID == eHero::HERO_ASHE);
+            AmmoGuardSample sample{};
+            sample.skillBase = local.SkillBase;
+            sample.heroId = local.HeroID;
+            sample.ammo = observed.known ? observed.remaining : -1;
+            sample.source = observed.known ? 7 : 0;
+            const bool blocking = observed.known && observed.remaining <= reserveAmmo;
+            LogAmmoGuardSample(runtimeKey, sample, reserveAmmo, blocking);
+            // Unknown is handled as a cancellable wait by the click worker,
+            // never as zero, a full clip or a cached software-shot estimate.
+            return blocking;
+        }
         AmmoGuardSample sample = TryReadLocalAmmoRemaining(local);
         UpdateSequenceAmmoBudgetFromRead(runtimeKey, reserveAmmo, sample.ammo);
 
@@ -4399,6 +4563,88 @@ bool HeroSkillNeedsProjectileObservations(uint64_t localHero)
     return false;
 }
 
+namespace {
+
+AimFirePhase::Phase ResolveAsheComboTrackingPhase(
+    const SequenceTimeline& timeline, Clock::time_point now = Clock::now())
+{
+    AimFirePhase::Phase phase;
+    // Horizontal motion is wholly owned by the selected behavior. Only the
+    // explicitly retained vertical hold is layered over it; old recovery and
+    // pre-shot boost fields cannot silently alter the KOI sequence.
+    if (timeline.lastShotStarted != Clock::time_point{} &&
+        now - timeline.lastShotStarted < std::chrono::milliseconds(AsheCombo::kPostShotPitchPauseMs)) {
+        phase.paused = true;
+        phase.pitchScale = 0.0f;
+    }
+    return phase;
+}
+
+void RunAsheInputSequence(const std::string& skillId, int key,
+                         const Config::HeroSkillTrackingParams& trackingParams,
+                         bool prediction, bool ammoGuardEnabled, int ammoGuardReserve)
+{
+    auto& runtime = g_sequences[skillId];
+    const bool held = IsActivationKeyHeld(key);
+    if (runtime.workerCompletion)
+        runtime.workerCompletion->activationHeld.store(held, std::memory_order_release);
+
+    if ((runtime.active && runtime.activationKey != key) ||
+        Config::Menu.load(std::memory_order_acquire) ||
+        !SkillLogicalOutputAllowed() || !RuntimeWorkersRunning()) {
+        CancelSequenceAndBlockUntilRelease(skillId, runtime, "hard_runtime_pause");
+        return;
+    }
+    if (runtime.active && runtime.workerCompletion) {
+        const auto reason = runtime.workerCompletion->reason.load(std::memory_order_acquire);
+        if (reason != SequenceWorkerExitReason::Running) {
+            if (HeroSkillDetail::SequenceWorkerExitRequiresRelease(reason))
+                CancelSequenceAndBlockUntilRelease(skillId, runtime, SequenceWorkerExitReasonName(reason));
+            else CancelSequence(skillId, runtime, SequenceWorkerExitReasonName(reason));
+            return;
+        }
+    }
+    if (!HeroSkillDetail::AdvanceSequenceRearmGate(runtime.rearmBlockedUntilRelease, held)) return;
+    if (!runtime.active) {
+        if (!held) return;
+        const auto output = CurrentOutputRuntimeState();
+        if (!HeroSkillDetail::SequenceWorkerRuntimeMatches(
+                output.backendGeneration, output.backendGeneration, output.outputGateOpen)) {
+            CancelSequenceAndBlockUntilRelease(skillId, runtime, "runtime_unavailable");
+            return;
+        }
+        runtime.active = true;
+        runtime.activationKey = key;
+        g_anyInputSequenceActive.store(true, std::memory_order_release);
+        TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
+        TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
+        ResetAimSmoothingState();
+        MarkActionExecuted(skillId);
+        runtime.workerCompletion = std::make_shared<SequenceWorkerCompletion>();
+        runtime.workerCompletion->activationHeld.store(held, std::memory_order_release);
+        runtime.worker = std::jthread(RunAsheComboWorker, skillId, key, ammoGuardEnabled,
+            ammoGuardReserve, output.backendGeneration, runtime.workerCompletion);
+    }
+
+    // A soft release keeps the committed action/wait alive, while aim follows
+    // the physical activation key immediately. The worker decides reset only
+    // at KOI's original checkpoints. All outer CancelSkill paths stay hard.
+    if (!held) {
+        if (runtime.aimTarget[0]) {
+            ResetAimSmoothingState();
+            runtime.aimTarget = {};
+        }
+        return;
+    }
+    const auto timeline = runtime.workerCompletion->Snapshot();
+    if (timeline.stepStarted == Clock::time_point{}) return;
+    RunTrackingOverlayTick(skillId, runtime, trackingParams, prediction,
+        ResolveAsheComboTrackingPhase(timeline));
+    UpdateSequenceHitTiming(skillId, runtime);
+}
+
+} // namespace
+
 void RunInputSequence(const std::string& skillId,
                       const std::vector<Config::HeroSkillSequenceStep>& steps,
                       int key,
@@ -4408,6 +4654,11 @@ void RunInputSequence(const std::string& skillId,
                       bool ammoGuardEnabled,
                       int ammoGuardReserve)
 {
+    if (UsesAsheAmmoBudgetFallback(skillId)) {
+        RunAsheInputSequence(skillId, key, trackingParams, prediction,
+            ammoGuardEnabled, ammoGuardReserve);
+        return;
+    }
     SequenceRuntime& runtime = g_sequences[skillId];
     const bool held = IsActivationKeyHeld(key);
     const bool useWorker = UseSequenceWorker();
@@ -4988,9 +5239,19 @@ void ProcessHeroSkills()
             // whole hero pass confirms that no enabled sequence hotkey is held.
             g_anyInputSequenceActivationHeld.store(true, std::memory_order_release);
         }
-        if (sequenceSkill)
+        if (sequenceSkill && !UsesAsheAmmoBudgetFallback(skillKey))
             UpdateSequenceAmmoBudgetReloadState(skillKey, localSnapshot, settings.ammoGuardReserve);
-        if (sequenceSkill && !sequenceActive && AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(heroId,V2::HeroSettings::Action::Reload)))
+        if (sequenceActive && UsesAsheAmmoBudgetFallback(skillKey)) {
+            bool reloading = Config::reloading;
+            (void)ReadLocalReloadingFast(localSnapshot, reloading);
+            if (reloading || AimbotDetail::IsInputVkDown(
+                    V2::HeroSettings::Key(heroId,V2::HeroSettings::Action::Reload))) {
+                CancelSequenceAndBlockUntilRelease(skillKey, g_sequences[skillKey], "reload_interrupted");
+                continue;
+            }
+        }
+        if (sequenceSkill && !UsesAsheAmmoBudgetFallback(skillKey) && !sequenceActive &&
+            AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(heroId,V2::HeroSettings::Action::Reload)))
             ResetSequenceAmmoBudget(skillKey);
 
         if (!sequenceActive && !genjiComboActive &&

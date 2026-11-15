@@ -50,7 +50,7 @@ int SerialOutputDevice::Button(int button, bool down, bool) {
 
 int SerialOutputDevice::ButtonState(std::uint32_t mask, bool) {
     int result = success;
-    for (int button = 0; button < 3; ++button) {
+    for (int button = 0; button < transport_.MouseButtonCount(); ++button) {
         const int status = transport_.Button(button, (mask & (1u << button)) != 0);
         if (result == success) result = status;
     }

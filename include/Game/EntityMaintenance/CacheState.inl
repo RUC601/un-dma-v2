@@ -126,6 +126,8 @@
         std::string participantLabel{};
         uint64_t participantController = 0;
         uint32_t participantControllerUid = 0;
+        OW::EntityRosterPolicy::ParticipantBindingContext participantBindingContext{};
+        DWORD participantBindingContextAttemptTick = 0;
         std::string_view admissionRejectReason{};
         DWORD admissionRejectTick = 0;
         OW::c_entity entity{};

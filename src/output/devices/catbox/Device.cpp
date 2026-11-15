@@ -25,7 +25,7 @@ public:
     int Button(int button, bool down, bool) override { return CatBoxMgr.Button(button, down); }
     int ButtonState(std::uint32_t mask, bool) override {
         int result = success;
-        for (int button = 0; button < 3; ++button) {
+        for (int button = 0; button < 5; ++button) {
             const int status = CatBoxMgr.Button(button, (mask & (1u << button)) != 0);
             if (result == success) result = status;
         }

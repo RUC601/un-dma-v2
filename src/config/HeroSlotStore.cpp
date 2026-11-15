@@ -260,7 +260,7 @@ using namespace Detail;
     bool TryGetHeroAimSlot(uint64_t heroId, int slotIndex, HeroSlotPreset& outSlot)
     {
         if (configView && !configAuthority) {
-            const auto& store = configView->heroAimPresets;
+            const auto& store = configView->heroAimPresets.Read();
             auto item = store.find(heroId);
             if (item == store.end()) return false;
             outSlot = item->second[static_cast<size_t>(ClampHeroPresetSlotIndex(slotIndex))];
@@ -275,7 +275,7 @@ using namespace Detail;
     bool TryGetHeroTriggerSlot(uint64_t heroId, int slotIndex, HeroSlotPreset& outSlot)
     {
         if (configView && !configAuthority) {
-            const auto& store = configView->heroTriggerPresets;
+            const auto& store = configView->heroTriggerPresets.Read();
             auto item = store.find(heroId);
             if (item == store.end()) return false;
             outSlot = item->second[static_cast<size_t>(ClampHeroPresetSlotIndex(slotIndex))];

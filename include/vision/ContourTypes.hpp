@@ -61,6 +61,10 @@ struct Frame {
     std::uint64_t sequence = 0, epoch = 0, settingsRevision = 0;
     double arrivalMs = 0.0, sampleTimeSeconds = 0.0;
     bool sampleTimeValid = false;
+    // Recognition belongs to these exact pixels and defaults to unknown.
+    // Consumers must also require the current local hero to be Ashe.
+    int asheAmmoRemaining = -1;
+    double asheAmmoConfidence = 0.0;
     Rect detectionRoi;
     std::vector<std::uint8_t> pixels;
     std::vector<std::uint8_t> mask;

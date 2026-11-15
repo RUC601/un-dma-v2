@@ -86,6 +86,7 @@ inline bool Motion(AimPlan::Motion& m,bool chooseMethod=true) {
     }
     if(m.method==7) changed|=Shuwu(m.shuwu);
     if(m.method==8) changed|=UI::ResponseCurveEditor(m.responseCurve);
+    if(m.method==9) ImGui::TextWrapped("%s",L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
     return changed;
 }
 inline bool Policy(OW::Config::HeroPreset& preset, bool weightedRanking = true) {

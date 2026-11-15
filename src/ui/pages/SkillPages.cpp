@@ -53,6 +53,14 @@ using namespace UI::Theme;
 
 static bool DrawHeroSkillSequenceSteps(const OW::HeroSkillDefinition& definition,
                                        OW::Config::HeroSkillSettings& settings) {
+    if (definition.heroId == OW::eHero::HERO_ASHE &&
+        std::string(definition.skillId ? definition.skillId : "") == "fire-pattern") {
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Ashe combo stages"));
+        ImGui::TextWrapped("%s", L("Hip shot, scope in, scoped shot after 210 ms, scope out after 50 ms, then three follow-up hip shots, each after a 240 ms wait."));
+        ImGui::TextWrapped("%s", L("A brief release can continue the current stage. A release seen at a checkpoint restarts from shot one on the next press. A shot already waiting may still fire after release."));
+        ImGui::TextWrapped("%s", L("After every shot, vertical tracking pauses for 35 ms while horizontal tracking continues."));
+        return false;
+    }
     bool changed = false;
 
     ImGui::Spacing();
@@ -161,6 +169,12 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     }
 
     const bool hasSequenceControls = hasControl(OW::HeroSkillControls::SequenceSteps);
+    const bool isAsheCombo = definition.heroId == OW::eHero::HERO_ASHE &&
+        std::string(definition.skillId ? definition.skillId : "") == "fire-pattern";
+    if (isAsheCombo) {
+        ImGui::TextWrapped("%s", L("Hip shot, scope in, scoped shot after 210 ms, scope out after 50 ms, then three follow-up hip shots, each after a 240 ms wait."));
+        ImGui::TextWrapped("%s", L("A brief release can continue the current stage. A release seen at a checkpoint restarts from shot one on the next press. A shot already waiting may still fire after release."));
+    }
     const bool hasTrackingOverlay = hasControl(OW::HeroSkillControls::TrackingOverlay);
     const bool hasComboAction = hasControl(OW::HeroSkillControls::ComboAction);
     const bool hasPitchControls = hasControl(OW::HeroSkillControls::PitchControl);
@@ -462,6 +476,32 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             changed = true;
         }
         ImGui::PopItemWidth();
+        SettingRow("Motion method", kAimbotRightLabelWidth);
+        PushControlWidth();
+        const auto* selectedTrackingPreset = OW::Config::FindAimBehaviorPreset(settings.tracking.aimBehaviorPresetId);
+        int trackingMethod = selectedTrackingPreset ? selectedTrackingPreset->method : settings.tracking.method;
+        ImGui::BeginDisabled(settings.tracking.aimBehaviorPresetId >= 0);
+        if (UISelect("##skillTrackingMethod", &trackingMethod, kAimMethod, IM_ARRAYSIZE(kAimMethod))) {
+            settings.tracking.method = trackingMethod;
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::PopItemWidth();
+        static bool koiPresetListFull = false;
+        if (isAsheCombo && ImGui::SmallButton(L("Use Koi proportional tracking"))) {
+            const int presetId = OW::Config::EnsureKoiTrackingBehaviorPreset();
+            koiPresetListFull = presetId < 0;
+            if (presetId >= 0) {
+                settings.tracking.aimBehaviorPresetId = presetId;
+                settings.tracking.aimBehavior = OW::Config::kAimBehaviorTracking;
+                settings.tracking.method = 9;
+                settings.tracking.smooth = 0.0f;
+                settings.tracking.speedScale = 100.0f;
+                changed = true;
+            }
+        }
+        if (isAsheCombo && koiPresetListFull)
+            ImGui::TextWrapped("%s", L("The mode list is full (64). Delete an unused mode to add another."));
         }
         {
             SettingRow("Priority", kAimbotRightLabelWidth);
@@ -525,7 +565,9 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
                             OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
         ImGui::PopItemWidth();
 
-        if (hasSequenceControls) {
+        if (isAsheCombo) {
+            ImGui::TextWrapped("%s", L("After every shot, vertical tracking pauses for 35 ms while horizontal tracking continues."));
+        } else if (hasSequenceControls) {
             ImGui::Spacing();
             ImGui::TextColored(
                 ImGui::ColorConvertU32ToFloat4(kColTextMuted),
@@ -830,7 +872,9 @@ void UI::SequencesPage() {
             title += " / ";
             title += L(definition.displayName);
             UIGroupBox(title.c_str());
-            if (sequenceCombo)
+            const bool isAsheCombo = definition.heroId == OW::eHero::HERO_ASHE &&
+                std::string(definition.skillId ? definition.skillId : "") == "fire-pattern";
+            if (sequenceCombo && !isAsheCombo)
                 DrawHeroSkillSequenceDefinition(definition, selectedHero.heroId);
             else
                 DrawHeroSkillDefinition(definition, selectedHero.heroId);

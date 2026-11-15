@@ -58,7 +58,8 @@ inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior) 
         }
     }
     if(behavior==2) {
-        const char* methods[]={"Inherit","Linear","PID","Bezier","Piecewise","Accel Limited","Constant","Hybrid PID","Shuwu","Error response curve"};
+        const char* methods[]={"Inherit","Linear","PID","Bezier","Piecewise","Accel Limited","Constant","Hybrid PID","Shuwu","Error response curve","Koi proportional"};
+        static_assert(std::size(methods) == OW::Config::kAimMethodCount + 1);
         int index=t.flick2ndInnerMethod+1;SettingRow("Second Method");PushControlWidth();
         if(UISelect("##secondMethod",&index,methods,IM_ARRAYSIZE(methods))) {t.flick2ndInnerMethod=index-1;changed=true;}
         ImGui::PopItemWidth();

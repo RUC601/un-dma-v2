@@ -143,7 +143,7 @@ namespace OW
     {
         switch (control.kind) {
         case OutputControlKind::MouseButton:
-            return control.code <= 2;
+            return control.code <= 4;
         case OutputControlKind::KeyboardUsage:
             return control.code >= 0x04 && control.code <= 0xDF;
         case OutputControlKind::KeyboardModifier:

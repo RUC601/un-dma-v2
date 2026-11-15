@@ -91,6 +91,7 @@ public:
 
     bool SupportsKeyboard() const { return protocol_.SupportsKeyboard(); }
     bool SupportsMask() const { return protocol_.SupportsMask(); }
+    int MouseButtonCount() const { return protocol_.EncodeButton(4, false).empty() ? 3 : 5; }
     V2::Output::PhysicalInputSnapshot PhysicalInput() const;
     int SendKeyboardReport(unsigned char modifiers, const std::vector<unsigned char>& usages, OutputIntent intent);
     int MaskMouse(uint32_t mask, std::shared_ptr<OutputCommandCompletion> completion = {});

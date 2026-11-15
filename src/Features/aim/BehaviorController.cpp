@@ -3804,6 +3804,11 @@ namespace AimbotDetail {
             }
             if (ordinaryFlick && CurrentOrdinaryFlickIdentity() != state.ordinaryFlick.identity)
                 break;
+            if (ordinaryFlick && !FlickRepeat::ConsumeMovementSample(
+                    state.ordinaryFlick, OW::consumerFrame->sequence)) {
+                OW::RuntimeWorkerSleep(1);
+                continue;
+            }
             if (AimSessionTimedOut(sessionStartedTick, "flick"))
                 break;
             if (LocalEntity().HeroID == OW::eHero::HERO_WIDOWMAKER &&
@@ -3879,14 +3884,23 @@ namespace AimbotDetail {
                     PauseOrdinaryFlickMovement(state);
                     break;
                 }
-                if (repeatPhase.repeat) {
+                const bool hitBeforeMove = contourEnabled ? contourReady : OW::in_range(
+                    aim.local_angle, aim.target_angle, aim.local_pos, aimTarget,
+                    OW::Config::aimbotEffectiveHitWindow);
+                const bool contactBeforeMove = contourEnabled
+                    ? contourCandidate.contour.evidence.touching || contourCandidate.contour.evidence.inside
+                    : hitBeforeMove;
+                if (ordinaryFlick && contactBeforeMove) {
+                    // Once the measured crosshair is in the hit window, fire
+                    // from that sample. Moving toward the centre first can
+                    // pull a valid first shot out of its own firing window.
+                    aim.smoothed_angle = aim.local_angle;
+                } else if (repeatPhase.repeat) {
                     aim.smoothed_angle = FlickRepeat::Step(aim.local_angle, aim.target_angle,
                         OrdinaryFlickPhase(state).remainingMs,
                         OW::AimSmoothingDetail::ComputeDeltaTime(),
                         OW::Config::flickRepeatMaxSpeedDegPerSec,
-                        contourEnabled ? (contourCandidate.contour.evidence.touching || contourCandidate.contour.evidence.inside) :
-                            OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos,
-                                aimTarget, OW::Config::aimbotEffectiveHitWindow));
+                        contactBeforeMove);
                 } else {
                     ApplyAiAimNoise(aim.smoothed_angle, 300.f, false);
                 }
@@ -3908,8 +3922,8 @@ namespace AimbotDetail {
 
                     if (ordinaryFlick && CurrentOrdinaryFlickIdentity() != state.ordinaryFlick.identity)
                         break;
-                    if (ordinaryFlick && repeatPhase.repeat && aim.smoothed_angle == aim.local_angle)
-                        OW::ResetAimSmoothingState();
+                    if (ordinaryFlick && aim.smoothed_angle == aim.local_angle)
+                        OW::HoldAimSmoothingState();
                     else
                         MoveAimDelta(aim.local_angle, aim.smoothed_angle);
                     if (OW::Config::aimVerboseLog) {
@@ -3920,8 +3934,6 @@ namespace AimbotDetail {
                     }
                     // Pixel contact is the hit evidence in contour mode. A hidden
                     // bone centre cannot veto an exposed edge of the same body.
-                    const bool hitBeforeMove = contourEnabled ? contourReady : OW::in_range(
-                        aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
                     const bool hitAfterMove = !contourEnabled && OW::in_range(
                         aim.smoothed_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
                     ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);

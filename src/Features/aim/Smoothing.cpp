@@ -3,14 +3,17 @@
 #include "Utils/Diagnostics.hpp"
 #include "Game/AimSmoothingTiming.hpp"
 #include "Game/AimShuwu.hpp"
+#include "Game/AimKoi.hpp"
 #include <algorithm>
 #include <cmath>
 namespace OW {
     Vector3 SmoothLinear(Vector3 LocalAngle, Vector3 TargetAngle, float speed) {
         const float factor = std::isfinite(speed) ? std::clamp(speed, 0.0f, 1.0f) : 0.0f;
-        thread_local float lastx = 0;
-        thread_local float lasty = 0;
-        thread_local float lastz = 0;
+        auto& state = AimSmoothingDetail::GetLinearState();
+        if (factor <= 0.0f) {
+            state = {};
+            return LocalAngle;
+        }
 
         Vector3 Result;
         float deltax = (TargetAngle.X - LocalAngle.X) * factor;
@@ -22,24 +25,29 @@ namespace OW {
         Result.Z = LocalAngle.Z + deltaz;
 
         if (Config::trackcompensate) {
-            Vector3 realresult{
-                LocalAngle.X + TargetAngle.X - lastx,
-                LocalAngle.Y + TargetAngle.Y - lasty,
-                LocalAngle.Z + TargetAngle.Z - lastz
-            };
-            if (Result.DistTo(realresult) <= Config::comarea) {
-                if (fabsf(deltax) < fabsf(TargetAngle.X - lastx))
-                    deltax = (TargetAngle.X - lastx) * Config::comspeed;
-                if (fabsf(deltaz) < fabsf(TargetAngle.Z - lastz))
-                    deltaz = (TargetAngle.Z - lastz) * Config::comspeed;
+            // The first sample after a lifecycle break establishes a baseline;
+            // only consecutive targets can supply a tracking compensation.
+            if (state.initialized) {
+                Vector3 realresult{
+                    LocalAngle.X + TargetAngle.X - state.lastTarget.X,
+                    LocalAngle.Y + TargetAngle.Y - state.lastTarget.Y,
+                    LocalAngle.Z + TargetAngle.Z - state.lastTarget.Z
+                };
+                if (Result.DistTo(realresult) <= Config::comarea) {
+                    if (fabsf(deltax) < fabsf(TargetAngle.X - state.lastTarget.X))
+                        deltax = (TargetAngle.X - state.lastTarget.X) * Config::comspeed;
+                    if (fabsf(deltaz) < fabsf(TargetAngle.Z - state.lastTarget.Z))
+                        deltaz = (TargetAngle.Z - state.lastTarget.Z) * Config::comspeed;
+                }
             }
-            lastx = TargetAngle.X;
-            lasty = TargetAngle.Y;
-            lastz = TargetAngle.Z;
+            state.lastTarget = TargetAngle;
+            state.initialized = true;
 
             Result.X = LocalAngle.X + deltax;
             Result.Y = LocalAngle.Y + deltay;
             Result.Z = LocalAngle.Z + deltaz;
+        } else {
+            state = {};
         }
         return Result;
     }
@@ -62,7 +70,13 @@ namespace OW {
     }
 
     namespace AimSmoothingDetail {
+        LinearState& GetLinearState() {
+            thread_local LinearState state;
+            return state;
+        }
+
         AimShuwu::State& ShuwuState() { thread_local AimShuwu::State state; return state; }
+        AimKoi::State& KoiState() { thread_local AimKoi::State state; return state; }
         bool& ShuwuDispatched() { thread_local bool dispatched = false; return dispatched; }
         AimHybrid::State& GetHybridState() {
             thread_local AimHybrid::State state;
@@ -82,6 +96,10 @@ namespace OW {
         OvershootState& GetOvershootState() {
             thread_local OvershootState state;
             return state;
+        }
+
+        void ResetLinearState() {
+            GetLinearState() = LinearState{};
         }
 
         void ResetPIDState() {
@@ -293,21 +311,25 @@ namespace OW {
     } // namespace AimSmoothingDetail
 
     void ResetAimSmoothingState() {
+        AimSmoothingDetail::ResetLinearState();
         AimSmoothingDetail::ResetPIDState();
         AimSmoothingDetail::ResetBezierState();
         AimSmoothingDetail::ResetOvershootState();
         AimSmoothingDetail::ResetHybridState();
         AimSmoothingDetail::ShuwuState() = {};
+        AimSmoothingDetail::KoiState() = {};
         AimSmoothingDetail::ResetDeltaTime();
         AimSmoothingDetail::ShuwuDispatched() = false;
     }
 
     void HoldAimSmoothingState() {
+        AimSmoothingDetail::ResetLinearState();
         AimSmoothingDetail::ResetPIDState();
         AimSmoothingDetail::ResetBezierState();
         AimSmoothingDetail::ResetOvershootState();
         AimSmoothingDetail::ResetHybridState();
         AimSmoothingDetail::ShuwuState() = {};
+        AimSmoothingDetail::KoiState() = {};
         AimSmoothingDetail::LastSmoothingTick() =
             std::chrono::steady_clock::now();
         AimSmoothingDetail::ShuwuDispatched() = false;
@@ -492,16 +514,18 @@ namespace OW {
         thread_local int previousMethod = -1;
 
         if (method != previousMethod) {
+            AimSmoothingDetail::ResetLinearState();
             AimSmoothingDetail::ResetPIDState();
             AimSmoothingDetail::ResetBezierState();
             AimSmoothingDetail::ResetOvershootState();
             AimSmoothingDetail::ResetHybridState();
             AimSmoothingDetail::ShuwuState() = {};
+            AimSmoothingDetail::KoiState() = {};
             previousMethod = method;
         }
 
         // Hybrid PID owns its braking curve and must converge on the real target.
-        const Vector3 adjustedTarget = (method == 6 || method == 7 || method == 8)
+        const Vector3 adjustedTarget = (method == 6 || method == 7 || method == 8 || method == 9)
             ? target
             : AimSmoothingDetail::ApplyOvershootCurveTarget(local, target);
         const Vector3 error = adjustedTarget - local;
@@ -661,13 +685,21 @@ namespace OW {
             result=local+error*factor;
             break;
         }
+        case 9: {
+            const auto move = AimKoi::Advance(AimSmoothingDetail::KoiState(),
+                error.X, error.Y, deltaTime, slotSpeedScale * methodSpeedScale,
+                Config::selectedAimSample);
+            result = local + Vector3(static_cast<float>(move.pitch),
+                static_cast<float>(move.yaw), 0.0f);
+            break;
+        }
         default:
             result = SmoothLinear(local, adjustedTarget, effectiveStepFactor);
             break;
         }
 
         const Vector3 outputDelta = result - local;
-        if (commitOvershootStep && method != 6 && method != 7 && method != 8)
+        if (commitOvershootStep && method != 6 && method != 7 && method != 8 && method != 9)
             AimSmoothingDetail::CommitOvershootStep(outputDelta);
         Diagnostics::Aim("smooth.result method=%d result=(%.9f,%.9f,%.9f) output_delta=(%.9f,%.9f,%.9f) output_len=%.9f",
             method,

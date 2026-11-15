@@ -2,12 +2,15 @@
 
 #include <cstdint>
 #include <string_view>
+#include <string>
 #include <algorithm>
 #include <utility>
 #include <vector>
 #include <iterator>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace OW::EntityMaintenance { struct ParticipantReplacementVerifier; }
 
 namespace OW::EntityRosterPolicy {
 
@@ -167,6 +170,24 @@ enum class SameParticipantObservationAction : uint8_t {
     KeepExisting,
 };
 
+// Retained context belongs to one admitted generation; its controller may be
+// freed before the successor is discovered.
+struct ParticipantBindingContext {
+    uint64_t address=0, link=0, linkBase=0, hero=0, generation=0;
+    uint64_t epoch=0, scene=0, registry=0, context=0, owner=0, buckets=0;
+    uint32_t match=0, controllerUid=0;
+    std::string label;
+};
+
+class VerifiedDeadParticipantReplacement {
+    friend struct OW::EntityMaintenance::ParticipantReplacementVerifier;
+    bool verified_=false;
+    explicit VerifiedDeadParticipantReplacement(bool value):verified_(value) {}
+public:
+    VerifiedDeadParticipantReplacement() = default;
+    bool Verified() const noexcept { return verified_; }
+};
+
 inline bool CanReturnRetiredActor(bool sameSignature,bool absenceObserved,bool actualMember) noexcept {
     return !sameSignature || (absenceObserved && actualMember);
 }
@@ -217,7 +238,8 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     bool existingMember = true,
     bool incomingMember = true,
     bool sameController = false,
-    bool incomingPaired = false) noexcept
+    bool incomingPaired = false,
+    const VerifiedDeadParticipantReplacement& deadReplacement = {}) noexcept
 {
     (void)existingSeenThisCycle;
     if(sameActor)return SameParticipantObservationAction::ReplaceExisting;
@@ -225,6 +247,7 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
     if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
+    if(deadReplacement.Verified())return SameParticipantObservationAction::ReplaceExisting;
     if (membershipKnown && existingMember && incomingMember)
         return SameParticipantObservationAction::KeepExisting;
     if (incomingFresh && !existingFresh)

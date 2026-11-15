@@ -9,6 +9,7 @@
 #include "Game/AimResponseCurve.hpp"
 
 namespace OW::AimPlan {
+inline constexpr int kMotionMethodCount = 10;
 inline constexpr int kMaxGroups = 12;
 inline constexpr int kMaxHeroes = 64;
 inline float Finite(float v, float fallback, float lo, float hi) {
@@ -138,7 +139,7 @@ inline bool Better(bool preferred,float score,uint64_t key,bool bestPreferred,fl
 inline void NormalizeMotion(Motion& m) {
     const Motion d;
     AimResponseCurve::Normalize(m.responseCurve);
-    m.method=(std::clamp)(m.method,0,8);
+    m.method=(std::clamp)(m.method,0,kMotionMethodCount-1);
     m.angularSpeedScale=Finite(m.angularSpeedScale,100,0,200);
     m.pidP=Finite(m.pidP,d.pidP,0,10); m.pidI=Finite(m.pidI,d.pidI,0,10);
     m.pidD=Finite(m.pidD,d.pidD,0,10); m.pidMaxIntegral=Finite(m.pidMaxIntegral,10,0,1000);

@@ -1,4 +1,6 @@
             if(hotAlreadyApplied) {
+                OW::EntityMaintenance::ParticipantReplacementVerifier::Maintain(*cacheIt->second,entity,
+                    processRegistry,processSceneGeneration,entityAdmissionNow);
                 cacheIt->second->entity=entity;
                 if(localStats.selectedAddress==entity.address && OW::TryCommitLocalEntity(entity,entityAdmissionNow()))
                     localCycleSnapshot=entity;
@@ -79,6 +81,7 @@
                     }
                 }
                 auto existingRosterIt = entityRoster.find(entity.roster_key);
+                OW::EntityRosterPolicy::VerifiedDeadParticipantReplacement deadReplacement;
                 if (entity.participant_key != 0 &&
                     existingRosterIt != entityRoster.end() &&
                     existingRosterIt->second->entity.address != entity.address) {
@@ -101,6 +104,16 @@
                     const bool incomingPaired=sameController && (liveBindingConfirmed || (entity.LinkBase &&
                         OW::ResolveCnLinkTargetMapBase(entity.LinkBase,offset::Link_UniqueId,&pairedUid)==entity.address &&
                         pairedUid==entity.match_id));
+                    const char* replacementFailure="none";
+                    if(!sameController && !existingFresh && incomingFresh && completeActorMembershipKnown &&
+                        latestCompleteActorMembers.contains(existingRosterIt->second->entity.address) &&
+                        latestCompleteActorMembers.contains(entity.address)) {
+                        const auto& previous=*existingRosterIt->second;
+                        deadReplacement=OW::EntityMaintenance::ParticipantReplacementVerifier::Verify(
+                            previous.entity,previous.participantControllerUid,previous.participantLabel,previous.participantBindingContext,
+                            entity,admissionRecord.participantControllerUid,admissionRecord.participantLabel,
+                            processRegistry,processSceneGeneration,entityAdmissionNow,&replacementFailure);
+                    }
                     switch (OW::EntityRosterPolicy::ResolveSameParticipantObservation(
                         existingRosterIt->second->seenThisCycle || existingFresh,
                         false,
@@ -108,9 +121,9 @@
                         incomingFresh,
                         completeActorMembershipKnown,
                         latestCompleteActorMembers.contains(existingRosterIt->second->entity.address),
-                        latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired)) {
+                        latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired,deadReplacement)) {
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::KeepExisting:
-                        rejectAdmission(1,!incomingFresh?"incoming_not_alive":sameController?"controller_pair_unconfirmed":"participant_ambiguous");
+                        rejectAdmission(1,!incomingFresh?"incoming_not_alive":sameController?"controller_pair_unconfirmed":"participant_ambiguous",replacementFailure);
                         continue;
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::ReplaceExisting:
                     default:
@@ -149,6 +162,8 @@
                     entity.Alive,(refreshHealth || hotReads.HealthRead()) && componentCache.healthValid &&
                         componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow(),&authorityFailure);
                 if(!entity.body_authority_revision){rejectAdmission(3,authorityFailure);continue;}
+                OW::EntityMaintenance::ParticipantReplacementVerifier::Maintain(admissionRecord,entity,
+                    processRegistry,processSceneGeneration,entityAdmissionNow);
                 // A new body's observation was read before its admission generation existed.
                 // Bind only that same fully checked sample to the newly admitted generation.
                 auto& admittedSkeleton = cacheIt->second->skeletonCache;
@@ -170,6 +185,8 @@
                     const auto oldAddress=old->address,oldGeneration=old->actor_generation;
                     if(oldAddress!=entity.address) {
                         retireObservedBody(*old);
+                        if(deadReplacement.Verified())Diagnostics::Info("[V2-DEAD-PARTICIPANT-REPLACEMENT] old=0x%llX actor=0x%llX generation=%llu",
+                            oldAddress,entity.address,entity.actor_generation);
                     }
                     cacheIt->second->cachedSkeletonValid=false;cacheIt->second->skeletonCache={};
                     entity.has_previous_render_sample=false;

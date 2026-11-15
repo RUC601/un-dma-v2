@@ -401,7 +401,7 @@ int SerialTransport::EnqueueCommand(
 int SerialTransport::ExecuteSafetyReleaseAll()
 {
     int aggregateStatus = success;
-    for (int button = 0; button < 3; ++button) {
+    for (int button = 0; button < MouseButtonCount(); ++button) {
         if (!SendCommandOrFailSession(protocol_.EncodeButton(button, false)) &&
             aggregateStatus == success) {
             aggregateStatus = err_net_tx;
@@ -670,8 +670,9 @@ int SerialTransport::MoveTimed(int x, int y, int runtime)
 
 int SerialTransport::Button(int button, bool down)
 {
-    if (button < 0 || button > 2) return err_net_cmd;
+    if (button < 0 || button > 4) return err_net_cmd;
     const auto command = protocol_.EncodeButton(button, down);
+    if (command.empty()) return err_net_cmd;
     if (V2::Output::OutputDebugLog())
         Diagnostics::Info("[OUTPUT-SERIAL] queue button=%d down=%d", button, down ? 1 : 0);
     return EnqueueCommand(command, OutputCommandType::MouseButton, OutputIntentForState(down));

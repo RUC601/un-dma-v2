@@ -87,6 +87,7 @@ include(cmake/OutputSources.cmake)
 add_library(UnContourVision STATIC
     src/vision/CaptureCard.cpp
     src/vision/ContourDetection.cpp
+    src/vision/AsheAmmo.cpp
     src/vision/ContourService.cpp
     src/config/ContourSettings.cpp
 )

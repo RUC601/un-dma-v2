@@ -497,6 +497,13 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Smooth Curve", "平滑曲线" },
 
     // Skill and sequence settings.
+    { "Koi proportional", "KOI 比例跟枪" },
+    { "Follows the remaining aim error proportionally. Speed scale adjusts response.", "按误差比例持续跟随；速度倍率调节响应。" },
+    { "Use Koi proportional tracking", "使用 KOI 比例跟枪" },
+    { "Ashe combo stages", "艾什连招阶段" },
+    { "Hip shot, scope in, scoped shot after 210 ms, scope out after 50 ms, then three follow-up hip shots, each after a 240 ms wait.", "腰射首枪 → 开镜 → 210 ms 后开镜射击 → 50 ms 后收镜 → 后续三枪各等待 240 ms 再腰射。" },
+    { "A brief release can continue the current stage. A release seen at a checkpoint restarts from shot one on the next press. A shot already waiting may still fire after release.", "短暂松键后按回可能续接当前阶段；检查点看到松键后，下次按下从首枪重开。已经开始等待的射击，松键后仍可能打出。" },
+    { "After every shot, vertical tracking pauses for 35 ms while horizontal tracking continues.", "每枪后纵向跟枪暂停 35 ms，横向持续跟随。" },
     { "Skill Key", "技能输出键" },
     { "Health Threshold", "血量阈值" },
     { "Max Health", "血量上限" },

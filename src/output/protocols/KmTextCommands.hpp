@@ -25,12 +25,15 @@ inline int ButtonDomain(std::string_view command) {
     if (command.starts_with("km.left(")) return 0;
     if (command.starts_with("km.right(")) return 1;
     if (command.starts_with("km.middle(")) return 2;
+    if (command.starts_with("km.side1(")) return 3;
+    if (command.starts_with("km.side2(")) return 4;
     return -1;
 }
 
 inline bool IsButtonRelease(std::string_view command) {
     return command == "km.left(0)\r\n" || command == "km.right(0)\r\n" ||
-        command == "km.middle(0)\r\n";
+        command == "km.middle(0)\r\n" || command == "km.side1(0)\r\n" ||
+        command == "km.side2(0)\r\n";
 }
 
 inline int FlushInterval(OutputCommandType type) {

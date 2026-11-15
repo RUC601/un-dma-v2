@@ -305,16 +305,15 @@ namespace OW { namespace Config {
         constexpr int kAimBehaviorSemanticsVersion = 6;
         constexpr int kVisualOverlayCleanupVersion = 8;
         constexpr int kDefaultAimPolicyVersion = 14;
-        constexpr int kCurrentHeroConfigVersion = 19;
+        constexpr int kCurrentHeroConfigVersion = 20;
         constexpr int kHeroFovAnglesStoredAsHalfAnglesVersion = 2;
         constexpr int kHeroAimBehaviorSemanticsVersion = 3;
         constexpr int kRoadhogChainHookFullHealthDefaultVersion = 5;
         constexpr int kBadAnaAbilityKeyLayoutVersion = 7;
         constexpr int kAnaSleepDartFullHealthDefaultVersion = 8;
         constexpr int kDocumentedHeroSlotDefaultsVersion = 9;
-        constexpr int kAsheFirePatternStableTrackingVersion = 13;
         constexpr int kAimScopeRequirementVersion = 14;
-        constexpr int kAsheFirePatternAimPhaseVersion = 15;
+        constexpr int kAsheKoiComboVersion = 20;
         constexpr int kHeroDefaultAimPolicyVersion = 16;
         constexpr const char* kMetaSection = "Meta";
         constexpr const char* kVersionKey = "config_version";
@@ -2609,7 +2608,7 @@ namespace OW { namespace Config {
             };
             constexpr const char* methods[] = {
                 "Linear", "PID", "Bezier", "Piecewise", "Accel Limited",
-                "Constant", "Hybrid PID", "Shuwu", "Error Response Curve"
+                "Constant", "Hybrid PID", "Shuwu", "Error Response Curve", "Koi Proportional"
             };
             const auto motion = CaptureBehaviorMotion(behavior, true);
             const bool builtin = method < 0;
@@ -4439,237 +4438,62 @@ namespace OW { namespace Config {
             return ValidateHeroSkillSettingsValue(defaults);
         }
 
-        std::vector<HeroSkillSequenceStep> MakeMeasuredAsheFirePatternSteps()
-        {
-            return {
-                { 0x01,  49, 1.0f, 0 },
-                { 0x02, 140, 1.0f, 0 },
-                { 0x03,  70, 1.0f, 0 },
-                { 0x02,  70, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00,  45, 1.0f, 0 },
-                { 0x02, 140, 1.0f, 0 },
-                { 0x03,  70, 1.0f, 0 },
-                { 0x02,  70, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00,  47, 1.0f, 0 },
-                { 0x02, 140, 1.0f, 0 },
-                { 0x03,  70, 1.0f, 0 },
-                { 0x02,  70, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-                { 0x01,  49, 1.0f, 0 },
-                { 0x00, 183, 1.0f, 0 },
-                { 0x01,  49, 1.0f, 0 },
-            };
-        }
-
-        bool MatchesAsheTenStepFirePatternDefault(const std::vector<HeroSkillSequenceStep>& steps)
-        {
-            constexpr std::pair<int, int> semantic[] = {
-                { 0x01,  49 },
-                { 0x00, 182 },
-                { 0x02, 245 },
-                { 0x03,  70 },
-                { 0x02, 210 },
-                { 0x00, 154 },
-                { 0x01,  49 },
-                { 0x00, 182 },
-                { 0x01,  49 },
-                { 0x00, 300 },
-            };
-
-            if (steps.size() != std::size(semantic))
-                return false;
-
-            for (size_t index = 0; index < std::size(semantic); ++index) {
-                if (steps[index].buttonMask != semantic[index].first ||
-                    steps[index].durationMs != semantic[index].second) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        bool MatchesPreviousAsheFirePatternDefault(const std::vector<HeroSkillSequenceStep>& steps)
-        {
-            constexpr std::pair<int, int> previous[] = {
-                { 0x01,  60 },
-                { 0x03,   5 },
-                { 0x02, 220 },
-                { 0x03,  62 },
-                { 0x02,  47 },
-                { 0x00, 142 },
-                { 0x01,  75 },
-                { 0x00, 147 },
-            };
-
-            if (steps.size() != std::size(previous))
-                return false;
-
-            for (size_t index = 0; index < std::size(previous); ++index) {
-                if (steps[index].buttonMask != previous[index].first ||
-                    steps[index].durationMs != previous[index].second) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        bool MatchesLegacyFiveStepAsheFirePatternDefault(const std::vector<HeroSkillSequenceStep>& steps)
-        {
-            constexpr std::pair<int, int> legacy[] = {
-                { 0x01,   5 },
-                { 0x02, 190 },
-                { 0x03,   5 },
-                { 0x00, 119 },
-                { 0x00, 119 },
-            };
-
-            if (steps.size() != std::size(legacy))
-                return false;
-
-            for (size_t index = 0; index < std::size(legacy); ++index) {
-                if (steps[index].buttonMask != legacy[index].first ||
-                    steps[index].durationMs != legacy[index].second) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        bool MatchesMeasuredAsheFirePattern(const std::vector<HeroSkillSequenceStep>& steps)
-        {
-            const std::vector<HeroSkillSequenceStep> measured = MakeMeasuredAsheFirePatternSteps();
-            if (steps.size() != measured.size())
-                return false;
-
-            for (size_t index = 0; index < measured.size(); ++index) {
-                if (steps[index].buttonMask != measured[index].buttonMask ||
-                    steps[index].durationMs != measured[index].durationMs) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        bool SequenceJsonMissingTimingMetadata(const rapidjson::Value& value)
-        {
-            if (!value.IsObject())
-                return false;
-
-            const auto sequenceSteps = value.FindMember("sequenceSteps");
-            if (sequenceSteps == value.MemberEnd() || !sequenceSteps->value.IsArray())
-                return false;
-
-            for (const rapidjson::Value& step : sequenceSteps->value.GetArray()) {
-                if (!step.IsObject())
-                    continue;
-
-                if (step.FindMember("speedScale") == step.MemberEnd() ||
-                    step.FindMember("jitterMs") == step.MemberEnd()) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        bool ShouldMigrateAsheFirePatternSequence(uint64_t heroId,
-                                                  const std::string& skillId,
-                                                  const rapidjson::Value& value,
-                                                  const HeroSkillSettings& settings)
+        bool MigrateAsheKoiCombo(int heroConfigVersion,
+                                 uint64_t heroId,
+                                 const std::string& skillId,
+                                 const rapidjson::Value& value,
+                                 HeroSkillSettings& settings)
         {
             if (heroId != static_cast<uint64_t>(OW::eHero::HERO_ASHE) || skillId != "fire-pattern")
                 return false;
 
-            if (MatchesMeasuredAsheFirePattern(settings.sequenceSteps))
-                return false;
-
-            return SequenceJsonMissingTimingMetadata(value) ||
-                MatchesLegacyFiveStepAsheFirePatternDefault(settings.sequenceSteps) ||
-                MatchesAsheTenStepFirePatternDefault(settings.sequenceSteps) ||
-                MatchesPreviousAsheFirePatternDefault(settings.sequenceSteps);
-        }
-
-        bool ShouldRestoreAsheFirePatternAimAssistDefault(uint64_t heroId,
-                                                          const std::string& skillId,
-                                                          const rapidjson::Value& value,
-                                                          const HeroSkillSettings& settings)
-        {
-            if (heroId != static_cast<uint64_t>(OW::eHero::HERO_ASHE) || skillId != "fire-pattern")
-                return false;
-
-            if (!MatchesMeasuredAsheFirePattern(settings.sequenceSteps))
-                return false;
-
-            const bool hasNewAimAssistKeys =
-                value.FindMember("trackingAimBehavior") != value.MemberEnd() ||
-                value.FindMember("trackingSpeedScale") != value.MemberEnd();
-            return !hasNewAimAssistKeys && settings.tracking.fov <= 0.001f;
-        }
-
-        bool ShouldMigrateAsheFirePatternTrackingStability(
-            int heroConfigVersion,
-            uint64_t heroId,
-            const std::string& skillId,
-            const HeroSkillSettings& settings)
-        {
-            if (heroConfigVersion >= kAsheFirePatternStableTrackingVersion ||
-                heroId != static_cast<uint64_t>(OW::eHero::HERO_ASHE) ||
-                skillId != "fire-pattern" ||
-                !MatchesMeasuredAsheFirePattern(settings.sequenceSteps)) {
-                return false;
+            const auto defaults = MakeAsheComboSequenceDefaults();
+            bool changed = false;
+            if (heroConfigVersion < kAsheKoiComboVersion) {
+                // Only the exact old, unnamed compile-time tracking default is
+                // upgraded. In particular, a user's named Shuwu preset is not
+                // identified by its numeric ID and must remain selected.
+                const auto& tracking = settings.tracking;
+                const bool oldDefault = tracking.aimBehaviorPresetId < 0 &&
+                    tracking.aimBehavior == kAimBehaviorTracking &&
+                    (tracking.method == 6 || (heroConfigVersion < 15 && tracking.method == 0)) &&
+                    SameFloatForDefaultMigration(tracking.smooth, 0.0f) &&
+                    (SameFloatForDefaultMigration(tracking.speedScale, 40.0f) ||
+                     (heroConfigVersion < 13 && SameFloatForDefaultMigration(tracking.speedScale, 100.0f))) &&
+                    SameFloatForDefaultMigration(tracking.fov, kDefaultFovDeg) &&
+                    tracking.bone == kAimBoneHead &&
+                    SameFloatForDefaultMigration(tracking.hitbox, kDefaultHitboxScalePercent) &&
+                    SameFloatForDefaultMigration(tracking.yawScale, 100.0f) &&
+                    SameFloatForDefaultMigration(tracking.pitchScale, 100.0f);
+                const bool missingLegacyTracking = value.IsObject() &&
+                    !value.HasMember("trackingAimBehavior") && !value.HasMember("trackingMethod") &&
+                    !value.HasMember("trackingSpeedScale") && tracking.aimBehaviorPresetId < 0 &&
+                    tracking.fov <= 0.001f;
+                if (oldDefault || missingLegacyTracking) {
+                    settings.tracking = defaults.tracking;
+                    changed = true;
+                }
             }
 
-            // Only rewrite the exact legacy aim-assist default. Customized
-            // behavior, method, FOV, bone, hitbox, or speed remains untouched.
-            return settings.tracking.aimBehavior == kAimBehaviorTracking &&
-                settings.tracking.aimBehaviorPresetId < 0 &&
-                settings.tracking.method == 0 &&
-                SameFloatForDefaultMigration(settings.tracking.smooth, 0.0f) &&
-                SameFloatForDefaultMigration(settings.tracking.speedScale, 100.0f) &&
-                SameFloatForDefaultMigration(settings.tracking.fov, kDefaultFovDeg) &&
-                settings.tracking.bone == kAimBoneHead &&
-                SameFloatForDefaultMigration(
-                    settings.tracking.hitbox,
-                    kDefaultHitboxScalePercent);
-        }
-
-        bool ShouldMigrateAsheFirePatternAimPhase(
-            int heroConfigVersion,
-            uint64_t heroId,
-            const std::string& skillId,
-            const rapidjson::Value& value,
-            const HeroSkillSettings& settings)
-        {
-            if (heroConfigVersion >= kAsheFirePatternAimPhaseVersion ||
-                heroId != static_cast<uint64_t>(OW::eHero::HERO_ASHE) ||
-                skillId != "fire-pattern" ||
-                !MatchesMeasuredAsheFirePattern(settings.sequenceSteps) ||
-                !value.IsObject()) {
-                return false;
-            }
-
-            // Preserve an explicitly authored experimental phase policy even
-            // when the surrounding JSON still carries an older version.
-            return value.FindMember("sequencePhaseAwareTracking") == value.MemberEnd();
+            // Ashe now always uses its semantic runner. Retire every old table,
+            // including custom timing: these fields no longer drive this skill.
+            // The fixed vertical pause never activates the old yaw/recovery/boost.
+            changed |= !settings.sequenceSteps.empty() || !settings.sequencePhaseAwareTracking ||
+                !SameFloatForDefaultMigration(settings.sequencePostFirePauseMs, 35.0f) ||
+                !SameFloatForDefaultMigration(settings.sequenceRecoveryMs, 0.0f) ||
+                !SameFloatForDefaultMigration(settings.sequencePostFireYawScale, 1.0f) ||
+                !SameFloatForDefaultMigration(settings.sequencePostFirePitchScale, 0.0f) ||
+                !SameFloatForDefaultMigration(settings.sequencePreFireBoostWindowMs, 0.0f) ||
+                !SameFloatForDefaultMigration(settings.sequencePreFireBoostScale, 1.0f);
+            settings.sequenceSteps.clear();
+            settings.sequencePhaseAwareTracking = true;
+            settings.sequencePostFirePauseMs = 35.0f;
+            settings.sequenceRecoveryMs = 0.0f;
+            settings.sequencePostFireYawScale = 1.0f;
+            settings.sequencePostFirePitchScale = 0.0f;
+            settings.sequencePreFireBoostWindowMs = 0.0f;
+            settings.sequencePreFireBoostScale = 1.0f;
+            return changed;
         }
 
         bool IsProjectileAimSkill(uint64_t heroId, const std::string& skillId)
@@ -5049,54 +4873,11 @@ namespace OW { namespace Config {
                     }
                     if (RepairBadAnaAbilityKeyLayout(heroConfigVersion, heroId, skillId, settings))
                         settings = ValidateHeroSkillSettingsValue(settings);
-                    if (ShouldMigrateAsheFirePatternSequence(heroId, skillId, skill->value, settings)) {
-                        settings.sequenceSteps = MakeMeasuredAsheFirePatternSteps();
-                        settings.cooldownGuard = true;
-                        settings.ammoGuard = true;
-                        settings.ammoGuardReserve = 1;
+                    if (MigrateAsheKoiCombo(heroConfigVersion, heroId, skillId, skill->value, settings)) {
                         settings = ValidateHeroSkillSettingsValue(settings);
+                        gLastHeroConfigNeedsSave = true;
                         LogConfig(Diagnostics::LogLevel::Info,
-                            "Migrated Ashe fire-pattern sequence to locked tuned defaults.");
-                    }
-                    if (ShouldRestoreAsheFirePatternAimAssistDefault(heroId, skillId, skill->value, settings)) {
-                        settings.tracking.aimBehavior = kAimBehaviorTracking;
-                        settings.tracking.speedScale =
-                            HeroSkillDetail::kAsheFirePatternTrackingSpeedScale;
-                        settings.tracking.fov = kDefaultFovDeg;
-                        settings.tracking.bone = kAimBoneHead;
-                        settings.tracking.hitbox = kDefaultHitboxScalePercent;
-                        settings = ValidateHeroSkillSettingsValue(settings);
-                        LogConfig(Diagnostics::LogLevel::Info,
-                            "Restored Ashe fire-pattern aim assist defaults.");
-                    }
-                    if (ShouldMigrateAsheFirePatternTrackingStability(
-                            heroConfigVersion,
-                            heroId,
-                            skillId,
-                            settings)) {
-                        settings.tracking.speedScale =
-                            HeroSkillDetail::kAsheFirePatternTrackingSpeedScale;
-                        settings = ValidateHeroSkillSettingsValue(settings);
-                        LogConfig(Diagnostics::LogLevel::Info,
-                            "Migrated Ashe fire-pattern tracking speed to stable default.");
-                    }
-                    if (ShouldMigrateAsheFirePatternAimPhase(
-                            heroConfigVersion,
-                            heroId,
-                            skillId,
-                            skill->value,
-                            settings)) {
-                        const HeroSkillSettings defaults = MakeAsheComboSequenceDefaults();
-                        settings.sequencePhaseAwareTracking = defaults.sequencePhaseAwareTracking;
-                        settings.sequencePostFirePauseMs = defaults.sequencePostFirePauseMs;
-                        settings.sequenceRecoveryMs = defaults.sequenceRecoveryMs;
-                        settings.sequencePostFireYawScale = defaults.sequencePostFireYawScale;
-                        settings.sequencePostFirePitchScale = defaults.sequencePostFirePitchScale;
-                        settings.sequencePreFireBoostWindowMs = defaults.sequencePreFireBoostWindowMs;
-                        settings.sequencePreFireBoostScale = defaults.sequencePreFireBoostScale;
-                        settings = ValidateHeroSkillSettingsValue(settings);
-                        LogConfig(Diagnostics::LogLevel::Info,
-                            "Migrated Ashe fire-pattern to phase-aware tracking defaults.");
+                            "Migrated Ashe fire-pattern to checkpoint combo stages; custom tracking is preserved.");
                     }
                     skills[skillId] = settings;
                 }
@@ -5639,6 +5420,10 @@ namespace OW { namespace Config {
             aimOvershootResetPixels = ReadFixedFloat(ini, section, "aimOvershootResetPixels", aimOvershootResetPixels);
             aimDryRun = ReadBool(ini, section, "aimDryRun", aimDryRun);
             aimVerboseLog = ReadBool(ini, section, "aimVerboseLog", aimVerboseLog);
+            if (aimVerboseLogSessionOverride) {
+                aimVerboseLogPersistedPreference = aimVerboseLog;
+                aimVerboseLog = true;
+            }
             aimDryRunLogIntervalMs = ReadInt(ini, section, "aimDryRunLogIntervalMs", aimDryRunLogIntervalMs);
 
             triggerbotMode = ReadInt(ini, section, "triggerbotMode", triggerbotMode);
@@ -5928,7 +5713,8 @@ namespace OW { namespace Config {
                 "constantAngularSpeedScale",
                 "hybridPidAngularSpeedScale",
                 "shuwuAngularSpeedScale",
-                "errorResponseCurveAngularSpeedScale"
+                "errorResponseCurveAngularSpeedScale",
+                "koiProportionalAngularSpeedScale"
             };
             static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
@@ -6096,7 +5882,8 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimOvershootGain", aimOvershootGain);
             WriteFixedFloatValue(path, section, "aimOvershootResetPixels", aimOvershootResetPixels);
             WriteBoolValue(path, section, "aimDryRun", aimDryRun);
-            WriteBoolValue(path, section, "aimVerboseLog", aimVerboseLog);
+            WriteBoolValue(path, section, "aimVerboseLog",
+                aimVerboseLogSessionOverride ? aimVerboseLogPersistedPreference : aimVerboseLog);
             WriteIntValue(path, section, "aimDryRunLogIntervalMs", aimDryRunLogIntervalMs);
 
             WriteIntValue(path, section, "triggerbotMode", triggerbotMode);
@@ -6327,7 +6114,8 @@ namespace OW { namespace Config {
                 "constantAngularSpeedScale",
                 "hybridPidAngularSpeedScale",
                 "shuwuAngularSpeedScale",
-                "errorResponseCurveAngularSpeedScale"
+                "errorResponseCurveAngularSpeedScale",
+                "koiProportionalAngularSpeedScale"
             };
             static_assert(angularSpeedKeys.size() == kAimMethodCount);
 
@@ -7268,24 +7056,62 @@ namespace OW { namespace Config {
             DeleteValue(path, "Global", "gafAsyncKeyStateSessionId");
         }
 
+        struct PersistedConfigContents {
+            std::string system;
+            std::shared_ptr<const std::string> heroes;
+            bool operator==(const PersistedConfigContents& other) const {
+                return system == other.system && (heroes == other.heroes ||
+                    (heroes && other.heroes && *heroes == *other.heroes));
+            }
+        };
+        struct HeroDocumentCache {
+            std::string path;
+            uint64_t configVersion = 0;
+            std::shared_ptr<const V2::HeroSettings::Store> settings;
+            std::shared_ptr<const std::string> contents;
+        } heroDocumentCache;
         struct AutoSaveState {
-            std::string path, observed, saved;
+            std::string path;
+            PersistedConfigContents observed, saved;
             uint64_t changedMs = 0, retryMs = 0;
+            bool pending = false;
         } autoSave;
         constexpr uint64_t kAutoSaveDelayMs = 4000;
+#ifdef UNLEASHED_SELF_TESTS
+        // Functional assertions count document construction; no timers/benchmarks.
+        uint64_t autoSaveHeroDocumentBuilds = 0;
+#endif
 
-        std::string CapturePersistedConfigUnlocked(const std::string& path)
+        PersistedConfigContents CapturePersistedConfigUnlocked(const std::string& path,
+                                                               bool reuseHeroDocument = false)
         {
-            std::string contents;
+            PersistedConfigContents contents;
             struct CaptureScope {
-                CaptureScope(std::string& target) { capturedConfig = &target; }
-                ~CaptureScope() { capturedConfig = nullptr; }
-            } capture(contents);
+                std::string* previous = capturedConfig;
+                explicit CaptureScope(std::string& target) { capturedConfig = &target; }
+                ~CaptureScope() { capturedConfig = previous; }
+            } capture(contents.system);
+            // These writers are the source of truth for legacy/direct global edits.
+            // Keep their small system-field comparison; do not require UI dirty flags.
             SaveSystemConfigContentsUnlocked(path);
-            rapidjson::StringBuffer buffer;
-            rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-            HeroPresetsDocumentUnlocked(HeroConfigPath(path)).Accept(writer);
-            contents.append(buffer.GetString(), buffer.GetSize());
+            const auto settings = V2::HeroSettings::Snapshot();
+            if (!reuseHeroDocument || !heroDocumentCache.contents ||
+                heroDocumentCache.path != path ||
+                heroDocumentCache.configVersion != configValuesVersion ||
+                heroDocumentCache.settings != settings) {
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                HeroPresetsDocumentUnlocked(HeroConfigPath(path)).Accept(writer);
+                auto next = std::make_shared<const std::string>(buffer.GetString(), buffer.GetSize());
+                // Retain identity when a publication only changed the runtime view.
+                if (heroDocumentCache.contents && *heroDocumentCache.contents == *next)
+                    next = heroDocumentCache.contents;
+                heroDocumentCache = {path, configValuesVersion, settings, std::move(next)};
+#ifdef UNLEASHED_SELF_TESTS
+                ++autoSaveHeroDocumentBuilds;
+#endif
+            }
+            contents.heroes = heroDocumentCache.contents;
             return contents;
         }
 
@@ -7293,6 +7119,7 @@ namespace OW { namespace Config {
         {
             autoSave = {};
             autoSave.path = path;
+            // Save/load may normalize authority before its scope publishes a version.
             autoSave.observed = autoSave.saved = CapturePersistedConfigUnlocked(path);
         }
 
@@ -7584,7 +7411,10 @@ namespace OW { namespace Config {
             bool& migrationSaved;
             ~AutoSaveLoadGuard() {
                 ResetAutoSaveUnlocked(path);
-                if (!migrationSaved) autoSave.saved.clear(); // Keep the failed migration pending.
+                if (!migrationSaved) {
+                    autoSave.saved = {};
+                    autoSave.pending = true; // Retry the failed migration even without another edit.
+                }
             }
         } autoSaveLoadGuard{path, migrationSaved};
         struct ProfileLoadGuard {
@@ -7714,13 +7544,14 @@ namespace OW { namespace Config {
         ScopedConfigAuthority authority(false);
         if (!HeroSaveAllowed(HeroConfigPath(path))) return AutoSaveResult::Failed;
         if (autoSave.path != path) ResetAutoSaveUnlocked(path);
-        const auto current = CapturePersistedConfigUnlocked(path);
+        const auto current = CapturePersistedConfigUnlocked(path, true);
         if (current != autoSave.observed) {
             autoSave.observed = current;
+            autoSave.pending = current != autoSave.saved;
             autoSave.changedMs = nowMs;
             autoSave.retryMs = 0;
         }
-        if (current == autoSave.saved || (!flush &&
+        if (!autoSave.pending || (!flush &&
             (nowMs - autoSave.changedMs < kAutoSaveDelayMs || nowMs < autoSave.retryMs)))
             return AutoSaveResult::Idle;
         authority.publish = true; // Saving validates/normalizes live values. Idle polling does not.

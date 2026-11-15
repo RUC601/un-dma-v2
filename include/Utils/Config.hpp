@@ -9,6 +9,7 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <limits>
 #include <cassert>
 #include <utility>
 #include <unordered_map>
@@ -162,7 +163,7 @@ namespace OW { namespace Config {
     std::string LastPersistenceError();
 #ifdef UNLEASHED_SELF_TESTS
     int RunPersistenceSelfTest();
-    int RunConfigConcurrencySelfTest();
+    int RunConfigConcurrencySelfTest(bool functionalOnly = false);
 #endif
     std::string HeroConfigPath();
     std::string HeroConfigPath(const std::string& configPath);
@@ -334,10 +335,10 @@ namespace OW { namespace Config {
     inline float aimbotMaxHead = 100.0f;
     inline decltype(aimbotMaxHead)& View_aimbotMaxHead();
     inline int   aimMethod = 0;
-    inline decltype(aimMethod)& View_aimMethod(); // 0=Linear, 1=PID, 2=Bezier, 3=Piecewise, 4=AccelLimited, 5=Constant, 6=HybridPID, 7=Shuwu, 8=ErrorResponseCurve
+    inline decltype(aimMethod)& View_aimMethod(); // 0=Linear, 1=PID, 2=Bezier, 3=Piecewise, 4=AccelLimited, 5=Constant, 6=HybridPID, 7=Shuwu, 8=ErrorResponseCurve, 9=KoiProportional
     inline int   aimbotSmoothType = 0;
     inline decltype(aimbotSmoothType)& View_aimbotSmoothType(); // 0=Constant Speed, 1=Linear, 2=Bezier
-    inline constexpr int kAimMethodCount = 9;
+    inline constexpr int kAimMethodCount = AimPlan::kMotionMethodCount;
     inline constexpr float kAimConstantAngularSpeedMaxDeg = 3600.0f;
     inline std::array<int, kAimBehaviorCount> aimBehaviorMethod = { 0, 0, 0, 0, 0 };
     inline decltype(aimBehaviorMethod)& View_aimBehaviorMethod();
@@ -353,9 +354,9 @@ namespace OW { namespace Config {
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitMaxPixels = { 4, 50, 50, 4, 4 };
     inline std::array<int, kAimBehaviorCount> aimBehaviorMoveSplitDelayUs = { 800, 0, 0, 800, 800 };
     inline std::array<float, kAimMethodCount> aimMethodAngularSpeedScale = {
-        100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f
+        100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f
     };
-    inline std::array<int, 2> secondaryAimMethodOverride = { -1, -1 }; // -1=inherit, 0-8=kAimMethod
+    inline std::array<int, 2> secondaryAimMethodOverride = { -1, -1 }; // -1=inherit, 0-9=kAimMethod
     inline float aimPidP = 0.5f;
     inline decltype(aimPidP)& View_aimPidP();
     inline float aimPidI = 0.01f;
@@ -436,10 +437,13 @@ namespace OW { namespace Config {
 
     inline std::vector<AimMethodPreset> aimMethodPresets{};
     inline decltype(aimMethodPresets)& View_aimMethodPresets();
+    inline const decltype(aimMethodPresets)& Read_aimMethodPresets();
     inline std::vector<AimBehaviorPreset> aimBehaviorPresets{};
     inline decltype(aimBehaviorPresets)& View_aimBehaviorPresets();
+    inline const decltype(aimBehaviorPresets)& Read_aimBehaviorPresets();
     inline std::vector<DynamicFovPreset> dynamicFovPresets{};
     inline decltype(dynamicFovPresets)& View_dynamicFovPresets();
+    inline const decltype(dynamicFovPresets)& Read_dynamicFovPresets();
     inline int   aimbotFovMode = kFovModeFixed;
     inline decltype(aimbotFovMode)& View_aimbotFovMode();
     inline int   aimbotDynamicFovPresetId = -1;
@@ -698,7 +702,12 @@ namespace OW { namespace Config {
 
     inline const AimMethodPreset* FindAimMethodPreset(int presetId)
     {
-        return FindMutableAimMethodPreset(presetId);
+        assert(configAuthority || configView);
+        if (presetId < 0) return nullptr;
+        const auto& presets = Read_aimMethodPresets();
+        const auto item = std::find_if(presets.begin(), presets.end(),
+            [presetId](const AimMethodPreset& preset) { return preset.id == presetId; });
+        return item != presets.end() ? &(*item) : nullptr;
     }
 
     inline AimBehaviorPreset* FindMutableAimBehaviorPreset(int presetId)
@@ -714,11 +723,16 @@ namespace OW { namespace Config {
 
     inline const AimBehaviorPreset* FindAimBehaviorPreset(int presetId)
     {
-        return FindMutableAimBehaviorPreset(presetId);
+        assert(configAuthority || configView);
+        if (presetId < 0) return nullptr;
+        const auto& presets = Read_aimBehaviorPresets();
+        const auto item = std::find_if(presets.begin(), presets.end(),
+            [presetId](const AimBehaviorPreset& preset) { return preset.id == presetId; });
+        return item != presets.end() ? &(*item) : nullptr;
     }
 
     inline int DefaultAimBehaviorPresetId(int behavior = kAimBehaviorTracking) {
-        for (const auto& preset : View_aimBehaviorPresets())
+        for (const auto& preset : Read_aimBehaviorPresets())
             if (preset.defaultBehavior == behavior) return preset.id;
         return -1;
     }
@@ -735,6 +749,42 @@ namespace OW { namespace Config {
         return FindAimBehaviorPreset(presetId) ? presetId : -1;
     }
 
+    // Explicit UI action only: creates an independent optional mode without
+    // changing the user's existing mode, method preset or global Tracking.
+    inline int EnsureKoiTrackingBehaviorPreset()
+    {
+        assert(configAuthority || configView);
+        AimBehaviorPreset desired;
+        desired.name = "KOI Tracking";
+        desired.behavior = kAimBehaviorTracking;
+        desired.method = 9;
+        desired.motion.method = 9;
+        desired.smooth = 100.0f;
+        desired.baseSpeed = 100.0f;
+        desired.moveSplitEnabled = false;
+        const auto& existing = Read_aimBehaviorPresets();
+        for (const auto& preset : existing) {
+            if (preset.name == desired.name && preset.defaultBehavior < 0 &&
+                preset.behavior == desired.behavior && preset.method == desired.method &&
+                preset.methodPresetId == desired.methodPresetId && preset.motion == desired.motion &&
+                static_cast<const AimBehaviorTuning&>(preset) == static_cast<const AimBehaviorTuning&>(desired))
+                return preset.id;
+        }
+        if (std::count_if(existing.begin(), existing.end(),
+                [](const auto& preset) { return preset.defaultBehavior < 0; }) >= 64)
+            return -1;
+        int next = (std::max)(1, View_nextAimBehaviorPresetId());
+        for (const auto& preset : existing) {
+            if (preset.id == (std::numeric_limits<int>::max)()) return -1;
+            next = (std::max)(next, preset.id + 1);
+        }
+        if (next == (std::numeric_limits<int>::max)()) return -1;
+        desired.id = next;
+        View_nextAimBehaviorPresetId() = next + 1;
+        View_aimBehaviorPresets().push_back(std::move(desired));
+        return next;
+    }
+
     inline DynamicFovPreset* FindMutableDynamicFovPreset(int presetId)
     {
         // Caller owns a read/edit scope or the authority lock.
@@ -748,7 +798,12 @@ namespace OW { namespace Config {
 
     inline const DynamicFovPreset* FindDynamicFovPreset(int presetId)
     {
-        return FindMutableDynamicFovPreset(presetId);
+        assert(configAuthority || configView);
+        if (presetId < 0) return nullptr;
+        const auto& presets = Read_dynamicFovPresets();
+        const auto item = std::find_if(presets.begin(), presets.end(),
+            [presetId](const DynamicFovPreset& preset) { return preset.id == presetId; });
+        return item != presets.end() ? &(*item) : nullptr;
     }
 
     inline int ClampDynamicFovPresetId(int presetId)
@@ -1322,6 +1377,10 @@ namespace OW { namespace Config {
     // ---- Diagnostics / Dry-run ----
     inline bool aimDryRun = false;              // Dry-run mode: log everything, don't move cursor
     inline bool aimVerboseLog = false;          // Extra verbose per-tick logging
+    // CLI-only override: persistence writes the loaded preference, not this
+    // session's effective logging value (including automatic UI saves).
+    inline bool aimVerboseLogSessionOverride = false;
+    inline bool aimVerboseLogPersistedPreference = false;
     inline int aimDryRunLogIntervalMs = 100;    // Min interval between dry-run log lines (avoid spam)
 
     // ---- Sensitivity auto-calibration ----
@@ -1747,8 +1806,10 @@ namespace OW { namespace Config {
 
     inline std::unordered_map<uint64_t, std::array<HeroSlotPreset, kMaxHeroPresetSlots>> heroAimPresets;
     inline decltype(heroAimPresets)& View_heroAimPresets();
+    inline const decltype(heroAimPresets)& Read_heroAimPresets();
     inline std::unordered_map<uint64_t, std::array<HeroSlotPreset, kMaxHeroPresetSlots>> heroTriggerPresets;
     inline decltype(heroTriggerPresets)& View_heroTriggerPresets();
+    inline const decltype(heroTriggerPresets)& Read_heroTriggerPresets();
     inline HeroSkillPresetStore heroSkillPresets;
     inline int targetPriority = 0;
 
@@ -1858,6 +1919,29 @@ namespace OW { namespace Config {
     ConfigLoadResult LoadConfig(const std::string& path);
 
 
+    // Runtime scopes share the immutable libraries. A local editor/override detaches
+    // only the library it explicitly writes; published versions never share authority.
+    template<class T> class SharedConfigStore {
+        std::shared_ptr<T> data = std::make_shared<T>();
+    public:
+        SharedConfigStore() = default;
+        SharedConfigStore(const SharedConfigStore&) = default;
+        SharedConfigStore(SharedConfigStore&&) = default;
+        SharedConfigStore& operator=(const SharedConfigStore&) = default;
+        SharedConfigStore& operator=(SharedConfigStore&&) = default;
+        SharedConfigStore& operator=(const T& source) {
+            data = std::make_shared<T>(source);
+            return *this;
+        }
+        const T& Read() const { return *data; }
+        T& Write() {
+            if (data.use_count() != 1) data = std::make_shared<T>(*data);
+            return *data;
+        }
+        auto begin() const { return Read().begin(); }
+        auto end() const { return Read().end(); }
+    };
+
     // Authority is written only under Config::mutex. Published versions own all data.
     struct ConfigValues {
         std::uint64_t version = 0;
@@ -1878,12 +1962,12 @@ namespace OW { namespace Config {
         decltype(Config::aimBehaviorMethod) aimBehaviorMethod;
         decltype(Config::aimBehaviorMethodPreset) aimBehaviorMethodPreset;
         decltype(Config::aimBehaviorPresetId) aimBehaviorPresetId;
-        decltype(Config::aimBehaviorPresets) aimBehaviorPresets;
+        SharedConfigStore<decltype(Config::aimBehaviorPresets)> aimBehaviorPresets;
         decltype(Config::aimBezierControlPoints) aimBezierControlPoints;
         decltype(Config::aimBezierCurvature) aimBezierCurvature;
         decltype(Config::aimBezierSpeed) aimBezierSpeed;
         decltype(Config::aimMethod) aimMethod;
-        decltype(Config::aimMethodPresets) aimMethodPresets;
+        SharedConfigStore<decltype(Config::aimMethodPresets)> aimMethodPresets;
         decltype(Config::aimPidD) aimPidD;
         decltype(Config::aimPidDeadzone) aimPidDeadzone;
         decltype(Config::aimPidI) aimPidI;
@@ -1944,9 +2028,9 @@ namespace OW { namespace Config {
         decltype(Config::aimbotUnlock) aimbotUnlock;
         decltype(Config::autobone) autobone;
         decltype(Config::autoscalefov) autoscalefov;
-        decltype(Config::dynamicFovPresets) dynamicFovPresets;
-        decltype(Config::heroAimPresets) heroAimPresets;
-        decltype(Config::heroTriggerPresets) heroTriggerPresets;
+        SharedConfigStore<decltype(Config::dynamicFovPresets)> dynamicFovPresets;
+        SharedConfigStore<decltype(Config::heroAimPresets)> heroAimPresets;
+        SharedConfigStore<decltype(Config::heroTriggerPresets)> heroTriggerPresets;
         decltype(Config::hitbox) hitbox;
         decltype(Config::minFov1) minFov1;
         decltype(Config::minFov2) minFov2;
@@ -2106,12 +2190,14 @@ namespace OW { namespace Config {
     inline decltype(aimBehaviorMethod)& View_aimBehaviorMethod() { return configAuthority ? aimBehaviorMethod : CurrentConfigValues().aimBehaviorMethod; }
     inline decltype(aimBehaviorMethodPreset)& View_aimBehaviorMethodPreset() { return configAuthority ? aimBehaviorMethodPreset : CurrentConfigValues().aimBehaviorMethodPreset; }
     inline decltype(aimBehaviorPresetId)& View_aimBehaviorPresetId() { return configAuthority ? aimBehaviorPresetId : CurrentConfigValues().aimBehaviorPresetId; }
-    inline decltype(aimBehaviorPresets)& View_aimBehaviorPresets() { return configAuthority ? aimBehaviorPresets : CurrentConfigValues().aimBehaviorPresets; }
+    inline decltype(aimBehaviorPresets)& View_aimBehaviorPresets() { return configAuthority ? aimBehaviorPresets : CurrentConfigValues().aimBehaviorPresets.Write(); }
+    inline const decltype(aimBehaviorPresets)& Read_aimBehaviorPresets() { return configAuthority ? aimBehaviorPresets : CurrentConfigValues().aimBehaviorPresets.Read(); }
     inline decltype(aimBezierControlPoints)& View_aimBezierControlPoints() { return configAuthority ? aimBezierControlPoints : CurrentConfigValues().aimBezierControlPoints; }
     inline decltype(aimBezierCurvature)& View_aimBezierCurvature() { return configAuthority ? aimBezierCurvature : CurrentConfigValues().aimBezierCurvature; }
     inline decltype(aimBezierSpeed)& View_aimBezierSpeed() { return configAuthority ? aimBezierSpeed : CurrentConfigValues().aimBezierSpeed; }
     inline decltype(aimMethod)& View_aimMethod() { return configAuthority ? aimMethod : CurrentConfigValues().aimMethod; }
-    inline decltype(aimMethodPresets)& View_aimMethodPresets() { return configAuthority ? aimMethodPresets : CurrentConfigValues().aimMethodPresets; }
+    inline decltype(aimMethodPresets)& View_aimMethodPresets() { return configAuthority ? aimMethodPresets : CurrentConfigValues().aimMethodPresets.Write(); }
+    inline const decltype(aimMethodPresets)& Read_aimMethodPresets() { return configAuthority ? aimMethodPresets : CurrentConfigValues().aimMethodPresets.Read(); }
     inline decltype(aimPidD)& View_aimPidD() { return configAuthority ? aimPidD : CurrentConfigValues().aimPidD; }
     inline decltype(aimPidDeadzone)& View_aimPidDeadzone() { return configAuthority ? aimPidDeadzone : CurrentConfigValues().aimPidDeadzone; }
     inline decltype(aimPidI)& View_aimPidI() { return configAuthority ? aimPidI : CurrentConfigValues().aimPidI; }
@@ -2172,9 +2258,12 @@ namespace OW { namespace Config {
     inline decltype(aimbotUnlock)& View_aimbotUnlock() { return configAuthority ? aimbotUnlock : CurrentConfigValues().aimbotUnlock; }
     inline decltype(autobone)& View_autobone() { return configAuthority ? autobone : CurrentConfigValues().autobone; }
     inline decltype(autoscalefov)& View_autoscalefov() { return configAuthority ? autoscalefov : CurrentConfigValues().autoscalefov; }
-    inline decltype(dynamicFovPresets)& View_dynamicFovPresets() { return configAuthority ? dynamicFovPresets : CurrentConfigValues().dynamicFovPresets; }
-    inline decltype(heroAimPresets)& View_heroAimPresets() { return configAuthority ? heroAimPresets : CurrentConfigValues().heroAimPresets; }
-    inline decltype(heroTriggerPresets)& View_heroTriggerPresets() { return configAuthority ? heroTriggerPresets : CurrentConfigValues().heroTriggerPresets; }
+    inline decltype(dynamicFovPresets)& View_dynamicFovPresets() { return configAuthority ? dynamicFovPresets : CurrentConfigValues().dynamicFovPresets.Write(); }
+    inline const decltype(dynamicFovPresets)& Read_dynamicFovPresets() { return configAuthority ? dynamicFovPresets : CurrentConfigValues().dynamicFovPresets.Read(); }
+    inline decltype(heroAimPresets)& View_heroAimPresets() { return configAuthority ? heroAimPresets : CurrentConfigValues().heroAimPresets.Write(); }
+    inline const decltype(heroAimPresets)& Read_heroAimPresets() { return configAuthority ? heroAimPresets : CurrentConfigValues().heroAimPresets.Read(); }
+    inline decltype(heroTriggerPresets)& View_heroTriggerPresets() { return configAuthority ? heroTriggerPresets : CurrentConfigValues().heroTriggerPresets.Write(); }
+    inline const decltype(heroTriggerPresets)& Read_heroTriggerPresets() { return configAuthority ? heroTriggerPresets : CurrentConfigValues().heroTriggerPresets.Read(); }
     inline decltype(hitbox)& View_hitbox() { return configAuthority ? hitbox : CurrentConfigValues().hitbox; }
     inline decltype(minFov1)& View_minFov1() { return configAuthority ? minFov1 : CurrentConfigValues().minFov1; }
     inline decltype(minFov2)& View_minFov2() { return configAuthority ? minFov2 : CurrentConfigValues().minFov2; }
@@ -2288,14 +2377,14 @@ namespace OW { namespace Config {
         assign(before.aimBehaviorMethod, after.aimBehaviorMethod, aimBehaviorMethod);
         assign(before.aimBehaviorMethodPreset, after.aimBehaviorMethodPreset, aimBehaviorMethodPreset);
         assign(before.aimBehaviorPresetId, after.aimBehaviorPresetId, aimBehaviorPresetId);
-        changed |= MergeConfigPresets(before.aimBehaviorPresets, after.aimBehaviorPresets, aimBehaviorPresets);
+        changed |= MergeConfigPresets(before.aimBehaviorPresets.Read(), after.aimBehaviorPresets.Read(), aimBehaviorPresets);
         assign(before.aimBezierControlPoints, after.aimBezierControlPoints, aimBezierControlPoints);
         assign(before.aimBezierCurvature, after.aimBezierCurvature, aimBezierCurvature);
         assign(before.aimBezierSpeed, after.aimBezierSpeed, aimBezierSpeed);
         nextAimBehaviorPresetId=(std::max)(nextAimBehaviorPresetId,after.nextAimBehaviorPresetId);
         assign(before.aimModeState, after.aimModeState, aimModeState);
         assign(before.aimMethod, after.aimMethod, aimMethod);
-        changed |= MergeConfigPresets(before.aimMethodPresets, after.aimMethodPresets, aimMethodPresets);
+        changed |= MergeConfigPresets(before.aimMethodPresets.Read(), after.aimMethodPresets.Read(), aimMethodPresets);
         assign(before.aimPidD, after.aimPidD, aimPidD);
         assign(before.aimPidDeadzone, after.aimPidDeadzone, aimPidDeadzone);
         assign(before.aimPidI, after.aimPidI, aimPidI);
@@ -2356,7 +2445,7 @@ namespace OW { namespace Config {
         assign(before.aimbotUnlock, after.aimbotUnlock, aimbotUnlock);
         assign(before.autobone, after.autobone, autobone);
         assign(before.autoscalefov, after.autoscalefov, autoscalefov);
-        changed |= MergeConfigPresets(before.dynamicFovPresets, after.dynamicFovPresets, dynamicFovPresets);
+        changed |= MergeConfigPresets(before.dynamicFovPresets.Read(), after.dynamicFovPresets.Read(), dynamicFovPresets);
         assign(before.hitbox, after.hitbox, hitbox);
         assign(before.minFov1, after.minFov1, minFov1);
         assign(before.minFov2, after.minFov2, minFov2);

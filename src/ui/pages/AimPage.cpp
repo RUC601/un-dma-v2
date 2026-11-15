@@ -113,8 +113,8 @@ void UI::AimbotPage() {
                 activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
                 if (activePreset.fovMode == OW::Config::kFovModeFixed) {
                     activePreset.dynamicFovPresetId = -1;
-                } else if (!OW::Config::View_dynamicFovPresets().empty()) {
-                    activePreset.dynamicFovPresetId = OW::Config::View_dynamicFovPresets().front().id;
+                } else if (!OW::Config::Read_dynamicFovPresets().empty()) {
+                    activePreset.dynamicFovPresetId = OW::Config::Read_dynamicFovPresets().front().id;
                 }
                 presetChanged = true;
             }

@@ -41,7 +41,19 @@ struct State {
     bool shotLatched = false;
     bool moving = false;
     std::uint64_t targetKey = 0;
+    std::uint64_t movementSample = 0;
 };
+
+inline bool ConsumeMovementSample(State& state, std::uint64_t sample) {
+    // View angles in the consumption frame are sampled, not a synchronous
+    // acknowledgement of the previous mouse command. Replaying that frame
+    // spends the same angular error more than once, especially near a repeat
+    // deadline where Step is allowed to close the whole remaining error.
+    if (!sample || (state.movementSample && sample <= state.movementSample))
+        return false;
+    state.movementSample = sample;
+    return true;
+}
 
 inline void PauseMovement(State& state) {
     state.moving = false;
@@ -50,6 +62,7 @@ inline void PauseMovement(State& state) {
 
 inline void EndActivation(State& state) {
     state.shotLatched = false;
+    state.movementSample = 0;
     PauseMovement(state);
 }
 

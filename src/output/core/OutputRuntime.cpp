@@ -380,26 +380,26 @@ namespace V2::Output {
         return DispatchDevice(generation, [&](IOutputDevice& device) { return device.Move(x, y, runtimeMs); });
     }
     int DispatchMouseButton(int button, bool down) {
-        if (button < 0 || button > 2) return err_net_cmd;
+        if (button < 0 || button > 4) return err_net_cmd;
         return DispatchDevice(std::nullopt, [&](IOutputDevice& device) { return device.Button(button, down); });
     }
     int DispatchMouseButtonForGeneration(std::uint64_t generation, int button, bool down) {
-        if (button < 0 || button > 2) return err_net_cmd;
+        if (button < 0 || button > 4) return err_net_cmd;
         if (SuppressOutput(OutputIntentForState(down))) return err_output_suppressed;
         return DispatchDevice(generation, [&](IOutputDevice& device) { return device.Button(button, down); });
     }
     int DispatchForceReleaseMouseButtonForGeneration(std::uint64_t generation, int button) {
-        if (button < 0 || button > 2) return err_net_cmd;
+        if (button < 0 || button > 4) return err_net_cmd;
         return DispatchDevice(generation, [&](IOutputDevice& device) { return device.Button(button, false, true); });
     }
     int DispatchMouseButtonStateMask(std::uint32_t mask, bool force) {
-        return DispatchDevice(std::nullopt, [&](IOutputDevice& device) { return device.ButtonState(mask & 7u, force); });
+        return DispatchDevice(std::nullopt, [&](IOutputDevice& device) { return device.ButtonState(mask & 0x1Fu, force); });
     }
     int DispatchForceReleaseMouseButtons() {
         return DispatchDevice(std::nullopt, [](IOutputDevice& device) { return device.ReleaseButtons(); });
     }
     int DispatchForceReleaseMouseButton(int button) {
-        if (button < 0 || button > 2) return err_net_cmd;
+        if (button < 0 || button > 4) return err_net_cmd;
         return DispatchDevice(std::nullopt, [&](IOutputDevice& device) { return device.Button(button, false, true); });
     }
     int DispatchMouseMask(std::uint32_t mask) {

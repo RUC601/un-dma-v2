@@ -1719,7 +1719,8 @@ namespace OW {
         std::vector<std::pair<uint64_t,uint64_t>>* bindingMembers=nullptr,bool* bindingComplete=nullptr,
         std::vector<EntityRosterPolicy::Discovery>* discoveries=nullptr,
         const std::unordered_map<uint64_t,EntityHeaderSnapshot>* headers=nullptr,
-        const std::vector<EntityRosterPolicy::Discovery>* hotActors=nullptr,bool currentController=false) {
+        const std::vector<EntityRosterPolicy::Discovery>* hotActors=nullptr,bool currentController=false,
+        bool currentMapPositiveOnly=false) {
         std::vector<std::pair<uint64_t,uint64_t>> result;
         const DWORD discoveryTick = static_cast<DWORD>(EntityRegistryNowMs());
         if (discoveries) discoveries->clear();
@@ -1747,19 +1748,28 @@ namespace OW {
         const bool linkIdRead=link && SDK->read_range(link+offset::Link_TargetId,linkIds.data(),sizeof(linkIds));
         const bool targetIdRead=linkIdRead;
         const uint32_t targetId=linkIds[0],linkId=linkIds[1];
+        if(currentMapPositiveOnly && (!linkIdRead || (!targetId && !linkId))){trace(8);return result;}
         bool allBindingsResolved=(currentController || topology.member_ids_complete) && linkIdRead && targetIdRead;
         std::vector<std::pair<uint64_t,uint64_t>> contextBindings;
+        std::vector<std::pair<uint64_t,CnLinkTargetMapIdentity>> positiveMapGuards;
         if(linkIdRead && targetIdRead)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
             const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
             if(!id || (idOffset==offset::Link_UniqueId && id==targetId))continue;
-            if(currentController) {
+            if(currentController || currentMapPositiveOnly) {
                 uint32_t resolvedId=0;
-                const auto target=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId);
+                CnLinkTargetMapIdentity currentMap;
+                const auto target=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId,
+                    currentMapPositiveOnly?&currentMap:nullptr);
                 if(resolvedId==id && IsPlausibleUserPointer(target)) {
                     if(std::find(components.begin(),components.end(),target)==components.end())components.push_back(target);
                     contextBindings.emplace_back(idOffset,target);
+                    if(currentMapPositiveOnly)positiveMapGuards.emplace_back(idOffset,currentMap);
                     continue;
                 }
+                // Some live CN controllers expose no context at link+8. A
+                // complete fresh header sweep may then prove a unique UID
+                // binding; partial/stale indexes never gain this fallback.
+                if(currentMapPositiveOnly && !topology.member_ids_complete){trace(8);return {};}
             }
             std::vector<uint64_t> matches;
             for(const auto& [component,memberId]:topology.member_ids)
@@ -1771,10 +1781,13 @@ namespace OW {
                 const auto target=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId);
                 if(resolvedId==id && std::find(matches.begin(),matches.end(),target)!=matches.end()) {
                     components.push_back(target);contextBindings.emplace_back(idOffset,target);
-                } else allBindingsResolved=false;
+                } else {
+                    allBindingsResolved=false;
+                    if(currentMapPositiveOnly){trace(8);return {};}
+                }
             } else if(!matches.empty())components.push_back(matches.front());
         }
-        if(link)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
+        if(link && !currentMapPositiveOnly)for(auto idOffset:{offset::Link_TargetId,offset::Link_UniqueId}) {
             const auto id=idOffset==offset::Link_TargetId?targetId:linkId;
             if(std::any_of(contextBindings.begin(),contextBindings.end(),[&](const auto& pair){return pair.first==idOffset;}))continue;
             if(id && std::any_of(topology.member_ids.begin(),topology.member_ids.end(),[&](const auto& pair){return pair.second==id;}))continue;
@@ -1786,6 +1799,7 @@ namespace OW {
                 std::find(components.begin(),components.end(),target)==components.end())components.push_back(target);
         }
         auto resolvedComponents=components;
+        if(currentMapPositiveOnly && components.empty()){trace(8);return result;}
         struct RecoveredBinding {
             uint64_t idOffset=0,target=0;
             CnLinkTargetMapIdentity map;
@@ -1840,7 +1854,7 @@ namespace OW {
                 !GameData::IsKnownHeroId(hero.heroid)){trace(6,component);continue;}
             uint32_t actorMatch=0;
             if(!componentHeader.ReadParentOffset(offset::Entity_MatchId,actorMatch)){trace(2,component);continue;}
-            const bool hotBody=!recoveredRemote && hotActors && std::any_of(hotActors->begin(),hotActors->end(),[&](const auto& actor) {
+            const bool hotBody=!recoveredRemote && !currentMapPositiveOnly && hotActors && std::any_of(hotActors->begin(),hotActors->end(),[&](const auto& actor) {
                 return actor.address==component && actor.link==parent && actor.match==actorMatch && actor.hero==hero.heroid;
             });
             if(!hotBody) {
@@ -1852,7 +1866,7 @@ namespace OW {
                     trace(5,component);continue;
                 }
                 HealthPayloadSummary health{};
-                if(!TryParseHealthPayload(hp,health) || ((!discoveries || recoveredRemote) && (health.total<=0 || health.isDead))){trace(6,component);continue;}
+                if(!TryParseHealthPayload(hp,health) || ((!discoveries || recoveredRemote || currentMapPositiveOnly) && (health.total<=0 || health.isDead))){trace(6,component);continue;}
                 if(!std::isfinite(location.x)||!std::isfinite(location.y)||!std::isfinite(location.z)||
                     std::fabs(location.x)>100000 || std::fabs(location.y)>100000 || std::fabs(location.z)>100000){trace(7,component);continue;}
             }
@@ -1893,13 +1907,17 @@ namespace OW {
                     return binding.idOffset==idOffset && binding.target==target;
                 });
                 CnLinkTargetMapIdentity currentMap;
+                const auto positiveGuard=std::find_if(positiveMapGuards.begin(),positiveMapGuards.end(),
+                    [&](const auto& guard){return guard.first==idOffset;});
                 const auto currentTarget=ResolveCnLinkTargetMapBase(link,idOffset,nullptr,
-                    recovered!=recoveredBindings.end()?&currentMap:nullptr);
-                if(currentTarget!=target || (recovered!=recoveredBindings.end() && currentMap!=recovered->map)){
+                    recovered!=recoveredBindings.end() || positiveGuard!=positiveMapGuards.end()?&currentMap:nullptr);
+                if(currentTarget!=target || (recovered!=recoveredBindings.end() && currentMap!=recovered->map) ||
+                    (positiveGuard!=positiveMapGuards.end() && currentMap!=positiveGuard->second)){
                     if(discoveries)discoveries->clear();trace(8);return {};
                 }
             }
             allBindingsResolved=allBindingsResolved && idsStable;
+            if(currentMapPositiveOnly)allBindingsResolved=false;
             if(allBindingsResolved && bindingMembers)
                 for(auto component:resolvedComponents)bindingMembers->emplace_back(component,parent);
             if(bindingComplete)*bindingComplete=allBindingsResolved;

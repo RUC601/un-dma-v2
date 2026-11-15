@@ -451,7 +451,7 @@ int main(int argc, char** argv)
         const std::string argument = argv[index] ? argv[index] : "";
         if (argument == "--help" || argument == "-h") {
             std::printf("Usage: UNDMA_V2 [--config-check] [--test-server]\n"
-                        "       [--test-server-port 1..65535] [--test-server-cors] [--box-perf-mode]\n       [--run-seconds 1..1800] [--reconnect-after 1..1799] [--canvas-only]\n       [--profile auto|cn|world|nexon]\n");
+                        "       [--test-server-port 1..65535] [--test-server-cors] [--box-perf-mode]\n       [--run-seconds 1..1800] [--reconnect-after 1..1799] [--canvas-only]\n       [--profile auto|cn|world|nexon] [--capture-screen] [--aim-diagnostics]\n");
             return 0;
         }
         if (argument == "--profile") {
@@ -474,9 +474,11 @@ int main(int argc, char** argv)
             continue;
         }
         if (argument == "--config-check" || argument == "--test-server" ||
-            argument == "--test-server-cors" || argument == "--box-perf-mode" || argument == "--canvas-only" || argument == "--launcher-stdio")
+            argument == "--test-server-cors" || argument == "--box-perf-mode" || argument == "--canvas-only" || argument == "--launcher-stdio" || argument == "--capture-screen" || argument == "--aim-diagnostics")
             continue;
 #ifdef UNLEASHED_SELF_TESTS
+        if (argument == "--functional-only" && HasCommandLineFlag(argc, argv, "--config-concurrency-selftest"))
+            continue;
         if (argument == "--skill-mode-scope-selftest" || argument == "--aim-release-output-selftest" || argument == "--config-concurrency-selftest" || argument == "--config-persistence-selftest" ||
             argument == "--test-server-lifecycle-selftest" ||
             argument == "--overlay-status-selftest" || argument == "--runtime-control-selftest" ||
@@ -497,7 +499,7 @@ int main(int argc, char** argv)
     if (HasCommandLineFlag(argc, argv, "--overlay-status-selftest"))
         return RunOverlayStatusSelfTest();
     if (HasCommandLineFlag(argc, argv, "--config-concurrency-selftest"))
-        return OW::Config::RunConfigConcurrencySelfTest();
+        return OW::Config::RunConfigConcurrencySelfTest(HasCommandLineFlag(argc, argv, "--functional-only"));
     if (HasCommandLineFlag(argc, argv, "--skill-mode-scope-selftest"))
         return OW::RunSkillModeScopeSelfTest();
     if (HasCommandLineFlag(argc, argv, "--aim-release-output-selftest"))
@@ -561,8 +563,15 @@ int main(int argc, char** argv)
         Diagnostics::Error("Config load failed: %s", OW::Config::LastPersistenceError().c_str());
         return EXIT_FAILURE;
     }
-    if (!V2::Vision::Preferences::Load())
+    const bool capturePreferencesLoaded = V2::Vision::Preferences::Load();
+    if (!capturePreferencesLoaded)
         Diagnostics::Warn("Capture preferences unavailable: %s", V2::Vision::Preferences::Error().c_str());
+    if (HasCommandLineFlag(argc, argv, "--aim-diagnostics")) {
+        OW::Config::aimVerboseLogPersistedPreference = OW::Config::aimVerboseLog;
+        OW::Config::aimVerboseLogSessionOverride = true;
+        OW::Config::aimVerboseLog = true;
+        Diagnostics::Info("Verbose aim diagnostics enabled for this run by --aim-diagnostics; settings were not saved.");
+    }
     if (boxPerfModeRequested) {
         OW::Config::boxPerfMode = true;
         OW::Config::boxPerfFastRect = true;
@@ -647,6 +656,17 @@ int main(int argc, char** argv)
     PreloadHeroAvatars();
     PreloadAbilityIcons();
     V2::Alerts::Start();
+    if (HasCommandLineFlag(argc, argv, "--capture-screen")) {
+        // Explicit session-only capture using the same service as the UI and
+        // contour consumers. Do not persist enabled state or open a second card.
+        auto& capture = V2::Vision::GetService();
+        auto settings = capture.GetSettings();
+        settings.enabled = true;
+        if (capturePreferencesLoaded && capture.Configure(settings) && capture.Start())
+            Diagnostics::Info("Capture requested by --capture-screen; waiting for the first frame.");
+        else
+            Diagnostics::Warn("--capture-screen could not start capture; inspect capture settings and status.");
+    }
     V2::Launcher::Send("{\"event\":\"ready\"}");
     StartProcessConnectionThread();
     Diagnostics::Info("Settings ready; hardware and process connection run in background.");

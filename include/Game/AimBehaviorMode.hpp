@@ -83,7 +83,7 @@ inline void NormalizeBehaviorTuning(AimBehaviorTuning& t) {
     t.flick2ndBoxPadding=Finite(t.flick2ndBoxPadding,8,0,80);
     t.flick2ndInnerRadius=Finite(t.flick2ndInnerRadius,34,0,250);
     t.flick2ndInnerSmoothScale=Finite(t.flick2ndInnerSmoothScale,.55f,.1f,1);
-    t.flick2ndInnerMethod=(std::clamp)(t.flick2ndInnerMethod,-1,8);
+    t.flick2ndInnerMethod=(std::clamp)(t.flick2ndInnerMethod,-1,AimPlan::kMotionMethodCount-1);
     t.startLimiter=ValidateAimStartLimiterProfile(t.startLimiter);
     t.moveSplitMaxPixels=(std::clamp)(t.moveSplitMaxPixels,1,50);
     t.moveSplitDelayUs=(std::clamp)(t.moveSplitDelayUs,0,10000);

@@ -86,7 +86,8 @@ inline const char* kHeroSkillTargetBones[] = {
     "Chest", "Head", "Neck", "Closest"
 };
 inline const char* kAimBehavior[]  = { "Tracking", "Flick", "Flick2nd", "Reacquire", "MagneticTrigger" };
-inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID", "Shuwu", "Error response curve" };
+inline const char* kAimMethod[]    = { "Linear", "PID", "Bezier", "Piecewise", "Accel Limited", "Constant", "Hybrid PID", "Shuwu", "Error response curve", "Koi proportional" };
+static_assert(std::size(kAimMethod) == OW::Config::kAimMethodCount);
 inline const char* kAimSmoothType[] = { "Constant Speed", "Linear", "Bezier" };
 inline const char* kPredictionMode[] = { "Auto", "Force On", "Force Off" };
 inline const char* kFirePolicy[] = {

@@ -11,6 +11,11 @@ namespace OW {
         constexpr float kMaxDeltaTime = 0.1f;
         constexpr float kRetargetAngleThreshold = 2.0f;
 
+        struct LinearState {
+            Vector3 lastTarget{};
+            bool initialized = false;
+        };
+
         struct PIDState {
             Vector3 integral{};
             Vector3 previousError{};
@@ -33,6 +38,7 @@ namespace OW {
         };
 
 
+        LinearState& GetLinearState();
         AimHybrid::State& GetHybridState();
         PIDState& GetPIDState();
         BezierState& GetBezierState();

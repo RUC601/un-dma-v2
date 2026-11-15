@@ -24,6 +24,8 @@
             record.entity=std::move(value);record.seenThisCycle=true;record.lastHotReadTick=tick;
             record.visibilitySample = {};
             if(newlyDead) {
+                OW::EntityMaintenance::ParticipantReplacementVerifier::Maintain(record,record.entity,
+                    processRegistry,processSceneGeneration,entityAdmissionNow);
                 ++lifecycleStats.entityRecordMarkDeadCount;
                 record.respawnWatchStartedTick=tick;record.respawnFirstScanRequested=false;record.respawnLastScanRequestTick=0;
                 record.cachedSkeletonValid=false;record.skeletonCache={};record.lastRawObservation={};

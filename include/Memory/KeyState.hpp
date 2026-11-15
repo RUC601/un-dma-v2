@@ -1679,27 +1679,32 @@ namespace KeyState {
     }
 
     inline void PublishKeyStateSample(const KeyStateBitmap& latest, bool readOk, DWORD actual,
-                                     uint64_t timestampMs, uint64_t expectedAddress = 0)
+                                     uint64_t readStartedAtMs, uint64_t readCompletedAtMs,
+                                     uint64_t expectedAddress = 0)
     {
         const bool ok = readOk && actual == kKeyStateByteCount;
+        // The bitmap may have been read at any point in the call. Its oldest
+        // possible age includes the read itself, not just time since return.
+        const bool usable = ok && IsSampleTimestampFresh(readStartedAtMs, readCompletedAtMs);
         std::lock_guard<std::mutex> lock(keyStateMutex);
         if (expectedAddress != 0 &&
             gafAsyncKeyStateAddr.load(std::memory_order_acquire) != expectedAddress)
             return;
         lastSampleBytes.store(actual, std::memory_order_release);
-        keyStateBitmap = ok ? latest : KeyStateBitmap{};
+        keyStateBitmap = usable ? latest : KeyStateBitmap{};
         if (ok) {
-            lastSuccessfulSampleMs.store(timestampMs, std::memory_order_release);
+            lastSuccessfulSampleMs.store(readStartedAtMs, std::memory_order_release);
+            // A slow successful read invalidates input, not the resolved address.
             consecutiveReadFailures.store(0, std::memory_order_release);
         } else if (consecutiveReadFailures.fetch_add(1, std::memory_order_acq_rel) + 1 >=
                    kReadFailuresBeforeResolve) {
             initialized.store(false, std::memory_order_release);
             gafAsyncKeyStateAddr.store(0, std::memory_order_release);
-            nextResolveAttemptMs.store(timestampMs + kResolverRetryBackoffMs,
+            nextResolveAttemptMs.store(readCompletedAtMs + kResolverRetryBackoffMs,
                                        std::memory_order_release);
             consecutiveReadFailures.store(0, std::memory_order_release);
         }
-        sampleAvailable.store(ok, std::memory_order_release);
+        sampleAvailable.store(usable, std::memory_order_release);
     }
 
     inline void UpdateKeyStates()
@@ -1718,14 +1723,16 @@ namespace KeyState {
         KeyStateBitmap latest{};
         DWORD actual = 0;
         const auto start = std::chrono::steady_clock::now();
+        const uint64_t readStartedAtMs = GetTickCount64();
         const bool ok = mem.vHandle && VMMDLL_MemReadEx(
             mem.vHandle,
             EffectiveReadPid(static_cast<DWORD>(keyStateReadPid.load(std::memory_order_acquire)),
                 keyStateReadUsesKernelMemory.load(std::memory_order_acquire)),
             address, latest.data(), static_cast<DWORD>(latest.size()), &actual,
             VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_NOPAGING) != FALSE && actual == latest.size();
+        const uint64_t readCompletedAtMs = GetTickCount64();
         Diagnostics::RecordDmaRead(ok, std::chrono::steady_clock::now() - start);
-        PublishKeyStateSample(latest, ok, actual, GetTickCount64(), address);
+        PublishKeyStateSample(latest, ok, actual, readStartedAtMs, readCompletedAtMs, address);
     }
 
     inline KeyStateVkSample MakeVkSampleLocation(int vkCode)

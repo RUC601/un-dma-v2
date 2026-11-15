@@ -413,7 +413,7 @@ namespace OW {
         OutputUnownedControlCallback ownerlessRelease,
         std::uint64_t expectedGeneration,
         bool requireNewPress) {
-        if(control.kind==OutputControlKind::MouseButton&&control.code>2)return ActionOutputStatus::UnsupportedTransport;
+        if(control.kind==OutputControlKind::MouseButton&&control.code>4)return ActionOutputStatus::UnsupportedTransport;
         const V2::Output::OutputRuntimeAppliedState applied = V2::Output::RuntimeController().Applied();
         if (applied.descriptor.backend == V2::Output::OutputRuntimeBackend::None ||
             !V2::Output::RuntimeController().CanDispatch(applied.generation) ||
@@ -686,7 +686,7 @@ namespace OW {
     bool SendMouseButtonStateMask(uint32_t stateMask, bool force) {
         if (ShouldSuppressOutput("mouse_button_state"))
             return false;
-        return V2::Output::DispatchMouseButtonStateMask(stateMask & 0x7u, force) == success;
+        return V2::Output::DispatchMouseButtonStateMask(stateMask & 0x1Fu, force) == success;
     }
 
     bool MaskPhysicalMouseButtons(uint32_t mask) {

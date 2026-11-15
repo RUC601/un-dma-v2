@@ -8,6 +8,7 @@
 #include "../../runtime/Acquisition.hpp"
 #include "EntityWorkers.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/EntityMaintenance/ParticipantReplacement.hpp"
 #include "Game/map/MapReader.hpp"
 #include "Game/SkillCooldownTimers.hpp"
 #include "Game/HeroSkills.hpp"
@@ -961,7 +962,7 @@ void entity_thread() {
             neededBones |= OW::kSkeletonBoneAllMask;
         if(OW::Config::IsFlick2ndBehavior(OW::Config::View_aimBehavior()) || OW::Config::Flick2)
             neededBones|=OW::kSkeletonBoneShoulders|OW::kSkeletonBonePelvis;
-        const auto& heroSlots=OW::Config::View_heroAimPresets();
+        const auto& heroSlots=OW::Config::Read_heroAimPresets();
         if(const auto slots=heroSlots.find(localCycleSnapshot.HeroID);slots!=heroSlots.end())
             for(const auto& slot:slots->second)if(slot.present && slot.enabled) {
                 if(slot.preset.autoBone)neededBones|=slot.preset.aimBoneMask;

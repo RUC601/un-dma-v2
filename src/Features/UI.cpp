@@ -1871,20 +1871,20 @@ bool UISkeletonBoneMultiSelect(const char* label, OW::SkeletonBoneMask* rawMask)
 
 int NextAimMethodPresetId() {
     int nextId = 1;
-    for (const OW::Config::AimMethodPreset& preset : OW::Config::View_aimMethodPresets())
+    for (const OW::Config::AimMethodPreset& preset : OW::Config::Read_aimMethodPresets())
         nextId = (std::max)(nextId, preset.id + 1);
     return nextId;
 }
 
 static int NextAimBehaviorPresetId() {
     auto& next=OW::Config::View_nextAimBehaviorPresetId();
-    for(const auto& p:OW::Config::View_aimBehaviorPresets()) next=(std::max)(next,p.id+1);
+    for(const auto& p:OW::Config::Read_aimBehaviorPresets()) next=(std::max)(next,p.id+1);
     return next++;
 }
 
 int NextDynamicFovPresetId() {
     int nextId = 1;
-    for (const OW::Config::DynamicFovPreset& preset : OW::Config::View_dynamicFovPresets())
+    for (const OW::Config::DynamicFovPreset& preset : OW::Config::Read_dynamicFovPresets())
         nextId = (std::max)(nextId, preset.id + 1);
     return nextId;
 }
@@ -2003,7 +2003,7 @@ bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod)
             ImGui::SetItemDefaultFocus();
 
         const int normalizedFilter = filterMethod >= 0 ? OW::Config::ClampAimMethodIndex(filterMethod) : -1;
-        for (const OW::Config::AimMethodPreset& preset : OW::Config::View_aimMethodPresets()) {
+        for (const OW::Config::AimMethodPreset& preset : OW::Config::Read_aimMethodPresets()) {
             const int method = OW::Config::ClampAimMethodIndex(preset.method);
             if (normalizedFilter >= 0 && method != normalizedFilter)
                 continue;
@@ -2042,7 +2042,7 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
             ImGui::SetItemDefaultFocus();
 
         const int normalizedFilter = filterBehavior >= 0 ? OW::Config::ClampAimBehaviorIndex(filterBehavior) : -1;
-        for (const OW::Config::AimBehaviorPreset& preset : OW::Config::View_aimBehaviorPresets()) {
+        for (const OW::Config::AimBehaviorPreset& preset : OW::Config::Read_aimBehaviorPresets()) {
             const int behavior = OW::Config::ClampAimBehaviorIndex(preset.behavior);
             if (normalizedFilter >= 0 && behavior != normalizedFilter)
                 continue;
@@ -2087,7 +2087,7 @@ bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone) 
                 ImGui::SetItemDefaultFocus();
         }
 
-        for (const OW::Config::DynamicFovPreset& preset : OW::Config::View_dynamicFovPresets()) {
+        for (const OW::Config::DynamicFovPreset& preset : OW::Config::Read_dynamicFovPresets()) {
             const OW::Config::DynamicFovPreset normalized =
                 OW::Config::ValidateDynamicFovPresetValue(preset);
             char labelText[160] = {};

@@ -82,6 +82,7 @@ enum class SmoothingControllerType : int {
     HybridPID = 6,
     Shuwu = 7,
     ErrorResponseCurve = 8,
+    KoiProportional = 9,
 };
 
 enum class ExecutionSource : int {
@@ -257,7 +258,7 @@ inline UnlockMode ClampUnlockMode(int value)
 
 inline SmoothingControllerType ClampSmoothingController(int value)
 {
-    return static_cast<SmoothingControllerType>(std::clamp(value, 0, 8));
+    return static_cast<SmoothingControllerType>(std::clamp(value, 0, AimPlan::kMotionMethodCount - 1));
 }
 
 inline bool ResolvePredictionEnabled(PredictionOverrideMode mode,
