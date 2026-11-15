@@ -60,7 +60,7 @@ using V2::VisualSettings::Element;
 using V2::VisualSettings::Settings;
 using V2::VisualSettings::Style;
 bool StyleDetails(Style& style,Element element) {
-    const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair;
+    const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Health||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair;
     const bool line=element==Element::Box||element==Element::Health||element==Element::Resources||element==Element::Skeleton||element==Element::Prediction||element==Element::Hitbox||element==Element::Snapline||element==Element::EyeRay||element==Element::Crosshair;
     bool changed=false;
     if(size){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Size"),&style.size,6,80,"%.1f");}
@@ -79,12 +79,38 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
     SettingRow(V2::VisualSettings::kElementNames[index],labelWidth);
     bool changed=UICheckbox("##enabled",&enabled);
     auto& style=settings.elements[index];
-    ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible,[&]{changed|=StyleDetails(style,element);});
+    ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
     ImGui::SetItemTooltip("%s",L("Visible"));
     ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
     ImGui::SetItemTooltip("%s",L("Hidden"));
-    ImGui::SameLine();if(ImGui::Button("...",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
-    if(ImGui::BeginPopup("##details")){changed|=StyleDetails(style,element);ImGui::EndPopup();}
+    const std::string detailsLabel=std::string("...##")+V2::VisualSettings::kElementNames[index];
+    ImGui::SameLine();if(ImGui::Button(detailsLabel.c_str(),ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
+    const char* typeLabel=element==Element::Box?"Box Type":element==Element::Name?"Name Type":nullptr;
+    if(typeLabel&&UI::Search::Pending()&&UI::Search::requested==typeLabel)ImGui::OpenPopup("##details");
+    if(ImGui::BeginPopup("##details")){
+        ImGui::TextUnformatted(L(V2::VisualSettings::kElementNames[index]));
+        ImGui::Spacing();
+        if(typeLabel){
+            UI::Search::Anchor(typeLabel);
+            ImGui::TextDisabled("%s",L(typeLabel));
+            const char* boxes[]={"Corner","Rectangle","Filled"};
+            const char* names[]={"Hero Name","BattleTag","Hero / BattleTag"};
+            ImGui::SetNextItemWidth(220);
+            changed|=UISelect(element==Element::Box?"##boxType":"##nameType",
+                element==Element::Box?&settings.boxType:&settings.nameType,element==Element::Box?boxes:names,3);
+        }
+        if(element==Element::Health){
+            const bool zh=OW::Config::uiLanguage==1;
+            const char* styles[]={zh?"1 · ED 侧边细条":"1 · ED side line",zh?"2 · 框上方横条":"2 · Above box",zh?"3 · 游戏分类血条":"3 · Game resource pools"};
+            int healthStyle=settings.healthBarStyle-1;
+            ImGui::TextDisabled("%s",zh?"血条样式":"Health Bar Style");
+            ImGui::SetNextItemWidth(220);
+            if(UISelect("##healthBarStyle",&healthStyle,styles,3)){settings.healthBarStyle=healthStyle+1;changed=true;}
+        }
+        changed|=StyleDetails(style,element);
+        ImGui::EndPopup();
+    }
     ImGui::PopID();return changed;
 }
 void OutlineControls() {
@@ -240,7 +266,7 @@ void UI::VisualsPage() {
     auto settings=V2::HeroSettings::Snapshot()->display;
     bool changed=false;
     const float width=ImGui::GetContentRegionAvail().x;
-    const bool columns=width>=650;
+    const bool columns=width>=650*(std::max)(1.f,ImGui::GetFontSize()/15.f);
     const float height=(std::max)(200.f,ImGui::GetContentRegionAvail().y);
     ImGui::BeginChild("VisualsLeft",ImVec2(columns?(width-16)*.5f:0,columns?height:0),columns?ImGuiChildFlags_None:ImGuiChildFlags_AutoResizeY);
     Card("Players",[&]{
@@ -253,19 +279,11 @@ void UI::VisualsPage() {
     Card("Player ESP",[&]{
         SettingRow("Dynamic Font Scaling");changed|=UICheckbox("##dynamicFont",&settings.dynamicFont);
         changed|=ElementRow(settings,Element::Box,OW::Config::draw_info);
-        const char* boxes[]={"Corner","Rectangle","Filled"};SettingRow("Box Type");PushControlWidth();changed|=UISelect("##boxType",&settings.boxType,boxes,3);ImGui::PopItemWidth();
         changed|=ElementRow(settings,Element::Name,OW::Config::name);
-        const char* names[]={"Hero Name","BattleTag","Hero / BattleTag"};SettingRow("Name Type");PushControlWidth();changed|=UISelect("##nameType",&settings.nameType,names,3);ImGui::PopItemWidth();
         changed|=ElementRow(settings,Element::BattleTag,OW::Config::drawbattletag);
         bool healthEnabled=OW::Config::healthbar || OW::Config::healthbar2;
         changed|=ElementRow(settings,Element::Health,healthEnabled);
         OW::Config::healthbar=healthEnabled;OW::Config::healthbar2=false;
-        const bool zh=OW::Config::uiLanguage==1;
-        const char* styles[]={zh?"1 · ED 侧边细条":"1 · ED side line",zh?"2 · 框上方横条":"2 · Above box",zh?"3 · 游戏分类血条":"3 · Game resource pools"};
-        int healthStyle=settings.healthBarStyle-1;
-        SettingRow(zh?"血条样式":"Health Bar Style");PushControlWidth();
-        if(UISelect("##healthBarStyle",&healthStyle,styles,3)){settings.healthBarStyle=healthStyle+1;changed=true;}
-        ImGui::PopItemWidth();
         changed|=ElementRow(settings,Element::Distance,OW::Config::dist);
         changed|=ElementRow(settings,Element::Avatar,OW::Config::draw_avatar);
         changed|=ElementRow(settings,Element::Ultimate,settings.worldUltimate);
@@ -277,8 +295,8 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
         changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);
         changed|=ElementRow(settings,Element::Crosshair,OW::Config::crosscircle);
-        OutlineControls();
     });
+    Card("Game Outlines",[]{OutlineControls();});
     Card("World",[&]{
         auto& world=settings.world;
         ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"物品识别与字段待现场核验；轮胎缺少可靠身份":"Object capture pending live validation; tire identity unavailable");
@@ -344,28 +362,7 @@ void UI::VisualsPage() {
     ImGui::EndChild();
     if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
 }
-void DrawThemeGeneralPage() {
-    auto settings=V2::HeroSettings::Snapshot()->display;
-    bool changed=false;
-    for(int i=0;i<int(Element::Count);++i) {
-        ImGui::PushID(i);
-        Card(V2::VisualSettings::kElementNames[i],[&]{
-            auto& style=settings.elements[i];
-            changed|=UIColorEdit("Visible",&style.visible);changed|=UIColorEdit("Hidden",&style.hidden);
-            changed|=UIColorEdit("Ally",&style.ally);changed|=UIColorEdit("Target",&style.target);
-            changed|=StyleDetails(style,static_cast<Element>(i));
-        });
-        ImGui::PopID();
-    }
-    Card("Game Outlines",[]{OutlineControls();});
-    if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
-}
-
-static bool UIFovRingCompactColorEdit(const char* label, ImVec4* value) {
-    return UI::ColorPicker(label,*value);
-}
-
-static bool UIFovRingStyleRow(OW::Config::FovRingSlotKind kind,
+static void DrawFovRingCard(OW::Config::FovRingSlotKind kind,
                               int slotIndex,
                               bool slotEnabled,
                               float slotFovDeg) {
@@ -377,50 +374,52 @@ static bool UIFovRingStyleRow(OW::Config::FovRingSlotKind kind,
 
     char slotLabel[32] = {};
     std::snprintf(slotLabel, sizeof(slotLabel), L("Slot %d"), slotIndex + 1);
-    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,10.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(12,12));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,kColPanelSoft);
+    ImGui::BeginChild("RingCard",ImVec2(0,0),
+        ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY|ImGuiChildFlags_AlwaysAutoResize|ImGuiChildFlags_AlwaysUseWindowPadding,
+        ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted(slotLabel);
-
-    ImGui::SameLine(74.0f);
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(slotEnabled ? kColTextMuted : kColTextDim),
                        "%s %.0f deg",
                        slotEnabled ? L("On") : L("Off"),
                        OW::Config::ClampFovDeg(slotFovDeg));
 
-    ImGui::SameLine(160.0f);
-    changed |= UICheckbox("##visible", &style.visible);
-    ImGui::SameLine(181.0f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(L("Show"));
-
-    ImGui::SameLine(232.0f);
-    changed |= UIFovRingCompactColorEdit("##color", &style.color);
-
-    ImGui::SameLine(334.0f);
-    ImGui::SetNextItemWidth(102.0f);
+    ImGui::Spacing();
+    changed |= UICheckbox(L("Show"), &style.visible);
+    ImGui::SameLine();
+    changed |= UI::ColorPicker("##color",style.color);
+    ImGui::SetItemTooltip("%s",L("Color"));
+    ImGui::TextDisabled("%s",L("Thickness"));
+    ImGui::SetNextItemWidth(-FLT_MIN);
     changed |= UISlider("##thickness", &style.thickness, 0.5f, 6.0f, Number(1, " px"));
 
-    ImGui::SameLine(448.0f);
     static const char* kLineStyles[] = { "Solid", "Dashed" };
-    ImGui::SetNextItemWidth(88.0f);
+    ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"线型":"Line style");
+    ImGui::SetNextItemWidth(-FLT_MIN);
     changed |= UISelect("##lineStyle", &style.lineStyle, kLineStyles, IM_ARRAYSIZE(kLineStyles));
 
-    ImGui::SameLine(548.0f);
-    changed |= UICheckbox("##label", &style.showLabel);
-    ImGui::SameLine(569.0f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(L("Label"));
+    changed |= UICheckbox(L("Label"), &style.showLabel);
 
     if (changed)
         style = OW::Config::ClampFovRingStyle(style, kind, slotIndex);
 
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
     ImGui::PopID();
-    return changed;
 }
 
 static void DrawFovRingStyleGroup(OW::Config::FovRingSlotKind kind,
                                   const HeroOption& selectedHero) {
-    UIGroupBox("Aim Slot Rings");
-    {
+    ImGui::TextUnformatted(L("Aim Slot Rings"));
+    ImGui::Spacing();
+    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+    const float gap=12.f*scale;
+    const int columns=std::clamp(int((ImGui::GetContentRegionAvail().x+gap)/(190.f*scale+gap)),1,4);
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(gap*.5f,gap*.5f));
+    if(ImGui::BeginTable("FovRingCards",columns,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_NoPadOuterX)) {
         const int slotCount = selectedHero.heroId == 0
             ? OW::Config::kMaxHeroPresetSlots
             : ImClamp(OW::Config::GetHeroAimSlotCount(selectedHero.heroId),
@@ -434,10 +433,12 @@ static void DrawFovRingStyleGroup(OW::Config::FovRingSlotKind kind,
             const bool slotEnabled = hasSlot && slot.enabled;
             const float fovDeg = hasSlot ? slot.preset.fov : OW::Config::kDefaultFovDeg;
 
-            UIFovRingStyleRow(kind, slotIndex, selectedHero.heroId == 0 || slotEnabled, fovDeg);
+            ImGui::TableNextColumn();
+            DrawFovRingCard(kind, slotIndex, selectedHero.heroId == 0 || slotEnabled, fovDeg);
         }
+        ImGui::EndTable();
     }
-    CloseGroupBox();
+    ImGui::PopStyleVar();
 }
 
 void DrawThemeFovRingsPage() {
@@ -450,7 +451,7 @@ void UI::ThemePage() {
 
     state.themeSubTab = ImClamp(state.themeSubTab, 0, kThemeSubTabCount - 1);
     if (state.themeSubTab == 0)
-        DrawThemeGeneralPage();
+        VisualsPage();
     else
         DrawThemeFovRingsPage();
 

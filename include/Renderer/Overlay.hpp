@@ -59,7 +59,11 @@ private:
     unsigned long long      m_lastMenuRenderMs = 0;
     bool                    m_menuAnchorValid = false;
     bool                    m_minimizedToTaskbar = false;
+    bool                    m_uiResourcesInitialized = false;
+    DWORD                   m_windowServicesThread = 0;
 
+    bool InitializeWindowServices();
+    void ShutdownWindowServices();
     bool RegisterWindowClasses(HINSTANCE instance);
     bool CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance);
     bool CreateDX11();

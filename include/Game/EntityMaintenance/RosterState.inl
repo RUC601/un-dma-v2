@@ -2,6 +2,8 @@
     std::unordered_map<uint64_t, std::shared_ptr<RosterEntry>> entityRoster{};
     entityRoster.reserve(128);
     size_t maintenanceCursor = 0;
+    size_t bootstrapCursor = 0, recoveryMaintenanceCursor = 0;
+    bool bootstrapFirst = true, preferRecoveryMaintenance = true;
     std::unordered_map<uint64_t,DWORD> discoveryAttemptTicks;
     bool missingTransitionNeedsScan=false;
     uint64_t actorGenerationSequence = 0, entityPublishSequence = 0;

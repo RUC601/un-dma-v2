@@ -234,6 +234,7 @@ void Render(Model& model, const std::function<void()>& save,
             if(ImGui::IsWindowAppearing())ImGui::SetKeyboardFocusHere(-1);
             bool matched=false;
             for(const auto& entry:Search::entries) {
+                if(entry.page<0||entry.page>=int(model.pages.size())||!model.pages[entry.page].visible)continue;
                 const auto* localized=UI::Text::Label(entry.label,zh);
                 if(!query[0]||(!ImStristr(entry.label,nullptr,query,nullptr)&&!ImStristr(localized,nullptr,query,nullptr)))continue;
                 matched=true;ImGui::PushID(&entry);
@@ -242,8 +243,8 @@ void Render(Model& model, const std::function<void()>& save,
                 ImGui::PopID();
             }
             for(int i=0;i<int(model.pages.size());++i) {
-                if(i==9) continue;
                 const auto& page=model.pages[i];
+                if(!page.visible)continue;
                 if(!ImStristr(page.label,nullptr,query,nullptr) && !ImStristr(page.group,nullptr,query,nullptr)) continue;
                 matched=true;
                 const auto label=std::string(page.group)+" / "+page.label;
@@ -299,8 +300,8 @@ void Render(Model& model, const std::function<void()>& save,
         const char* group=nullptr;
         for(int order=0;order<int(model.pages.size());++order) {
             const int i=model.pages.size()==16?(order==12?15:order>12?order-1:order):order;
-            if(i==9)continue;
             const auto& page=model.pages[i];
+            if(!page.visible)continue;
             if(!group||std::strcmp(group,page.group)!=0) {
                 if(group)ImGui::Dummy(ImVec2(0,10));
                 if(!collapsed)ImGui::TextDisabled("%s",page.group);

@@ -2466,7 +2466,7 @@ static int CurrentPageKey() {
         case UI::TAB_VISUALS:
             return kVisualsPageKey;
         case UI::TAB_THEME:
-            return kThemePageKeyBase + ImClamp(UI::state.themeSubTab, 0, kThemeSubTabCount - 1);
+            return ImClamp(UI::state.themeSubTab, 0, kThemeSubTabCount - 1) == 1 ? kThemePageKeyBase + 1 : kVisualsPageKey;
         case UI::TAB_MISC:
             return kMiscPageKeyBase + ImClamp(UI::state.miscSubTab, 0, kMiscSubTabCount - 1);
         default:
@@ -2759,6 +2759,9 @@ void UI::Render() {
     else if(state.activeTab==TAB_VISUALS) page=5;
     else if(state.activeTab==TAB_THEME) page=6+ImClamp(state.themeSubTab,0,1);
     else { const int mapping[]={13,14,8,9,10,11,12}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
+    // Keep historical page keys while routing retired duplicate pages to their owner.
+    if(page==6)page=5;
+    else if(page==9)page=8;
     const bool chinese=OW::Config::uiLanguage==OW::Config::kUiLanguageChineseSimplified;
     const Workspace::Page pages[] = {
         {chinese?"瞄准":"Aim", chinese?"英雄方案":"Hero schemes"},
@@ -2767,10 +2770,10 @@ void UI::Render() {
         {chinese?"序列":"Sequences", chinese?"英雄方案":"Hero schemes"},
         {chinese?"预警 Alert":"Alert", chinese?"英雄方案":"Hero schemes"},
         {chinese?"画面":"Visuals", chinese?"显示":"Display"},
-        {chinese?"主题":"Theme", chinese?"显示":"Display"},
+        {chinese?"主题":"Theme", chinese?"显示":"Display", false},
         {chinese?"范围圈":"FOV rings", chinese?"显示":"Display"},
         {chinese?"行为模式":"Behavior modes", chinese?"共享参数":"Shared settings"},
-        {chinese?"运动方法":"Methods", chinese?"共享参数":"Shared settings"},
+        {chinese?"运动方法":"Methods", chinese?"共享参数":"Shared settings", false},
         {chinese?"动态范围":"Dynamic FOV", chinese?"共享参数":"Shared settings"},
         {chinese?"输入与设备":"Input and devices", chinese?"系统":"System"},
         {chinese?"Overlay 与字体":"Overlay and fonts", chinese?"系统":"System"},
@@ -2792,7 +2795,7 @@ void UI::Render() {
     Workspace::Render(model, [] {
         SetPersistenceStatus(OW::Config::SaveAllConfig(OW::Config::ConfigPath()), T(UiText::SavedAllChanges));
     }, [&](int selected) {
-        page=selected;
+        page=selected==6?5:selected==9?8:selected;
         if (page<4) { state.activeTab=TAB_AIMING; state.aimingSubTab=page; }
         else if (page==4) state.activeTab=TAB_ALERT;
         else if (page==5) state.activeTab=TAB_VISUALS;
@@ -2804,7 +2807,7 @@ void UI::Render() {
         case 0: AimbotPage(); break; case 1: TriggerPage(); break;
         case 2: SkillsPage(); break; case 3: SequencesPage(); break;
         case 4: AlertPage(); break;
-        case 5: VisualsPage(); break; case 6: DrawThemeGeneralPage(); break;
+        case 5: case 6: VisualsPage(); break;
         case 7: DrawThemeFovRingsPage(); break; case 8: DrawMiscBehaviorPage(); break;
         case 9: DrawMiscBehaviorPage(); break; case 10: DrawMiscDynamicFovPage(); break;
         case 11: DrawMiscOutputPage(); break; case 12: DrawMiscScreenPage(); break;

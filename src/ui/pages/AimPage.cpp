@@ -6,6 +6,7 @@
 #include "ui/SlotSelector.hpp"
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
+#include "vision/ContourService.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
@@ -191,6 +192,37 @@ void UI::AimbotPage() {
                                         : "轮廓确认仅支持普通 Flick。切换 Behavior 后若保留开启，该 Slot 暂停执行；可在此关闭。")
                     : (contourSupported ? "Uses captured contours to confirm the exposed part. All three colors are matched. Start capture under Settings > Screen. This version supports ordinary Flick with hitscan weapons and prediction off. Projectile weapons, charge-release and execution after key release pause this Slot."
                                         : "Contour confirmation supports ordinary Flick only. This Slot stays paused while it is enabled for another behavior; turn it off here to resume."));
+            }
+            if (activePreset.contourEnabled) {
+                V2::Vision::Settings captureSettings;
+                const auto captureFrame = V2::Vision::GetService().Snapshot(captureSettings);
+                const auto captureStatus = V2::Vision::GetService().Status();
+                const bool zh = OW::Config::uiLanguage == 1;
+                const char* captureMessage = nullptr;
+                if (!captureSettings.enabled || captureStatus.state == V2::Vision::ServiceState::Stopped)
+                    captureMessage = zh ? "轮廓采集未开启：当前 Slot 等待画面，不会瞄准或开火。请先开始采集。"
+                                        : "Capture is stopped. This Slot waits for an image and cannot aim or fire. Start capture first.";
+                else if (captureStatus.state == V2::Vision::ServiceState::Faulted)
+                    captureMessage = zh ? "轮廓采集失败：当前 Slot 已暂停，请到采集设置查看原因。"
+                                        : "Capture failed. This Slot is paused; check the capture settings for details.";
+                else if (captureStatus.state == V2::Vision::ServiceState::Starting)
+                    captureMessage = zh ? "轮廓采集正在连接：当前 Slot 等待新画面。"
+                                        : "Capture is starting. This Slot is waiting for a new image.";
+                else if (!captureFrame)
+                    captureMessage = zh ? "轮廓采集没有新鲜画面：当前 Slot 等待画面恢复。"
+                                        : "No fresh capture frame. This Slot is waiting for the image to recover.";
+                if (captureMessage) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.64f, 0.25f, 1.0f));
+                    ImGui::TextWrapped("%s", captureMessage);
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::TextWrapped("%s", zh ? "已收到新鲜采集画面；目标部位仍须通过轮廓关联与触边确认。"
+                                                : "Fresh capture frames are available. The target part still requires contour association and contact confirmation.");
+                }
+                if (ImGui::SmallButton(zh ? "打开采集设置" : "Open capture settings")) {
+                    state.activeTab = TAB_MISC;
+                    state.miscSubTab = 6;
+                }
             }
 
             // Trace Condition

@@ -5,7 +5,7 @@
 #include <imgui.h>
 
 namespace UI::Workspace {
-struct Page { const char* label; const char* group; };
+struct Page { const char* label; const char* group; bool visible = true; };
 // 壳只拥有布局；配置编辑、保存和页面业务通过回调交给各自所有者。
 struct Model {
     std::span<const Page> pages;

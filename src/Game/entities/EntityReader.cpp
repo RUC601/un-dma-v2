@@ -1,6 +1,7 @@
 #include "Game/EntityMaintenance/HotFieldReads.hpp"
 #include "Game/EntityMaintenance/HotLifeTransition.hpp"
 #include "Game/EntityMaintenance/ComponentRefresh.hpp"
+#include "Game/EntityMaintenance/RefreshBatch.hpp"
 #include "Game/EntityMaintenance/WorkSchedule.hpp"
 #include "Game/ParticipantIdentity.hpp"
 #include "Game/camera/CameraWorker.hpp"
@@ -390,6 +391,7 @@ void entity_thread() {
             uint32_t observedMatchId=0;
             DWORD matchIdBytes=0;
             DWORD readStartedTick=0,readCompletedTick=0, skeletonReadStartedTick=0;
+            DWORD hotFieldsReadStartedTick=0,hotFieldsReadCompletedTick=0;
             std::array<OW::Skeleton::PoseRange,19> boneRanges{};
             std::array<uint8_t,19*0x60> boneData{};
             std::array<bool,18> boneRequested{};
@@ -397,6 +399,9 @@ void entity_thread() {
             bool botChestRequested=false;
             bool skeletonPrepared=false;
             uint64_t skeletonRevision=0, rotationLeaf=0;
+            OW::Skeleton::LayoutGuard skeletonBefore{},skeletonAfter{};
+            std::vector<int> guardedBoneIndices;
+            OW::Skeleton::PointerGuard rotationGuard{};
             std::vector<uint8_t> shapeBoneData;
             DWORD shapeBoneBytes=0;
             OW::EntityBodyObservation bodyObservation{};
@@ -410,12 +415,16 @@ void entity_thread() {
                     std::isfinite(rotation.Y) &&
                     std::isfinite(rotation.Z);
             }
+            bool RotationGuarded() const {
+                return rotationGuard.Matches(rotationLeaf);
+            }
         };
     struct ScatterOwner {
         VMMDLL_SCATTER_HANDLE value = mem.CreateScatterHandle();
         ~ScatterOwner() { if(value) mem.CloseScatterHandle(value); }
-    } hotScatterOwner;
+    } hotScatterOwner,hotGuardScatterOwner;
     const auto hotFieldScatter = hotScatterOwner.value;
+    const auto hotGuardScatter = hotGuardScatterOwner.value;
     std::vector<HotFieldBatchItem> hotFieldBatchItems;
     std::unordered_map<uint64_t,size_t> hotFieldBatchIndex;
     std::unordered_map<uint64_t,uint64_t> successfulSamples;
@@ -740,7 +749,6 @@ void entity_thread() {
         const auto skillObservationNeeds = OW::HeroSkillObservationNeeds();
         size_t skeletonRefreshBudget =
             static_cast<size_t>(skeletonRefreshBudgetPerCycle);
-        const size_t skeletonBudgetForCycle=skeletonRefreshBudget;
         size_t entityLoopStart = raw_entities.empty() ? 0 : maintenanceCursor % raw_entities.size();
         for(size_t offset=0;offset<raw_entities.size();++offset) {
             const size_t index=(entityLoopStart+offset)%raw_entities.size();
@@ -937,6 +945,13 @@ void entity_thread() {
             }
 
         const auto& activeOffsetsForHotBatch = offset::Active();
+        const auto prepareSkeletonScatter=[&](VMMDLL_SCATTER_HANDLE scatter,uint64_t at,void* dst,size_t bytes,DWORD* actual) {
+            ++pipelineStats.hotScatterRequestedCount;
+            ++pipelineStats.hotScatterBatchRequests;
+            const bool prepared=mem.AddScatterReadRequest(scatter,at,dst,bytes,actual);
+            recordHotScatterPrepare(at,bytes,prepared);
+            return prepared;
+        };
 
         {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.hotScatterPrepareMs);
@@ -1004,11 +1019,12 @@ void entity_thread() {
                         scatterVisibility)) {
                     continue;
                 }
-                cached.rotationLeaf = 0;
-                if (cached.rotation && !mem.ReadFreshExact(
-                    OW::Skeleton::AddressOffset(cached.rotation, offset::RotationBase_Sub1),
-                    &cached.rotationLeaf, sizeof(cached.rotationLeaf))) cached.rotationLeaf = 0;
                 item.rotationLeaf = cached.rotationLeaf;
+                if(cached.rotation) {
+                    item.rotationGuard.beforePrepared=prepareSkeletonScatter(hotFieldScatter,
+                        OW::Skeleton::AddressOffset(cached.rotation,offset::RotationBase_Sub1),
+                        &item.rotationGuard.before,sizeof(item.rotationGuard.before),&item.rotationGuard.beforeBytes);
+                }
                 if (cached.rotationLeaf) {
                     ++pipelineStats.hotScatterRequestedCount;
                     item.rotationRequested = mem.AddScatterReadRequest(
@@ -1028,10 +1044,14 @@ void entity_thread() {
                 cached.ApplyBases(skeletonOwner);
                 skeletonOwner.connection_epoch = connectionEpoch;
                 skeletonOwner.scene_generation = processSceneGeneration;
-                item.skeletonReadStartedTick = GetTickCount();
-                item.skeletonPrepared = skeletonOwner.ConfirmSkeletonLayout(cached.skeletonCache);
+                skeletonOwner.Alive=cached.alive;skeletonOwner.PlayerHealth=cached.playerHealth;
+                item.skeletonPrepared = cached.skeletonCache.valid &&
+                    cached.skeletonCache.identity==skeletonOwner.SkeletonIdentity();
                 item.skeletonRevision = cached.skeletonCache.revision;
-                if (!item.skeletonPrepared) cached.cachedSkeletonValid = false;
+                if (!item.skeletonPrepared) {
+                    cached.cachedSkeletonValid = false;
+                    cached.skeletonCache.valid=false;
+                }
                 const auto& skeleton=cached.skeletonCache;
                 if(item.skeletonPrepared && skeleton.bonesBase) {
                     std::array<int,19> indices{}; size_t count=0;
@@ -1039,9 +1059,11 @@ void entity_thread() {
                         if(skeleton.mappedIndices[slot]<0 || (!OW::Config::draw_skel && slot>=3 &&
                             !OW::SkeletonBoneMaskIncludesRenderSlot(neededBones,slot)))continue;
                         item.boneRequested[slot]=true;indices[count++]=skeleton.mappedIndices[slot];
+                        item.guardedBoneIndices.push_back(skeleton.mappedIndices[slot]);
                     }
                     if(skeleton.hasBotChest && skeleton.botChestMappedIndex>=0) {
                         item.botChestRequested=true;indices[count++]=skeleton.botChestMappedIndex;
+                        item.guardedBoneIndices.push_back(skeleton.botChestMappedIndex);
                     }
                     std::sort(indices.begin(),indices.begin()+count);
                     size_t packedOffset=0;
@@ -1051,16 +1073,24 @@ void entity_thread() {
                         auto& range=item.boneRanges[item.boneRangeCount++];
                         range.first=indices[begin];range.last=indices[end-1];range.offset=packedOffset;
                         range.size=size_t(range.last-range.first)*0x30+sizeof(XMFLOAT3);
-                        mem.AddScatterReadRequest(hotFieldScatter,skeleton.bonesBase+0x20+uint64_t(range.first)*0x30,
+                        range.prepared=prepareSkeletonScatter(hotFieldScatter,skeleton.bonesBase+0x20+uint64_t(range.first)*0x30,
                             item.boneData.data()+packedOffset,range.size,&range.bytes);
                         packedOffset+=range.size;begin=end;
                     }
                 }
-                if(OW::Config::draw_hitbox && OW::ModelShapes::Supported(cached.heroId) &&
+                if(item.skeletonPrepared && OW::Config::draw_hitbox && OW::ModelShapes::Supported(cached.heroId) &&
                    skeleton.valid && skeleton.shapeModelIndex>=0 && skeleton.shapeMaxIndex>=0 && skeleton.shapeMaxIndex<skeleton.boneCount) {
                     item.shapeBoneData.resize(size_t(skeleton.shapeMaxIndex+1)*0x30);
-                    mem.AddScatterReadRequest(hotFieldScatter,skeleton.bonesBase,item.shapeBoneData.data(),
-                        item.shapeBoneData.size(),&item.shapeBoneBytes);
+                    if(!prepareSkeletonScatter(hotFieldScatter,skeleton.bonesBase,item.shapeBoneData.data(),
+                        item.shapeBoneData.size(),&item.shapeBoneBytes))item.shapeBoneData.clear();
+                    else for(const auto mapped:skeleton.shapeMapped)if(mapped>=0)item.guardedBoneIndices.push_back(mapped);
+                }
+                if(item.skeletonPrepared) {
+                    item.skeletonBefore.Queue(skeleton.layout,skeleton.identity,
+                        skeleton.heroId==OW::eHero::HERO_DVA,item.guardedBoneIndices,
+                        [&](uint64_t at,void* dst,size_t bytes,DWORD* actual) {
+                            return prepareSkeletonScatter(hotFieldScatter,at,dst,bytes,actual);
+                        });
                 }
                 item.prepared=true;
                 hotFieldBatchIndex.emplace(componentParent, itemIndex);
@@ -1135,24 +1165,19 @@ void entity_thread() {
             const OW::Vector3 position(velocity.location.x,velocity.location.y-1.f,velocity.location.z);
             if(!OW::c_entity::IsPlausibleSpatialAnchor(position)){rejectHot(12);continue;}
             next.pos=position;next.velocity={velocity.velocity.x,velocity.velocity.y,velocity.velocity.z};
-            uint64_t currentRotationLeaf = 0;
-            next.rotation_valid = item.RotationRead() && item.rotationLeaf && mem.ReadFreshExact(
-                OW::Skeleton::AddressOffset(next.RotationBase, offset::RotationBase_Sub1),
-                &currentRotationLeaf, sizeof(currentRotationLeaf)) && currentRotationLeaf == item.rotationLeaf;
+            next.rotation_valid = item.RotationRead() && item.RotationGuarded();
             if (next.rotation_valid) next.Rot = item.rotation;
-            else cached.rotationLeaf = 0;
             next.ClearSkeletonObservation();
             const bool skeletonConfirmed = item.skeletonPrepared &&
                 item.skeletonRevision == cached.skeletonCache.revision &&
                 (!next.VelocityBase || cached.skeletonCache.layout.sourceAddress != next.VelocityBase + 0x8B0 ||
                  item.reads.velocity.bonedata == cached.skeletonCache.boneData) &&
-                next.CommitSkeletonPoses(cached.skeletonCache,
+                next.CommitSkeletonPosesGuarded(cached.skeletonCache,item.skeletonBefore,item.skeletonAfter,item.skeletonRevision,
                     std::span(item.boneRanges.data(), item.boneRangeCount), item.boneData,
-                    item.boneRequested, item.botChestRequested);
+                    item.boneRequested, item.botChestRequested,item.readCompletedTick);
             if (!skeletonConfirmed) {
-                if (cached.skeletonCache.status == OW::Skeleton::ReadStatus::Ready)
-                    cached.skeletonCache.status = OW::Skeleton::ReadStatus::LayoutChanged;
-                cached.skeletonCache.valid = false;
+                // A failed pose/rotation sample does not discard an otherwise
+                // verified mapping. Only guard/identity drift schedules a rebuild.
                 cached.cachedSkeletonValid = false;
                 cached.cachedModelShapes = {};
                 next.skeleton_status = cached.skeletonCache.status;
@@ -1209,7 +1234,7 @@ void entity_thread() {
             next.ApplySkeletonCoreAnchors();
             if (item.reads.visibilityRequested)
                 cached.visibilitySample.Commit(OW::DecodeVisibilityRaw(item.reads.visibilityRaw),
-                    item.reads.VisibilityRead(), item.readStartedTick, item.readCompletedTick);
+                    item.reads.VisibilityRead(), item.hotFieldsReadStartedTick, item.hotFieldsReadCompletedTick);
             next.Vis = cached.visibility ? cached.visibilitySample.Visible(GetTickCount()) :
                 (offset::UsesProtectedEntityLayout() && !next.HeroBase && OW::GameData::IsTrainingBotHeroId(next.HeroID));
             cached.vis = next.Vis;
@@ -1276,12 +1301,56 @@ void entity_thread() {
                 Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::EntityHotScatter);
                 ok=mem.ExecuteReadScatter(hotFieldScatter);
             }
+            const DWORD hotFieldsCompleted=GetTickCount();
+            bool guardQueued=false;
+            if(ok && hotGuardScatter)for(auto& item:hotFieldBatchItems) {
+                const auto found=componentBaseCache.find(item.componentParent);
+                if(found==componentBaseCache.end() || found->second->linkParent!=item.linkParent)continue;
+                const auto& cached=*found->second;
+                if(cached.rotation) {
+                    guardQueued=true;
+                    item.rotationGuard.afterPrepared=prepareSkeletonScatter(hotGuardScatter,
+                        OW::Skeleton::AddressOffset(cached.rotation,offset::RotationBase_Sub1),
+                        &item.rotationGuard.after,sizeof(item.rotationGuard.after),&item.rotationGuard.afterBytes);
+                }
+                if(item.skeletonPrepared && item.skeletonRevision==cached.skeletonCache.revision) {
+                    guardQueued=true;
+                    item.skeletonAfter.Queue(cached.skeletonCache.layout,cached.skeletonCache.identity,
+                        cached.skeletonCache.heroId==OW::eHero::HERO_DVA,item.guardedBoneIndices,
+                        [&](uint64_t at,void* dst,size_t bytes,DWORD* actual) {
+                            return prepareSkeletonScatter(hotGuardScatter,at,dst,bytes,actual);
+                        });
+                }
+            }
+            bool guardOk=ok && hotGuardScatter;
+            if(guardOk && guardQueued) {
+                ScopedPipelinePhaseTimer timer(pipelineStats.phase.hotScatterExecuteMs);
+                Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::EntityHotScatter);
+                guardOk=mem.ExecuteReadScatter(hotGuardScatter);
+                ++pipelineStats.hotScatterExecuteCount; ++dmaFieldWindow.hotScatterExecute;
+                if(!guardOk){++pipelineStats.hotScatterExecuteFailCount; ++dmaFieldWindow.hotScatterExecuteFail;}
+            }
             const DWORD completed=GetTickCount();
             ++pipelineStats.hotScatterExecuteCount; ++dmaFieldWindow.hotScatterExecute;
             if(!ok){++pipelineStats.hotScatterExecuteFailCount; ++dmaFieldWindow.hotScatterExecuteFail;}
             for(auto& item:hotFieldBatchItems) {
-                item.readStartedTick=item.skeletonReadStartedTick ? item.skeletonReadStartedTick : started;
+                item.skeletonReadStartedTick=started;
+                item.readStartedTick=started;
+                // Visibility belongs to the first scatter; the second skeleton
+                // guard must not extend its sample time or next due time.
+                item.hotFieldsReadStartedTick=started;
+                item.hotFieldsReadCompletedTick=hotFieldsCompleted;
                 item.readCompletedTick=completed;
+                item.rotationGuard.executed=guardOk;
+                item.skeletonBefore.executed=ok;
+                item.skeletonAfter.executed=guardOk;
+                const auto found=componentBaseCache.find(item.componentParent);
+                if(found!=componentBaseCache.end() && found->second->linkParent==item.linkParent) {
+                    // New/moved rotation leaves become eligible on the next hot
+                    // batch; never follow the new pointer synchronously here.
+                    const bool leafKnown=item.rotationGuard.Stable() && OW::IsPlausibleUserPointer(item.rotationGuard.after);
+                    found->second->rotationLeaf=leafKnown?item.rotationGuard.after:0;
+                }
                 item.sampleTimeUs=RuntimeTrace::NowUs();
                 item.reads.scatterExecuted=false; item.reads.scatterOk=ok && item.prepared;
                 recordHotScatterReadResults(item.reads);
@@ -1305,6 +1374,20 @@ void entity_thread() {
         const uint64_t maintenanceStartedUs=RuntimeTrace::NowUs();
         const OW::EntityMaintenance::Budget maintenanceBudget{maintenanceStartedUs,1000};
         size_t maintenanceVisited=0;
+#include "Game/EntityMaintenance/Bootstrap.inl"
+        if(bootstrapFirst)runBootstrapBatch();
+        std::vector<uint8_t> needsReconciliation(raw_entities.size(),0);
+        for(size_t n=0;n<raw_entities.size();++n) {
+            const auto [address,link]=raw_entities[n];
+            const auto* proof=cycleDiscoveries.Find(address,link,GetTickCount());
+            if(!proof || dynamicEntityCache.contains(address))continue;
+            const auto cache=componentBaseCache.find(address);
+            needsReconciliation[n]=cache==componentBaseCache.end() || cache->second->linkParent!=link ||
+                !cache->second->baseUpdateTick || !cache->second->entity.body_valid ||
+                cache->second->entity.HeroID!=proof->hero;
+        }
+        const auto maintenanceOrder=OW::EntityMaintenance::MaintenanceOrder(
+            needsReconciliation,recoveryMaintenanceCursor,maintenanceCursor,preferRecoveryMaintenance);
 
         {
         ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.entityLoopWallMs);
@@ -1313,9 +1396,11 @@ void entity_thread() {
         for (size_t order = 0; OW::RuntimeWorkersRunning() &&
                            OW::ProcessConnection::IsConnected() && order < raw_entities.size(); ++order) {
             if(!maintenanceBudget.CanStart(RuntimeTrace::NowUs()))break;
-            const size_t i = (entityLoopStart + order) % raw_entities.size();
+            const size_t i = maintenanceOrder[order];
             ++maintenanceVisited;
-            maintenanceCursor=(i+1)%raw_entities.size();
+            if(needsReconciliation[i])recoveryMaintenanceCursor=(i+1)%raw_entities.size();
+            else maintenanceCursor=(i+1)%raw_entities.size();
+            preferRecoveryMaintenance=needsReconciliation[i]==0;
             OW::c_entity entity{};
             const bool progressLog = detailedProcessLog && (i < 3 || (i % 16) == 0);
             uint64_t ComponentParent = 0;
@@ -1374,6 +1459,8 @@ void entity_thread() {
             const OW::EntityHeaderSnapshot* componentSnapshot = nullptr;
             const OW::EntityHeaderSnapshot* linkSnapshot = nullptr;
 #include "Game/EntityMaintenance/CacheAdmission.inl"
+            const bool componentCommitIsMemoryOnly=cacheIt->second->componentRefresh.stage==
+                OW::EntityMaintenance::ComponentRefresh::Stage::Ready;
 
             if (componentCacheHit) {
                 dmaFieldWindow.componentCacheHit++;
@@ -1390,7 +1477,8 @@ void entity_thread() {
             Diagnostics::ScopedDmaCallsite dmaTag(
                 Diagnostics::DmaCallsite::EntityHeaderSpecial);
             if (!componentCacheHit) {
-                if (cacheIt->second->componentRefresh.Active()) {
+                if (cacheIt->second->componentRefresh.Active() ||
+                    cacheIt->second->componentRefresh.stage==OW::EntityMaintenance::ComponentRefresh::Stage::Ready) {
                     // Resume from the transaction's original headers. Its final
                     // scatter rechecks allocation and match IDs before commit.
                     const auto& pending=cacheIt->second->componentRefresh;
@@ -1429,7 +1517,7 @@ void entity_thread() {
             }
 
             // Check for special entity IDs (HP packs, Bob, etc.)
-            if (!componentCacheHit && !cacheIt->second->componentRefresh.Active()) {
+            if (!componentCacheHit && !cacheIt->second->componentRefresh.Active() && !componentCommitIsMemoryOnly) {
                 ScopedPipelinePhaseTimer specialTimer(pipelineStats.phase.entitySpecialProbeMs);
                 // Object classification is optional; a short read must still reach player rebuild.
                 {
@@ -1512,7 +1600,7 @@ void entity_thread() {
 #include "Game/EntityMaintenance/CacheRebuild.inl"
                 // A completed component transaction never appends cold fields
                 // to its final verification visit. The next hot cycle uses it.
-                if(resumableCn)continue;
+                if(resumableCn && !componentCommitIsMemoryOnly)continue;
             }
 
             using ColdStage=OW::EntityMaintenance::ColdStage;
@@ -1520,17 +1608,16 @@ void entity_thread() {
             const DWORD coldNow=GetTickCount();
             uint32_t coldDue=0;
             const auto markCold=[&](ColdStage stage,bool due){if(due)coldDue|=OW::EntityMaintenance::StageBit(stage);};
-            const auto priorHot=hotFieldBatchIndex.find(ComponentParent);
-            const bool currentHotSkeleton=priorHot!=hotFieldBatchIndex.end() &&
-                hotFieldBatchItems[priorHot->second].applied && coldRecord.cachedSkeletonValid &&
-                coldRecord.skeletonUpdateTick==hotFieldBatchItems[priorHot->second].readStartedTick;
+            auto skeletonIdentityOwner=coldRecord.entity;
+            coldRecord.ApplyBases(skeletonIdentityOwner);
             const auto coldHero=coldRecord.heroValid?coldRecord.heroId:coldRecord.entity.HeroID;
             const DWORD coldSkillInterval=skillObservationNeeds.Fast(coldHero) ||
                 V2::Alerts::ObserveSkillHero(coldHero) || V2::Alerts::ObserveUltimateHero(coldHero)
                 ? 50u : OW::Config::ult ? 100u : OW::kEntitySkillStatusIntervalMs;
             markCold(ColdStage::Identity,coldRecord.stat && !coldRecord.participantIdentityValid &&
                 (!coldRecord.participantIdentityUpdateTick || coldNow-coldRecord.participantIdentityUpdateTick>=1000));
-            markCold(ColdStage::Skeleton,coldRecord.velocity && !currentHotSkeleton);
+            markCold(ColdStage::Skeleton,coldRecord.velocity && (!coldRecord.skeletonCache.valid ||
+                coldRecord.skeletonCache.identity!=skeletonIdentityOwner.SkeletonIdentity()));
             markCold(ColdStage::TeamName,!coldRecord.teamUpdateTick ||
                 coldNow-coldRecord.teamUpdateTick>=OW::kEntityDeadComponentRefreshMs);
             markCold(ColdStage::Skill,coldRecord.skill && std::any_of(coldRecord.skillDeadlines.begin(),coldRecord.skillDeadlines.end(),
@@ -1545,9 +1632,17 @@ void entity_thread() {
             markCold(ColdStage::Stealth,OW::EntityMaintenance::CanObserveStealth(coldHero==OW::eHero::HERO_SOMBRA,
                 coldRecord.isEnemy,coldRecord.skill!=0) &&
                 (!coldRecord.stealthAttemptTick || coldNow-coldRecord.stealthAttemptTick>=50));
-            const auto selectedCold=coldRecord.coldSchedule.Select(coldDue);
+            // Admission needs a current team before optional names, skills and
+            // skeleton mapping. Finish that started initialization visit even
+            // if its mandatory health reads consumed the cooperative budget.
+            const bool initializingBody=needsReconciliation[i]!=0;
+            const bool essentialTeam=initializingBody && coldRecord.team && !coldRecord.confirmedTeam.known;
+            const auto selectedCold=initializingBody
+                ? (essentialTeam?ColdStage::TeamName:ColdStage::None)
+                : coldRecord.coldSchedule.Select(coldDue);
             bool coldStarted=false;
             const auto startCold=[&](ColdStage stage) {
+                if(essentialTeam && stage==ColdStage::TeamName && !coldStarted) {coldStarted=true;return true;}
                 if(coldStarted || !coldRecord.coldSchedule.Start(selectedCold,stage,maintenanceBudget,RuntimeTrace::NowUs()))return false;
                 coldStarted=true;return true;
             };
@@ -1720,25 +1815,21 @@ void entity_thread() {
 
             // ---- Rotation ----
             bool rotationReadFromBatch = false;
+            bool rotationAttemptedInBatch = false;
             entity.rotation_valid = false;
             {
                 const auto hotBatchIt = hotFieldBatchIndex.find(ComponentParent);
                 if (componentCacheHit && hotBatchIt != hotFieldBatchIndex.end()) {
                     HotFieldBatchItem& item = hotFieldBatchItems[hotBatchIt->second];
-                    uint64_t observedRotationLeaf = 0;
-                    if (item.reads.scatterOk && item.linkParent == LinkParent && item.RotationRead() &&
-                        mem.ReadFreshExact(OW::Skeleton::AddressOffset(entity.RotationBase, offset::RotationBase_Sub1),
-                            &observedRotationLeaf, sizeof(observedRotationLeaf)) &&
-                        observedRotationLeaf == item.rotationLeaf) {
+                    rotationAttemptedInBatch=item.linkParent==LinkParent;
+                    if (item.reads.scatterOk && item.linkParent == LinkParent && item.RotationRead() && item.RotationGuarded()) {
                         entity.Rot = item.rotation;
                         rotationReadFromBatch = true;
                         entity.rotation_valid = true;
-                    } else if (item.linkParent == LinkParent && item.rotationRequested) {
-                        cacheIt->second->rotationLeaf = 0;
                     }
                 }
             }
-            if (!rotationReadFromBatch && entity.RotationBase) {
+            if (!rotationReadFromBatch && !rotationAttemptedInBatch && entity.RotationBase) {
                 entity.ReadSkeletonRotation(cacheIt->second->rotationLeaf);
             }
 
@@ -2017,14 +2108,15 @@ void entity_thread() {
                 const auto hotSkeletonItem=hotFieldBatchIndex.find(ComponentParent);
                 const bool hotSkeletonCurrent=hotSkeletonItem!=hotFieldBatchIndex.end() && skeletonSlowCache.cachedSkeletonValid &&
                     skeletonSlowCache.skeletonUpdateTick==hotFieldBatchItems[hotSkeletonItem->second].readStartedTick;
-                const bool refreshSkeleton = !hotSkeletonCurrent &&
-                    (forceLocalSkeletonRefresh ||
-                    (OW::PresentationTiming::BudgetEligible(i,raw_entities.size(),entityLoopStart,skeletonBudgetForCycle) &&
-                     consumeCycleBudget(skeletonRefreshBudget)));
+                const bool rebuildSkeleton = !skeletonSlowCache.skeletonCache.valid ||
+                    skeletonSlowCache.skeletonCache.identity!=entity.SkeletonIdentity();
+                const bool refreshSkeleton = rebuildSkeleton &&
+                    (forceLocalSkeletonRefresh || consumeCycleBudget(skeletonRefreshBudget));
                 if (!refreshSkeleton) {
-                    if(entity.rotation_valid && skeletonSlowCache.cachedSkeletonValid &&
+                    if(hotSkeletonCurrent && entity.rotation_valid && skeletonSlowCache.cachedSkeletonValid &&
                         OW::PresentationTiming::Fresh(skeletonSlowCache.skeletonUpdateTick,GetTickCount()) &&
-                        entity.ReconfirmSkeletonLayout(skeletonSlowCache.skeletonCache)) {
+                        skeletonSlowCache.skeletonCache.valid &&
+                        skeletonSlowCache.skeletonCache.identity==entity.SkeletonIdentity()) {
                     entity.ApplySkeletonMapping(skeletonSlowCache.skeletonCache);
                     entity.skeleton_sample_tick_ms=skeletonSlowCache.skeletonUpdateTick;
                     entity.model_shapes = skeletonSlowCache.cachedModelShapes;
@@ -2817,7 +2909,8 @@ void entity_thread() {
 #include "Game/EntityMaintenance/Outlines.inl"
 
         // Swap processed entities
-        maintenanceCursor=OW::PresentationTiming::AdvanceMaintenanceCursor(entityLoopStart,raw_entities.size(),maintenanceVisited,skeletonBudgetForCycle);
+        if(!bootstrapFirst)runBootstrapBatch();
+        bootstrapFirst=!bootstrapFirst;
         RuntimeTrace::Emit(RuntimeTrace::SlowWork,RuntimeTrace::NowUs()-maintenanceStartedUs,tmp_entities.size());
         if(missingTransitionNeedsScan) {
             requestTopologyRescan(GetTickCount());missingTransitionNeedsScan=false;

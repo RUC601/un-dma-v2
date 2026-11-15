@@ -10,6 +10,8 @@
                     OW::EntityMaintenance::ComponentRefresh::Stage::Ready;
                 if(resumedCn) {
                     const auto& completed=cacheIt->second->componentRefresh;
+                    cache.baseUpdateTick=completed.verifiedTick;
+                    cache.layoutCheckTick=completed.verifiedTick;
                     const auto& values=completed.values;
                     cache.componentLayout=completed.component.Layout();cache.linkLayout=completed.link.Layout();
                     cache.layoutsKnown=true;

@@ -12,6 +12,7 @@ using namespace DirectX;
 #include "Game/ModelShapes.hpp"
 #include "Game/BoneSlots.hpp"
 #include "Game/SkeletonRead.hpp"
+#include "Game/SkeletonBatch.hpp"
 #include "Game/SkeletonSemantics.hpp"
 #include "Game/Structs.hpp"
 #include "Game/PresentationTiming.hpp"
@@ -303,6 +304,7 @@ namespace OW {
             SkeletonSemantics::Form form = SkeletonSemantics::Form::Unknown;
             uint64_t revision = 0, hits = 0, misses = 0;
             Skeleton::ReadMetrics metrics{};
+            Skeleton::GuardFailureSeries guardFailures{};
             Skeleton::ReadStatus status = Skeleton::ReadStatus::Empty;
             uint64_t heroId = 0;
             uint64_t boneData = 0;
@@ -408,7 +410,7 @@ namespace OW {
                 if (!boneIdTable)
                     return -1;
 
-                uint16_t count = SDK->RPM<uint16_t>(bonePtr + 0x64);
+                uint16_t count = SDK->RPM<uint16_t>(bonePtr + Skeleton::BoneCountOffset());
                 if (debugHead)
                     debugHeadBoneCount = count;
                 if (count == 0 || count > kMaxBoneIdCount)
@@ -455,7 +457,7 @@ namespace OW {
             if (!info.boneIdTable)
                 return false;
 
-            info.boneCount = SDK->RPM<uint16_t>(info.bonePtr + 0x64);
+            info.boneCount = SDK->RPM<uint16_t>(info.bonePtr + Skeleton::BoneCountOffset());
             return info.boneCount > 0 && info.boneCount <= kMaxBoneIdCount;
         }
 
@@ -526,7 +528,7 @@ namespace OW {
                 if (!probe.boneIdTable)
                     return probe;
 
-                probe.boneCount = SDK->RPM<uint16_t>(probe.bonePtr + 0x64);
+                probe.boneCount = SDK->RPM<uint16_t>(probe.bonePtr + Skeleton::BoneCountOffset());
                 if (probe.boneCount == 0 || probe.boneCount > kMaxBoneIdCount)
                     return probe;
 
@@ -677,6 +679,7 @@ namespace OW {
                 return false;
             }
             const auto form = SkeletonSemantics::ResolveForm(HeroID, observed.formKnown, observed.linkD4, observed.linkD8);
+            cache.guardFailures.Reset();
             const auto ids = SkeletonSemantics::RequestedIds(HeroID, form);
             if (cache.valid && cache.identity == identity && cache.layout == observed && cache.requestedBoneIds == ids) {
                 ++cache.hits;
@@ -766,12 +769,60 @@ namespace OW {
                 skeleton_status = mapping.status;
                 return false;
             }
+            return ApplyVerifiedSkeletonPoses(mapping, ranges, poses, requested, botRequested);
+        }
+
+        bool CommitSkeletonPosesGuarded(SkeletonBoneCache& mapping,
+                                       const Skeleton::LayoutGuard& before, const Skeleton::LayoutGuard& after,
+                                       uint64_t revision, std::span<const Skeleton::PoseRange> ranges,
+                                       std::span<const uint8_t> poses,
+                                       const std::array<bool, 18>& requested, bool botRequested,
+                                       uint32_t sampleTick = 0) {
+            ClearSkeletonObservation();
+            const bool current = mapping.valid && revision == mapping.revision && mapping.identity == SkeletonIdentity();
+            const auto first=before.Compare(mapping.layout),last=after.Compare(mapping.layout);
+            if (!current || first==Skeleton::GuardResult::Changed || last==Skeleton::GuardResult::Changed) {
+                mapping.valid = false;
+                mapping.status = skeleton_status = Skeleton::ReadStatus::LayoutChanged;
+                return false;
+            }
+            if(first!=Skeleton::GuardResult::Same || last!=Skeleton::GuardResult::Same) {
+                if(mapping.guardFailures.Expired(sampleTick,PresentationTiming::kAnchorFreshMs))mapping.valid=false;
+                mapping.status=skeleton_status=Skeleton::ReadStatus::DescriptorReadFailed;
+                return false;
+            }
+            mapping.guardFailures.Reset();
+            mapping.status=Skeleton::ReadStatus::Ready;
+            for (size_t slot = 0; slot < requested.size(); ++slot) {
+                const int index = mapping.mappedIndices[slot];
+                if (requested[slot] && index >= 0 && (!before.Covers(index) || !after.Covers(index))) {
+                    mapping.status = skeleton_status = Skeleton::ReadStatus::PoseReadFailed;
+                    return false;
+                }
+            }
+            if (botRequested && mapping.hasBotChest && mapping.botChestMappedIndex >= 0 &&
+                (!before.Covers(mapping.botChestMappedIndex) || !after.Covers(mapping.botChestMappedIndex))) {
+                mapping.status = skeleton_status = Skeleton::ReadStatus::PoseReadFailed;
+                return false;
+            }
+            if (!rotation_valid || !IsPlausibleSpatialAnchor(pos) || !IsFiniteVectorValue(Rot)) {
+                mapping.status = skeleton_status = Skeleton::ReadStatus::InvalidTransform;
+                return false;
+            }
+            ++mapping.hits;
+            return ApplyVerifiedSkeletonPoses(mapping, ranges, poses, requested, botRequested);
+        }
+
+        bool ApplyVerifiedSkeletonPoses(SkeletonBoneCache& mapping,
+                                       std::span<const Skeleton::PoseRange> ranges,
+                                       std::span<const uint8_t> poses,
+                                       const std::array<bool, 18>& requested, bool botRequested) {
             ApplySkeletonMapping(mapping);
             const auto rotation = XMMatrixRotationY(Rot.X);
             const auto world = [&](int index, Vector3& point) {
                 if (index < 0 || index >= mapping.boneCount) return false;
                 for (const auto& range : ranges) {
-                    if (index < range.first || index > range.last || range.bytes != range.size ||
+                    if (!range.prepared || index < range.first || index > range.last || range.bytes != range.size ||
                         range.offset > poses.size() || range.size > poses.size() - range.offset) continue;
                     const size_t localOffset = 0x30 * size_t(index - range.first);
                     if (localOffset > range.size || sizeof(XMFLOAT3) > range.size - localOffset) continue;
@@ -837,7 +888,9 @@ namespace OW {
             const size_t bytes = stride * size_t(mapping.maxMappedIndex) + sizeof(XMFLOAT3);
             std::array<uint8_t, stride * kMaxBoneIdCount> poses{};
             if (!source.Exact(mapping.bonesBase + 0x20, poses.data(), bytes)) {
-                mapping.valid = false;
+                // The complete mapping was just observed. A dynamic-pose
+                // failure does not require another full ID-table discovery;
+                // the next hot frame must still pass both layout guards.
                 mapping.status = skeleton_status = Skeleton::ReadStatus::PoseReadFailed;
                 return;
             }

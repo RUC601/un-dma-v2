@@ -48,9 +48,16 @@ struct ComponentRefresh {
     std::array<uint64_t, 13> values{};
     uint64_t keyAddressA = 0, keyAddressB = 0;
     uint32_t startedTick = 0;
+    uint32_t verifiedTick = 0;
     size_t matchOffset = 0;
     uint8_t keyA = 0, keyB = 0;
     bool Active() const { return stage == Stage::Slots || stage == Stage::Types || stage == Stage::Verify; }
+    bool ReadyFresh(uint32_t tick,uint32_t maxAge) {
+        if(stage!=Stage::Ready)return false;
+        if(uint32_t(tick-verifiedTick)<maxAge)return true;
+        // Queue the existing final validation again; waiting never renews it.
+        stage=Stage::Verify;verifiedTick=0;values={};return false;
+    }
     bool Begin(const RefreshIdentity& owner, const RefreshHeader& body, const RefreshHeader& controller,
                const std::array<uint32_t, 13>& types, uint64_t keyAtA, uint64_t keyAtB,
                size_t matchAt, uint32_t tick) {
@@ -77,85 +84,103 @@ struct ComponentRefresh {
         stage = Stage::Slots;
         return true;
     }
-    template<class Batch, class Decode>
-    Stage Step(const RefreshIdentity& current, uint32_t tick, Batch&& batch, Decode&& decode) {
-        // A paused transaction must never survive a changed lifetime or become a
-        // permanently queued owner. A failed transaction is retried from headers.
-        if (!(current == identity) || uint32_t(tick - startedTick) > 5000) return stage = Stage::Failed;
-        if (!Active()) return stage;
+    // A plan owns the byte counts and verification payload until the shared
+    // scatter completes. Do not move a prepared plan or its ComponentRefresh.
+    struct StepPlan {
+        Stage stage=Stage::Empty;
+        RefreshIdentity identity{};
         std::vector<RefreshRequest> requests;
-        requests.reserve(48);
-        std::array<uint32_t, 48> actual{};
-        auto request = [&](uint64_t address, void* output, size_t size) {
-            const size_t i = requests.size();
-            requests.push_back({address, output, size, &actual[i]});
-        };
-        auto execute = [&] {
-            if (!requests.empty() && !batch(requests)) return false;
-            for (const auto& read : requests) if (*read.actual != read.size) return false;
-            return true;
-        };
-        if (stage == Stage::Slots) {
-            request(keyAddressA, &keyA, sizeof(keyA)); request(keyAddressB, &keyB, sizeof(keyB));
-            std::array<size_t,21> indexes{};
-            for (size_t i=0;i<slots.size();++i) if (slots[i].address) {
-                indexes[i]=requests.size();request(slots[i].address,&slots[i].encoded,sizeof(slots[i].encoded));
-            }
-            if (!batch(requests) || actual[0]!=1 || actual[1]!=1) return stage = Stage::Failed;
-            for (size_t i=0;i<slots.size();++i)
-                if (slots[i].address && actual[indexes[i]]!=8) slots[i].encoded=0;
-            for (auto& slot : slots) if (slot.address && slot.encoded) {
-                const auto value = decode(slot.encoded, keyA, keyB);
-                if (value >= 0x10000 && value < 0x0000800000000000ULL) slot.decoded = value;
-            }
-            return stage = Stage::Types;
+        std::array<uint32_t,48> actual{};
+        std::array<size_t,21> indexes{};
+        std::array<size_t,13> chosen{};
+        std::array<bool,21> selected{};
+        RefreshHeader currentBody{},currentLink{};
+        std::array<uint64_t,21> encoded{};
+        std::array<uint8_t,21> types{};
+        uint8_t a=0,b=0;
+        void Read(uint64_t address,void* output,size_t size) {
+            const auto index=requests.size();
+            requests.push_back({address,output,size,&actual[index]});
         }
-        if (stage == Stage::Types) {
-            std::array<size_t,21> indexes{};
-            for (size_t i=0;i<slots.size();++i) if (slots[i].decoded) {
-                indexes[i]=requests.size();request(slots[i].decoded+0x10,&slots[i].observedType,1);
+    };
+    bool PrepareStep(const RefreshIdentity& current,uint32_t tick,StepPlan& plan) {
+        plan=StepPlan{};
+        if(!(current==identity) || uint32_t(tick-startedTick)>5000) {
+            stage=Stage::Failed;return false;
+        }
+        if(!Active())return false;
+        plan.stage=stage;plan.identity=identity;plan.requests.reserve(48);
+        if(stage==Stage::Slots) {
+            plan.Read(keyAddressA,&keyA,1);plan.Read(keyAddressB,&keyB,1);
+            for(size_t i=0;i<slots.size();++i)if(slots[i].address) {
+                plan.indexes[i]=plan.requests.size();
+                plan.Read(slots[i].address,&slots[i].encoded,sizeof(slots[i].encoded));
             }
-            if (!requests.empty() && !batch(requests)) return stage = Stage::Failed;
-            for (size_t i=0;i<slots.size();++i)
-                if (slots[i].decoded && (actual[indexes[i]]!=1 || slots[i].observedType!=slots[i].type)) slots[i].decoded=0;
-            return stage = Stage::Verify;
+            return true;
+        }
+        if(stage==Stage::Types) {
+            for(size_t i=0;i<slots.size();++i)if(slots[i].decoded) {
+                plan.indexes[i]=plan.requests.size();
+                plan.Read(slots[i].decoded+0x10,&slots[i].observedType,1);
+            }
+            return true;
         }
         constexpr std::array<size_t,8> fallback{0,2,3,4,6,7,8,11};
-        std::array<size_t,13> chosen{};
-        for(size_t i=0;i<chosen.size();++i)chosen[i]=i;
-        for(size_t i=0;i<fallback.size();++i)if(!slots[fallback[i]].decoded && slots[13+i].decoded)chosen[fallback[i]]=13+i;
-        // A transient failure of a declared life/body field cannot replace a
-        // healthy committed cache with zero. Optional fields remain independent.
+        for(size_t i=0;i<plan.chosen.size();++i)plan.chosen[i]=i;
+        for(size_t i=0;i<fallback.size();++i)
+            if(!slots[fallback[i]].decoded && slots[13+i].decoded)plan.chosen[fallback[i]]=13+i;
         for(const size_t field:std::array<size_t,5>{0,1,2,4,5}) {
             bool declared=slots[field].address!=0;
             for(size_t i=0;i<fallback.size();++i)if(fallback[i]==field)declared=declared || slots[13+i].address!=0;
-            if(declared && !slots[chosen[field]].decoded)return stage=Stage::Failed;
+            if(declared && !slots[plan.chosen[field]].decoded) {stage=Stage::Failed;return false;}
         }
-        std::array<bool,21> selected{};
-        for(const auto index:chosen)if(slots[index].decoded)selected[index]=true;
-        RefreshHeader currentBody{}, currentLink{};
-        std::array<uint64_t, 21> encoded{};
-        std::array<uint8_t, 21> types{};
-        uint8_t a = 0, b = 0;
-        request(identity.values[0] + RefreshHeader::offset, currentBody.bytes.data(), currentBody.bytes.size());
-        if (identity.values[0] != identity.values[1])
-            request(identity.values[1] + RefreshHeader::offset, currentLink.bytes.data(), currentLink.bytes.size());
-        request(keyAddressA, &a, 1); request(keyAddressB, &b, 1);
-        for (size_t i = 0; i < slots.size(); ++i) {
-            if (selected[i]) {
-                request(slots[i].address,&encoded[i],sizeof(encoded[i]));
-                request(slots[i].decoded+0x10,&types[i],1);
+        for(const auto index:plan.chosen)if(slots[index].decoded)plan.selected[index]=true;
+        plan.Read(identity.values[0]+RefreshHeader::offset,plan.currentBody.bytes.data(),RefreshHeader::size);
+        if(identity.values[0]!=identity.values[1])
+            plan.Read(identity.values[1]+RefreshHeader::offset,plan.currentLink.bytes.data(),RefreshHeader::size);
+        plan.Read(keyAddressA,&plan.a,1);plan.Read(keyAddressB,&plan.b,1);
+        for(size_t i=0;i<slots.size();++i)if(plan.selected[i]) {
+            plan.Read(slots[i].address,&plan.encoded[i],8);
+            plan.Read(slots[i].decoded+0x10,&plan.types[i],1);
+        }
+        return true;
+    }
+    template<class Decode>
+    Stage FinishStep(const RefreshIdentity& current,uint32_t tick,const StepPlan& plan,bool executed,Decode&& decode) {
+        if(!(current==identity) || !(plan.identity==identity) || stage!=plan.stage ||
+           uint32_t(tick-startedTick)>5000 || !executed)return stage=Stage::Failed;
+        if(stage==Stage::Slots) {
+            if(plan.actual[0]!=1 || plan.actual[1]!=1)return stage=Stage::Failed;
+            for(size_t i=0;i<slots.size();++i)
+                if(slots[i].address && plan.actual[plan.indexes[i]]!=8)slots[i].encoded=0;
+            for(auto& slot:slots)if(slot.address && slot.encoded) {
+                const auto value=decode(slot.encoded,keyA,keyB);
+                if(value>=0x10000 && value<0x0000800000000000ULL)slot.decoded=value;
             }
+            return stage=Stage::Types;
         }
-        if (!execute()) return stage = Stage::Failed;
-        if (identity.values[0] == identity.values[1]) currentLink = currentBody;
-        if (!component.SameAllocation(currentBody, matchOffset) || !link.SameAllocation(currentLink, matchOffset) ||
-            a != keyA || b != keyB) return stage = Stage::Failed;
-        for (size_t i = 0; i < slots.size(); ++i)
-            if (selected[i] && (encoded[i] != slots[i].encoded || types[i] != slots[i].type))
-                return stage = Stage::Failed;
-        for(size_t i=0;i<values.size();++i)values[i]=slots[chosen[i]].decoded;
-        return stage = Stage::Ready;
+        if(stage==Stage::Types) {
+            for(size_t i=0;i<slots.size();++i)
+                if(slots[i].decoded && (plan.actual[plan.indexes[i]]!=1 || slots[i].observedType!=slots[i].type))slots[i].decoded=0;
+            return stage=Stage::Verify;
+        }
+        if(stage!=Stage::Verify)return stage=Stage::Failed;
+        for(const auto& read:plan.requests)if(*read.actual!=read.size)return stage=Stage::Failed;
+        const auto& finalLink=identity.values[0]==identity.values[1]?plan.currentBody:plan.currentLink;
+        if(!component.SameAllocation(plan.currentBody,matchOffset) || !link.SameAllocation(finalLink,matchOffset) ||
+           plan.a!=keyA || plan.b!=keyB)return stage=Stage::Failed;
+        for(size_t i=0;i<slots.size();++i)
+            if(plan.selected[i] && (plan.encoded[i]!=slots[i].encoded || plan.types[i]!=slots[i].type))return stage=Stage::Failed;
+        for(size_t i=0;i<values.size();++i)values[i]=slots[plan.chosen[i]].decoded;
+        verifiedTick=tick;
+        return stage=Stage::Ready;
+    }
+    template<class Batch,class Decode>
+    Stage Step(const RefreshIdentity& current,uint32_t tick,Batch&& batch,Decode&& decode) {
+        StepPlan plan;
+        if(!PrepareStep(current,tick,plan))return stage;
+        const bool executed=plan.requests.empty() || batch(plan.requests);
+        return FinishStep(current,tick,plan,executed,decode);
     }
 };
 }

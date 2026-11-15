@@ -1,5 +1,6 @@
 #include "EntityWorkers.hpp"
 #include "Game/Overwatch.hpp"
+#include "Game/EntityDiscovery/WorkSchedule.hpp"
 #include <memory>
 
 namespace {
@@ -21,6 +22,7 @@ struct DiscoveryState {
     DWORD lastScan=0, lastKnownProbe=0, lastLocalProbe=0;
     uint64_t localLink=0;
     OW::EntityRosterPolicy::Discovery lastLocalIdentity{};
+    OW::EntityDiscovery::WorkSchedule workSchedule;
     std::chrono::steady_clock::time_point started;
 };
 
@@ -78,8 +80,13 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     // Keep only a controller hint across body replacement; the probe still validates the entire new binding.
     if(local.LinkParent && local.AngleBase && local.connection_epoch==epoch && local.scene_generation==scene)
         state.localLink=local.LinkParent;
-    if(state.localLink && state.topology.complete &&
-        (!state.lastLocalProbe || now-state.lastLocalProbe>=50)) {
+    const auto work=state.workSchedule.Select(
+        state.localLink && state.topology.complete &&
+            (!state.lastLocalProbe || now-state.lastLocalProbe>=50),
+        !state.knownLinks.empty() && now-state.lastKnownProbe>=32 && state.topology.complete,
+        state.scan || state.pairCursor<state.pendingPairs.size() || !state.lastScan || now-state.lastScan>=250);
+    if(work==OW::EntityDiscovery::Work::None)return;
+    if(work==OW::EntityDiscovery::Work::LocalBinding) {
         discoveryOperation="local_binding";
         std::vector<OW::EntityRosterPolicy::Discovery> proofs;
         std::vector<std::pair<uint64_t,uint64_t>> bindings;
@@ -99,7 +106,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         return;
     }
     // Renew known bindings from the same topology used by the resumable full scan.
-    if(!state.validating && !state.knownLinks.empty() && now-state.lastKnownProbe>=32 && state.topology.complete) {
+    if(work==OW::EntityDiscovery::Work::KnownBinding) {
         discoveryOperation="known_binding";
         state.lastKnownProbe=now;
         const auto parent=state.knownLinks[state.knownCursor++%state.knownLinks.size()];

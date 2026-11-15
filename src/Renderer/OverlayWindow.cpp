@@ -7,9 +7,6 @@
 
 namespace {
 void MarkFullscreen(HWND canvas, HWND menu, bool fullscreen) {
-    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
-        return;
     ITaskbarList2* taskbar = nullptr;
     if (SUCCEEDED(CoCreateInstance(__uuidof(TaskbarList), nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&taskbar)))) {
@@ -19,9 +16,38 @@ void MarkFullscreen(HWND canvas, HWND menu, bool fullscreen) {
         }
         taskbar->Release();
     }
-    if (SUCCEEDED(initialized))
-        CoUninitialize();
 }
+}
+
+bool Overlay::InitializeWindowServices() {
+    const DWORD thread = GetCurrentThreadId();
+    if (m_windowServicesThread)
+        return m_windowServicesThread == thread;
+
+    // Shell and text-input services belong to the UI thread's whole window
+    // lifetime. A temporary taskbar call must not tear down their apartment
+    // while the windows and their IME contexts are still alive.
+    const HRESULT result = CoInitializeEx(nullptr,
+        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(result)) {
+        Diagnostics::Error("Overlay UI COM initialization failed: hr=0x%08lx.", result);
+        return false;
+    }
+    m_windowServicesThread = thread;
+    return true;
+}
+
+void Overlay::ShutdownWindowServices() {
+    if (!m_windowServicesThread)
+        return;
+    if (m_windowServicesThread != GetCurrentThreadId()) {
+        Diagnostics::Error("Overlay UI COM shutdown attempted on a different thread.");
+        return;
+    }
+    // S_OK and S_FALSE both acquire one reference; release only our reference,
+    // after both windows and all UI resources have finished their callbacks.
+    m_windowServicesThread = 0;
+    CoUninitialize();
 }
 
 // 【功能约定：Minimize Overlay；2026-10-19 补充，供用户阅读及后续 Agent 维护】

@@ -290,11 +290,13 @@ using V2::Output::ShutdownOutputRuntime;
 
 static void ShutdownHeadlessRuntime(const char* reason = "headless_shutdown")
 {
-    V2::Vision::GetService().Stop();
     V2::Runtime::RestoreNativeOutlineBeforeShutdown();
     OW::RequestRuntimeShutdown([] {
         OW::SetRuntimeOutputSessionEnabled(false);
     });
+    // Close ordinary output and signal workers before a capture driver can
+    // block in Stop/join. Brightness restoration above still needs the reader.
+    V2::Vision::GetService().Stop();
     mem.CancelPendingOperations();
     StopProcessConnectionThread();
     V2::Alerts::Stop();

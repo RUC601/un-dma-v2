@@ -6,10 +6,13 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include "Game/Offsets.hpp"
 
 namespace OW::Skeleton {
 
     inline constexpr std::size_t MaxBones = 1024;
+    // +0x64 也能读，但当前国服破坏球为 282、有效姿态只有 270，尾部含无效记录，所以改用 +0x66。
+    inline uint64_t BoneCountOffset() { return offset::IsCnProfile() ? 0x66 : 0x64; }
     inline std::atomic<uint64_t> RevisionSequence{0};
 
     inline uint64_t AddressOffset(uint64_t address, uint64_t offset) {
@@ -99,6 +102,7 @@ namespace OW::Skeleton {
         int first = 0, last = 0;
         std::size_t offset = 0, size = 0;
         unsigned long bytes = 0;
+        bool prepared = true;
     };
 
     template<class T, std::size_t N>
@@ -125,8 +129,7 @@ namespace OW::Skeleton {
             return false;
         }
         layout.idTable = Field<uint64_t>(descriptor, 0x38);
-        // UN V2 layout at the pinned baseline. Pure's +0x66 is a different source.
-        layout.count = Field<uint16_t>(descriptor, 0x64);
+        layout.count = Field<uint16_t>(descriptor, BoneCountOffset());
         if (!layout.count || layout.count > MaxBones) {
             status = ReadStatus::InvalidCount;
             return false;

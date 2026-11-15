@@ -992,11 +992,27 @@ namespace AimbotDetail {
         static DWORD lastReport=0;
         const DWORD now=GetTickCount();if(lastReport && now-lastReport<500) return;lastReport=now;
         const auto& e=candidate.contour.evidence;
-        Diagnostics::Info("[V2 contour] target=0x%llX body=%llu frame=%llu epoch=%llu ageMs=%.1f exposed=%d retained=%d edge=%d inside=%d contact=%d ready=%d",
+        const auto selection=CurrentTrackingSessionIdentity();
+        V2::Vision::Settings captureSettings;
+        const auto captureFrame=V2::Vision::GetService().Snapshot(captureSettings);
+        const auto captureStatus=V2::Vision::GetService().Status();
+        const char* captureState=captureStatus.state==V2::Vision::ServiceState::Running?"running":
+            captureStatus.state==V2::Vision::ServiceState::Starting?"starting":
+            captureStatus.state==V2::Vision::ServiceState::Faulted?"faulted":"stopped";
+        // Keep acquisition evidence distinct from the selected candidate. A zero
+        // candidate sequence can mean either missing capture or rejected targets.
+        Diagnostics::Info("[V2 contour] target=0x%llX body=%llu frame=%llu epoch=%llu ageMs=%.1f exposed=%d retained=%d edge=%d inside=%d contact=%d ready=%d hero=0x%llX slot=%d key=%d captureEnabled=%d captureState=%s captureFrame=%llu captureAgeMs=%.1f received=%llu processed=%llu pieces=%zu",
             static_cast<unsigned long long>(e.identity.entity),static_cast<unsigned long long>(e.identity.body),
             static_cast<unsigned long long>(e.sequence),static_cast<unsigned long long>(e.epoch),
             e.sequence?V2::Vision::MonotonicMs()-e.capturedMs:-1.0,e.exposed?1:0,candidate.contour.retained?1:0,
-            e.touching?1:0,e.inside?1:0,state.contourContact.touched?1:0,state.contourContact.ready?1:0);
+            e.touching?1:0,e.inside?1:0,state.contourContact.touched?1:0,state.contourContact.ready?1:0,
+            static_cast<unsigned long long>(selection.heroId),selection.slotIndex+1,selection.aimKey,
+            captureSettings.enabled?1:0,captureState,
+            static_cast<unsigned long long>(captureFrame?captureFrame->sequence:0),
+            captureStatus.receivedFrames?captureStatus.frameAgeMs:-1.0,
+            static_cast<unsigned long long>(captureStatus.receivedFrames),
+            static_cast<unsigned long long>(captureStatus.processedFrames),
+            captureFrame?captureFrame->components.size():std::size_t{0});
     }
 
     inline bool ContourSubmissionAllowed() {

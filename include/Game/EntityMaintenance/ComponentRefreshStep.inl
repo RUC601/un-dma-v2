@@ -16,8 +16,11 @@
                             static_cast<uint64_t>(OW::offset::ActiveProfile()),SDK->dwGameBase.load(),
                             cacheIt->second->entity.actor_generation,revision,absence}};
                     };
-                    if(!OW::AcceptEntityRegistry(processRegistry)) { pending={};continue; }
-                    if(!pending.Active()) {
+                    if(!OW::AcceptEntityRegistry(processRegistry) ||
+                       (pending.stage==OW::EntityMaintenance::ComponentRefresh::Stage::Ready &&
+                        uint32_t(GetTickCount()-pending.startedTick)>5000)) { pending={};continue; }
+                    pending.ReadyFresh(GetTickCount(),OW::kEntityDeadComponentRefreshMs);
+                    if(!pending.Active() && pending.stage!=OW::EntityMaintenance::ComponentRefresh::Stage::Ready) {
                         OW::EntityMaintenance::RefreshHeader body{},controller{};
                         if(!componentSnapshot || !linkSnapshot ||
                             !componentSnapshot->range.ReadAddress(ComponentParent+OW::kEntityHeaderSnapshotOffset,body.bytes) ||
@@ -33,7 +36,8 @@
                         // all component reads to the same already-expensive visit.
                         continue;
                     }
-                    if(!maintenanceBudget.CanStart(RuntimeTrace::NowUs()))continue;
+                    if(pending.stage!=OW::EntityMaintenance::ComponentRefresh::Stage::Ready &&
+                       !maintenanceBudget.CanStart(RuntimeTrace::NowUs()))continue;
                     auto exactBatch=[&](const std::vector<OW::EntityMaintenance::RefreshRequest>& requests) {
                         struct ScatterOwner {
                             VMMDLL_SCATTER_HANDLE handle=mem.CreateScatterHandle();
@@ -54,8 +58,9 @@
                         mem.CloseScatterHandle(owner.handle);owner.handle=nullptr;
                         return executed;
                     };
-                    const auto stage=pending.Step(currentIdentity(),GetTickCount(),exactBatch,
-                        [](uint64_t encoded,uint8_t a,uint8_t b){return OW::Cn155284::Component(encoded,a,b);});
+                    const auto stage=pending.stage==OW::EntityMaintenance::ComponentRefresh::Stage::Ready
+                        ? pending.stage : pending.Step(currentIdentity(),GetTickCount(),exactBatch,
+                            [](uint64_t encoded,uint8_t a,uint8_t b){return OW::Cn155284::Component(encoded,a,b);});
                     if(!OW::AcceptEntityRegistry(processRegistry) || !(currentIdentity()==pending.identity)) {
                         pending={};continue;
                     }

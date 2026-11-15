@@ -496,28 +496,32 @@ LRESULT WINAPI MenuWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 } // namespace
 
 bool Overlay::Initialize(const wchar_t* overlayTitle) {
+    if (!InitializeWindowServices())
+        return false;
+    const auto fail = [this]() { Shutdown(); return false; };
     ImGui_ImplWin32_EnableDpiAwareness();
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     if (!RegisterWindowClasses(instance))
-        return false;
+        return fail();
 
     if (!CreateWindows(overlayTitle, instance))
-        return false;
+        return fail();
 
     if (!CreateDX11())
-        return false;
+        return fail();
 
     IMGUI_CHECKVERSION();
     if (!InitializeImGuiContext(&m_canvasContext, m_canvasHWnd))
-        return false;
+        return fail();
     if (!InitializeImGuiContext(&m_menuContext, m_menuHWnd))
-        return false;
+        return fail();
 
     g_menuContext = m_menuContext;
 
     Render::Initialize(m_pDevice, m_pContext);
     Render::InitIcons(m_pDevice);
     UI::InitializeResources(m_pDevice);
+    m_uiResourcesInitialized = true;
 
     UpdateWindowVisibility();
     return true;
@@ -619,7 +623,10 @@ void Overlay::RequestExit() {
 
 void Overlay::Shutdown() {
     UI::Vision::ReleasePreviewResources();
-    UI::ShutdownResources();
+    if (m_uiResourcesInitialized) {
+        UI::ShutdownResources();
+        m_uiResourcesInitialized = false;
+    }
     Render::ShutdownIcons();
 
     g_menuContext = nullptr;
@@ -640,6 +647,7 @@ void Overlay::Shutdown() {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     UnregisterClassW(kMenuClassName, instance);
     UnregisterClassW(kCanvasClassName, instance);
+    ShutdownWindowServices();
 }
 
 bool Overlay::RegisterWindowClasses(HINSTANCE instance) {
@@ -902,8 +910,11 @@ void Overlay::ShutdownImGuiContext(ImGuiContext*& context) {
         return;
 
     ImGui::SetCurrentContext(context);
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.BackendRendererUserData)
+        ImGui_ImplDX11_Shutdown();
+    if (io.BackendPlatformUserData)
+        ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(context);
     context = nullptr;
     ImGui::SetCurrentContext(nullptr);

@@ -267,7 +267,6 @@ bool UIColorEdit(const char* label, ImVec4* value,
 void DrawCheckboxGrid3(const char* labels[], bool* values[], int rowCount,
                               float gapX, const float ratios[3]);
 void DrawRuntimeReadinessDetails();
-void DrawThemeGeneralPage();
 void DrawThemeFovRingsPage();
 void DrawMiscGeneralPage();
 void DrawMiscDiagnosticsPage();
