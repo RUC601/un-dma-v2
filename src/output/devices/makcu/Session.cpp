@@ -28,6 +28,7 @@ void MakcuSession::Reset() {
     makcuTextNeedsSync = false;
     makcuBinaryPollStartedMs = 0;
     makcuNextButtonPollMs = 0;
+    makcuButtonDialect.store(MakcuProtocol::ButtonDialect::Side);
 }
 
 bool MakcuSession::Identity(std::string_view response) const {
@@ -85,9 +86,30 @@ std::string MakcuSession::EncodeMask(int button, bool enabled) const {
     return MakcuProtocol::Mask(button, enabled);
 }
 
+std::string MakcuSession::EncodeButton(int button, bool down) const {
+    return MakcuProtocol::Button(button, down, makcuButtonDialect.load());
+}
+
+int MakcuSession::ButtonDomain(std::string_view command) const {
+    const auto& queries = MakcuProtocol::Queries(makcuButtonDialect.load());
+    for (size_t button = 0; button < queries.size(); ++button) {
+        const auto prefix = queries[button].substr(0, queries[button].size() - 1);
+        if (command.starts_with(prefix)) return int(button);
+    }
+    return -1;
+}
+
+bool MakcuSession::IsButtonRelease(std::string_view command) const {
+    const auto dialect = makcuButtonDialect.load();
+    for (int button = 0; button < 5; ++button)
+        if (command == MakcuProtocol::Button(button, false, dialect)) return true;
+    return false;
+}
+
 bool MakcuSession::ConfigureMakcuMonitorLocked(SerialChannel& channel, bool v4Route)
 {
     using namespace V2::Output::MakcuProtocol;
+    makcuButtonDialect.store(ButtonDialect::Side);
     // Older firmware can send bare bytes that are ambiguous in the text stream.
     if (!channel.Write("km.buttons(0)\r\n")) return false;
     if (v4Route) {
@@ -115,16 +137,28 @@ bool MakcuSession::ConfigureMakcuMonitorLocked(SerialChannel& channel, bool v4Ro
             if (!makcuFirmwareVersion) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    if (!ReadInputLocked(channel, true) || !RefreshMakcuButtonsLocked(channel)) return false;
+    if (!ReadInputLocked(channel, true)) return false;
+    bool complete = false;
+    if (!QueryMakcuTextButtonsLocked(channel, ButtonDialect::Side, complete)) return false;
+    if (!complete) {
+        // Finish the rejected dialect's replies before sending another untagged sweep.
+        if (!Identity(QueryLocked(channel, "km.version()\r\n", true))) return false;
+        makcuTextNeedsSync = false;
+        if (!QueryMakcuTextButtonsLocked(channel, ButtonDialect::Ms, complete)) return false;
+        if (complete) makcuButtonDialect.store(ButtonDialect::Ms);
+    }
     return !HasLegacyPrefixedButtonStream(makcuFirmwareVersion.value_or(0)) ||
         channel.Write("km.buttons(1)\r\n");
 }
 
-bool MakcuSession::QueryMakcuTextButtonsLocked(SerialChannel& channel)
+bool MakcuSession::QueryMakcuTextButtonsLocked(SerialChannel& channel,
+    MakcuProtocol::ButtonDialect dialect, bool& complete)
 {
     using namespace V2::Output::MakcuProtocol;
+    complete = false;
+    const auto& queries = Queries(dialect);
     std::string commands;
-    for (const auto query : ButtonQueries) {
+    for (const auto query : queries) {
         commands += query;
         commands += "\r\n";
     }
@@ -144,12 +178,13 @@ bool MakcuSession::QueryMakcuTextButtonsLocked(SerialChannel& channel)
                 rejected = true;
                 break;
             }
-            const auto state = PhysicalButton(body, button);
+            const auto state = PhysicalButton(body, button, dialect);
             if (!state) continue;
             if (*state) buttons |= uint8_t(1u << button);
-            if (++button == ButtonQueries.size()) {
+            if (++button == queries.size()) {
                 std::lock_guard lock(snapshotMutex);
                 if (physical.sampledAtMs < started) physical = {true, buttons, GetTickCount64()};
+                complete = true;
                 return true;
             }
         }
@@ -173,7 +208,10 @@ bool MakcuSession::RefreshMakcuButtonsLocked(SerialChannel& channel)
             return true;
     }
     makcuNextButtonPollMs = now + kMakcuButtonPollIntervalMs;
-    if (!makcuBinaryMonitor) return QueryMakcuTextButtonsLocked(channel);
+    if (!makcuBinaryMonitor) {
+        bool complete = false;
+        return QueryMakcuTextButtonsLocked(channel, makcuButtonDialect.load(), complete);
+    }
     if (!channel.Write(V2::Output::MakcuProtocol::PhysicalButtonsRequest)) return false;
     makcuBinaryPollStartedMs = now;
     return true;

@@ -1,5 +1,6 @@
 #include "output/DeviceConnection.hpp"
 #include "output/OutputRuntime.hpp"
+#include "output/AutomaticDeviceSelection.hpp"
 #include "Utils/Config.hpp"
 #include "Utils/Diagnostics.hpp"
 #include <chrono>
@@ -12,8 +13,14 @@ int InitializeOutputFromConfig()
     return 0;
 #endif
     constexpr auto timeout = std::chrono::milliseconds(500);
-    const int status = V2::Output::ReconcileRuntimeFromConfig(timeout);
+    const int status = V2::Output::ApplyOutputConfiguration(timeout);
     const V2::Output::OutputRuntimeAppliedState applied = V2::Output::RuntimeController().Applied();
+    if (OW::Config::outputEnabled && OW::Config::outputAutoDetect &&
+        (OW::Config::outputDeviceType == 0 || OW::Config::outputDeviceType == 3 ||
+         OW::Config::outputDeviceType == 4 || OW::Config::outputDeviceType == 5)) {
+        Diagnostics::Info("[OUTPUT-AUTO] device identification scheduled");
+        return status;
+    }
 
     if (!OW::Config::outputEnabled) {
         std::printf("[OUTPUT] Disabled by config; runtime is stopped.\n");
@@ -64,6 +71,7 @@ int ReleaseOutputMouseStateForShutdown(
 
 int ShutdownOutputRuntime(const char* reason, DWORD timeoutMs)
 {
+    StopAutomaticDeviceSelection();
     Diagnostics::Aim("output.lifecycle_shutdown reason=%s timeoutMs=%lu",
         reason ? reason : "unknown",
         static_cast<unsigned long>(timeoutMs));

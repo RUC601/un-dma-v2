@@ -18,6 +18,7 @@ using UI::Text::kUiLanguageOptions;
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
+#include "output/AutomaticDeviceSelection.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
 #include "Game/Offsets.hpp"
@@ -370,7 +371,7 @@ OutputConnectionTestResult TestOutputConnection() {
 
 OutputConnectionTestResult ApplyOutputRuntimeFromCurrentConfig(
         std::chrono::milliseconds timeout) {
-        const int status = V2::Output::ReconcileRuntimeFromConfig(timeout);
+        const int status = V2::Output::ApplyOutputConfiguration(timeout);
         const V2::Output::OutputRuntimeAppliedState applied =
             V2::Output::RuntimeController().Applied();
 
@@ -396,6 +397,10 @@ OutputConnectionTestResult ApplyOutputRuntimeFromCurrentConfig(
         }
         if (!OW::Config::outputEnabled)
             return { true, "Disabled" };
+        if (OW::Config::outputAutoDetect &&
+            (OW::Config::outputDeviceType == 0 || OW::Config::outputDeviceType == 3 ||
+             OW::Config::outputDeviceType == 4 || OW::Config::outputDeviceType == 5))
+            return { true, "Detecting connected devices..." };
         if (!V2::Output::RuntimeController().IsOutputGateOpen() ||
             applied.descriptor.backend == V2::Output::OutputRuntimeBackend::None) {
             return { false, "Runtime inactive" };
@@ -732,6 +737,7 @@ void UI::AutoSave(bool flush) {
     const uint64_t nowMs = GetTickCount64();
     if (!flush && nowMs - lastPollMs < 100) return;
     lastPollMs = nowMs;
+    if (!flush) V2::Output::PollAutomaticDeviceSelection();
     const auto result = OW::Config::PollAutoSave(OW::Config::ConfigPath(), nowMs, flush);
     if (result != OW::Config::AutoSaveResult::Idle && ImGui::GetCurrentContext()) {
         const bool chinese = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;

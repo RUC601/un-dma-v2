@@ -11,8 +11,8 @@
 namespace OW::Skeleton {
 
     inline constexpr std::size_t MaxBones = 1024;
-    // +0x64 也能读，但当前国服破坏球为 282、有效姿态只有 270，尾部含无效记录，所以改用 +0x66。
-    inline uint64_t BoneCountOffset() { return offset::IsCnProfile() ? 0x66 : 0x64; }
+    // +0x64 也能读，但已在国服破坏球观察到计数 282、有效姿态仅 270 的无效尾部；CN、World、Nexon 统一改读 +0x66。
+    inline constexpr uint64_t BoneCountOffset() { return 0x66; }
     inline std::atomic<uint64_t> RevisionSequence{0};
 
     inline uint64_t AddressOffset(uint64_t address, uint64_t offset) {

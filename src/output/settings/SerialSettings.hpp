@@ -2,9 +2,11 @@
 
 namespace V2::Output::SerialConfig {
 
-// The existing INI format has one shared COM selection for every serial device.
+// Compatibility projection for the selected device. OutputProfiles owns each
+// family's saved port and identity; the legacy INI key remains readable.
 struct Settings {
     char port[16] = "COM3";
+    char instanceId[256] = {};
 };
 
 inline Settings current;

@@ -8,8 +8,10 @@ void DrawSerialPortField(const ConfigChanged& changed)
     SettingRow(T(UiText::ComPort));
     PushControlWidth();
     ImGui::InputText("##ComPort", OW::Config::outputComPort, IM_ARRAYSIZE(OW::Config::outputComPort));
-    if (ImGui::IsItemDeactivatedAfterEdit())
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        OW::Config::outputSerialInstanceId[0] = '\0';
         changed();
+    }
     ImGui::PopItemWidth();
 }
 }

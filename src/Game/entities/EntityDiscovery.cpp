@@ -176,6 +176,9 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     const DWORD now=static_cast<DWORD>(OW::EntityRegistryNowMs());
     const auto frame=OW::SnapshotFrame();
     const auto& local=frame->local;
+    const bool currentMapProfile=
+        OW::offset::Active().contextMap==OW::offset::ContextMapMode::Protected155284 ||
+        OW::offset::Active().contextMap==OW::offset::ContextMapMode::World155284;
     // Keep only a controller hint across body replacement; the probe still validates the entire new binding.
     if(local.LinkParent && local.AngleBase && local.connection_epoch==epoch && local.scene_generation==scene)
         state.localLink=local.LinkParent;
@@ -184,7 +187,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
             (!state.lastLocalProbe || now-state.lastLocalProbe>=50),
         !state.knownLinks.empty() && now-state.lastKnownProbe>=32 && state.topology.complete,
         state.scan || state.pairCursor<state.pendingPairs.size() || !state.lastScan || now-state.lastScan>=250,
-        OW::offset::Active().componentTransform==OW::offset::ComponentTransformMode::Cn155284 && OW::DynamicEntityRegistryEnabled() &&
+        currentMapProfile && OW::DynamicEntityRegistryEnabled() &&
             (state.positiveTableReading || !state.positiveTableTick || now-state.positiveTableTick>=250 ||
              !state.positive.probes.empty() || (!state.positive.members.empty() && now-state.positiveHeaderTick>=8)));
     if(work==OW::EntityDiscovery::Work::None)return;
@@ -229,8 +232,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         // During respawn the old UID index can still point at an intact corpse.
         // Consult the controller's current map before that cached index, then
         // retain the probe's exact life/identity and final-map checks.
-        const bool currentMap=recovery[selected] &&
-            OW::offset::Active().componentTransform==OW::offset::ComponentTransformMode::Cn155284;
+        const bool currentMap=recovery[selected] && currentMapProfile;
         OW::EntityTopologySample recoveryTopology;
         const bool freshRecoveryIndex=currentMap && state.positive.Contains(parent) &&
             state.positive.FreshMemberIds(now,recoveryTopology.member_ids);
@@ -316,6 +318,13 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         const auto verified=OW::ProbePriorityActor(parent,state.topology,false,nullptr,&resolved,&proofs);
         if(!verified.empty() && resolved) {
             state.validatedProofs.insert(state.validatedProofs.end(),proofs.begin(),proofs.end());
+        } else if(!verified.empty() && !proofs.empty() &&
+            OW::offset::Active().contextMap==OW::offset::ContextMapMode::World155284) {
+            // A current World map may discover a body that the old scan could
+            // not pair. Publish that proof without granting roster retirement.
+            state.bindingsComplete=false;
+            state.proofs.insert(state.proofs.end(),proofs.begin(),proofs.end());
+            PublishDiscovery(state,verified,proofs,false,false,{},true,true);
         } else {
             auto member=state.topology;member.members={parent};
             if(OW::AuditEntityScene(member)!=OW::EntityRosterPolicy::SceneAudit::Empty)

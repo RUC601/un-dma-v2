@@ -622,6 +622,11 @@ namespace OW {
             *resolvedId = 0;
         if (verifiedMap)
             *verifiedMap = {};
+        const auto mapMode = offset::Active().contextMap;
+        const bool protectedMap = mapMode == offset::ContextMapMode::Protected155284;
+        const bool worldMap = mapMode == offset::ContextMapMode::World155284;
+        RuntimeTrace::MapLookupSpan mapTrace(
+            linkBase, idOffset, (verifiedMap ? 1u : 0u) | (protectedMap ? 2u : 0u) | (worldMap ? 4u : 0u));
         if (!IsPlausibleUserPointer(linkBase))
             return 0;
 
@@ -629,23 +634,41 @@ namespace OW {
         if (!SDK->read_range(linkBase+idOffset,&id,sizeof(id)) || id == 0)
             return 0;
 
-        uint64_t context=0;
-        if (!SDK->read_range(linkBase+0x8,&context,sizeof(context)) || !IsPlausibleUserPointer(context))
+        uint64_t rawContext=0;
+        if (!SDK->read_range(linkBase+0x8,&rawContext,sizeof(rawContext)))
+            return 0;
+        // The historical "context" is the component parent, not a global context.
+        const uint64_t context = protectedMap ? Cn155284::Parent(rawContext) :
+            worldMap ? RegionalLayout::World155284::DecodeMapParent(rawContext) : rawContext;
+        mapTrace.Pointer(1, rawContext, context);
+        if (!IsPlausibleUserPointer(context))
             return 0;
 
-        uint64_t bucketOwner=0;
-        if (!SDK->read_range(context+0x28,&bucketOwner,sizeof(bucketOwner)) || !IsPlausibleUserPointer(bucketOwner))
+        uint64_t rawOwner=0;
+        if (!SDK->read_range(context+0x28,&rawOwner,sizeof(rawOwner)))
+            return 0;
+        const uint64_t bucketOwner = protectedMap ? Cn155284::MapOwner(rawOwner) :
+            worldMap ? RegionalLayout::World155284::DecodeMapOwner(rawOwner) : rawOwner;
+        mapTrace.Pointer(2, rawOwner, bucketOwner);
+        if (!IsPlausibleUserPointer(bucketOwner))
             return 0;
 
-        uint64_t bucketArray=0;
-        if (!SDK->read_range(bucketOwner+0x18,&bucketArray,sizeof(bucketArray)) || !IsPlausibleUserPointer(bucketArray))
+        uint64_t rawBuckets=0;
+        if (!SDK->read_range(bucketOwner+0x18,&rawBuckets,sizeof(rawBuckets)))
+            return 0;
+        const uint64_t bucketArray = protectedMap ? Cn155284::MapBuckets(rawBuckets) :
+            worldMap ? RegionalLayout::World155284::DecodeMapBuckets(rawBuckets) : rawBuckets;
+        mapTrace.Pointer(3, rawBuckets, bucketArray);
+        if (!IsPlausibleUserPointer(bucketArray))
             return 0;
 
         const uint64_t bucket = id & 0xFFFu;
         uint64_t entries=0;uint32_t count=0;
         if (!SDK->read_range(bucketArray+16ull*bucket,&entries,sizeof(entries)) ||
-            !SDK->read_range(bucketArray+16ull*bucket+8,&count,sizeof(count)) ||
-            !IsPlausibleUserPointer(entries) || count == 0 || count > 4096)
+            !SDK->read_range(bucketArray+16ull*bucket+8,&count,sizeof(count)))
+            return 0;
+        mapTrace.Bucket(entries, count, id);
+        if (!IsPlausibleUserPointer(entries) || count == 0 || count > 4096)
             return 0;
 
         const uint32_t cappedCount = (std::min)(count, 512u);
@@ -671,6 +694,7 @@ namespace OW {
             if (IsPlausibleUserPointer(mapBase)) {
                 if (resolvedId)
                     *resolvedId = id;
+                mapTrace.Result(mapBase);
                 return mapBase;
             }
             }
@@ -680,6 +704,7 @@ namespace OW {
         if(verifiedMap && uniqueTarget) {
             *verifiedMap={context,bucketOwner,bucketArray,entries,count};
             if(resolvedId)*resolvedId=id;
+            mapTrace.Result(uniqueTarget);
             return uniqueTarget;
         }
 
@@ -1675,11 +1700,93 @@ namespace OW {
         return guard.Check(true) && AcceptEntityRegistry(topology.registry) ? Audit::Empty : Audit::Unknown;
     }
 
+    inline std::vector<std::pair<uint64_t,uint64_t>> ProbeRegionalMapActor(
+        uint64_t parent, const EntityTopologySample& topology, const EntityHeaderSnapshot& header,
+        uint32_t parentId, uint64_t link, uint32_t tick,
+        std::vector<EntityRosterPolicy::Discovery>* discoveries)
+    {
+        const auto scene = EntitySceneGeneration();
+        const auto profile = offset::ActiveProfile();
+        const auto& offsets = offset::Active();
+        const auto current = [&] {
+            return RuntimeWorkersRunning() && ProcessConnection::IsConnected() &&
+                ProcessConnection::ConnectionEpoch() == topology.registry.epoch &&
+                EntitySceneGeneration() == scene && offset::ActiveProfile() == profile &&
+                AcceptEntityRegistry(topology.registry);
+        };
+        std::array<uint32_t,2> ids{};
+        std::array<uint64_t,6> controllerLayout{};
+        if (!link || !current() || !header.ReadComponentLayout(controllerLayout) ||
+            !SDK->read_range(link + offset::Link_TargetId, ids.data(), sizeof(ids))) return {};
+        const auto linkHero = DecryptComponent(parent, offsets.typeHeroId, &header, true);
+        struct Candidate {
+            uint64_t actor=0, idOffset=0, health=0, heroBase=0, hero=0;
+            uint32_t uid=0;
+            CnLinkTargetMapIdentity map;
+            std::array<uint64_t,6> layout{};
+        };
+        std::vector<Candidate> candidates;
+        for (size_t index=0; index<ids.size(); ++index) {
+            if (!ids[index] || (index && ids[index]==ids[0])) continue;
+            Candidate value;
+            value.idOffset = index ? offset::Link_UniqueId : offset::Link_TargetId;
+            value.actor = ResolveCnLinkTargetMapBase(link, value.idOffset, &value.uid, &value.map);
+            if (!value.actor || value.actor==parent) continue;
+            if (value.map.context!=parent) return {};
+            EntityHeaderSnapshot actorHeader;
+            uint32_t actorId=0;
+            if (value.uid!=ids[index] || !actorHeader.Read(value.actor) ||
+                !actorHeader.ReadParentOffset(offset::Entity_MatchId, actorId) || actorId!=value.uid ||
+                !actorHeader.ReadComponentLayout(value.layout)) return {};
+            value.health = DecryptComponent(value.actor, offsets.typeHealth, &actorHeader, true);
+            value.heroBase = linkHero ? linkHero : DecryptComponent(value.actor, offsets.typeHeroId, &actorHeader, true);
+            if (!value.health || !value.heroBase ||
+                !SDK->read_range(value.heroBase+0xD0, &value.hero, sizeof(value.hero)) ||
+                !GameData::IsKnownHeroId(value.hero)) continue;
+            if (!candidates.empty() && candidates.front().actor!=value.actor) return {};
+            candidates.push_back(value);
+        }
+        // A UID index can still name a retired body. Current World155284 bindings
+        // require the native map; failed/ambiguous map proof never selects that index.
+        if (candidates.empty()) return {};
+        EntityHeaderSnapshot finalController;
+        uint32_t finalParentId=0;
+        std::array<uint64_t,6> finalControllerLayout{};
+        std::array<uint32_t,2> finalIds{};
+        if (!finalController.Read(parent) ||
+            !finalController.ReadParentOffset(offset::Entity_MatchId,finalParentId) || finalParentId!=parentId ||
+            !finalController.ReadComponentLayout(finalControllerLayout) || finalControllerLayout!=controllerLayout ||
+            DecryptComponent(parent,offsets.typeLink,&finalController,true)!=link ||
+            DecryptComponent(parent,offsets.typeHeroId,&finalController,true)!=linkHero ||
+            !SDK->read_range(link+offset::Link_TargetId,finalIds.data(),sizeof(finalIds)) || finalIds!=ids) return {};
+        for (const auto& value : candidates) {
+            EntityHeaderSnapshot finalActor;
+            std::array<uint64_t,6> finalLayout{};
+            uint32_t actorId=0, mappedId=0;
+            uint64_t hero=0;
+            CnLinkTargetMapIdentity finalMap;
+            if (!finalActor.Read(value.actor) ||
+                !finalActor.ReadParentOffset(offset::Entity_MatchId,actorId) || actorId!=value.uid ||
+                !finalActor.ReadComponentLayout(finalLayout) || finalLayout!=value.layout ||
+                DecryptComponent(value.actor,offsets.typeHealth,&finalActor,true)!=value.health ||
+                (!linkHero && DecryptComponent(value.actor,offsets.typeHeroId,&finalActor,true)!=value.heroBase) ||
+                !SDK->read_range(value.heroBase+0xD0,&hero,sizeof(hero)) || hero!=value.hero ||
+                ResolveCnLinkTargetMapBase(link,value.idOffset,&mappedId,&finalMap)!=value.actor ||
+                mappedId!=value.uid || finalMap!=value.map) return {};
+        }
+        if (!current() || uint32_t(EntityRegistryNowMs()-tick)>100) return {};
+        const auto& value=candidates.front();
+        if (discoveries) discoveries->push_back({value.actor,parent,value.hero,value.uid,tick});
+        return {{value.actor,parent}};
+    }
+
     inline std::vector<std::pair<uint64_t,uint64_t>> ProbeRegionalActor(
         uint64_t parent, const EntityTopologySample& topology, const EntityHeaderSnapshot& header,
         uint32_t parentId, uint64_t link, uint32_t tick,
         std::vector<EntityRosterPolicy::Discovery>* discoveries)
     {
+        if (offset::Active().contextMap == offset::ContextMapMode::World155284)
+            return ProbeRegionalMapActor(parent,topology,header,parentId,link,tick,discoveries);
         if (!link)
             return {};
         uint32_t linkId = 0;
@@ -1740,7 +1847,10 @@ namespace OW {
         if (offset::Active().capacityBoundRegistry) {
             result = ProbeRegionalActor(parent, topology, header, match, link, discoveryTick, discoveries);
             if (bindingMembers) *bindingMembers = result;
-            if (bindingComplete) *bindingComplete = result.size() == 1;
+            // Native map evidence admits the current body, not complete roster
+            // enumeration or deletion authority over other bodies.
+            if (bindingComplete) *bindingComplete =
+                offset::Active().contextMap == offset::ContextMapMode::Plain && result.size() == 1;
             return result;
         }
         std::vector<uint64_t> components;
@@ -1766,9 +1876,9 @@ namespace OW {
                     if(currentMapPositiveOnly)positiveMapGuards.emplace_back(idOffset,currentMap);
                     continue;
                 }
-                // Some live CN controllers expose no context at link+8. A
-                // complete fresh header sweep may then prove a unique UID
-                // binding; partial/stale indexes never gain this fallback.
+                // A failed map lookup alone does not establish an absent context.
+                // A complete fresh header sweep may prove a unique UID binding;
+                // partial/stale indexes never gain this fallback.
                 if(currentMapPositiveOnly && !topology.member_ids_complete){trace(8);return {};}
             }
             std::vector<uint64_t> matches;

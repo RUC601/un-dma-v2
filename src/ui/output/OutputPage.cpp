@@ -2,6 +2,7 @@
 #include "ui/EditorSupport.hpp"
 #include "output/DeviceCapabilities.hpp"
 #include "output/OutputRuntime.hpp"
+#include "output/AutomaticDeviceSelection.hpp"
 #include "Game/Target.hpp"
 #include "features/aim/BehaviorController.hpp"
 #include "Utils/Diagnostics.hpp"
@@ -62,15 +63,27 @@ void DrawMiscOutputPage() {
                 outputConnectionTestMessage.c_str());
         }
 
+        SettingRow(L("Automatically select connected device"));
+        if (ImGui::Checkbox("##AutoDetectDevice", &OW::Config::outputAutoDetect))
+            markOutputRuntimeConfigChanged();
+        ImGui::TextWrapped("%s", L("Each device keeps its connection, calibration and delay settings. A working device stays selected; after disconnecting, saved devices are checked again."));
+        const auto detection = V2::Output::GetAutomaticDeviceStatus();
+        if (OW::Config::outputAutoDetect && !detection.message.empty())
+            ImGui::TextWrapped("%s", L(detection.message.c_str()));
+
         SettingRow(T(UiText::DeviceType));
         PushControlWidth();
-        if (UI::OutputSettings::SelectDevice("##DeviceType", OW::Config::outputDeviceType)) {
+        int selectedDevice = OW::Config::outputDeviceType;
+        if (UI::OutputSettings::SelectDevice("##DeviceType", selectedDevice)) {
+            OW::Config::SelectOutputDeviceProfile(selectedDevice);
             markOutputRuntimeConfigChanged();
         }
         ImGui::PopItemWidth();
 
         UI::OutputSettings::DrawConnectionFields(
             OW::Config::outputDeviceType, markOutputRuntimeConfigChanged);
+        if (OW::Config::outputAutoDetect && UIActionButton(L("Detect again"), 104.0f))
+            markOutputRuntimeConfigChanged();
 
         SettingRow(T(UiText::BaseCountsRad));
         PushControlWidth();

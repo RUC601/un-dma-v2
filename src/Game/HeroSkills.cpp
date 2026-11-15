@@ -10,6 +10,7 @@
 #include "Game/AimFirePhase.hpp"
 #include "Game/AsheCombo.hpp"
 #include "vision/AsheAmmo.hpp"
+#include "vision/ZaryaAmmo.hpp"
 #include "Game/AutoMelee.hpp"
 #include "Game/DoomfistPunch.hpp"
 #include "Game/Overwatch.hpp"
@@ -69,9 +70,6 @@ namespace {
     constexpr int kZaryaAmmoClipSize = 100;
     constexpr double kZaryaPrimaryAmmoPerSecond = 20.0;
     constexpr double kZaryaSecondaryAmmoCost = 25.0;
-    constexpr int kZaryaAutoRightThresholdMin = 1;
-    constexpr int kZaryaAutoRightThresholdMax = 5;
-    constexpr int kZaryaAutoRightThresholdLeadAmmo = 3;
     constexpr int kZaryaAutoRightHoldBaseMs = 200;
     constexpr int kZaryaAutoRightHoldJitterMs = 10;
     constexpr int kZaryaAutoRightLeftReleaseBaseMs = 100;
@@ -306,6 +304,8 @@ namespace {
     };
 
     struct ZaryaAmmoProbeRuntime {
+        int source = -1;
+        bool captureRequested = false;
         bool lastReloading = false;
         Clock::time_point reloadStarted{};
         bool reloadQualified = false;
@@ -315,6 +315,10 @@ namespace {
         bool rightWasDown = false;
         bool autoRightSent = false;
         int autoRightThreshold = 0;
+        std::uint64_t hudSequence = 0, hudEpoch = 0;
+        int lastHudAmmo = -1;
+        double hudNotBeforeMs = 0.0;
+        bool hudReloadPending = false;
         Clock::time_point lastObserved{};
         Clock::time_point lastBudgetLog{};
         int lastLoggedAmmo = -1000;
@@ -558,11 +562,13 @@ namespace {
             std::string(definition.skillId ? definition.skillId : "") == "dash-combo";
     }
 
-    int PickZaryaAutoRightThreshold()
+    int PickZaryaAutoRightThreshold(const Config::HeroSkillSettings& settings)
     {
+        const int base = std::clamp(settings.zaryaAmmoThreshold, 1, kZaryaAmmoClipSize);
+        const int jitter = std::clamp(settings.zaryaAmmoJitter, 0, kZaryaAmmoClipSize - 1);
         std::uniform_int_distribution<int> distribution(
-            kZaryaAutoRightThresholdMin,
-            kZaryaAutoRightThresholdMax);
+            (std::max)(1, base - jitter),
+            (std::min)(kZaryaAmmoClipSize, base + jitter));
         std::lock_guard<std::mutex> lock(g_randomMutex);
         return distribution(g_random);
     }
@@ -3184,174 +3190,166 @@ namespace {
             runtime.autoRightSent ? 1 : 0);
     }
 
-    void ArmZaryaAmmoProbeBudget(const std::string& runtimeKey,
-                                 ZaryaAmmoProbeRuntime& runtime,
-                                 Clock::time_point now,
-                                 bool leftDown,
-                                 bool rightDown,
-                                 long long reloadDurationMs)
+    // Observe only: output is submitted by the caller after all gates pass.
+    // HUD readings and the time estimate never seed or repair one another.
+    bool AdvanceZaryaAmmoProbe(ZaryaAmmoProbeRuntime& runtime,
+                               const Config::HeroSkillSettings& settings,
+                               Clock::time_point now, bool leftDown, bool rightDown,
+                               bool reloading, const V2::Vision::ZaryaAmmoSnapshot& hud)
     {
-        runtime.budgetArmed = true;
-        runtime.ammo = static_cast<double>(kZaryaAmmoClipSize);
+        const int source = settings.zaryaAmmoSource == Config::kZaryaAmmoHudRecognition
+            ? Config::kZaryaAmmoHudRecognition : Config::kZaryaAmmoLeftHoldEstimate;
+        const double nowMs = std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
+        if (runtime.source != source) {
+            // Switching sources cancels the old observation, but must not issue
+            // a second automatic secondary in the same already-fired magazine.
+            const bool sent = runtime.autoRightSent;
+            const int threshold = runtime.autoRightThreshold;
+            const auto hudEpoch = runtime.hudEpoch;
+            const auto hudSequence = runtime.hudSequence;
+            const int lastHudAmmo = runtime.lastHudAmmo;
+            runtime = {};
+            runtime.source = source;
+            runtime.autoRightSent = sent;
+            runtime.autoRightThreshold = threshold;
+            // Retain only actual HUD evidence across a source switch. This can
+            // recognize a subsequent refill without importing estimated ammo.
+            runtime.hudEpoch = hudEpoch;
+            runtime.hudSequence = hudSequence;
+            runtime.lastHudAmmo = lastHudAmmo;
+            runtime.hudNotBeforeMs = nowMs;
+        }
+        const bool useHud = source == Config::kZaryaAmmoHudRecognition;
+        const auto previousObserved = runtime.lastObserved;
+        const bool previousLeft = runtime.leftWasDown;
+        const bool previousRight = runtime.rightWasDown;
+        runtime.lastObserved = now;
         runtime.leftWasDown = leftDown;
         runtime.rightWasDown = rightDown;
-        runtime.autoRightSent = false;
-        runtime.autoRightThreshold = PickZaryaAutoRightThreshold();
-        runtime.lastObserved = now;
-        ResetZaryaAmmoProbeBudgetLog(runtime);
 
-        Diagnostics::Aim("zarya.ammo_probe reload_success skill=%s durationMs=%lld seedAmmo=%d threshold=%d",
-            runtimeKey.c_str(),
-            reloadDurationMs,
-            kZaryaAmmoClipSize,
-            runtime.autoRightThreshold);
-        LogZaryaAmmoProbeBudget(runtimeKey, runtime, "reload_seed", leftDown, rightDown, now);
-    }
-
-    void UpdateZaryaAmmoProbe(const std::string& runtimeKey,
-                              const Config::HeroSkillSettings& settings,
-                              const c_entity& local)
-    {
-        ZaryaAmmoProbeRuntime& runtime = g_zaryaAmmoProbes[runtimeKey];
-        const Clock::time_point now = Clock::now();
-        const bool leftDown = AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Primary));
-        const bool rightDown = AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(TargetingDetail::SnapshotLocalEntity().HeroID,V2::HeroSettings::Action::Secondary));
-
-        bool reloading = false;
-        const bool fastReloadRead = ReadLocalReloadingFast(local, reloading);
         if (reloading) {
             if (!runtime.lastReloading) {
                 runtime.reloadStarted = now;
                 runtime.reloadQualified = false;
                 runtime.budgetArmed = false;
                 runtime.ammo = -1.0;
-                runtime.autoRightSent = false;
-                runtime.autoRightThreshold = 0;
-                ResetZaryaAmmoProbeBudgetLog(runtime);
-                Diagnostics::Aim("zarya.ammo_probe reload_start skill=%s source=%s skillBase=0x%llX",
-                    runtimeKey.c_str(),
-                    fastReloadRead ? "fast" : "cache",
-                    static_cast<unsigned long long>(local.SkillBase));
             }
-
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - runtime.reloadStarted);
-            if (!runtime.reloadQualified && elapsed >= kZaryaReloadSuccessMinDuration) {
-                runtime.reloadQualified = true;
-                Diagnostics::Aim("zarya.ammo_probe reload_qualified skill=%s durationMs=%lld",
-                    runtimeKey.c_str(),
-                    static_cast<long long>(elapsed.count()));
-            }
-
+            runtime.reloadQualified |= now - runtime.reloadStarted >= kZaryaReloadSuccessMinDuration;
             runtime.lastReloading = true;
-            runtime.leftWasDown = leftDown;
-            runtime.rightWasDown = rightDown;
-            runtime.lastObserved = now;
-            return;
+            return false;
         }
-
         if (runtime.lastReloading) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - runtime.reloadStarted);
-            if (runtime.reloadQualified || elapsed >= kZaryaReloadSuccessMinDuration) {
-                ArmZaryaAmmoProbeBudget(
-                    runtimeKey,
-                    runtime,
-                    now,
-                    leftDown,
-                    rightDown,
-                    static_cast<long long>(elapsed.count()));
-            } else {
-                Diagnostics::Aim("zarya.ammo_probe reload_too_short skill=%s durationMs=%lld",
-                    runtimeKey.c_str(),
-                    static_cast<long long>(elapsed.count()));
-                runtime.budgetArmed = false;
-                runtime.ammo = -1.0;
-                runtime.autoRightThreshold = 0;
-            }
-
+            const bool qualified = runtime.reloadQualified ||
+                now - runtime.reloadStarted >= kZaryaReloadSuccessMinDuration;
             runtime.lastReloading = false;
             runtime.reloadStarted = {};
             runtime.reloadQualified = false;
-            runtime.leftWasDown = leftDown;
-            runtime.rightWasDown = rightDown;
-            runtime.lastObserved = now;
-            return;
-        }
-
-        runtime.lastReloading = false;
-        if (!runtime.budgetArmed) {
-            runtime.leftWasDown = leftDown;
-            runtime.rightWasDown = rightDown;
-            runtime.lastObserved = now;
-            return;
-        }
-
-        if (runtime.lastObserved.time_since_epoch().count() == 0)
-            runtime.lastObserved = now;
-
-        double elapsedSeconds = std::chrono::duration<double>(now - runtime.lastObserved).count();
-        elapsedSeconds = std::clamp(elapsedSeconds, 0.0, 0.25);
-
-        if (runtime.leftWasDown && elapsedSeconds > 0.0) {
-            runtime.ammo -= kZaryaPrimaryAmmoPerSecond * elapsedSeconds;
-        }
-
-        const bool manualRightEdge = !runtime.rightWasDown && rightDown;
-        if (manualRightEdge)
-            runtime.ammo -= kZaryaSecondaryAmmoCost;
-
-        runtime.ammo = std::clamp(runtime.ammo, 0.0, static_cast<double>(kZaryaAmmoClipSize));
-        runtime.lastObserved = now;
-        runtime.leftWasDown = leftDown;
-        runtime.rightWasDown = rightDown;
-
-        LogZaryaAmmoProbeBudget(
-            runtimeKey,
-            runtime,
-            manualRightEdge ? "manual_right" : "",
-            leftDown,
-            rightDown,
-            now);
-
-        const int thresholdAmmo = runtime.autoRightThreshold > 0
-            ? runtime.autoRightThreshold
-            : kZaryaAutoRightThresholdMin;
-        const int triggerAmmo = leftDown
-            ? std::clamp(thresholdAmmo + kZaryaAutoRightThresholdLeadAmmo, 1, kZaryaAmmoClipSize)
-            : thresholdAmmo;
-        if (!runtime.autoRightSent && runtime.ammo <= static_cast<double>(triggerAmmo) && !rightDown) {
-            const std::string pulseKey = runtimeKey + ":auto_right";
-            runtime.autoRightSent = true;
-            const bool releaseLeftDuringPulse = leftDown;
-            const ZaryaAutoRightTiming timing = PickZaryaAutoRightTiming();
-            if (StartZaryaAutoRightPulse(pulseKey, releaseLeftDuringPulse, timing)) {
-                runtime.ammo = std::clamp(
-                    runtime.ammo - kZaryaSecondaryAmmoCost,
-                    0.0,
-                    static_cast<double>(kZaryaAmmoClipSize));
-                MarkActionExecuted(runtimeKey);
-                Diagnostics::Aim("zarya.ammo_probe auto_right skill=%s threshold=%d triggerAmmo=%d xMs=%lld yMs=%lld zMs=%lld releaseLeft=%d ammoAfter=%.1f",
-                    runtimeKey.c_str(),
-                    thresholdAmmo,
-                    triggerAmmo,
-                    static_cast<long long>(timing.rightHold.count()),
-                    static_cast<long long>(timing.leftReleaseDelay.count()),
-                    static_cast<long long>(timing.afterLeftRelease.count()),
-                    releaseLeftDuringPulse ? 1 : 0,
-                    runtime.ammo);
-                LogZaryaAmmoProbeBudget(runtimeKey, runtime, "auto_right", leftDown, true, now);
-            } else {
-                Diagnostics::Aim("zarya.ammo_probe auto_right_skip skill=%s threshold=%d triggerAmmo=%d xMs=%lld yMs=%lld zMs=%lld releaseLeft=%d ammo=%.1f reason=timed_action_active",
-                    runtimeKey.c_str(),
-                    thresholdAmmo,
-                    triggerAmmo,
-                    static_cast<long long>(timing.rightHold.count()),
-                    static_cast<long long>(timing.leftReleaseDelay.count()),
-                    static_cast<long long>(timing.afterLeftRelease.count()),
-                    releaseLeftDuringPulse ? 1 : 0,
-                    runtime.ammo);
+            runtime.hudNotBeforeMs = nowMs;
+            if (useHud) {
+                // Even an observed reload cannot manufacture 100 HUD rounds.
+                runtime.hudReloadPending = qualified;
+            } else if (qualified) {
+                runtime.ammo = kZaryaAmmoClipSize;
+                runtime.budgetArmed = true;
+                runtime.autoRightSent = false;
+                runtime.autoRightThreshold = PickZaryaAutoRightThreshold(settings);
             }
+            return false;
+        }
+
+        if (useHud) {
+            runtime.budgetArmed = false;
+            runtime.ammo = -1.0;
+            if (!hud.known || hud.remaining < 0 || hud.remaining > kZaryaAmmoClipSize ||
+                hud.sequence == 0 || hud.epoch == 0 || !std::isfinite(hud.arrivalMs) ||
+                hud.arrivalMs < runtime.hudNotBeforeMs) return false;
+            if (hud.epoch != runtime.hudEpoch) {
+                runtime.hudEpoch = hud.epoch;
+                runtime.hudSequence = 0;
+                runtime.lastHudAmmo = -1;
+            }
+            if (hud.sequence <= runtime.hudSequence) return false;
+            runtime.hudSequence = hud.sequence;
+            const bool fullAfterUse = hud.remaining == kZaryaAmmoClipSize &&
+                runtime.lastHudAmmo >= 0 && runtime.lastHudAmmo < kZaryaAmmoClipSize;
+            const bool observedRefill = runtime.hudReloadPending && hud.remaining > 0 &&
+                (hud.remaining == kZaryaAmmoClipSize ||
+                    (runtime.lastHudAmmo >= 0 && hud.remaining > runtime.lastHudAmmo));
+            if (fullAfterUse || observedRefill) {
+                runtime.autoRightSent = false;
+                runtime.autoRightThreshold = PickZaryaAutoRightThreshold(settings);
+                runtime.hudReloadPending = false;
+            } else if (runtime.autoRightThreshold == 0) {
+                runtime.autoRightThreshold = PickZaryaAutoRightThreshold(settings);
+            }
+            runtime.lastHudAmmo = hud.remaining;
+            runtime.ammo = hud.remaining;
+            runtime.budgetArmed = true;
+        } else {
+            if (!runtime.budgetArmed) return false;
+            const double elapsedSeconds = previousObserved.time_since_epoch().count() == 0
+                ? 0.0 : std::chrono::duration<double>(now - previousObserved).count();
+            // A missed interval has unknown physical input history. Wait for a
+            // completed reload rather than silently losing held-fire duration.
+            if (elapsedSeconds < 0.0 || elapsedSeconds > 0.25) {
+                runtime.budgetArmed = false;
+                runtime.ammo = -1.0;
+                return false;
+            }
+            if (previousLeft)
+                runtime.ammo -= kZaryaPrimaryAmmoPerSecond * elapsedSeconds;
+            if (!previousRight && rightDown)
+                runtime.ammo -= kZaryaSecondaryAmmoCost;
+            runtime.ammo = std::clamp(runtime.ammo, 0.0, double(kZaryaAmmoClipSize));
+        }
+        // The selected threshold is the actual threshold: no hidden +3 lead.
+        return leftDown && !rightDown && !runtime.autoRightSent && !runtime.hudReloadPending &&
+            runtime.budgetArmed && runtime.autoRightThreshold > 0 &&
+            runtime.ammo > 0.0 && runtime.ammo <= runtime.autoRightThreshold;
+    }
+
+    void UpdateZaryaAmmoProbe(const std::string& runtimeKey,
+                              const Config::HeroSkillSettings& settings,
+                              const c_entity& local)
+    {
+        auto& runtime = g_zaryaAmmoProbes[runtimeKey];
+        const auto now = Clock::now();
+        const int source = settings.zaryaAmmoSource == Config::kZaryaAmmoHudRecognition
+            ? Config::kZaryaAmmoHudRecognition : Config::kZaryaAmmoLeftHoldEstimate;
+        if (runtime.source != source)
+            TimedOutputScheduler().Cancel(runtimeKey + ":auto_right");
+        const bool leftDown = AimbotDetail::IsInputVkDown(
+            V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Primary));
+        const bool rightDown = AimbotDetail::IsInputVkDown(
+            V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Secondary));
+        bool reloading = false;
+        (void)ReadLocalReloadingFast(local, reloading);
+        const auto hud = source == Config::kZaryaAmmoHudRecognition
+            ? V2::Vision::ReadZaryaAmmo(local.HeroID == eHero::HERO_ZARYA)
+            : V2::Vision::ZaryaAmmoSnapshot{};
+        const bool ready = AdvanceZaryaAmmoProbe(runtime, settings, now,
+            leftDown, rightDown, reloading, hud);
+        if (source == Config::kZaryaAmmoHudRecognition && !runtime.captureRequested) {
+            runtime.captureRequested = true;
+            (void)V2::Vision::RequestZaryaAmmoCapture();
+        }
+        LogZaryaAmmoProbeBudget(runtimeKey, runtime, "", leftDown, rightDown, now);
+        if (!ready) return;
+        const auto timing = PickZaryaAutoRightTiming();
+        if (StartZaryaAutoRightPulse(runtimeKey + ":auto_right", true, timing)) {
+            // A refused scheduler submission does not consume this magazine's
+            // one automatic attempt. HUD ammo is never decremented by output.
+            runtime.autoRightSent = true;
+            if (source == Config::kZaryaAmmoLeftHoldEstimate)
+                runtime.ammo = (std::max)(0.0, runtime.ammo - kZaryaSecondaryAmmoCost);
+            MarkActionExecuted(runtimeKey);
+            Diagnostics::Aim("zarya.ammo_probe auto_right skill=%s source=%s threshold=%d base=%d jitter=%d xMs=%lld yMs=%lld ammo=%.1f frame=%llu epoch=%llu ageMs=%.2f",
+                runtimeKey.c_str(), source == Config::kZaryaAmmoHudRecognition ? "hud" : "left_hold",
+                runtime.autoRightThreshold, settings.zaryaAmmoThreshold, settings.zaryaAmmoJitter,
+                static_cast<long long>(timing.rightHold.count()),
+                static_cast<long long>(timing.leftReleaseDelay.count()), runtime.ammo,
+                static_cast<unsigned long long>(hud.sequence),
+                static_cast<unsigned long long>(hud.epoch), hud.ageMs);
         }
     }
 

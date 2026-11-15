@@ -1326,6 +1326,7 @@ namespace OW { namespace Config {
     inline int& catBoxMonitorPort = V2::Output::DeviceSettings::CatBox().monitorPort;
 
     inline bool& outputEnabled = V2::Output::DeviceSettings::Selection().enabled;
+    inline bool& outputAutoDetect = V2::Output::DeviceSettings::Selection().autoDetect;
     inline int& outputDeviceType = V2::Output::DeviceSettings::Selection().legacyDeviceId;
     inline auto& outputIp = V2::Output::DeviceSettings::Network().ip;
     inline int& outputPort = V2::Output::DeviceSettings::Network().commandPort;
@@ -1333,6 +1334,18 @@ namespace OW { namespace Config {
     inline bool& outputMonitorPortManualOverride = V2::Output::DeviceSettings::Network().manualMonitorPort;
     inline auto& outputMac = V2::Output::DeviceSettings::Network().mac;
     inline auto& outputComPort = V2::Output::DeviceSettings::Serial().port;
+    inline auto& outputSerialInstanceId = V2::Output::DeviceSettings::Serial().instanceId;
+
+    using OutputDeviceProfile = V2::Output::ProfileConfig::Profile;
+    // Unlocked variants require Config::mutex. The legacy output fields remain
+    // a projection of the currently selected family's saved parameters.
+    void SynchronizeOutputDeviceProfileUnlocked();
+    void SelectOutputDeviceProfileUnlocked(int id);
+    void SelectOutputDeviceProfile(int id);
+    OutputDeviceProfile GetOutputDeviceProfileUnlocked(int id);
+    OutputDeviceProfile GetOutputDeviceProfile(int id);
+    bool SetOutputDeviceProfileUnlocked(int id, const OutputDeviceProfile& profile);
+    bool SetOutputDeviceProfile(int id, const OutputDeviceProfile& profile);
     inline float outputCountsPerRadian = 100.0f;       // KMBox relative mouse counts needed for one radian at the reference game sens
     inline float gameMouseSensitivity = 15.0f;        // manual/effective current in-game sensitivity used for scaling
     inline float referenceGameSensitivity = 15.0f;    // game sens used when counts-per-radian was measured
@@ -1735,6 +1748,7 @@ namespace OW { namespace Config {
     };
 
     enum AutoMeleeHealthMode { kMeleeAnyHealth = 0, kMeleeHealthPercent = 1, kMeleeHealthAbsolute = 2 };
+    enum ZaryaAmmoSource { kZaryaAmmoLeftHoldEstimate = 0, kZaryaAmmoHudRecognition = 1 };
 
     struct HeroSkillSettings {
         bool enabled = false;
@@ -1800,6 +1814,9 @@ namespace OW { namespace Config {
         int jumpLeadMs = 50;
         int projectileThreatMask = 3; // 1 Ana grenade, 2 Bastion grenade; separate from active-cast threats.
         bool projectileThreatEnabled = false;
+        int zaryaAmmoSource = kZaryaAmmoLeftHoldEstimate;
+        int zaryaAmmoThreshold = 6;
+        int zaryaAmmoJitter = 2;
     };
 
     using HeroSkillPresetStore = std::unordered_map<uint64_t, std::unordered_map<std::string, HeroSkillSettings>>;

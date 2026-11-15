@@ -31,6 +31,9 @@ namespace OW {
             World155284,
         };
 
+        // Checked independently from component decoding at every version update.
+        enum class ContextMapMode { Plain, Protected155284, World155284 };
+
         enum class SingletonListMode {
             EncryptedWorld,
             EncryptedWorld151293,
@@ -107,6 +110,7 @@ namespace OW {
             uint32_t imageSize = 0;
             uint32_t typeItemTransform = 0;
             uint32_t typeItemTransformAlt = 0;
+            ContextMapMode contextMap = ContextMapMode::Plain;
         };
 
         // =========================================================================
@@ -405,6 +409,7 @@ namespace OW {
             .imageSize = Cn155284::imageSize,
             .typeItemTransform = 4,
             .typeItemTransformAlt = 0x2A,
+            .contextMap = ContextMapMode::Protected155284,
         };
 
         inline constexpr RuntimeOffsetProfile kWorld155284RuntimeProfile{
@@ -444,6 +449,7 @@ namespace OW {
             .imageSize = 0x4876000,
             .typeItemTransform = 4,
             .typeItemTransformAlt = 0x2A,
+            .contextMap = ContextMapMode::World155284,
         };
 
         // 155284KB shares the protected transforms and table layout with 155284N.
@@ -460,6 +466,9 @@ namespace OW {
             profile.registryLockRva = 0x4680860;
             profile.imageTimestamp = 0x6AEBEA26;
             profile.imageSize = 0x4D6B000;
+            // Independently checked in Nexon D0/D4/D8 native getters, not
+            // inferred from the shared component transform (2026-11-16).
+            profile.contextMap = ContextMapMode::Protected155284;
             return profile;
         }();
 

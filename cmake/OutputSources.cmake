@@ -31,4 +31,6 @@ set(UNLEASHED_OUTPUT_ACTION_SOURCES
     src/output/core/OutputOwnership.cpp
     src/output/core/OutputScheduler.cpp
     src/output/settings/DeviceConnection.cpp
+    src/output/settings/AutomaticDeviceSelection.cpp
+    src/output/settings/DeviceDiscovery.cpp
 )

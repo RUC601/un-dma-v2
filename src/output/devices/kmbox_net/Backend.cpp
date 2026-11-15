@@ -1326,9 +1326,8 @@ void KmBoxNetBackend::HeartbeatLoop()
         if (lifecycleState.load(std::memory_order_acquire) != LifecycleState::Running)
             continue;
 
-        if (V2::Output::OutputSuppressed())
-            continue;
-
+        // Menu suppression gates input commands, not connection checks. A quiet
+        // disconnected device must still become Error so automatic selection can run.
         if (!EnsureConnected())
             continue;
 

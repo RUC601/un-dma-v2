@@ -6,6 +6,7 @@
 #include "output/devices/catbox/Settings.hpp"
 #include "output/settings/SerialSettings.hpp"
 #include "output/settings/SelectionSettings.hpp"
+#include "output/settings/OutputProfiles.hpp"
 
 namespace V2::Output::DeviceSettings {
 
@@ -13,6 +14,7 @@ inline constexpr KmBoxNetConfig::Settings& Network() noexcept { return KmBoxNetC
 inline constexpr CatBoxConfig::Settings& CatBox() noexcept { return CatBoxConfig::current; }
 inline constexpr SerialConfig::Settings& Serial() noexcept { return SerialConfig::current; }
 inline constexpr SelectionConfig::Settings& Selection() noexcept { return SelectionConfig::current; }
+inline constexpr ProfileConfig::Store& Profiles() noexcept { return ProfileConfig::current; }
 
 inline bool IsValidUdpPort(int port) noexcept
 {
@@ -25,6 +27,7 @@ inline void ResetConnections() noexcept
     CatBox() = {};
     Serial() = {};
     Selection() = {};
+    Profiles() = {};
 }
 
 template<class ReadText, class ReadInteger, class ReadBoolean>

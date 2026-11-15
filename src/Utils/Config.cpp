@@ -11,6 +11,7 @@
 #include "config/AimModeJson.hpp"
 #include "config/AlertJson.hpp"
 #include "config/SlotStorageInternal.hpp"
+#include "output/settings/OutputProfilesJson.hpp"
 
 #include "Game/HeroSkills.hpp"
 #include "Game/HeroSettings.hpp"
@@ -61,6 +62,89 @@
 // =====================================================================
 
 namespace OW { namespace Config {
+    namespace {
+        OutputDeviceProfile CaptureOutputDeviceProjection()
+        {
+            OutputDeviceProfile profile;
+            profile.port = outputComPort;
+            profile.instanceId = outputSerialInstanceId;
+            profile.countsPerRadian = outputCountsPerRadian;
+            profile.calibratedYaw = calibratedCountsPerRadian;
+            profile.calibratedPitch = calibratedPitchCountsPerRadian;
+            profile.referenceGameSensitivity = referenceGameSensitivity;
+            profile.autoScaleByGameSensitivity = autoScaleByGameSensitivity;
+            profile.inputDelayMs = outputInputDelayMs;
+            return profile;
+        }
+
+        void ApplyOutputDeviceProjection(const OutputDeviceProfile& profile)
+        {
+            std::snprintf(outputComPort, sizeof(outputComPort), "%s", profile.port.c_str());
+            std::snprintf(outputSerialInstanceId, sizeof(outputSerialInstanceId), "%s", profile.instanceId.c_str());
+            outputCountsPerRadian = profile.countsPerRadian;
+            calibratedCountsPerRadian = profile.calibratedYaw;
+            calibratedPitchCountsPerRadian = profile.calibratedPitch;
+            referenceGameSensitivity = profile.referenceGameSensitivity;
+            autoScaleByGameSensitivity = profile.autoScaleByGameSensitivity;
+            outputInputDelayMs = profile.inputDelayMs;
+        }
+    }
+
+    void SynchronizeOutputDeviceProfileUnlocked()
+    {
+        outputDeviceType = V2::Output::ProfileConfig::NormalizeDeviceId(outputDeviceType);
+        ApplyOutputDeviceProjection(V2::Output::ProfileConfig::Synchronize(
+            V2::Output::DeviceSettings::Profiles(), outputDeviceType, CaptureOutputDeviceProjection()));
+    }
+
+    void SelectOutputDeviceProfileUnlocked(int id)
+    {
+        SynchronizeOutputDeviceProfileUnlocked();
+        outputDeviceType = V2::Output::ProfileConfig::NormalizeDeviceId(id);
+        SynchronizeOutputDeviceProfileUnlocked();
+    }
+
+    void SelectOutputDeviceProfile(int id)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        SelectOutputDeviceProfileUnlocked(id);
+    }
+
+    OutputDeviceProfile GetOutputDeviceProfileUnlocked(int id)
+    {
+        SynchronizeOutputDeviceProfileUnlocked();
+        return V2::Output::ProfileConfig::ForId(V2::Output::DeviceSettings::Profiles(), id);
+    }
+
+    OutputDeviceProfile GetOutputDeviceProfile(int id)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return GetOutputDeviceProfileUnlocked(id);
+    }
+
+    bool SetOutputDeviceProfileUnlocked(int id, const OutputDeviceProfile& profile)
+    {
+        namespace Profiles = V2::Output::ProfileConfig;
+        if (!Profiles::IsDeviceId(id) || !Profiles::IsValidProfile(Profiles::FamilyForDeviceId(id), profile))
+            return false;
+        SynchronizeOutputDeviceProfileUnlocked();
+        auto saved = profile;
+        saved.hasSavedParameters = true;
+        Profiles::ForId(V2::Output::DeviceSettings::Profiles(), id) = saved;
+        if (Profiles::FamilyForDeviceId(id) == Profiles::FamilyForDeviceId(outputDeviceType)) {
+            outputDeviceType = saved.preferredDeviceId;
+            V2::Output::DeviceSettings::Profiles().projectedDeviceId = outputDeviceType;
+            ApplyOutputDeviceProjection(saved);
+        }
+        return true;
+    }
+
+    bool SetOutputDeviceProfile(int id, const OutputDeviceProfile& profile)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return SetOutputDeviceProfileUnlocked(id, profile);
+    }
+
     namespace Detail {}
     using namespace Detail;
 
@@ -2063,6 +2147,10 @@ namespace OW { namespace Config {
             settings.fireDelayMs = std::clamp(settings.fireDelayMs, 0, 100);
             settings.jumpKeyCode = std::clamp(settings.jumpKeyCode, 0, 255);
             settings.ammoGuardReserve = std::clamp(settings.ammoGuardReserve, 0, 50);
+            settings.zaryaAmmoSource = settings.zaryaAmmoSource == kZaryaAmmoHudRecognition
+                ? kZaryaAmmoHudRecognition : kZaryaAmmoLeftHoldEstimate;
+            settings.zaryaAmmoThreshold = std::clamp(settings.zaryaAmmoThreshold, 1, 100);
+            settings.zaryaAmmoJitter = std::clamp(settings.zaryaAmmoJitter, 0, 99);
             settings.projectileSpeed = std::clamp(settings.projectileSpeed, 0.0f, 300.0f);
             settings.projectileRadius = std::clamp(settings.projectileRadius, 0.0f, 2.0f);
             settings.preFireDelayMs = std::clamp(settings.preFireDelayMs, 0.0f, 1000.0f);
@@ -3891,6 +3979,9 @@ namespace OW { namespace Config {
             AddJsonInt(value, "jumpKeyCode", settings.jumpKeyCode, allocator);
             AddJsonBool(value, "ammoGuard", settings.ammoGuard, allocator);
             AddJsonInt(value, "ammoGuardReserve", settings.ammoGuardReserve, allocator);
+            AddJsonInt(value, "zaryaAmmoSource", settings.zaryaAmmoSource, allocator);
+            AddJsonInt(value, "zaryaAmmoThreshold", settings.zaryaAmmoThreshold, allocator);
+            AddJsonInt(value, "zaryaAmmoJitter", settings.zaryaAmmoJitter, allocator);
             AddJsonFloat(value, "projectileSpeed", settings.projectileSpeed, allocator);
             AddJsonFloat(value, "projectileRadius", settings.projectileRadius, allocator);
             AddJsonBool(value, "projectileGravity", settings.projectileGravity, allocator);
@@ -4425,6 +4516,9 @@ namespace OW { namespace Config {
             defaults.jumpKeyCode = ReadJsonInt(value, "jumpKeyCode", defaults.jumpKeyCode);
             defaults.ammoGuard = ReadJsonBool(value, "ammoGuard", defaults.ammoGuard);
             defaults.ammoGuardReserve = ReadJsonInt(value, "ammoGuardReserve", defaults.ammoGuardReserve);
+            defaults.zaryaAmmoSource = ReadJsonInt(value, "zaryaAmmoSource", defaults.zaryaAmmoSource);
+            defaults.zaryaAmmoThreshold = ReadJsonInt(value, "zaryaAmmoThreshold", defaults.zaryaAmmoThreshold);
+            defaults.zaryaAmmoJitter = ReadJsonInt(value, "zaryaAmmoJitter", defaults.zaryaAmmoJitter);
             defaults.projectileSpeed = ReadJsonFloat(value, "projectileSpeed", defaults.projectileSpeed);
             defaults.projectileRadius = ReadJsonFloat(value, "projectileRadius", defaults.projectileRadius);
             defaults.projectileGravity = ReadJsonBool(value, "projectileGravity", defaults.projectileGravity);
@@ -6298,10 +6392,25 @@ namespace OW { namespace Config {
                 section,
                 "kmboxSuppressOutputWhileMenuOpen",
                 outputSuppressOutputWhileMenuOpen);
+
+            namespace Profiles = V2::Output::ProfileConfig;
+            outputDeviceType = Profiles::NormalizeDeviceId(outputDeviceType);
+            auto& profiles = V2::Output::DeviceSettings::Profiles();
+            Profiles::MigrateLegacy(profiles, outputDeviceType, CaptureOutputDeviceProjection());
+            if (KeyExists(ini, section, "OutputProfiles") &&
+                !Profiles::Decode(ReadString(ini, section, "OutputProfiles", ""), profiles)) {
+                LogConfig(Diagnostics::LogLevel::Warn,
+                    "Invalid OutputProfiles; retained the selected device's legacy parameters.");
+            }
+            profiles.projectedDeviceId = outputDeviceType;
+            auto& selected = Profiles::ForId(profiles, outputDeviceType);
+            selected.preferredDeviceId = outputDeviceType;
+            ApplyOutputDeviceProjection(selected);
         }
 
         void SaveOutputSettingsUnlocked(const std::string& path)
         {
+            SynchronizeOutputDeviceProfileUnlocked();
             V2::Output::DeviceSettings::SaveConnections(
                 [&](const char* key, const char* value) { WriteStringValue(path, "KMBox", key, value); },
                 [&](const char* key, int value) { WriteIntValue(path, "KMBox", key, value); },
@@ -6324,6 +6433,8 @@ namespace OW { namespace Config {
                 "KMBox",
                 "kmboxSuppressOutputWhileMenuOpen",
                 outputSuppressOutputWhileMenuOpen);
+            WriteStringValue(path, "KMBox", "OutputProfiles",
+                V2::Output::ProfileConfig::Encode(V2::Output::DeviceSettings::Profiles()).c_str());
         }
 
         template <typename T>
@@ -6622,6 +6733,7 @@ namespace OW { namespace Config {
                 Diagnostics::Aim("config.clamp name=kmboxDeviceType old=%d new=%d",
                     previousDeviceType, outputDeviceType);
             }
+            SynchronizeOutputDeviceProfileUnlocked();
             ClampSetting("kmboxPort", outputPort, V2::Output::KmBoxNetConfig::kMinimumCommandPort,
             V2::Output::KmBoxNetConfig::kMaximumCommandPort, kDefaultOutputPort);
             NormalizeOutputPortsUnlocked("validate");
@@ -7421,6 +7533,9 @@ namespace OW { namespace Config {
             ProfileLoadGuard() { configLoadGeneration.fetch_add(1, std::memory_order_acq_rel); }
             ~ProfileLoadGuard() { configLoadGeneration.fetch_add(1, std::memory_order_release); }
         } profileLoadGuard;
+        const bool hadOutputProfiles = V2::Output::DeviceSettings::Profiles().projectedDeviceId >= 0;
+        if (hadOutputProfiles) SynchronizeOutputDeviceProfileUnlocked();
+        const auto previousOutputProfiles = V2::Output::DeviceSettings::Profiles();
         ResetHeroDefaultsUnlocked();
         ResetAimbotDefaultsUnlocked();
         ResetAimMethodDefaultsUnlocked();
@@ -7466,6 +7581,20 @@ namespace OW { namespace Config {
         config_version = kCurrentConfigVersion;
 
         LoadSystemConfigUnlocked(ini);
+        if (hadOutputProfiles && KeyExists(ini, "KMBox", "OutputProfiles")) {
+            V2::Output::ProfileConfig::Store decodedProfiles;
+            if (!V2::Output::ProfileConfig::Decode(
+                    ReadString(ini, "KMBox", "OutputProfiles", ""), decodedProfiles)) {
+                auto& profiles = V2::Output::DeviceSettings::Profiles();
+                profiles = previousOutputProfiles;
+                profiles.projectedDeviceId = outputDeviceType;
+                auto& selected = V2::Output::ProfileConfig::ForId(profiles, outputDeviceType);
+                selected.preferredDeviceId = outputDeviceType;
+                ApplyOutputDeviceProjection(selected);
+                LogConfig(Diagnostics::LogLevel::Warn,
+                    "Invalid OutputProfiles reload; preserved all previously valid device profiles.");
+            }
+        }
         if (needsMigration)
             ApplySystemConfigMigrationDefaultsUnlocked(fileVersion);
         migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument, true);

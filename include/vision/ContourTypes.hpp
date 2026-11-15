@@ -65,6 +65,8 @@ struct Frame {
     // Consumers must also require the current local hero to be Ashe.
     int asheAmmoRemaining = -1;
     double asheAmmoConfidence = 0.0;
+    int zaryaAmmoRemaining = -1;
+    double zaryaAmmoConfidence = 0.0;
     Rect detectionRoi;
     std::vector<std::uint8_t> pixels;
     std::vector<std::uint8_t> mask;

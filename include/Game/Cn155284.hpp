@@ -35,6 +35,16 @@ constexpr uint64_t Pointer(uint64_t value) { return (value ^ pointerXor) + point
 constexpr uint64_t Parent(uint64_t value) {
     return std::rotr((value ^ 0x340A56FA93DA6F7BULL) - 0x1CF6B5C337C2DCC1ULL, 46);
 }
+// Native UID-map getter 0xF0F420: parent+0x28 and owner+0x18 are encoded.
+// Evidence: 03_DOWNP/202611060630/context-map-audit-20261116/static/.
+constexpr uint64_t MapOwner(uint64_t value) {
+    return ((value - 0x3E03CA7FF8566774ULL) ^ 0x453CDFB9F6015D41ULL) +
+           0x190984468FA46B64ULL;
+}
+constexpr uint64_t MapBuckets(uint64_t value) {
+    return std::rotr(((value - 0x6ADD326E3B5F25A6ULL) ^ 0x0A2C96E5BFF01AE5ULL) -
+                     0x1AB82793B73D81BFULL, 25);
+}
 constexpr uint64_t Singleton(uint64_t value) {
     return (std::rotr(std::rotr(value, 1) + 0xE4A74035D2D1853DULL, 36) ^
             0x9ACE05FA7D7CF0CBULL) + 0x57A241D065E55B43ULL;

@@ -138,6 +138,7 @@ namespace HeroSkillControls {
     inline constexpr HeroSkillControlFlags TrajectoryAction = 1u << 27;
     inline constexpr HeroSkillControlFlags GroupCondition = 1u << 28;
     inline constexpr HeroSkillControlFlags DefensiveAction = 1u << 29;
+    inline constexpr HeroSkillControlFlags LowAmmoRightClick = 1u << 30;
 }
 
 namespace HeroSkillHotkey {
@@ -467,6 +468,9 @@ inline Config::HeroSkillSettings MakeZaryaReloadAmmoProbeDefaults()
     settings.prediction = false;
     settings.ammoGuard = false;
     settings.ammoGuardReserve = 1;
+    settings.zaryaAmmoSource = Config::kZaryaAmmoLeftHoldEstimate;
+    settings.zaryaAmmoThreshold = 6;
+    settings.zaryaAmmoJitter = 2;
     return settings;
 }
 
@@ -846,7 +850,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         "particle-cannon-alt-fire",
         HeroSkillInputAction::SecondaryFire,
         HeroSkillCategory::Skill,
-        HeroSkillControls::Enabled,
+        HeroSkillControls::Enabled | HeroSkillControls::LowAmmoRightClick,
         MakeZaryaReloadAmmoProbeDefaults()
     },
     {

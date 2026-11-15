@@ -168,6 +168,39 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         changed |= UICheckbox("##skillEnabled", &settings.enabled);
     }
 
+    if (hasControl(OW::HeroSkillControls::LowAmmoRightClick)) {
+        const char* sources[] = { "Estimate From Left Hold", "Read Ammo From Capture" };
+        SettingRow("Ammo Source", kAimbotRightLabelWidth);
+        PushControlWidth();
+        changed |= UISelect("##zaryaAmmoSource", &settings.zaryaAmmoSource, sources, IM_ARRAYSIZE(sources));
+        ImGui::PopItemWidth();
+
+        SettingRow("Base Threshold (ammo)", kAimbotRightLabelWidth);
+        PushControlWidth();
+        changed |= UISlider("##zaryaAmmoThreshold", &settings.zaryaAmmoThreshold, 1.0f, 100.0f, Number(0, ""));
+        ImGui::PopItemWidth();
+
+        SettingRow("Random Range (+/- ammo)", kAimbotRightLabelWidth);
+        PushControlWidth();
+        changed |= UISlider("##zaryaAmmoJitter", &settings.zaryaAmmoJitter, 0.0f, 99.0f, Number(0, ""));
+        ImGui::PopItemWidth();
+
+        const int minimum = (std::max)(1, settings.zaryaAmmoThreshold - settings.zaryaAmmoJitter);
+        const int maximum = (std::min)(100, settings.zaryaAmmoThreshold + settings.zaryaAmmoJitter);
+        if (minimum == maximum)
+            ImGui::TextWrapped(L("Fixed threshold: %d ammo. Fires once per magazine while primary fire is held."), minimum);
+        else
+            ImGui::TextWrapped(L("Chooses one threshold from %d to %d ammo per magazine. Fires once while primary fire is held."), minimum, maximum);
+        ImGui::TextWrapped("%s", L("Threshold changes apply to the next magazine."));
+        if (settings.zaryaAmmoSource == OW::Config::kZaryaAmmoHudRecognition)
+            ImGui::TextWrapped("%s", L("Reads current ammo from the capture card. Waits when the number is unavailable; does not switch to time estimation."));
+        else
+            ImGui::TextWrapped("%s", L("After a completed reload, estimates remaining ammo from how long primary fire is held."));
+        if (changed) OW::Config::SetHeroSkillSettings(heroId, definition.skillId, settings);
+        ImGui::PopID();
+        return changed;
+    }
+
     const bool hasSequenceControls = hasControl(OW::HeroSkillControls::SequenceSteps);
     const bool isAsheCombo = definition.heroId == OW::eHero::HERO_ASHE &&
         std::string(definition.skillId ? definition.skillId : "") == "fire-pattern";

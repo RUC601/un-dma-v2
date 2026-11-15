@@ -10,8 +10,24 @@ inline constexpr std::string_view FirmwareVersionRequest{"\xDE\xAD\x00\x00\x04",
 inline constexpr std::array<std::string_view, 5> ButtonQueries = {
     "km.left()", "km.right()", "km.middle()", "km.side1()", "km.side2()"
 };
+enum class ButtonDialect { Side, Ms };
+inline constexpr std::array<std::string_view, 5> MsButtonQueries = {
+    "km.left()", "km.right()", "km.middle()", "km.ms1()", "km.ms2()"
+};
 
-inline std::optional<bool> PhysicalButton(std::string_view response, size_t button) {
+inline const auto& Queries(ButtonDialect dialect) {
+    return dialect == ButtonDialect::Ms ? MsButtonQueries : ButtonQueries;
+}
+
+inline std::string Button(int button, bool down, ButtonDialect dialect) {
+    if (button < 0 || button >= int(ButtonQueries.size())) return {};
+    const auto query = Queries(dialect)[button];
+    return std::string(query.substr(0, query.size() - 1)) + (down ? "1)\r\n" : "0)\r\n");
+}
+
+inline std::optional<bool> PhysicalButton(std::string_view response, size_t button,
+    ButtonDialect dialect = ButtonDialect::Side) {
+    if (button >= ButtonQueries.size()) return std::nullopt;
     constexpr std::string_view whitespace = " \r\n\t";
     const auto trim = [whitespace](std::string_view text) {
         const auto first = text.find_first_not_of(whitespace);
@@ -19,7 +35,7 @@ inline std::optional<bool> PhysicalButton(std::string_view response, size_t butt
             text.substr(first, text.find_last_not_of(whitespace) - first + 1);
     };
     response = trim(response);
-    const auto echo = ButtonQueries[button];
+    const auto echo = Queries(dialect)[button];
     if (response.starts_with(echo) && response.size() > echo.size() &&
         whitespace.find(response[echo.size()]) != std::string_view::npos)
         response = trim(response.substr(echo.size()));

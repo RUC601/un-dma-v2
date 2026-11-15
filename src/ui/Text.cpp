@@ -182,6 +182,19 @@ const char* Get(UiText id, bool chinese) {
 const char* Label(const char* text, bool chinese) {
     if (!text) return "";
     static constexpr UiTextPair extra[] = {
+    { "Automatically select connected device", "自动识别已连接的盒子" },
+    { "Each device keeps its connection, calibration and delay settings. A working device stays selected; after disconnecting, saved devices are checked again.", "每种盒子分别保存连接、校准和延迟参数。当前盒子正常时继续使用，断开后重新检测。" },
+    { "Waiting to identify a connected device", "等待识别已连接的盒子" },
+    { "Identifying connected devices", "正在识别已连接的盒子…" },
+    { "Detecting connected devices...", "正在识别已连接的盒子…" },
+    { "Multiple devices are available; select the preferred device below", "检测到多个可用盒子，请在下方选择优先使用的设备" },
+    { "No ready device found; saved settings are kept", "未检测到可用盒子，已保存的参数仍保留" },
+    { "The identified device could not connect; retrying", "识别到盒子但连接未成功，正在重试" },
+    { "The connected device is using its saved settings", "已连接，正在使用该盒子保存的参数" },
+    { "Waiting for the previous device to finish disconnecting", "正在等待上一个盒子断开连接" },
+    { "Detect again", "重新识别" },
+    { "Manual device selection", "手动选择设备" },
+    { "Output disabled", "设备输出已关闭" },
     {"New mode","新建模式"},
     {"Second stage motion parameters","第二阶段运动参数"},
     {"The mode list is full (64). Delete an unused mode to add another.","模式列表已满（64 项）。删除未使用的模式后可继续添加。"},

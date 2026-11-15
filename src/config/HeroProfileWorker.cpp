@@ -1,5 +1,6 @@
 #include "HeroProfileWorker.hpp"
 #include "Game/Overwatch.hpp"
+#include "output/AutomaticDeviceSelection.hpp"
 
 // =========================================================================
 // Config save/load thread
@@ -68,7 +69,7 @@ void configsavenloadthread() {
                     profileSwitch->nextHeroId,
                     profileSwitch->nextLinkBase);
                 const int outputReconcileStatus =
-                    V2::Output::ReconcileRuntimeFromConfig(std::chrono::milliseconds(500));
+                    V2::Output::ApplyOutputConfiguration(std::chrono::milliseconds(500), false);
                 if (outputReconcileStatus != success) {
                     Diagnostics::Warn(
                         "KMBox hero-profile reconcile failed. heroId=0x%llX status=%d",

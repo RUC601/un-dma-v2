@@ -14,7 +14,8 @@
 
 namespace RuntimeTrace {
 enum Kind : uint32_t { CameraRead=1, CameraPublish, CameraReject, ReadWait,
-    EntityPublish, EntityMissing, ActorReplace, RenderSkip, Bounds, Scan, SlowWork, RenderCameraUse, EntityReject, ProjectionJump, TopologyProbe, ProjectionRead, SlowRead, DiscoveryProbe, SdkEnter, SdkLeave, Count };
+    EntityPublish, EntityMissing, ActorReplace, RenderSkip, Bounds, Scan, SlowWork, RenderCameraUse, EntityReject, ProjectionJump, TopologyProbe, ProjectionRead, SlowRead, DiscoveryProbe, SdkEnter, SdkLeave,
+    MapLookupBegin, MapLookupPointer, MapLookupBucket, MapLookupResult, Count };
 struct Event {
     uint64_t us=0, tick=0; uint32_t kind=0, reserved=0;
     uint64_t a=0,b=0,c=0,d=0; float values[16]{};
@@ -65,6 +66,32 @@ inline void Emit(Kind kind,uint64_t a=0,uint64_t b=0,uint64_t c=0,uint64_t d=0,
     q.events[w%q.events.size()]=event;q.write.store(w+1,std::memory_order_release);
 }
 inline void EnsureLifetime();
+// Opt-in trace only; observe existing map reads without issuing extra DMA reads.
+// All records carry a per-call ID, so interleaved producer queues can be joined.
+class MapLookupSpan {
+    inline static std::atomic<uint64_t> sequence{0};
+    uint64_t id_=0,target_=0,stage_=0;
+public:
+    // flags: bit 0 = complete/unique bucket proof, bit 1 = CN/Nexon155284
+    // decoding, bit 2 = World155284 decoding. Existing CN trace flags stay valid.
+    MapLookupSpan(uint64_t link,uint64_t idOffset,uint64_t flags) {
+        if(!enabled.load(std::memory_order_acquire))return;
+        id_=sequence.fetch_add(1,std::memory_order_relaxed)+1;
+        Emit(MapLookupBegin,id_,link,idOffset,flags);
+    }
+    MapLookupSpan(const MapLookupSpan&)=delete;
+    MapLookupSpan& operator=(const MapLookupSpan&)=delete;
+    void Pointer(uint64_t stage,uint64_t raw,uint64_t decoded) {
+        if(!id_)return;
+        stage_=stage;Emit(MapLookupPointer,id_,stage,raw,decoded);
+    }
+    void Bucket(uint64_t entries,uint64_t count,uint64_t uid) {
+        if(!id_)return;
+        stage_=4;Emit(MapLookupBucket,id_,entries,count,uid);
+    }
+    void Result(uint64_t target) {target_=target;}
+    ~MapLookupSpan(){if(id_)Emit(MapLookupResult,id_,target_,stage_,target_!=0);}
+};
 enum class SdkPhase : uint64_t { Initialize=1, ScatterCreate, ScatterExecute, ScatterClear, DirectRead, FreshRead, KeyMaterial, SessionDrain };
 class SdkSpan {
     inline static std::atomic<uint64_t> sequence{0};

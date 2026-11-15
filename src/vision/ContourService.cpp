@@ -2,6 +2,7 @@
 #include "vision/CaptureCard.hpp"
 #include "vision/ContourDetection.hpp"
 #include "vision/AsheAmmo.hpp"
+#include "vision/ZaryaAmmo.hpp"
 #include <algorithm>
 #include <atomic>
 #include <exception>
@@ -77,6 +78,7 @@ struct Service::Impl {
                 frame->sampleTimeValid = stats.sampleTimeValid;
                 if (!DetectContours(capture.view(), current, *frame, &error)) { Fault(error); break; }
                 DetectAsheAmmo(*frame);
+                DetectZaryaAmmo(*frame);
                 {
                     std::lock_guard lock(mutex);
                     if (stop.load(std::memory_order_acquire) || !settings.enabled) break;

@@ -26,9 +26,30 @@ bool FerrumSession::Identity(std::string_view response) const {
 bool FerrumSession::OnConnected(SerialChannel& channel) {
     channel.Purge();
     if (!Identity(QueryLocked(channel, "km.version()\r\n", true))) return false;
+    if (!ConfirmMousePresence(channel)) return false;
     keyboardReady = true;
     maskReady = true;
     return channel.Write("km.buttons(1)\r\n");
+}
+
+bool FerrumSession::ConfirmMousePresence(SerialChannel& channel) {
+    // A virtual COM and a Ferrum identity confirm the App, not a designated mouse.
+    const auto response = QueryLocked(channel, "km.has_mouse()\r\n");
+    const auto trim = [](std::string_view value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        return first == std::string_view::npos ? std::string_view{} :
+            value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
+    };
+    auto value = trim(response);
+    constexpr std::string_view echo = "km.has_mouse()";
+    if (value.starts_with(echo) && value.size() > echo.size() &&
+        std::string_view(" \t\r\n").find(value[echo.size()]) != std::string_view::npos)
+        value = trim(value.substr(echo.size()));
+    if (value == "1") return true;
+    ClearPhysicalInput();
+    keyboardReady = false;
+    maskReady = false;
+    return false;
 }
 
 void FerrumSession::RejectButtonPoll() {
@@ -95,15 +116,16 @@ bool FerrumSession::Poll(SerialChannel& channel, bool running) {
     return channel.Write(commands);
 }
 
-bool FerrumSession::Heartbeat(SerialChannel& channel, bool suppressed) {
+bool FerrumSession::Heartbeat(SerialChannel& channel, bool) {
     if (!ReadButtonReplies(channel)) return false;
-    if (buttonPollPending || (suppressed && !buttonPollNeedsSync)) return true;
+    if (buttonPollPending) RejectButtonPoll();
     // The serial command/reply order makes identity a barrier for late numeric
-    // replies. No new sweep is admitted until this barrier has been received.
+    // replies. Presence must follow it too: a late pressed-button value of 1
+    // must never be mistaken for km.has_mouse(). Check even with output suppressed.
     if (QueryLocked(channel, "km.version()\r\n", true).empty()) return false;
     responses.clear();
     buttonPollNeedsSync = false;
-    return true;
+    return ConfirmMousePresence(channel);
 }
 
 std::string FerrumSession::EncodeMask(int button, bool enabled) const {
