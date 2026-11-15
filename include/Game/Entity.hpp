@@ -10,6 +10,8 @@
 using namespace DirectX;
 
 #include "Game/ModelShapes.hpp"
+#include "Game/ModelWorldTransform.hpp"
+#include "Game/NativeHitboxes.hpp"
 #include "Game/BoneSlots.hpp"
 #include "Game/SkeletonRead.hpp"
 #include "Game/SkeletonBatch.hpp"
@@ -147,6 +149,9 @@ namespace OW {
         Vector3 neck_pos{};
         Vector3 chest_pos{};
         ModelShapes::Sample model_shapes{};
+        NativeHitboxes::Sample native_hitboxes{};
+        ModelWorld::Sample model_world{};
+        Skeleton::BodyIdentity model_world_identity{};
         std::array<Vector3, 18> skeleton_bones{};
         std::array<bool, 18> skeleton_bone_valid{};
         SkeletonSemantics::Form skeleton_form = SkeletonSemantics::Form::Unknown;
@@ -555,13 +560,7 @@ namespace OW {
                 if (!probe.localFinite)
                     return probe;
 
-                XMFLOAT3 result{};
-                XMMATRIX rotMatrix = XMMatrixRotationY(this->Rot.X);
-                XMStoreFloat3(&result, XMVector3Transform(XMLoadFloat3(&probe.local), rotMatrix));
-                if (this->HeroID == eHero::HERO_WRECKINGBALL)
-                    probe.world = Vector3(result.x, result.y - 0.7f, result.z) + this->pos;
-                else
-                    probe.world = Vector3(result.x, result.y, result.z) + this->pos;
+                if (!TransformBoneWorld(probe.local, probe.world)) return probe;
                 probe.worldNonZero = IsFiniteVectorValue(probe.world) && probe.world != Vector3(0, 0, 0);
                 return probe;
             } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -572,6 +571,7 @@ namespace OW {
 
         // Consumers read the published snapshot. Raw address diagnostics use ProbeBone.
         Vector3 GetBonePos(int boneId) const {
+            if (offset::IsCnProfile() && !HasCurrentModelWorldTransform()) return {};
             if (boneId == 83 && cached_bot_chest_bone_valid)
                 return cached_bot_chest_bone;
             for (size_t slot = 0; slot < skeleton_requested_ids.size(); ++slot) {
@@ -586,7 +586,8 @@ namespace OW {
 
         bool TrySkeletonPoint(size_t slot, Vector3& point) const {
             point = {};
-            if (!rotation_valid || skeleton_form == SkeletonSemantics::Form::Unknown || !skeleton_revision ||
+            if (!(offset::IsCnProfile() ? HasCurrentModelWorldTransform() : rotation_valid) ||
+                skeleton_form == SkeletonSemantics::Form::Unknown || !skeleton_revision ||
                 slot >= skeleton_bones.size() || !skeleton_bone_valid[slot] ||
                 skeleton_requested_ids[slot] < 0 || !IsFiniteVectorValue(skeleton_bones[slot]) ||
                 skeleton_bones[slot] == Vector3{}) return false;
@@ -598,6 +599,46 @@ namespace OW {
             return {address, LinkParent, HeroID, actor_generation, connection_epoch,
                 scene_generation, body_absence_revision, VelocityBase, BoneBase, LinkBase,
                 match_id, Alive && std::isfinite(PlayerHealth) && PlayerHealth > 0.f};
+        }
+
+        void ClearModelWorldTransform() {
+            model_world = {};
+            model_world_identity = {};
+        }
+
+        bool SetModelWorldTransform(uint64_t modelBase, const ModelWorld::QstRecord& record) {
+            const ModelWorld::QstRecord captured = record;
+            ClearModelWorldTransform();
+            const auto identity = SkeletonIdentity();
+            if (!offset::IsCnProfile() || !identity.alive || modelBase != VelocityBase ||
+                !model_world.Set(modelBase, captured)) return false;
+            model_world.sampleAnchor = pos;
+            model_world_identity = identity;
+            return true;
+        }
+
+        bool HasCurrentModelWorldTransform() const {
+            return model_world.valid && model_world.modelBase == VelocityBase &&
+                model_world_identity == SkeletonIdentity();
+        }
+
+        bool HasBoneWorldTransform() const {
+            return offset::IsCnProfile() ? HasCurrentModelWorldTransform() :
+                rotation_valid && IsPlausibleSpatialAnchor(pos) && IsFiniteVectorValue(Rot);
+        }
+
+        bool TransformBoneWorld(const XMFLOAT3& local, Vector3& point, bool legacyBallBias = true) const {
+            point = {};
+            if (!IsFiniteBoneValue(local) || !HasBoneWorldTransform()) return false;
+            if (offset::IsCnProfile()) {
+                point = model_world.TransformPoint({local.x, local.y, local.z}) + (pos - model_world.sampleAnchor);
+            } else {
+                XMFLOAT3 rotated{};
+                XMStoreFloat3(&rotated, XMVector3Transform(XMLoadFloat3(&local), XMMatrixRotationY(Rot.X)));
+                const float bias = legacyBallBias && HeroID == eHero::HERO_WRECKINGBALL ? -.7f : 0.f;
+                point = Vector3(rotated.x, rotated.y + bias, rotated.z) + pos;
+            }
+            return IsFiniteVectorValue(point) && point != Vector3{};
         }
 
         static Skeleton::ReadSource ProductionSkeletonSource(Skeleton::ReadMetrics* metrics = nullptr) {
@@ -624,12 +665,15 @@ namespace OW {
             return true;
         }
 
-        void ClearSkeletonObservation() {
+        void ClearSkeletonObservation(bool preserveModelWorld = false) {
+            // Only an in-progress same-body commit may retain the current read.
+            if (!preserveModelWorld || !HasCurrentModelWorldTransform()) ClearModelWorldTransform();
             skeleton_bone_valid.fill(false);
             skeleton_bones.fill(Vector3{});
             cached_bot_chest_bone = {};
             cached_bot_chest_bone_valid = false;
             model_shapes = {};
+            native_hitboxes = {};
             skeleton_sample_tick_ms = 0;
             skeleton_form = SkeletonSemantics::Form::Unknown;
             skeleton_requested_ids = SkeletonSemantics::kUnavailableMap;
@@ -652,13 +696,22 @@ namespace OW {
 
         void ApplySkeletonCoreAnchors() {
             Vector3* anchors[] = {&head_pos, &neck_pos, &chest_pos};
+            const bool observedTransformValid = !offset::IsCnProfile() || HasCurrentModelWorldTransform();
+            if (!observedTransformValid) {
+                for (size_t slot = 0; slot < 3; ++slot) {
+                    if (core_anchor_source[slot] == SkeletonSemantics::CoreAnchorSource::ObservedBone) {
+                        *anchors[slot] = {};
+                        core_anchor_source[slot] = SkeletonSemantics::CoreAnchorSource::Unavailable;
+                    }
+                }
+            }
             for (size_t slot = 0; slot < 3; ++slot) {
-                if (skeleton_bone_valid[slot]) {
+                if (observedTransformValid && skeleton_bone_valid[slot]) {
                     *anchors[slot] = skeleton_bones[slot];
                     core_anchor_source[slot] = SkeletonSemantics::CoreAnchorSource::ObservedBone;
                 }
             }
-            if (GameData::IsTrainingBotHeroId(HeroID) && cached_bot_chest_bone_valid) {
+            if (observedTransformValid && GameData::IsTrainingBotHeroId(HeroID) && cached_bot_chest_bone_valid) {
                 chest_pos = cached_bot_chest_bone;
                 core_anchor_source[2] = SkeletonSemantics::CoreAnchorSource::ObservedBone;
             }
@@ -760,8 +813,8 @@ namespace OW {
                                  std::span<const uint8_t> poses,
                                  const std::array<bool, 18>& requested, bool botRequested,
                                  const Skeleton::ReadSource* supplied = nullptr) {
-            ClearSkeletonObservation();
-            if (!rotation_valid || !IsPlausibleSpatialAnchor(pos) || !IsFiniteVectorValue(Rot)) {
+            ClearSkeletonObservation(true);
+            if (!HasBoneWorldTransform()) {
                 mapping.status = skeleton_status = Skeleton::ReadStatus::InvalidTransform;
                 return false;
             }
@@ -778,7 +831,7 @@ namespace OW {
                                        std::span<const uint8_t> poses,
                                        const std::array<bool, 18>& requested, bool botRequested,
                                        uint32_t sampleTick = 0) {
-            ClearSkeletonObservation();
+            ClearSkeletonObservation(true);
             const bool current = mapping.valid && revision == mapping.revision && mapping.identity == SkeletonIdentity();
             const auto first=before.Compare(mapping.layout),last=after.Compare(mapping.layout);
             if (!current || first==Skeleton::GuardResult::Changed || last==Skeleton::GuardResult::Changed) {
@@ -805,7 +858,7 @@ namespace OW {
                 mapping.status = skeleton_status = Skeleton::ReadStatus::PoseReadFailed;
                 return false;
             }
-            if (!rotation_valid || !IsPlausibleSpatialAnchor(pos) || !IsFiniteVectorValue(Rot)) {
+            if (!HasBoneWorldTransform()) {
                 mapping.status = skeleton_status = Skeleton::ReadStatus::InvalidTransform;
                 return false;
             }
@@ -818,7 +871,10 @@ namespace OW {
                                        std::span<const uint8_t> poses,
                                        const std::array<bool, 18>& requested, bool botRequested) {
             ApplySkeletonMapping(mapping);
-            const auto rotation = XMMatrixRotationY(Rot.X);
+            // CN uses the model transform sampled beside these poses; no
+            // velocity-origin or Wrecking Ball height correction is added.
+            const bool useModelWorld = offset::IsCnProfile();
+            const auto rotation = useModelWorld ? XMMatrixIdentity() : XMMatrixRotationY(Rot.X);
             const auto world = [&](int index, Vector3& point) {
                 if (index < 0 || index >= mapping.boneCount) return false;
                 for (const auto& range : ranges) {
@@ -826,7 +882,7 @@ namespace OW {
                         range.offset > poses.size() || range.size > poses.size() - range.offset) continue;
                     const size_t localOffset = 0x30 * size_t(index - range.first);
                     if (localOffset > range.size || sizeof(XMFLOAT3) > range.size - localOffset) continue;
-                    XMFLOAT3 local{}, rotated{};
+                    XMFLOAT3 local{};
                     std::memcpy(&local, poses.data() + range.offset + localOffset, sizeof(local));
                     if (index == mapping.mappedIndices[0]) {
                         debugHeadLocal = local;
@@ -835,9 +891,14 @@ namespace OW {
                         debugHeadLocalNonZero = debugHeadLocalFinite && IsNonZeroBoneValue(local);
                     }
                     if (!IsFiniteBoneValue(local)) return false;
-                    XMStoreFloat3(&rotated, XMVector3Transform(XMLoadFloat3(&local), rotation));
-                    const float bias = HeroID == eHero::HERO_WRECKINGBALL ? -0.7f : 0.f;
-                    point = Vector3(rotated.x, rotated.y + bias, rotated.z) + pos;
+                    if (useModelWorld) {
+                        point = model_world.TransformPoint({local.x, local.y, local.z});
+                    } else {
+                        XMFLOAT3 rotated{};
+                        XMStoreFloat3(&rotated, XMVector3Transform(XMLoadFloat3(&local), rotation));
+                        const float bias = HeroID == eHero::HERO_WRECKINGBALL ? -.7f : 0.f;
+                        point = Vector3(rotated.x, rotated.y + bias, rotated.z) + pos;
+                    }
                     return IsFiniteVectorValue(point) && point != Vector3{};
                 }
                 return false;
@@ -869,10 +930,10 @@ namespace OW {
             // Keep the legacy argument for callers. Failed observations cannot expand
             // into unconfirmed per-bone reads with a different identity.
             (void)allowSlowFallback;
-            ClearSkeletonObservation();
+            ClearSkeletonObservation(true);
             SkeletonBoneCache temporary{};
             auto& mapping = cache ? *cache : temporary;
-            if (!rotation_valid || !IsPlausibleSpatialAnchor(pos) || !IsFiniteVectorValue(Rot)) {
+            if (!HasBoneWorldTransform()) {
                 mapping.valid = false;
                 mapping.status = skeleton_status = Skeleton::ReadStatus::InvalidTransform;
                 return;
@@ -928,26 +989,10 @@ namespace OW {
                             XMFLOAT3 g = {currentBone.x + 0.5f, currentBone.y, currentBone.z - 0.5f};
                             XMFLOAT3 h = {currentBone.x + 0.5f, currentBone.y, currentBone.z + 0.5f};
 
-                            XMFLOAT3 Ra{}, Rb{}, Rc{}, Rd{}, Re{}, Rf{}, Rg{}, Rh{};
-                            XMMATRIX rotMatrix = XMMatrixRotationY(this->Rot.X);
-                            XMStoreFloat3(&Ra, XMVector3Transform(XMLoadFloat3(&a), rotMatrix));
-                            XMStoreFloat3(&Rb, XMVector3Transform(XMLoadFloat3(&b), rotMatrix));
-                            XMStoreFloat3(&Rc, XMVector3Transform(XMLoadFloat3(&c), rotMatrix));
-                            XMStoreFloat3(&Rd, XMVector3Transform(XMLoadFloat3(&d), rotMatrix));
-                            XMStoreFloat3(&Re, XMVector3Transform(XMLoadFloat3(&e), rotMatrix));
-                            XMStoreFloat3(&Rf, XMVector3Transform(XMLoadFloat3(&f), rotMatrix));
-                            XMStoreFloat3(&Rg, XMVector3Transform(XMLoadFloat3(&g), rotMatrix));
-                            XMStoreFloat3(&Rh, XMVector3Transform(XMLoadFloat3(&h), rotMatrix));
-
-                            float offY = (this->HeroID == eHero::HERO_WRECKINGBALL) ? -0.7f : 0.f;
-                            veca = Vector3(Ra.x, Ra.y + offY, Ra.z) + this->pos;
-                            vecb = Vector3(Rb.x, Rb.y + offY, Rb.z) + this->pos;
-                            vecc = Vector3(Rc.x, Rc.y + offY, Rc.z) + this->pos;
-                            vecd = Vector3(Rd.x, Rd.y + offY, Rd.z) + this->pos;
-                            vece = Vector3(Re.x, Re.y + offY, Re.z) + this->pos;
-                            vecf = Vector3(Rf.x, Rf.y + offY, Rf.z) + this->pos;
-                            vecg = Vector3(Rg.x, Rg.y + offY, Rg.z) + this->pos;
-                            vech = Vector3(Rh.x, Rh.y + offY, Rh.z) + this->pos;
+                            TransformBoneWorld(a, veca); TransformBoneWorld(b, vecb);
+                            TransformBoneWorld(c, vecc); TransformBoneWorld(d, vecd);
+                            TransformBoneWorld(e, vece); TransformBoneWorld(f, vecf);
+                            TransformBoneWorld(g, vecg); TransformBoneWorld(h, vech);
                         }
                     }
                 }
@@ -977,19 +1022,12 @@ namespace OW {
                             XMFLOAT3 b3 = {b.x,       b.y + 0.2f, b.z - 0.3f};
                             XMFLOAT3 b4 = {b.x,       b.y - 0.2f, b.z - 0.3f};
 
-                            XMFLOAT3 R0{}, R1{}, R2{}, R3{}, R4{};
-                            XMMATRIX rotMatrix = XMMatrixRotationY(this->Rot.X);
-                            XMStoreFloat3(&R0, XMVector3Transform(XMLoadFloat3(&b), rotMatrix));
-                            XMStoreFloat3(&R1, XMVector3Transform(XMLoadFloat3(&b1), rotMatrix));
-                            XMStoreFloat3(&R2, XMVector3Transform(XMLoadFloat3(&b2), rotMatrix));
-                            XMStoreFloat3(&R3, XMVector3Transform(XMLoadFloat3(&b3), rotMatrix));
-                            XMStoreFloat3(&R4, XMVector3Transform(XMLoadFloat3(&b4), rotMatrix));
-
-                            veceye  = Vector3(R0.x, R0.y, R0.z) + this->pos;
-                            arrow1  = Vector3(R1.x, R1.y, R1.z) + this->pos;
-                            arrow2  = Vector3(R2.x, R2.y, R2.z) + this->pos;
-                            arrow3  = Vector3(R3.x, R3.y, R3.z) + this->pos;
-                            arrow4  = Vector3(R4.x, R4.y, R4.z) + this->pos;
+                            // Legacy eye rays never used the skeleton Ball bias.
+                            TransformBoneWorld(b, veceye, false);
+                            TransformBoneWorld(b1, arrow1, false);
+                            TransformBoneWorld(b2, arrow2, false);
+                            TransformBoneWorld(b3, arrow3, false);
+                            TransformBoneWorld(b4, arrow4, false);
                         }
                     }
                 }

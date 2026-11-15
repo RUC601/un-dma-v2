@@ -1,10 +1,14 @@
 #pragma once
 #include <Windows.h>
 #include "Game/Structs.hpp"
+#include "Game/ModelWorldTransform.hpp"
 
 namespace OW {
     struct EntityHotFieldReads {
         OW::velocity_fields_t velocity{};
+        OW::ModelWorld::QstRecord modelWorld{};
+        DWORD modelWorldBytes=0;
+        bool modelWorldRequested=false;
         OW::health_fields_t health{};
         struct { uint64_t heroid=0; } hero;
         uint64_t visibilityRaw=0;

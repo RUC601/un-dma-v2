@@ -404,9 +404,30 @@ void entity_thread() {
             OW::Skeleton::PointerGuard rotationGuard{};
             std::vector<uint8_t> shapeBoneData;
             DWORD shapeBoneBytes=0;
+            OW::NativeHitboxes::Capture nativeHitboxes{};
+            OW::NativeHitboxes::PosePlan geometryPoses{};
+            bool sharedGeometryPoses=false;
+            struct ExtraRead { DWORD* bytes; size_t expected; bool prepared; };
+            std::vector<ExtraRead> extraReads;
             OW::EntityBodyObservation bodyObservation{};
             bool prepared=false, applied=false;
             uint64_t sampleTimeUs=0;
+
+            void Reset() {
+                // All scatter handles were executed before reuse. Keep allocation
+                // capacity; every completion counter and authority field resets.
+                auto shapeBuffer=std::move(shapeBoneData);
+                auto capture=std::move(nativeHitboxes);
+                auto plan=std::move(geometryPoses);
+                auto metrics=std::move(extraReads);
+                auto guardedIndices=std::move(guardedBoneIndices);
+                *this={};
+                shapeBoneData=std::move(shapeBuffer);shapeBoneData.clear();
+                nativeHitboxes=std::move(capture);nativeHitboxes.Reset({});
+                geometryPoses=std::move(plan);geometryPoses.Clear();
+                extraReads=std::move(metrics);extraReads.clear();
+                guardedBoneIndices=std::move(guardedIndices);guardedBoneIndices.clear();
+            }
 
             bool RotationRead() const {
                 return rotationRequested &&
@@ -425,7 +446,7 @@ void entity_thread() {
     } hotScatterOwner,hotGuardScatterOwner;
     const auto hotFieldScatter = hotScatterOwner.value;
     const auto hotGuardScatter = hotGuardScatterOwner.value;
-    std::vector<HotFieldBatchItem> hotFieldBatchItems;
+    std::vector<HotFieldBatchItem> hotFieldBatchStorage;
     std::unordered_map<uint64_t,size_t> hotFieldBatchIndex;
     std::unordered_map<uint64_t,uint64_t> successfulSamples;
     auto measurementStart=std::chrono::steady_clock::now();
@@ -922,8 +943,11 @@ void entity_thread() {
             }
         }
 
-        hotFieldBatchItems.clear(); hotFieldBatchIndex.clear();
-        hotFieldBatchItems.reserve(raw_entities.size());
+        hotFieldBatchIndex.clear();
+        // Grow before submitting any pointers to scatter. Unused slots retain
+        // their buffers, while the active span excludes all previous samples.
+        if(hotFieldBatchStorage.size()<raw_entities.size())hotFieldBatchStorage.resize(raw_entities.size());
+        size_t hotFieldBatchCount=0;
         hotFieldBatchIndex.reserve(raw_entities.size());
         bool hotFramePublished=false;
         OW::Config::ScopedConfigRead configRead;
@@ -951,6 +975,14 @@ void entity_thread() {
             const bool prepared=mem.AddScatterReadRequest(scatter,at,dst,bytes,actual);
             recordHotScatterPrepare(at,bytes,prepared);
             return prepared;
+        };
+        const auto extraRequest=[&](HotFieldBatchItem& item,uint64_t at,void* data,size_t size,DWORD& bytes) {
+            if(!size)return true;
+            ++pipelineStats.hotScatterRequestedCount;
+            const bool ok=mem.AddScatterReadRequest(hotFieldScatter,at,data,size,&bytes);
+            recordHotScatterPrepare(at,size,ok);
+            item.extraReads.push_back({&bytes,size,ok});
+            return ok;
         };
 
         {
@@ -998,12 +1030,13 @@ void entity_thread() {
                     ? cached.visibility + activeOffsetsForHotBatch.VisibilityValueOffset
                     : 0;
 
-                const size_t itemIndex = hotFieldBatchItems.size();
-                HotFieldBatchItem& item = hotFieldBatchItems.emplace_back();
+                const size_t itemIndex = hotFieldBatchCount++;
+                HotFieldBatchItem& item = hotFieldBatchStorage[itemIndex];
+                item.Reset();
                 item.componentParent = componentParent;
                 item.linkParent = linkParent;
-                if(!mem.AddScatterReadRequest(hotFieldScatter,componentParent+offset::Entity_MatchId,
-                    &item.observedMatchId,sizeof(item.observedMatchId),&item.matchIdBytes)) {
+                if(!extraRequest(item,componentParent+offset::Entity_MatchId,
+                    &item.observedMatchId,sizeof(item.observedMatchId),item.matchIdBytes)) {
                     continue;
                 }
                 if (!prepareHotFields(
@@ -1026,20 +1059,14 @@ void entity_thread() {
                         &item.rotationGuard.before,sizeof(item.rotationGuard.before),&item.rotationGuard.beforeBytes);
                 }
                 if (cached.rotationLeaf) {
-                    ++pipelineStats.hotScatterRequestedCount;
-                    item.rotationRequested = mem.AddScatterReadRequest(
-                        hotFieldScatter,
+                    item.rotationRequested = extraRequest(item,
                         cached.rotationLeaf + offset::RotationBase_Sub2,
                         &item.rotation,
                         sizeof(item.rotation),
-                        &item.rotationBytes);
-                    recordHotScatterPrepare(
-                        cached.rotationLeaf + offset::RotationBase_Sub2,
-                        sizeof(item.rotation),
-                        item.rotationRequested);
+                        item.rotationBytes);
                 }
-                if(cached.angle)mem.AddScatterReadRequest(hotFieldScatter,cached.angle+OW::kPlayerControllerViewDirectionOffset,
-                    &item.viewDirection,sizeof(item.viewDirection),&item.viewDirectionBytes);
+                if(cached.angle)extraRequest(item,cached.angle+OW::kPlayerControllerViewDirectionOffset,
+                    &item.viewDirection,sizeof(item.viewDirection),item.viewDirectionBytes);
                 auto skeletonOwner = cacheIt->second->entity;
                 cached.ApplyBases(skeletonOwner);
                 skeletonOwner.connection_epoch = connectionEpoch;
@@ -1053,6 +1080,17 @@ void entity_thread() {
                     cached.skeletonCache.valid=false;
                 }
                 const auto& skeleton=cached.skeletonCache;
+                const bool nativeGeometry=OW::Config::draw_hitbox && offset::IsCnProfile() && item.skeletonPrepared;
+                if(nativeGeometry && !cached.nativeHitboxLayout.Matches(cached.velocity,skeleton.revision)) {
+                    ++pipelineStats.hotGeometryLayoutLoads;
+                    OW::NativeHitboxes::LoadLayout(cached.nativeHitboxLayout,cached.velocity,skeleton.revision,skeleton.boneCount,
+                        [&](uint64_t at,void* data,size_t size) {
+                            ++pipelineStats.hotGeometryLayoutReads;pipelineStats.hotGeometryLayoutBytes+=size;
+                            const bool ok=mem.ReadFreshExact(at,data,size);
+                            if(!ok)++pipelineStats.hotGeometryLayoutFailures;
+                            return ok;
+                        });
+                }
                 if(item.skeletonPrepared && skeleton.bonesBase) {
                     std::array<int,19> indices{}; size_t count=0;
                     for(size_t slot=0;slot<18;++slot) {
@@ -1066,6 +1104,22 @@ void entity_thread() {
                         item.guardedBoneIndices.push_back(skeleton.botChestMappedIndex);
                     }
                     std::sort(indices.begin(),indices.begin()+count);
+                    if(nativeGeometry && cached.nativeHitboxLayout.Matches(cached.velocity,skeleton.revision)) {
+                        item.sharedGeometryPoses=item.geometryPoses.Build(std::span(indices.data(),count),
+                            cached.nativeHitboxLayout.boneIndices,skeleton.boneCount,skeleton.bonesBase);
+                    }
+                    if(item.sharedGeometryPoses) {
+                        for(auto& range:item.geometryPoses.ranges)
+                            range.prepared=extraRequest(item,skeleton.bonesBase+uint64_t(range.first)*48,
+                                item.geometryPoses.data.data()+range.offset,range.size,range.bytes);
+                        for(const auto index:cached.nativeHitboxLayout.boneIndices)
+                            item.guardedBoneIndices.push_back(index);
+                        // Translation views are completed only after ExecuteReadScatter.
+                        for(size_t n=0;n<count;++n)item.boneRanges[item.boneRangeCount++]={indices[n],indices[n],0,12,0,false};
+                        pipelineStats.hotGeometryPoseBytes+=item.geometryPoses.data.size();
+                        pipelineStats.hotGeometryPoseRanges+=item.geometryPoses.ranges.size();
+                        pipelineStats.hotGeometryFullPoseBytes+=size_t(skeleton.boneCount)*48;
+                    } else {
                     size_t packedOffset=0;
                     for(size_t begin=0;begin<count;) {
                         size_t end=begin+1;
@@ -1073,16 +1127,30 @@ void entity_thread() {
                         auto& range=item.boneRanges[item.boneRangeCount++];
                         range.first=indices[begin];range.last=indices[end-1];range.offset=packedOffset;
                         range.size=size_t(range.last-range.first)*0x30+sizeof(XMFLOAT3);
-                        range.prepared=prepareSkeletonScatter(hotFieldScatter,skeleton.bonesBase+0x20+uint64_t(range.first)*0x30,
-                            item.boneData.data()+packedOffset,range.size,&range.bytes);
+                        range.prepared=extraRequest(item,skeleton.bonesBase+0x20+uint64_t(range.first)*0x30,
+                            item.boneData.data()+packedOffset,range.size,range.bytes);
                         packedOffset+=range.size;begin=end;
                     }
+                    }
                 }
-                if(item.skeletonPrepared && OW::Config::draw_hitbox && OW::ModelShapes::Supported(cached.heroId) &&
+                if(nativeGeometry) {
+                    auto& capture=item.nativeHitboxes;
+                    capture.Reset(cached.nativeHitboxLayout);
+                    if(capture.prepared) {
+                        const auto request=[&](uint64_t at,void* data,size_t size,DWORD& bytes) {
+                            if(!extraRequest(item,at,data,size,bytes))capture.prepared=false;
+                        };
+                        request(cached.velocity+0xC8,&capture.observedRoot,8,capture.rootBytes);
+                        request(capture.layout.root,capture.observedHeader.data(),48,capture.headerBytes);
+                        request(capture.layout.spheres,capture.spheres.data(),capture.spheres.size(),capture.sphereBytes);
+                        request(capture.layout.capsules,capture.capsules.data(),capture.capsules.size(),capture.capsuleBytes);
+                        pipelineStats.hotGeometryShapeBytes+=capture.spheres.size()+capture.capsules.size();
+                    }
+                } else if(item.skeletonPrepared && OW::Config::draw_hitbox && OW::ModelShapes::Supported(cached.heroId) &&
                    skeleton.valid && skeleton.shapeModelIndex>=0 && skeleton.shapeMaxIndex>=0 && skeleton.shapeMaxIndex<skeleton.boneCount) {
                     item.shapeBoneData.resize(size_t(skeleton.shapeMaxIndex+1)*0x30);
-                    if(!prepareSkeletonScatter(hotFieldScatter,skeleton.bonesBase,item.shapeBoneData.data(),
-                        item.shapeBoneData.size(),&item.shapeBoneBytes))item.shapeBoneData.clear();
+                    if(!extraRequest(item,skeleton.bonesBase,item.shapeBoneData.data(),
+                        item.shapeBoneData.size(),item.shapeBoneBytes))item.shapeBoneData.clear();
                     else for(const auto mapped:skeleton.shapeMapped)if(mapped>=0)item.guardedBoneIndices.push_back(mapped);
                 }
                 if(item.skeletonPrepared) {
@@ -1095,12 +1163,12 @@ void entity_thread() {
                 item.prepared=true;
                 hotFieldBatchIndex.emplace(componentParent, itemIndex);
             }
-            pipelineStats.hotScatterBatchItems = hotFieldBatchItems.size();
-            for (const HotFieldBatchItem& item : hotFieldBatchItems)
+            pipelineStats.hotScatterBatchItems = hotFieldBatchCount;
+            for (const HotFieldBatchItem& item : std::span(hotFieldBatchStorage.data(),hotFieldBatchCount))
                 pipelineStats.hotScatterBatchRequests +=
-                    countHotFieldRequests(item.reads) +
-                    static_cast<size_t>(item.rotationRequested ? 1 : 0);
+                    countHotFieldRequests(item.reads) + item.extraReads.size();
         }
+        const auto hotFieldBatchItems=std::span(hotFieldBatchStorage.data(),hotFieldBatchCount);
 
 #include "Game/EntityMaintenance/PreviousSample.inl"
 #include "Game/EntityMaintenance/ObservedDeath.inl"
@@ -1168,12 +1236,18 @@ void entity_thread() {
             next.rotation_valid = item.RotationRead() && item.RotationGuarded();
             if (next.rotation_valid) next.Rot = item.rotation;
             next.ClearSkeletonObservation();
+            if(item.reads.scatterOk && item.reads.modelWorldRequested && item.reads.modelWorldBytes==sizeof(item.reads.modelWorld))
+                next.SetModelWorldTransform(next.VelocityBase,item.reads.modelWorld);
+            if(item.sharedGeometryPoses)
+                for(size_t n=0;n<item.boneRangeCount;++n)
+                    item.boneRanges[n]=item.geometryPoses.TranslationView(item.boneRanges[n].first);
             const bool skeletonConfirmed = item.skeletonPrepared &&
                 item.skeletonRevision == cached.skeletonCache.revision &&
                 (!next.VelocityBase || cached.skeletonCache.layout.sourceAddress != next.VelocityBase + 0x8B0 ||
                  item.reads.velocity.bonedata == cached.skeletonCache.boneData) &&
                 next.CommitSkeletonPosesGuarded(cached.skeletonCache,item.skeletonBefore,item.skeletonAfter,item.skeletonRevision,
-                    std::span(item.boneRanges.data(), item.boneRangeCount), item.boneData,
+                    std::span(item.boneRanges.data(), item.boneRangeCount),
+                    item.sharedGeometryPoses ? std::span<const uint8_t>(item.geometryPoses.data) : std::span<const uint8_t>(item.boneData),
                     item.boneRequested, item.botChestRequested,item.readCompletedTick);
             if (!skeletonConfirmed) {
                 // A failed pose/rotation sample does not discard an otherwise
@@ -1189,6 +1263,17 @@ void entity_thread() {
             }
             item.readCompletedTick = skeletonCompleted;
             std::fill(next.model_shapes.valid.begin(),next.model_shapes.valid.end(),false);
+            if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
+                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && OW::Config::draw_hitbox)
+                    next.native_hitboxes=item.nativeHitboxes.Commit(cached.skeletonCache.revision,item.readStartedTick,next.model_world,item.geometryPoses);
+                if(item.nativeHitboxes.Complete()) {
+                    if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount))cached.nativeHitboxLayout={};
+                    else if(item.nativeHitboxes.layout.boneIndices!=cached.nativeHitboxLayout.boneIndices)++pipelineStats.hotGeometryBindingChanges;
+                    if(!next.native_hitboxes.Matches(next.VelocityBase,next.skeleton_revision))++pipelineStats.hotGeometryRejectedSamples;
+                }
+                if(item.nativeHitboxes.prepared && !item.nativeHitboxes.Complete())cached.nativeHitboxLayout={};
+                cached.cachedNativeHitboxes=next.native_hitboxes;
+            }
             if(skeletonConfirmed && OW::Config::draw_hitbox && OW::ModelShapes::Supported(next.HeroID) &&
                !item.shapeBoneData.empty() && item.shapeBoneBytes==item.shapeBoneData.size() &&
                item.reads.velocity.bonedata==cached.skeletonCache.velocityBoneData &&
@@ -1354,6 +1439,11 @@ void entity_thread() {
                 item.sampleTimeUs=RuntimeTrace::NowUs();
                 item.reads.scatterExecuted=false; item.reads.scatterOk=ok && item.prepared;
                 recordHotScatterReadResults(item.reads);
+                for(const auto& read:item.extraReads) {
+                    if(!read.prepared)*read.bytes=0;
+                    pipelineStats.hotScatterBytesRead+=*read.bytes;
+                    if(*read.bytes!=read.expected)++pipelineStats.hotScatterShortReadCount;
+                }
                 if(item.reads.VelocityRead()) ++successfulSamples[item.componentParent];
             }
             if(ok) publishHotActors();
@@ -2112,14 +2202,32 @@ void entity_thread() {
                     skeletonSlowCache.skeletonCache.identity!=entity.SkeletonIdentity();
                 const bool refreshSkeleton = rebuildSkeleton &&
                     (forceLocalSkeletonRefresh || consumeCycleBudget(skeletonRefreshBudget));
-                if (!refreshSkeleton) {
-                    if(hotSkeletonCurrent && entity.rotation_valid && skeletonSlowCache.cachedSkeletonValid &&
+                if (offset::IsCnProfile() && refreshSkeleton) {
+                    // Rebuild only the binding here. The next hot batch supplies
+                    // the model transform and joint poses from one observation.
+                    entity.ClearSkeletonObservation();
+                    skeletonSlowCache.cachedSkeletonValid = false;
+                    skeletonSlowCache.cachedBotChestBoneValid = false;
+                    skeletonSlowCache.skeletonUpdateTick = 0;
+                    skeletonSlowCache.cachedModelShapes = {};
+                    skeletonSlowCache.cachedNativeHitboxes = {};
+                    skeletonSlowCache.nativeHitboxLayout = {};
+                    if (entity.ConfirmSkeletonLayout(skeletonSlowCache.skeletonCache, velocityBoneData)) {
+                        entity.ApplySkeletonMapping(skeletonSlowCache.skeletonCache);
+                        entity.skeleton_status = OW::Skeleton::ReadStatus::AwaitingBatch;
+                    } else {
+                        entity.skeleton_status = skeletonSlowCache.skeletonCache.status;
+                    }
+                } else if (!refreshSkeleton) {
+                    if(hotSkeletonCurrent && entity.HasBoneWorldTransform() && skeletonSlowCache.cachedSkeletonValid &&
                         OW::PresentationTiming::Fresh(skeletonSlowCache.skeletonUpdateTick,GetTickCount()) &&
                         skeletonSlowCache.skeletonCache.valid &&
                         skeletonSlowCache.skeletonCache.identity==entity.SkeletonIdentity()) {
                     entity.ApplySkeletonMapping(skeletonSlowCache.skeletonCache);
                     entity.skeleton_sample_tick_ms=skeletonSlowCache.skeletonUpdateTick;
                     entity.model_shapes = skeletonSlowCache.cachedModelShapes;
+                    entity.native_hitboxes=skeletonSlowCache.cachedNativeHitboxes;
+                    if(!entity.native_hitboxes.Matches(entity.VelocityBase,skeletonSlowCache.skeletonCache.revision))entity.native_hitboxes={};
                     if(!skeletonSlowCache.skeletonCache.valid ||
                         !entity.model_shapes.MatchesSkeleton(skeletonSlowCache.skeletonCache.revision) ||
                         entity.model_shapes.boneData != skeletonSlowCache.skeletonCache.boneData)entity.model_shapes={};

@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include "runtime/Acquisition.hpp"
 #include "Utils/RuntimeTrace.hpp"
+#include "Game/ModelWireMesh.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -621,6 +622,20 @@ void AppendEntityPipelineJson(std::ostringstream& out, const Diagnostics::Status
         << ",\"hot_scatter_batch_items\":" << process.hotScatterBatchItems
         << ",\"hot_scatter_batch_requests\":" << process.hotScatterBatchRequests
         << ",\"hot_scatter_estimated_unique_pages\":" << process.hotScatterEstimatedUniquePages
+        << ",\"geometry_layout_loads\":" << process.hotGeometryLayoutLoads
+        << ",\"geometry_layout_reads\":" << process.hotGeometryLayoutReads
+        << ",\"geometry_layout_bytes\":" << process.hotGeometryLayoutBytes
+        << ",\"geometry_layout_failures\":" << process.hotGeometryLayoutFailures
+        << ",\"geometry_pose_bytes\":" << process.hotGeometryPoseBytes
+        << ",\"geometry_full_pose_reference_bytes\":" << process.hotGeometryFullPoseBytes
+        << ",\"geometry_pose_ranges\":" << process.hotGeometryPoseRanges
+        << ",\"geometry_shape_bytes\":" << process.hotGeometryShapeBytes
+        << ",\"geometry_binding_changes\":" << process.hotGeometryBindingChanges
+        << ",\"geometry_rejected_samples\":" << process.hotGeometryRejectedSamples
+        << ",\"wire_cache_hits_total\":" << OW::ModelShapes::WireCacheHits.load(std::memory_order_relaxed)
+        << ",\"wire_cache_misses_total\":" << OW::ModelShapes::WireCacheMisses.load(std::memory_order_relaxed)
+        << ",\"wire_projected_vertices_total\":" << OW::ModelShapes::WireProjectedVertices.load(std::memory_order_relaxed)
+        << ",\"wire_candidate_segments_total\":" << OW::ModelShapes::WireCandidateSegments.load(std::memory_order_relaxed)
         << ",\"hot_scatter_success_count\":" << process.hotScatterSuccessCount
         << ",\"hot_scatter_partial_count\":" << process.hotScatterPartialCount
         << ",\"visibility_scatter_hit_count\":" << process.visibilityScatterHitCount
@@ -3107,6 +3122,11 @@ std::string BuildEntitiesJson(const std::unordered_map<std::string, std::string>
         AppendHexOrNull(out, entity.TeamBase);
         out << ",\"velocity_base\":";
         AppendHexOrNull(out, entity.VelocityBase);
+        out << ",\"model_world_valid\":" << (entity.HasCurrentModelWorldTransform()?"true":"false")
+            << ",\"native_hitbox_count\":" << entity.native_hitboxes.shapes.size()
+            << ",\"native_hitbox_tick\":" << entity.native_hitboxes.tick
+            << ",\"native_hitbox_revision\":" << entity.native_hitboxes.skeletonRevision
+            << ",\"bone_count_offset\":" << OW::Skeleton::BoneCountOffset();
         out << ",\"hero_base\":";
         AppendHexOrNull(out, entity.HeroBase);
         out << ",\"bone_base\":";

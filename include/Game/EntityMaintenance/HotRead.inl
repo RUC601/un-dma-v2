@@ -4,8 +4,13 @@
             pipelineStats.hotScatterBytesRequested += size;
             if (prepared) ++pipelineStats.hotScatterPrepareSuccessCount;
             else ++pipelineStats.hotScatterPrepareFailCount;
-            hotScatterPages.insert(address & kScatterPageMask);
-            hotScatterPages.insert((address + size - 1) & kScatterPageMask);
+            if(size) {
+                const auto last=(address+size-1)&kScatterPageMask;
+                for(auto page=address&kScatterPageMask;;page+=0x1000) {
+                    hotScatterPages.insert(page);
+                    if(page==last)break;
+                }
+            }
             pipelineStats.hotScatterEstimatedUniquePages = hotScatterPages.size();
         };
         auto prepareHotFields = [&](VMMDLL_SCATTER_HANDLE handle, EntityHotFieldReads& reads,
@@ -22,6 +27,10 @@
                 request(velocityBase + 0x50, &reads.velocity.velocity, 12, reads.velocityBytes[0]);
                 request(velocityBase + 0x200, &reads.velocity.location, 12, reads.velocityBytes[1]);
                 request(velocityBase + 0x8B0, &reads.velocity.bonedata, 8, reads.velocityBytes[2]);
+                if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
+                    reads.modelWorldRequested=true;
+                    request(velocityBase+0x3B0,&reads.modelWorld,sizeof(reads.modelWorld),reads.modelWorldBytes);
+                }
             }
             if (healthBase) {
                 reads.deathRequested = true;
@@ -52,7 +61,7 @@
             return reads.velocityRequested || reads.deathRequested || reads.healthRequested || reads.heroRequested || reads.visibilityRequested;
         };
         auto countHotFieldRequests = [](const EntityHotFieldReads& reads) {
-            return size_t(reads.velocityRequested) * 3 + size_t(reads.healthRequested) * 4 +
+            return size_t(reads.velocityRequested) * 3 + size_t(reads.modelWorldRequested) + size_t(reads.healthRequested) * 4 +
                 size_t(reads.deathRequested) + size_t(reads.heroRequested) + size_t(reads.visibilityRequested);
         };
         auto recordHotScatterReadResults = [&](const EntityHotFieldReads& reads) {
@@ -61,6 +70,7 @@
                 if (actual != expected) ++pipelineStats.hotScatterShortReadCount;
             };
             if (reads.velocityRequested) { field(reads.velocityBytes[0],12); field(reads.velocityBytes[1],12); field(reads.velocityBytes[2],8); }
+            if (reads.modelWorldRequested) field(reads.modelWorldBytes,sizeof(reads.modelWorld));
             if (reads.healthRequested) {
                 const bool pooled = offset::Active().pooledHealth;
                 field(reads.healthBytes[0],pooled ? OW::kCnHealthPoolBytes : 32);

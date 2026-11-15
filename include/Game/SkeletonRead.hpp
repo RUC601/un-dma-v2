@@ -65,7 +65,7 @@ namespace OW::Skeleton {
     enum class ReadStatus : uint8_t {
         Empty, Ready, InvalidBody, RootReadFailed, DescriptorReadFailed,
         InvalidCount, IdTableReadFailed, FormReadFailed, LayoutChanged, PoseReadFailed,
-        UnknownForm, NoMappedBones, InvalidTransform, PartialPose
+        UnknownForm, NoMappedBones, InvalidTransform, PartialPose, AwaitingBatch
     };
 
     inline const char* StatusName(ReadStatus status) {
@@ -83,6 +83,7 @@ namespace OW::Skeleton {
         case ReadStatus::NoMappedBones: return "no_mapped_bones";
         case ReadStatus::InvalidTransform: return "invalid_transform";
         case ReadStatus::PartialPose: return "partial_pose";
+        case ReadStatus::AwaitingBatch: return "awaiting_geometry_batch";
         default: return "empty";
         }
     }

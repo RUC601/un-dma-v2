@@ -251,7 +251,9 @@ inline OW::c_entity BuildPresentEntity(const OW::c_entity& rawSource,
     const float alpha = PresentEntityInterpolationAlpha(source, now, delayMs);
     if (alpha < 0.999f) {
         entity = OverlayRenderDetail::InterpolateEntitySamples(source, alpha);
-        setMeta(OW::PresentSnapshotSource::Interp, 0.0f, 0.90f);
+        const bool rawGeometry = OverlayRenderDetail::UsesRawNativeGeometry(source);
+        setMeta(rawGeometry ? OW::PresentSnapshotSource::Raw : OW::PresentSnapshotSource::Interp,
+            0.0f, rawGeometry ? 1.0f : 0.90f);
         return entity;
     }
 

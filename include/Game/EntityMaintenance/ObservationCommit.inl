@@ -139,6 +139,9 @@
                 if(old && !rawScanSeenComponents.contains(entity.address)) {
                     entity.actual_scan_generation=old->actual_scan_generation;entity.actual_scan_source=old->actual_scan_source;
                 }
+                const bool sampledModelCurrent=entity.HasCurrentModelWorldTransform();
+                const auto sampledModelIdentity=entity.model_world_identity;
+                const auto sampledModelAnchor=entity.model_world.sampleAnchor;
                 entity.actor_generation=sameLifetime && old->actor_generation ? old->actor_generation : ++actorGenerationSequence;
                 const char* authorityFailure=nullptr;
                 entity.body_authority_revision=OW::AdmitEntityBodyObservation(*discovery,entity.actor_generation,
@@ -153,8 +156,14 @@
                 auto sampledIdentity = admittedSkeleton.identity;
                 sampledIdentity.generation = admittedIdentity.generation;
                 if (admittedSkeleton.valid && sampledIdentity == admittedIdentity &&
-                    entity.skeleton_revision == admittedSkeleton.revision)
+                    entity.skeleton_revision == admittedSkeleton.revision) {
                     admittedSkeleton.identity = admittedIdentity;
+                    auto candidateModelIdentity=sampledModelIdentity;
+                    candidateModelIdentity.generation=admittedIdentity.generation;
+                    if(sampledModelCurrent && candidateModelIdentity==admittedIdentity &&
+                       entity.SetModelWorldTransform(entity.VelocityBase,entity.model_world.record))
+                        entity.model_world.sampleAnchor=sampledModelAnchor;
+                }
                 admissionRecord.admissionRejectReason={};
                 if(!entity.Alive)OW::TargetingDetail::InvalidateTargetBody(entity.address,entity.roster_key,entity.actor_generation);
                 if(old && !sameLifetime) {

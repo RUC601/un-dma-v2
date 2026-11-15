@@ -50,6 +50,8 @@
         std::string heroName = "Unknown";
         OW::c_entity::SkeletonBoneCache skeletonCache{};
         OW::ModelShapes::Sample cachedModelShapes{};
+        OW::NativeHitboxes::Layout nativeHitboxLayout{};
+        OW::NativeHitboxes::Sample cachedNativeHitboxes{};
         std::array<OW::Vector3, 18> cachedSkeletonBones{};
         std::array<bool, 18> cachedSkeletonBoneValid{};
         OW::Vector3 cachedSkeletonPos{};

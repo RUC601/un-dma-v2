@@ -2,6 +2,7 @@
 #include "Game/Overwatch.hpp"
 #include "Game/HeroSettings.hpp"
 #include "Game/TrainingBotDisplay.hpp"
+#include "Game/ModelWireMesh.hpp"
 #include "Game/snapshots/Interpolation.hpp"
 #include <cfloat>
 namespace OverlayRenderDetail {
@@ -1057,6 +1058,23 @@ namespace OverlayRenderDetail {
                              const OW::Matrix& view,
                              const Render::Color& color,
                              float opacity, float thickness=1,Vector2 offset={}) {
+        if(OW::offset::IsCnProfile()) {
+            const auto& native=entity.native_hitboxes;
+            if(!entity.HasCurrentModelWorldTransform() || !native.Matches(entity.VelocityBase,entity.skeleton_revision) ||
+               GetTickCount()-native.tick>100)return false;
+            const auto delta=entity.pos-native.world.sampleAnchor;
+            const Render::Color shapeColor(color.R,color.G,color.B,ToByte(opacity*.7f));
+            bool drew=false;
+            for(size_t i=0;i<native.shapes.size();++i) {
+                const auto world=[&](Vector3 p) {
+                    return native.world.TransformPoint(OW::ModelShapes::Transform(p,native.poses[i]))+delta;
+                };
+                drew=OW::ModelShapes::DrawCachedWire(native.shapes[i],world,
+                    [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
+                    [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
+            }
+            return drew;
+        }
         // Original model shapes use their own size; never apply the aim window scale.
         if(OW::ModelShapes::Supported(entity.HeroID) && entity.model_shapes.modelIndex>=0) {
             if (!entity.model_shapes.MatchesSkeleton(entity.skeleton_revision) ||
@@ -1074,14 +1092,9 @@ namespace OverlayRenderDetail {
                     DirectX::XMStoreFloat3(&out,DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&value),yaw));
                     return Vector3(out.x,out.y,out.z)+entity.pos;
                 };
-                OW::ModelShapes::Wire(model.shapes[s],[&](Vector3 a,Vector3 b) {
-                    Vector2 sa{},sb{};
-                    if(view.WorldToScreen(world(a),&sa,Vector2(OW::WX,OW::WY)) &&
-                       view.WorldToScreen(world(b),&sb,Vector2(OW::WX,OW::WY)) &&
-                       std::isfinite(sa.X) && std::isfinite(sa.Y) && std::isfinite(sb.X) && std::isfinite(sb.Y)) {
-                        Render::DrawLine(sa+offset,sb+offset,shapeColor,thickness);drew=true;
-                    }
-                });
+                drew=OW::ModelShapes::DrawCachedWire(model.shapes[s],world,
+                    [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
+                    [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
             }
             return drew;
         }

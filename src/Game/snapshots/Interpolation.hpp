@@ -94,7 +94,17 @@ namespace OverlayRenderDetail {
             point += offset;
     }
 
+    inline bool UsesRawNativeGeometry(const OW::c_entity& entity) {
+        return OW::offset::IsCnProfile() && entity.HasCurrentModelWorldTransform() &&
+            entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision);
+    }
+
     inline OW::c_entity InterpolateEntitySamples(const OW::c_entity& source, float alpha) {
+        // The native poses and model QST have no previous-sample interpolation.
+        // Keep their companion bones and anchors on the same raw geometry frame.
+        // Existing extrapolation still translates every consumer together.
+        if (UsesRawNativeGeometry(source))
+            return source;
         OW::c_entity entity = source;
         entity.head_pos = LerpWorldPosition(source.previous_head_pos, source.head_pos, alpha);
         entity.velocity = LerpFiniteVector(source.previous_velocity, source.velocity, alpha);

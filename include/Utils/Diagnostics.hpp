@@ -894,6 +894,16 @@ struct EntityPipelineProcessStats {
     size_t hotScatterBatchItems = 0;
     size_t hotScatterBatchRequests = 0;
     size_t hotScatterEstimatedUniquePages = 0;
+    size_t hotGeometryLayoutLoads = 0;
+    size_t hotGeometryLayoutReads = 0;
+    size_t hotGeometryLayoutBytes = 0;
+    size_t hotGeometryLayoutFailures = 0;
+    size_t hotGeometryPoseBytes = 0;
+    size_t hotGeometryFullPoseBytes = 0;
+    size_t hotGeometryPoseRanges = 0;
+    size_t hotGeometryShapeBytes = 0;
+    size_t hotGeometryBindingChanges = 0;
+    size_t hotGeometryRejectedSamples = 0;
     size_t hotScatterSuccessCount = 0;
     size_t hotScatterPartialCount = 0;
     size_t hotScatterFallbackReadCount = 0;
