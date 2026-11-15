@@ -9,6 +9,7 @@
 
 #include "Game/Entity.hpp"
 #include "Game/AimPlan.hpp"
+#include "Game/ContourTargeting.hpp"
 #include "Utils/Types.hpp"
 
 namespace OW {
@@ -202,6 +203,7 @@ struct EntityMotionState {
 };
 
 struct TargetCandidate {
+    Contour::Observation contour{};
     AimPlan::Effective plan{};
     bool planPreferred = false;
     bool valid = false;

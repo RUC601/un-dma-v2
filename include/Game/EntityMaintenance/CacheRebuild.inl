@@ -6,6 +6,18 @@
                 cache.layoutsKnown = componentSnapshot && linkSnapshot &&
                     componentSnapshot->ReadComponentLayout(cache.componentLayout) &&
                     linkSnapshot->ReadComponentLayout(cache.linkLayout);
+                const bool resumedCn = cacheIt->second->componentRefresh.stage ==
+                    OW::EntityMaintenance::ComponentRefresh::Stage::Ready;
+                if(resumedCn) {
+                    const auto& completed=cacheIt->second->componentRefresh;
+                    const auto& values=completed.values;
+                    cache.componentLayout=completed.component.Layout();cache.linkLayout=completed.link.Layout();
+                    cache.layoutsKnown=true;
+                    cache.health=values[0];cache.link=values[1];cache.team=values[2];cache.transform=values[3];
+                    cache.velocity=values[4];cache.hero=values[5];cache.bone=values[6];cache.rotation=values[7];
+                    cache.skill=values[8];cache.visibility=values[9];cache.angle=values[10];cache.enemyAngle=values[11];cache.stat=values[12];
+                    cache.rotationLeaf=cache.rotation==cacheIt->second->rotation ? cacheIt->second->rotationLeaf : 0;
+                } else {
                 cache.health     = decryptBase(ComponentParent, OW::offset::Active().typeHealth, componentSnapshot);
                 cache.link       = decryptBase(LinkParent, OW::offset::Active().typeLink, linkSnapshot);
                 cache.team       = decryptBase(ComponentParent, OW::offset::Active().typeTeam, componentSnapshot);
@@ -41,10 +53,15 @@
                     cache.rotationLeaf = SDK->RPM<uint64_t>(
                         cache.rotation + offset::RotationBase_Sub1);
                 }
+                }
                 auto& record=componentBaseCache[ComponentParent];
                 if(!record)record=std::make_shared<RosterEntry>();
                 cache.matchIdValid = componentSnapshot &&
                     componentSnapshot->ReadParentOffset(OW::offset::Entity_MatchId, cache.matchId);
+                if(resumedCn) {
+                    cache.matchId=record->componentRefresh.component.At<uint32_t>(OW::offset::Entity_MatchId);
+                    cache.matchIdValid=cache.matchId!=0;
+                }
                 const auto bases = [](const ComponentBaseCache& value) {
                     return std::array{value.health, value.link, value.team, value.transform,
                         value.velocity, value.hero, value.bone, value.rotation, value.rotationLeaf,
@@ -73,3 +90,4 @@
                     static_cast<ComponentBaseCache&>(*record)=std::move(cache);
                 }
                 cacheIt=componentBaseCache.find(ComponentParent);
+                record->componentRefresh={};

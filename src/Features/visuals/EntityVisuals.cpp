@@ -900,9 +900,9 @@ namespace OverlayRenderDetail {
             static_cast<int>(OW::Plexies20260609::kSkeletonSlotCount);
 
         for (int i = 0; i < kRenderSkeletonSlots; ++i) {
-            if (!entity.skeleton_bone_valid[i])
-                continue;
-            projected[i] = view.WorldToScreen(entity.skeleton_bones[i], &points[i], windowSize);
+            Vector3 point{};
+            if (!entity.TrySkeletonPoint(size_t(i), point)) continue;
+            projected[i] = view.WorldToScreen(point, &points[i], windowSize);
             points[i]=points[i]+offset;
         }
 
@@ -1059,7 +1059,8 @@ namespace OverlayRenderDetail {
                              float opacity, float thickness=1,Vector2 offset={}) {
         // Original model shapes use their own size; never apply the aim window scale.
         if(OW::ModelShapes::Supported(entity.HeroID) && entity.model_shapes.modelIndex>=0) {
-            if(!entity.model_shapes.tick || GetTickCount()-entity.model_shapes.tick>100)return false;
+            if (!entity.model_shapes.MatchesSkeleton(entity.skeleton_revision) ||
+                !entity.model_shapes.tick || GetTickCount()-entity.model_shapes.tick>100) return false;
             const Render::Color shapeColor(color.R,color.G,color.B,ToByte(opacity*.7f));
             const auto yaw=DirectX::XMMatrixRotationY(entity.Rot.X);
             bool drew=false;
@@ -1097,10 +1098,10 @@ namespace OverlayRenderDetail {
                 continue;
             }
 
-            if (slotIndex >= entity.skeleton_bones.size() || !entity.skeleton_bone_valid[slotIndex])
-                continue;
+            Vector3 point{};
+            if (!entity.TrySkeletonPoint(slotIndex, point)) continue;
             ellipseReady[slotIndex] = TryBuildBoneHitboxEllipse(
-                entity, view, slotIndex, entity.skeleton_bones[slotIndex], ellipses[slotIndex]);
+                entity, view, slotIndex, point, ellipses[slotIndex]);
         }
 
         const Render::Color hitboxColor(color.R, color.G, color.B, ToByte(opacity * 0.70f));

@@ -180,6 +180,19 @@ void UI::AimbotPage() {
             SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##aimIgnoreInvis", &activePreset.ignoreInvisible);
 
+            const bool contourSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick;
+            SettingRow(OW::Config::uiLanguage == 1 ? "轮廓确认" : "Contour confirmation", kAimbotRightLabelWidth);
+            ImGui::BeginDisabled(!contourSupported && !activePreset.contourEnabled);
+            presetChanged |= UICheckbox("##aimContour", &activePreset.contourEnabled);
+            ImGui::EndDisabled();
+            if (activePreset.contourEnabled || !contourSupported) {
+                ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
+                    ? (contourSupported ? "以采集画面确认露出部位；三种状态颜色均参与匹配。请在设置 → 屏幕开启采集。首版仅支持普通 Flick 和即时命中武器，需关闭提前量；弹道、蓄力释放及松热键执行暂不支持，不符合时暂停该 Slot。"
+                                        : "轮廓确认仅支持普通 Flick。切换 Behavior 后若保留开启，该 Slot 暂停执行；可在此关闭。")
+                    : (contourSupported ? "Uses captured contours to confirm the exposed part. All three colors are matched. Start capture under Settings > Screen. This version supports ordinary Flick with hitscan weapons and prediction off. Projectile weapons, charge-release and execution after key release pause this Slot."
+                                        : "Contour confirmation supports ordinary Flick only. This Slot stays paused while it is enabled for another behavior; turn it off here to resume."));
+            }
+
             // Trace Condition
             SettingRow("Trace Condition", kAimbotRightLabelWidth);
             PushControlWidth();

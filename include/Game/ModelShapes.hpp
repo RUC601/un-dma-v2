@@ -61,6 +61,10 @@ struct Sample {
     int modelIndex=-1;
     uint32_t tick=0;
     uint64_t boneData=0;
+    uint64_t skeletonRevision=0;
+    bool MatchesSkeleton(uint64_t revision) const {
+        return revision != 0 && skeletonRevision == revision;
+    }
 };
 inline int FindBone(const uint32_t* ids,size_t count,int id) {
     for(size_t i=0;i<count;++i)

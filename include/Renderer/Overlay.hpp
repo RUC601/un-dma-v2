@@ -31,6 +31,9 @@ public:
 
     HWND GetOverlayWindow() const { return m_canvasHWnd; }
     HWND GetMenuWindow() const { return m_menuHWnd; }
+    // UI-owned preview textures are created and released on the render thread.
+    ID3D11Device* GetD3DDevice() const { return m_pDevice; }
+    ID3D11DeviceContext* GetD3DContext() const { return m_pContext; }
 
 private:
     friend struct OverlayWindowSelfTestAccess;

@@ -86,6 +86,11 @@
         }
     };
     struct RosterEntry : ComponentBaseCache {
+        OW::EntityMaintenance::ComponentRefresh componentRefresh{};
+        OW::EntityMaintenance::ColdSchedule coldSchedule{};
+        std::array<uint64_t,10> stealthIdentity{};
+        DWORD stealthSampleTick=0,stealthAttemptTick=0;
+        bool stealthKnown=false,stealthActive=false;
         OW::EdOutline::State outlineState{};
         std::array<uint64_t, 6> outlineIdentity{};
         // Actor state must survive replacing the component-address cache in CacheRebuild.inl.

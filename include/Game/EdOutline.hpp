@@ -83,6 +83,36 @@ struct State {
         return a && b;
     }
     template<class Read, class Write, class Current>
+    bool ApplyColorOnly(Target next, bool visible, uint32_t color, uint32_t now,
+                        Read read, Write write, Current current, uint32_t refreshMs = 500) {
+        restoring = false;
+        attempted = true; nextAttempt = now + refreshMs; lastVisible = visible; lastColor = color;
+        if (!(target == next)) { target = next; parameterOwned = colorOwned = false; }
+
+        // Preserve the game's native depth/occlusion mode. If this instance
+        // previously owned a legacy mode override, relinquish it conditionally
+        // before entering the color-only path. Never manufacture mode 1/2 from Vis.
+        if (parameterOwned) {
+            uint64_t value = 0;
+            if (!current() || !read(target.parameter, &value, sizeof(value))) return false;
+            if (value == writtenParameter &&
+                (!current() || !write(target.parameter, &originalParameter, sizeof(originalParameter)))) return false;
+            parameterOwned = false;
+        }
+        uint32_t previous = 0;
+        if (!current() || !read(target.color, &previous, sizeof(previous))) return false;
+        if (previous == color) return true;
+        if (!colorOwned || previous != writtenColor) originalColor = previous;
+        if (!current()) return false;
+        writtenColor = color;
+        colorOwned = true;
+        if (!write(target.color, &color, sizeof(color))) {
+            Restore(read, write, current);
+            return false;
+        }
+        return true;
+    }
+    template<class Read, class Write, class Current>
     bool Apply(Target next, bool visible, uint32_t color, uint32_t now, Read read, Write write, Current current, bool world = false, uint32_t refreshMs = 500) {
         restoring = false;
         attempted = true; nextAttempt = now + refreshMs; lastVisible = visible; lastColor = color;

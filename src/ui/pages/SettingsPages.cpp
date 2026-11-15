@@ -9,6 +9,7 @@
 #include "ui/Theme.hpp"
 #include "config/UiPreferences.hpp"
 #include "ui/DynamicFovEditor.hpp"
+#include "ui/vision/ContourPanel.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "game/profiles/ProfileState.hpp"
@@ -905,6 +906,7 @@ void DrawMiscDynamicFovPage() {
 }
 
 void DrawMiscScreenPage() {
+    UI::Vision::DrawControls();
     auto display=V2::HeroSettings::Snapshot()->display;
     bool displayChanged=false;
     UIGroupBox(OW::Config::uiLanguage==1?"ESP / HUD 字体":"ESP / HUD fonts");

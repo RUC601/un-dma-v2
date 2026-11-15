@@ -9,6 +9,8 @@
 #include "ui/Text.hpp"
 #include "ui/Theme.hpp"
 #include "ui/ColorPicker.hpp"
+#include "config/ContourSettings.hpp"
+#include "vision/ContourService.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 #include "output/DeviceCapabilities.hpp"
@@ -86,13 +88,23 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
     ImGui::PopID();return changed;
 }
 void OutlineControls() {
+    bool paletteChanged=false;
     SettingRow("Game Outlines");UICheckbox("##gameOutlines",&OW::Config::gameOutlines);
-    ImGui::SameLine();UI::ColorPicker("outlineVisible",OW::Config::enargb);
+    ImGui::SameLine();paletteChanged|=UI::ColorPicker("outlineVisible",OW::Config::enargb);
     ImGui::SetItemTooltip("%s",L("Visible"));
-    ImGui::SameLine();UI::ColorPicker("outlineHidden",OW::Config::invisnenargb);
+    ImGui::SameLine();paletteChanged|=UI::ColorPicker("outlineHidden",OW::Config::invisnenargb);
     ImGui::SetItemTooltip("%s",L("Hidden"));
-    SettingRow("Visible Only");UICheckbox("##outlineVisibleOnly",&OW::Config::gameOutlineVisibleOnly);
+    SettingRow(OW::Config::uiLanguage==1?"选中目标改色":"Selected target color");
+    UICheckbox("##outlineTargetEnabled",&OW::Config::gameOutlineTargetColor);
+    ImGui::SameLine();paletteChanged|=UI::ColorPicker("outlineTarget",OW::Config::outlineTargetColor);
+    ImGui::SetItemTooltip("%s",L("Target"));
+    const bool contourCaptureEnabled=V2::Vision::GetService().GetSettings().enabled;
+    ImGui::BeginDisabled(contourCaptureEnabled);
     SettingRow("Rainbow Color");UICheckbox("##outlineRainbow",&OW::Config::gameOutlineRainbow);
+    ImGui::EndDisabled();
+    if(contourCaptureEnabled)ImGui::TextWrapped("%s",OW::Config::uiLanguage==1?"轮廓采集开启时使用固定三色，彩虹暂停。":"Capture uses three fixed colors; rainbow is paused while capture is enabled.");
+    ImGui::TextWrapped("%s",OW::Config::uiLanguage==1?"仅更改游戏原生轮廓颜色，遮挡由游戏处理。":"Changes native outline colors only; the game handles occlusion.");
+    if(paletteChanged)V2::Vision::SyncOutlinePalette();
 #ifndef UNLEASHED_OBSERVATION_ONLY
     namespace Brightness = OW::OutlineBrightness;
     static float brightnessDraft = 100.f;

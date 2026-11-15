@@ -282,12 +282,15 @@ static void LoadRuntimeConfigForDiagnostics()
 }
 
 #include "Alerts/Service.hpp"
+#include "vision/ContourService.hpp"
+#include "config/ContourSettings.hpp"
 using V2::Runtime::StartProcessConnectionThread;
 using V2::Runtime::StopProcessConnectionThread;
 using V2::Output::ShutdownOutputRuntime;
 
 static void ShutdownHeadlessRuntime(const char* reason = "headless_shutdown")
 {
+    V2::Vision::GetService().Stop();
     V2::Runtime::RestoreNativeOutlineBeforeShutdown();
     OW::RequestRuntimeShutdown([] {
         OW::SetRuntimeOutputSessionEnabled(false);
@@ -556,6 +559,8 @@ int main(int argc, char** argv)
         Diagnostics::Error("Config load failed: %s", OW::Config::LastPersistenceError().c_str());
         return EXIT_FAILURE;
     }
+    if (!V2::Vision::Preferences::Load())
+        Diagnostics::Warn("Capture preferences unavailable: %s", V2::Vision::Preferences::Error().c_str());
     if (boxPerfModeRequested) {
         OW::Config::boxPerfMode = true;
         OW::Config::boxPerfFastRect = true;

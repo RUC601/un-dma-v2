@@ -55,6 +55,11 @@ inline bool PresentEntityContinuityCompatible(const OW::c_entity& previous,
                                               const OW::c_entity& current) {
     if (!previous.address || !current.address || previous.address != current.address)
         return false;
+    if (previous.SkeletonIdentity() != current.SkeletonIdentity() ||
+        !OW::SkeletonSemantics::CanReuseHistory(
+            previous.skeleton_form, previous.skeleton_revision, previous.skeleton_requested_ids,
+            current.skeleton_form, current.skeleton_revision, current.skeleton_requested_ids))
+        return false;
     if (previous.roster_state != OW::EntityRosterState::Fresh ||
         current.roster_state != OW::EntityRosterState::Fresh) {
         return false;
@@ -305,6 +310,7 @@ inline void UpdatePresentEntityTracks(const std::vector<OW::c_entity>& rawEntiti
             track.hasPrevious = PresentEntityContinuityCompatible(track.previous, track.current);
         } else {
             track.current = source;
+            track.hasPrevious = track.hasPrevious && PresentEntityContinuityCompatible(track.previous, track.current);
         }
     }
 

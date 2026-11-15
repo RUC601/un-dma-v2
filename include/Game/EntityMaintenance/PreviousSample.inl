@@ -15,6 +15,12 @@
 
             if (previousEntity && !OW::PresentationTiming::CanReuseHistory(
                 previousEntity->PresentationIdentity(),entity.PresentationIdentity())) previousEntity=nullptr;
+            if (previousEntity && previousEntity->SkeletonIdentity() != entity.SkeletonIdentity())
+                previousEntity = nullptr;
+            if (previousEntity && !OW::SkeletonSemantics::CanReuseHistory(
+                previousEntity->skeleton_form, previousEntity->skeleton_revision, previousEntity->skeleton_requested_ids,
+                entity.skeleton_form, entity.skeleton_revision, entity.skeleton_requested_ids))
+                previousEntity = nullptr;
             if (!previousEntity) {
                 entity.previous_render_sample_tick_ms = sampleTick;
                 entity.position_sample_tick_ms = sampleTick;

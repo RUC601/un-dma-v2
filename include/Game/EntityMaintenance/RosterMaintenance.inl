@@ -103,6 +103,11 @@
             now - previous.last_seen_tick_ms > kObservationPreviousMaxAgeMs) {
             return static_cast<size_t>(0);
         }
+        if (previous.SkeletonIdentity() != current.SkeletonIdentity() ||
+            !OW::SkeletonSemantics::CanReuseHistory(
+            previous.skeleton_form, previous.skeleton_revision, previous.skeleton_requested_ids,
+            current.skeleton_form, current.skeleton_revision, current.skeleton_requested_ids))
+            return static_cast<size_t>(0);
 
         const Vector3 previousAnchor = observationAnchor(previous);
         const Vector3 currentAnchor = observationAnchor(current);

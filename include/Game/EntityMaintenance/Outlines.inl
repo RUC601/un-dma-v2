@@ -4,6 +4,10 @@
             size_t outlineBudget = 1;
             const bool world = offset::ActiveProfile() == offset::RuntimeProfile::World155284;
             const bool supported = world || offset::Active().componentTransform == offset::ComponentTransformMode::Cn155284;
+            const auto selectedOutlineTarget = OW::TargetingDetail::SnapshotTargetLockRuntime();
+            const auto visionState = V2::Vision::GetService().Status().state;
+            const bool fixedPalette = visionState == V2::Vision::ServiceState::Starting ||
+                visionState == V2::Vision::ServiceState::Running;
             for (auto& [key, record] : entityRoster) {
                 auto& state = record->outlineState;
                 if (!OW::Config::gameOutlines && !state.Active()) continue;
@@ -15,13 +19,21 @@
                     record->outlineIdentity = identity;
                 }
                 const DWORD outlineNow = GetTickCount();
-                const bool enabled = OW::Config::gameOutlines && actor.Team && actor.team_known &&
-                    (!OW::Config::gameOutlineVisibleOnly || actor.Vis);
+                // Vis chooses the unselected colour only. The game's native
+                // depth handling determines which fragments can be rendered.
+                const bool enabled = OW::Config::gameOutlines && actor.Team && actor.team_known;
                 if (!enabled && !state.Active()) continue;
-                const auto& color = actor.Vis ? OW::Config::enargb : OW::Config::invisnenargb;
+                const bool selected = selectedOutlineTarget.active &&
+                    selectedOutlineTarget.entityKey == OW::TargetingDetail::StableTargetKey(actor) &&
+                    selectedOutlineTarget.actorGeneration == actor.actor_generation &&
+                    uint32_t(outlineNow - selectedOutlineTarget.lastSeenTick) <= 120;
+                const bool selectedColor = selected && OW::Config::gameOutlineTargetColor;
+                const auto& color = selectedColor ? OW::Config::outlineTargetColor :
+                    (actor.Vis ? OW::Config::enargb : OW::Config::invisnenargb);
+                const bool animated = OW::Config::gameOutlineRainbow && !fixedPalette && !selectedColor;
                 const uint32_t packed = OW::EdOutline::AnimatedColor(color.x, color.y, color.z,
-                    OW::Config::gameOutlineRainbow, GetTickCount64());
-                const bool outlineDue = supported && state.Due(outlineNow, enabled, actor.Vis, packed, OW::Config::gameOutlineRainbow);
+                    animated, GetTickCount64());
+                const bool outlineDue = supported && state.Due(outlineNow, enabled, actor.Vis, packed, animated);
                 if (!outlineDue || !outlineBudget) continue;
                 if (!actor.HasUsableBody(outlineNow, processSceneGeneration)) continue;
                 --outlineBudget;
@@ -49,8 +61,8 @@
                     return bodyCurrent() && OW::EdOutline::Resolve(component, read, checked) && checked == target;
                 };
                 if (enabled) {
-                    state.Apply(target, actor.Vis, packed, outlineNow, read, write, current, world,
-                        OW::Config::gameOutlineRainbow ? 100 : 500);
+                    state.ApplyColorOnly(target, actor.Vis, packed, outlineNow, freshRead, write, current,
+                        animated ? 100 : 500);
                 } else if (state.target == target) {
                     if (state.Restore(read, write, current)) state = {};
                 } else state = {};

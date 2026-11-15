@@ -457,6 +457,8 @@ namespace OW { namespace Config {
     inline decltype(aimbotMaxCharge)& View_aimbotMaxCharge();
     inline bool  aimbotIgnoreInvisible = true;
     inline decltype(aimbotIgnoreInvisible)& View_aimbotIgnoreInvisible();
+    inline bool aimbotContourEnabled = false;
+    inline decltype(aimbotContourEnabled)& View_aimbotContourEnabled();
     inline int   aimbotTrace = 0;
     inline decltype(aimbotTrace)& View_aimbotTrace(); // 0=Strict, 1=Relaxed, 2=Off
     inline int   aimbotUnlock = 0;
@@ -1115,6 +1117,7 @@ namespace OW { namespace Config {
     inline bool gameOutlines    = false;
     inline bool gameOutlineVisibleOnly = false;
     inline bool gameOutlineRainbow = false;
+    inline bool gameOutlineTargetColor = true;
     inline bool draw_skel       = false;
     inline bool draw_avatar     = true;
     inline bool draw_hitbox     = false;
@@ -1159,6 +1162,7 @@ namespace OW { namespace Config {
     inline ImVec4 enargb        = ImVec4(1.f, 0.f, 0.f, 1.f);
     inline ImVec4 invisnenargb  = ImVec4(1.f, 1.f, 1.f, 1.f);
     inline ImVec4 targetargb    = ImVec4(1.f, 1.f, 0.f, 1.f);
+    inline ImVec4 outlineTargetColor = ImVec4(1.f, 1.f, 0.f, 1.f);
     inline ImVec4 allyargb      = ImVec4(0.f, 0.f, 1.f, 0.f);
 
     // ---- Box/fov colours ----
@@ -1452,6 +1456,7 @@ namespace OW { namespace Config {
         bool requireTargetable = false;
         int targetTeam = 0;      // 0=Enemies, 1=Allies, 2=All
         bool ignoreInvisible = true;
+        bool contourEnabled = false;
         int traceCondition = 0;   // 0=Strict, 1=Relaxed, 2=Off
         int unlockCondition = 0;  // 0=Anytime, 1=On Release, 2=Never
         float lockTime = 20.0f;
@@ -1904,6 +1909,7 @@ namespace OW { namespace Config {
         decltype(Config::aimbotFovEntryPredictionMs) aimbotFovEntryPredictionMs;
         decltype(Config::aimbotFovMode) aimbotFovMode;
         decltype(Config::aimbotIgnoreInvisible) aimbotIgnoreInvisible;
+        decltype(Config::aimbotContourEnabled) aimbotContourEnabled;
         decltype(Config::aimbotKeepFiring) aimbotKeepFiring;
         decltype(Config::aimbotLockTime) aimbotLockTime;
         decltype(Config::aimbotMagneticPostFirePauseMs) aimbotMagneticPostFirePauseMs;
@@ -2008,6 +2014,7 @@ namespace OW { namespace Config {
         value.aimbotFovEntryPredictionMs = aimbotFovEntryPredictionMs;
         value.aimbotFovMode = aimbotFovMode;
         value.aimbotIgnoreInvisible = aimbotIgnoreInvisible;
+        value.aimbotContourEnabled = aimbotContourEnabled;
         value.aimbotKeepFiring = aimbotKeepFiring;
         value.aimbotLockTime = aimbotLockTime;
         value.aimbotMagneticPostFirePauseMs = aimbotMagneticPostFirePauseMs;
@@ -2130,6 +2137,7 @@ namespace OW { namespace Config {
     inline decltype(aimbotFovEntryPredictionMs)& View_aimbotFovEntryPredictionMs() { return configAuthority ? aimbotFovEntryPredictionMs : CurrentConfigValues().aimbotFovEntryPredictionMs; }
     inline decltype(aimbotFovMode)& View_aimbotFovMode() { return configAuthority ? aimbotFovMode : CurrentConfigValues().aimbotFovMode; }
     inline decltype(aimbotIgnoreInvisible)& View_aimbotIgnoreInvisible() { return configAuthority ? aimbotIgnoreInvisible : CurrentConfigValues().aimbotIgnoreInvisible; }
+    inline decltype(aimbotContourEnabled)& View_aimbotContourEnabled() { return configAuthority ? aimbotContourEnabled : CurrentConfigValues().aimbotContourEnabled; }
     inline decltype(aimbotKeepFiring)& View_aimbotKeepFiring() { return configAuthority ? aimbotKeepFiring : CurrentConfigValues().aimbotKeepFiring; }
     inline decltype(aimbotLockTime)& View_aimbotLockTime() { return configAuthority ? aimbotLockTime : CurrentConfigValues().aimbotLockTime; }
     inline decltype(aimbotMagneticPostFirePauseMs)& View_aimbotMagneticPostFirePauseMs() { return configAuthority ? aimbotMagneticPostFirePauseMs : CurrentConfigValues().aimbotMagneticPostFirePauseMs; }
@@ -2313,6 +2321,7 @@ namespace OW { namespace Config {
         assign(before.aimbotFovEntryPredictionMs, after.aimbotFovEntryPredictionMs, aimbotFovEntryPredictionMs);
         assign(before.aimbotFovMode, after.aimbotFovMode, aimbotFovMode);
         assign(before.aimbotIgnoreInvisible, after.aimbotIgnoreInvisible, aimbotIgnoreInvisible);
+        assign(before.aimbotContourEnabled, after.aimbotContourEnabled, aimbotContourEnabled);
         assign(before.aimbotKeepFiring, after.aimbotKeepFiring, aimbotKeepFiring);
         assign(before.aimbotLockTime, after.aimbotLockTime, aimbotLockTime);
         assign(before.aimbotMagneticPostFirePauseMs, after.aimbotMagneticPostFirePauseMs, aimbotMagneticPostFirePauseMs);

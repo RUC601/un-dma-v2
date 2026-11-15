@@ -3075,6 +3075,24 @@ std::string BuildEntitiesJson(const std::unordered_map<std::string, std::string>
             << ",\"read_started_tick_ms\":" << entity.read_started_tick_ms
             << ",\"read_completed_tick_ms\":" << entity.read_completed_tick_ms
             << ",\"skeleton_sample_tick_ms\":" << entity.skeleton_sample_tick_ms;
+        out << ",\"skeleton_revision\":" << entity.skeleton_revision
+            << ",\"rotation_valid\":" << (entity.rotation_valid ? "true" : "false")
+            << ",\"skeleton_form\":";
+        AppendJsonString(out, OW::SkeletonSemantics::FormName(entity.skeleton_form));
+        out << ",\"skeleton_status\":";
+        AppendJsonString(out, OW::Skeleton::StatusName(entity.skeleton_status));
+        out << ",\"skeleton_mapping_source\":";
+        AppendJsonString(out, OW::SkeletonSemantics::MappingSource(entity.skeleton_form));
+        out << ",\"skeleton_requested_ids\":";
+        AppendIntArray(out, entity.skeleton_requested_ids);
+        out << ",\"core_anchor_sources\":[";
+        for (size_t slot = 0; slot < entity.core_anchor_source.size(); ++slot) {
+            if (slot) out << ',';
+            const auto source = entity.core_anchor_source[slot];
+            AppendJsonString(out, source == OW::SkeletonSemantics::CoreAnchorSource::ObservedBone ? "observed_bone" :
+                source == OW::SkeletonSemantics::CoreAnchorSource::PositionEstimate ? "position_estimate" : "unavailable");
+        }
+        out << ']';
         out << ",\"address\":";
         AppendHexString(out, entity.address);
         out << ",\"component_parent\":";

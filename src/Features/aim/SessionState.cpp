@@ -50,6 +50,8 @@ namespace AimbotDetail {
     }
 
     void EndOrdinaryFlickActivation(RuntimeState& state) {
+        state.contourContact.Reset();
+        OW::TargetingDetail::ResetContourSelection();
         if (state.ordinaryFlick.moving) PauseOrdinaryFlickMovement(state);
         FlickRepeat::EndActivation(state.ordinaryFlick);
     }

@@ -5,6 +5,8 @@
 
 #include "Utils/Config.hpp"
 #include "config/FileTransaction.hpp"
+#include "config/ContourSettings.hpp"
+#include "vision/ContourDetection.hpp"
 #include "config/AimPlanJson.hpp"
 #include "config/AimModeJson.hpp"
 #include "config/AlertJson.hpp"
@@ -2295,6 +2297,7 @@ namespace OW { namespace Config {
                 SameFloatForDefaultMigration(lhs.maxCharge, rhs.maxCharge) &&
                 lhs.ignoreInvisible == rhs.ignoreInvisible &&
                 lhs.traceCondition == rhs.traceCondition &&
+                lhs.contourEnabled == rhs.contourEnabled &&
                 lhs.unlockCondition == rhs.unlockCondition &&
                 SameFloatForDefaultMigration(lhs.lockTime, rhs.lockTime) &&
                 SameFloatForDefaultMigration(lhs.maxDistance, rhs.maxDistance) &&
@@ -2872,6 +2875,7 @@ namespace OW { namespace Config {
             aimbotMinCharge = 5.0f;
             aimbotMaxCharge = 100.0f;
             aimbotIgnoreInvisible = true;
+            aimbotContourEnabled = false;
             aimbotTrace = 0;
             aimbotUnlock = 0;
             aimbotLockTime = 20.0f;
@@ -2994,6 +2998,7 @@ namespace OW { namespace Config {
             gameOutlines = false;
             gameOutlineVisibleOnly = false;
             gameOutlineRainbow = false;
+            gameOutlineTargetColor = true;
             draw_skel = false;            // default: incomplete skeleton overlay is opt-in
             draw_avatar = true;           // default: preserve box avatar overlay
             draw_hitbox = false;          // default: hitbox overlay is opt-in
@@ -3029,6 +3034,7 @@ namespace OW { namespace Config {
             enargb = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);       // current box theme: visible fill red
             invisnenargb = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // current box theme: hidden fill white
             targetargb = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);   // current box theme: target fill yellow
+            outlineTargetColor = targetargb;
             allyargb = ImVec4(0.0f, 0.0f, 1.0f, 0.0f);     // current box theme: ally fill transparent blue
             EnemyCol = ImVec4(1.0f, 0.0f, 0.0f, 0.0f);     // current box theme: transparent red outline
             fovcol = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);       // default: 1,1,1,1
@@ -3137,6 +3143,7 @@ namespace OW { namespace Config {
             preset.minCharge = aimbotMinCharge;
             preset.maxCharge = aimbotMaxCharge;
             preset.ignoreInvisible = aimbotIgnoreInvisible;
+            preset.contourEnabled = aimbotContourEnabled;
             preset.traceCondition = aimbotTrace;
             preset.unlockCondition = aimbotUnlock;
             preset.lockTime = aimbotLockTime;
@@ -3227,6 +3234,7 @@ namespace OW { namespace Config {
             aimbotMinCharge = preset.minCharge;
             aimbotMaxCharge = preset.maxCharge;
             aimbotIgnoreInvisible = preset.ignoreInvisible;
+            aimbotContourEnabled = preset.contourEnabled;
             aimbotTrace = preset.traceCondition;
             aimbotUnlock = preset.unlockCondition;
             aimbotLockTime = preset.lockTime;
@@ -3381,6 +3389,7 @@ namespace OW { namespace Config {
             slot.preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", slot.preset.minCharge);
             slot.preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", slot.preset.maxCharge);
             slot.preset.ignoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", slot.preset.ignoreInvisible);
+            slot.preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             slot.preset.traceCondition = ReadInt(ini, section, "aimbotTrace", slot.preset.traceCondition);
             slot.preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", slot.preset.unlockCondition);
             slot.preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", slot.preset.lockTime);
@@ -3497,6 +3506,7 @@ namespace OW { namespace Config {
             preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", preset.minCharge);
             preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", preset.maxCharge);
             preset.ignoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", preset.ignoreInvisible);
+            preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             preset.traceCondition = ReadInt(ini, section, "aimbotTrace", preset.traceCondition);
             preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", preset.unlockCondition);
             preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", preset.lockTime);
@@ -3572,6 +3582,7 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotMinCharge", preset.minCharge);
             WriteFixedFloatValue(path, section, "aimbotMaxCharge", preset.maxCharge);
             WriteBoolValue(path, section, "aimbotIgnoreInvisible", preset.ignoreInvisible);
+            WriteBoolValue(path, section, "aimbotContourEnabled", preset.contourEnabled);
             WriteIntValue(path, section, "aimbotTrace", preset.traceCondition);
             WriteIntValue(path, section, "aimbotUnlock", preset.unlockCondition);
             WriteFixedFloatValue(path, section, "aimbotLockTime", preset.lockTime);
@@ -3703,6 +3714,7 @@ namespace OW { namespace Config {
             AddJsonBool(value, "ignoreSombraStealth", preset.ignoreSombraStealth, allocator);
             AddJsonBool(value, "requireTargetable", preset.requireTargetable, allocator);
             AddJsonInt(value, "targetTeam", preset.targetTeam, allocator);
+            AddJsonBool(value, "contourEnabled", preset.contourEnabled, allocator);
             AddJsonFloat(value, "maxAimTime", preset.maxAimTime, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
             AddJsonFloat(value, "maxCharge", preset.maxCharge, allocator);
@@ -4852,6 +4864,7 @@ namespace OW { namespace Config {
             defaults.ignoreSombraStealth = ReadJsonBool(value,"ignoreSombraStealth",defaults.ignoreSombraStealth);
             defaults.requireTargetable = ReadJsonBool(value,"requireTargetable",defaults.requireTargetable);
             defaults.targetTeam = ReadJsonInt(value, "targetTeam", defaults.targetTeam);
+            defaults.contourEnabled = ReadJsonBool(value, "contourEnabled", false);
             defaults.maxAimTime = ReadJsonFloat(value, "maxAimTime", defaults.maxAimTime);
             defaults.minCharge = ReadJsonFloat(value, "minCharge", defaults.minCharge);
             defaults.maxCharge = ReadJsonFloat(value, "maxCharge", defaults.maxCharge);
@@ -5568,6 +5581,7 @@ namespace OW { namespace Config {
             aimbotMinCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", aimbotMinCharge);
             aimbotMaxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", aimbotMaxCharge);
             aimbotIgnoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", aimbotIgnoreInvisible);
+            aimbotContourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             aimbotTrace = ReadInt(ini, section, "aimbotTrace", aimbotTrace);
             aimbotUnlock = ReadInt(ini, section, "aimbotUnlock", aimbotUnlock);
             aimbotLockTime = ReadFixedFloat(ini, section, "aimbotLockTime", aimbotLockTime);
@@ -6041,6 +6055,7 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotMinCharge", aimbotMinCharge);
             WriteFixedFloatValue(path, section, "aimbotMaxCharge", aimbotMaxCharge);
             WriteBoolValue(path, section, "aimbotIgnoreInvisible", aimbotIgnoreInvisible);
+            WriteBoolValue(path, section, "aimbotContourEnabled", aimbotContourEnabled);
             WriteIntValue(path, section, "aimbotTrace", aimbotTrace);
             WriteIntValue(path, section, "aimbotUnlock", aimbotUnlock);
             WriteFixedFloatValue(path, section, "aimbotLockTime", aimbotLockTime);
@@ -6394,6 +6409,7 @@ namespace OW { namespace Config {
             gameOutlines = ReadBool(ini, section, "gameOutlines", false);
             gameOutlineVisibleOnly = ReadBool(ini, section, "gameOutlineVisibleOnly", false);
             gameOutlineRainbow = ReadBool(ini, section, "gameOutlineRainbow", false);
+            gameOutlineTargetColor = ReadBool(ini, section, "gameOutlineTargetColor", true);
             draw_skel = ReadBool(ini, section, "draw_skel", draw_skel);
             draw_avatar = ReadBool(ini, section, "draw_avatar", draw_avatar);
             draw_hitbox = ReadBool(ini, section, "draw_hitbox", draw_hitbox);
@@ -6435,6 +6451,8 @@ namespace OW { namespace Config {
             LoadColor(ini, section, "invisenargb", invisnenargb);
             LoadColor(ini, section, "enargb", enargb);
             LoadColor(ini, section, "targetargb", targetargb);
+            outlineTargetColor = targetargb;
+            LoadColor(ini, section, "outlineTargetColor", outlineTargetColor);
             LoadColor(ini, section, "allyargb", allyargb);
             LoadFovRingStyles(ini);
         }
@@ -6885,6 +6903,7 @@ namespace OW { namespace Config {
             ClampColor("enargb", enargb);
             ClampColor("invisnenargb", invisnenargb);
             ClampColor("targetargb", targetargb);
+            ClampColor("outlineTargetColor", outlineTargetColor);
             ClampColor("allyargb", allyargb);
             ClampColor("EnemyCol", EnemyCol);
             ClampColor("fovcol", fovcol);
@@ -6894,6 +6913,9 @@ namespace OW { namespace Config {
                     FovRingSlotKind::Aim,
                     slotIndex);
             }
+            // Includes normal loads, missing/newer-profile fallback and explicit
+            // validation. Match the final normalized palette, not pre-load values.
+            V2::Vision::SyncOutlinePalette();
         }
 
         std::string ColorText(const ImVec4& value)
@@ -7195,6 +7217,7 @@ namespace OW { namespace Config {
             WriteBoolValue(path, "Global", "gameOutlines", gameOutlines);
             WriteBoolValue(path, "Global", "gameOutlineVisibleOnly", gameOutlineVisibleOnly);
             WriteBoolValue(path, "Global", "gameOutlineRainbow", gameOutlineRainbow);
+            WriteBoolValue(path, "Global", "gameOutlineTargetColor", gameOutlineTargetColor);
             WriteBoolValue(path, "Global", "draw_skel", draw_skel);
             WriteBoolValue(path, "Global", "draw_avatar", draw_avatar);
             WriteBoolValue(path, "Global", "draw_hitbox", draw_hitbox);
@@ -7235,6 +7258,7 @@ namespace OW { namespace Config {
             WriteColor(path, "Global", "invisenargb", invisnenargb);
             WriteColor(path, "Global", "enargb", enargb);
             WriteColor(path, "Global", "targetargb", targetargb);
+            WriteColor(path, "Global", "outlineTargetColor", outlineTargetColor);
             WriteColor(path, "Global", "allyargb", allyargb);
             SaveFovRingStyles(path);
 
@@ -7872,6 +7896,7 @@ namespace OW { namespace Config {
             View_aimbotMinCharge() = preset.minCharge;
             View_aimbotMaxCharge() = preset.maxCharge;
             View_aimbotIgnoreInvisible() = preset.ignoreInvisible;
+            View_aimbotContourEnabled() = preset.contourEnabled;
             View_aimbotTrace() = preset.traceCondition;
             View_aimbotUnlock() = preset.unlockCondition;
             View_aimbotLockTime() = preset.lockTime;

@@ -146,6 +146,15 @@
                     entity.Alive,(refreshHealth || hotReads.HealthRead()) && componentCache.healthValid &&
                         componentCache.healthUpdateTick==processLoopTick,entityAdmissionNow(),&authorityFailure);
                 if(!entity.body_authority_revision){rejectAdmission(3,authorityFailure);continue;}
+                // A new body's observation was read before its admission generation existed.
+                // Bind only that same fully checked sample to the newly admitted generation.
+                auto& admittedSkeleton = cacheIt->second->skeletonCache;
+                auto admittedIdentity = entity.SkeletonIdentity();
+                auto sampledIdentity = admittedSkeleton.identity;
+                sampledIdentity.generation = admittedIdentity.generation;
+                if (admittedSkeleton.valid && sampledIdentity == admittedIdentity &&
+                    entity.skeleton_revision == admittedSkeleton.revision)
+                    admittedSkeleton.identity = admittedIdentity;
                 admissionRecord.admissionRejectReason={};
                 if(!entity.Alive)OW::TargetingDetail::InvalidateTargetBody(entity.address,entity.roster_key,entity.actor_generation);
                 if(old && !sameLifetime) {

@@ -21,6 +21,8 @@ namespace AimbotDetail {
         bool dodelay = false;
         DWORD lastFlickFireTick = 0;
         OW::FlickRepeat::State ordinaryFlick{};
+        OW::Contour::ContactState contourContact{};
+        bool contourWasEnabled=false;
         uint64_t trajectoryWaitEntityKey = 0;
         DWORD trajectoryWaitStartedTick = 0;
         std::array<OW::AimReleaseFire::PhysicalPress,3> releasePresses{};

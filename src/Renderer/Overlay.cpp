@@ -3,6 +3,7 @@
 #include "Renderer/Overlay.hpp"
 #include "Renderer/FrameSchedule.hpp"
 #include "Features/UI.hpp"
+#include "ui/vision/ContourPanel.hpp"
 #include "config/UiPreferences.hpp"
 #include "Game/HeroSettings.hpp"
 #include <fstream>
@@ -617,6 +618,7 @@ void Overlay::RequestExit() {
 }
 
 void Overlay::Shutdown() {
+    UI::Vision::ReleasePreviewResources();
     UI::ShutdownResources();
     Render::ShutdownIcons();
 

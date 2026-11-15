@@ -83,6 +83,16 @@ set(GAME_HEADERS
 
 include(cmake/OutputSources.cmake)
 
+# Capture and pixel processing have no DMA or output-device dependency.
+add_library(UnContourVision STATIC
+    src/vision/CaptureCard.cpp
+    src/vision/ContourDetection.cpp
+    src/vision/ContourService.cpp
+    src/config/ContourSettings.cpp
+)
+target_include_directories(UnContourVision PUBLIC include PRIVATE src vendor/imgui vendor/rapidjson)
+target_link_libraries(UnContourVision PUBLIC strmiids ole32 oleaut32 uuid)
+
 set(UNLEASHED_SOURCES
     src/main.cpp
     src/unleashed.rc
@@ -109,6 +119,7 @@ set(UNLEASHED_SOURCES
     src/ui/pages/AlertPage.cpp
     src/ui/pages/DisplayPages.cpp
     src/ui/pages/SettingsPages.cpp
+    src/ui/vision/ContourPanel.cpp
     src/runtime/ProcessSession.cpp
     src/runtime/WorkerGroup.cpp
     src/features/aim/BehaviorController.cpp
@@ -188,6 +199,7 @@ target_include_directories(Unleashed PRIVATE
 # ============================================================================
 
 target_link_libraries(Unleashed PRIVATE
+    UnContourVision
     "${CMAKE_SOURCE_DIR}/vendor/leechcore/leechcore.lib"
     "${CMAKE_SOURCE_DIR}/vendor/leechcore/vmm.lib"
     d3d11
@@ -280,6 +292,8 @@ if(UNLEASHED_TEST_SERVER)
 endif()
 
 if(UNLEASHED_BUILD_TESTS)
-    set(UNLEASHED_TEST_ROOT "${CMAKE_SOURCE_DIR}/../../04_SCENARIO/un-dma-v2")
+    set(UNLEASHED_TEST_ROOT "${CMAKE_SOURCE_DIR}/../../04_SCENARIO/un-dma-v2" CACHE PATH "Offline regression source root")
+    # Header-level targeting/config consumers use the same vision implementation.
+    link_libraries(UnContourVision)
     include("${UNLEASHED_TEST_ROOT}/cmake/SelfTests.cmake")
 endif()

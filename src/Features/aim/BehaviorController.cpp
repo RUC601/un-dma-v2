@@ -217,7 +217,9 @@ namespace AimbotDetail {
     }
 
     inline bool AimPresetHasSelectableEntityInDistanceRange(const OW::Config::HeroPreset& preset) {
-        const std::vector<OW::c_entity> entities = OW::TargetingDetail::SnapshotEntities();
+        const auto frame=OW::consumerFrame?OW::consumerFrame:OW::SnapshotFrame();
+        const auto& entities=frame->entities;
+        OW::TargetingDetail::ContourEvaluation contour(*frame,preset.contourEnabled);
         if (entities.empty())
             return false;
 
@@ -232,16 +234,18 @@ namespace AimbotDetail {
         if (!fovContext.valid)
             return false;
 
-        for (OW::c_entity entity : entities) {
+        for (std::size_t entityIndex=0;entityIndex<entities.size();++entityIndex) {
+            const auto& entity=entities[entityIndex];
+            const bool selectionVisible=contour.enabled?contour.Visible(entityIndex):entity.Vis;
             const auto effective=OW::AimPlan::Resolve(preset.aimPlan,entity.HeroID);
-            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) continue;
+            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,selectionVisible)) continue;
             auto inRange=[&](float d) { return effective.overrideLimits ? std::isfinite(d) && d>=effective.limits.minDistance &&
                 (effective.limits.maxDistance<=0 || d<=effective.limits.maxDistance) : DistancePassesAimPresetRange(d,preset); };
             if (!OW::TargetingDetail::IsRuntimeTargetValid(entity, false))
                 continue;
             if (!OW::TargetingDetail::TargetTeamMatches(entity, preset.targetTeam, local))
                 continue;
-            if (preset.ignoreInvisible && !entity.Vis)
+            if ((contour.enabled || preset.ignoreInvisible) && !selectionVisible)
                 continue;
 
             const float chestDistance = camera.DistTo(entity.chest_pos);
@@ -250,7 +254,15 @@ namespace AimbotDetail {
 
             const int aimBone = effective.overrideAimPoint ? (effective.point.boneMask&1 ? OW::Config::kAimBoneHead :
                 effective.point.boneMask&2 ? OW::Config::kAimBoneNeck : OW::Config::kAimBoneChest) : ResolvePresetAimBoneForDistance(preset, chestDistance);
-            const Vector3 aimPoint = OW::TargetingDetail::ConfiguredBonePosition(entity, aimBone);
+            Vector3 aimPoint = OW::TargetingDetail::ConfiguredBonePosition(entity, aimBone);
+            if(contour.enabled) {
+                const auto rawMask=!entity.Team ? preset.allyBoneMask :
+                    effective.overrideAimPoint?effective.point.boneMask:preset.aimBoneMask;
+                const auto observation=contour.ResolveMask(entityIndex,
+                    OW::Contour::AimMaskForDistance(rawMask,chestDistance,preset.maxHeadDistance));
+                if(!observation.evidence.exposed && !observation.retained) continue;
+                aimPoint=observation.aimWorld;
+            }
             if (!OW::TargetingDetail::IsFiniteVector(aimPoint) ||
                 OW::TargetingDetail::IsZeroVector(aimPoint))
                 continue;
@@ -269,7 +281,9 @@ namespace AimbotDetail {
     }
 
     inline bool AimPresetHasEntityInDistanceRange(const OW::Config::HeroPreset& preset) {
-        const std::vector<OW::c_entity> entities = OW::TargetingDetail::SnapshotEntities();
+        const auto frame=OW::consumerFrame?OW::consumerFrame:OW::SnapshotFrame();
+        const auto& entities=frame->entities;
+        OW::TargetingDetail::ContourEvaluation contour(*frame,preset.contourEnabled);
         if (entities.empty())
             return false;
 
@@ -278,9 +292,12 @@ namespace AimbotDetail {
             OW::TargetingDetail::IsZeroVector(camera))
             return false;
 
-        for (const OW::c_entity& entity : entities) {
+        for (std::size_t entityIndex=0;entityIndex<entities.size();++entityIndex) {
+            const auto& entity=entities[entityIndex];
+            const bool selectionVisible=contour.enabled?contour.Visible(entityIndex):entity.Vis;
+            if(contour.enabled&&!selectionVisible) continue;
             const auto effective=OW::AimPlan::Resolve(preset.aimPlan,entity.HeroID);
-            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) continue;
+            if(!OW::AimPlan::Eligible(preset.aimPlan.selection,effective,entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,selectionVisible)) continue;
             if (!OW::TargetingDetail::IsRuntimeTargetValid(entity, false))
                 continue;
 
@@ -955,6 +972,75 @@ namespace AimbotDetail {
     inline constexpr const char* kTriggerCloseRangeOwnerKey =
         "overwatch.trigger.close_range";
 
+    inline const char* ContourUnsupportedReason() {
+        if(!OW::Config::View_aimbotContourEnabled()) return nullptr;
+        const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
+        if(OW::Config::View_aimBehavior()!=OW::Config::kAimBehaviorFlick) return "ordinary_flick_required";
+        if(tuning && tuning->releaseToFire) return "charge_release_not_supported";
+        const auto* weapon=OW::ResolveWeaponSpec(LocalEntity().HeroID,OW::Config::View_aimbotAttack());
+        if(!weapon) return "weapon_unknown";
+        if(weapon->aimClass!=OW::AimClass::HitscanSingle && weapon->aimClass!=OW::AimClass::HitscanAuto &&
+            weapon->aimClass!=OW::AimClass::HitscanBurst && weapon->aimClass!=OW::AimClass::Shotgun)
+            return "hitscan_weapon_required";
+        if(OW::ResolvePredictionEnabled(OW::ClampPredictionOverride(OW::Config::View_aimbotPredictionMode()),
+            weapon,OW::Config::View_Prediction())) return "prediction_not_supported";
+        return nullptr;
+    }
+    inline bool ContourModeSupported() { return ContourUnsupportedReason()==nullptr; }
+
+    inline void ReportContourStatus(const RuntimeState& state,const OW::TargetCandidate& candidate) {
+        static DWORD lastReport=0;
+        const DWORD now=GetTickCount();if(lastReport && now-lastReport<500) return;lastReport=now;
+        const auto& e=candidate.contour.evidence;
+        Diagnostics::Info("[V2 contour] target=0x%llX body=%llu frame=%llu epoch=%llu ageMs=%.1f exposed=%d retained=%d edge=%d inside=%d contact=%d ready=%d",
+            static_cast<unsigned long long>(e.identity.entity),static_cast<unsigned long long>(e.identity.body),
+            static_cast<unsigned long long>(e.sequence),static_cast<unsigned long long>(e.epoch),
+            e.sequence?V2::Vision::MonotonicMs()-e.capturedMs:-1.0,e.exposed?1:0,candidate.contour.retained?1:0,
+            e.touching?1:0,e.inside?1:0,state.contourContact.touched?1:0,state.contourContact.ready?1:0);
+    }
+
+    inline bool ContourSubmissionAllowed() {
+        if(!OW::Config::View_aimbotContourEnabled()) return true;
+        if(!activeAimShotState || !ContourModeSupported()) return false;
+        const auto& contact=activeAimShotState->contourContact;
+        const auto candidate=OW::TargetingDetail::SnapshotLastTargetCandidate();
+        if(!contact.ready || !candidate.valid || !candidate.contour.evidence.exposed ||
+            candidate.contour.retained || contact.identity!=candidate.contour.evidence.identity ||
+            !OW::TargetingDetail::IsRuntimeTargetValid(candidate.entitySnapshot,false)) return false;
+        V2::Vision::Settings currentSettings;
+        const auto image=V2::Vision::GetService().Snapshot(currentSettings);
+        return image && image->epoch==contact.epoch && image->settingsRevision==contact.revision &&
+            image->sequence==contact.sequence && contact.sequence>contact.consumedSequence &&
+            V2::Vision::IsFresh(*image,currentSettings,V2::Vision::MonotonicMs());
+    }
+
+    struct ScopedIndependentAimSelection {
+        bool contour=OW::Config::View_aimbotContourEnabled();
+        OW::TargetCandidate selected{};
+        OW::TargetingDetail::TargetLockRuntime lock{};
+        int index=-1;
+        float health=0;
+        ScopedIndependentAimSelection() {
+            if(!contour) return;
+            selected=OW::TargetingDetail::SnapshotLastTargetCandidate();
+            lock=OW::TargetingDetail::SnapshotTargetLockRuntime();
+            index=OW::Config::Targetenemyi;health=OW::Config::health;
+            OW::Config::View_aimbotContourEnabled()=false;
+        }
+        ~ScopedIndependentAimSelection() {
+            if(!contour) return;
+            OW::Config::View_aimbotContourEnabled()=true;
+            if(selected.valid && !OW::TargetingDetail::IsRuntimeTargetValid(selected.entitySnapshot,false)) {
+                selected={};lock={};index=-1;
+            }
+            OW::TargetingDetail::StoreLastTargetCandidate(selected);
+            OW::PublishSelectedAimPlan(selected);
+            OW::Config::Targetenemyi=index;OW::Config::health=health;
+            std::lock_guard<std::mutex> guard(OW::TargetingDetail::target_lock_mutex);
+            OW::TargetingDetail::target_lock_runtime=lock;
+        }
+    };
+
     inline bool ClickMouseButton(
         int button,
         DWORD sleep_ms = 10,
@@ -963,6 +1049,7 @@ namespace AimbotDetail {
         bool requireNewPress = false, DWORD* submittedAt = nullptr) {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return false;
+        if(ownerSource==OW::OutputOwnerSource::GlobalAim && !ContourSubmissionAllowed()) return false;
         const std::uint64_t operationGeneration =
             V2::Output::ActiveRuntimeSnapshot().generation;
         const OW::ActionOutputStatus pressStatus =
@@ -1014,7 +1101,7 @@ namespace AimbotDetail {
     }
 
     inline bool GlobalAimFirePolicyAllowsGeneratedFire() {
-        return AllowsGeneratedAimFire(ClampFirePolicy(OW::Config::View_aimbotFirePolicy()));
+        return ContourModeSupported() && AllowsGeneratedAimFire(ClampFirePolicy(OW::Config::View_aimbotFirePolicy()));
     }
 
     inline bool GeneratedFireAllowedForSource(OW::OutputOwnerSource ownerSource) {
@@ -1371,6 +1458,7 @@ namespace AimbotDetail {
                                         bool releaseAtCrosshair=false) {
         if(!activeAimShotState||!OW::RuntimeWorkersRunning()||!OW::HasFreshViewMatrices()||
            OW::Config::aimDryRun||!GeneratedFireAllowedForSource(source)||!AimModeStructureCurrent()) return false;
+        if(source==OW::OutputOwnerSource::GlobalAim && !ContourSubmissionAllowed()) return false;
         auto& state=*activeAimShotState;ObserveReleaseFireInput(state);
         if(state.releaseNeedsActivationUp) return false;
         const auto local=LocalEntity();const auto* weapon=OW::ResolveWeaponSpec(local.HeroID,OW::Config::View_aimbotAttack());
@@ -2413,6 +2501,7 @@ namespace AimbotDetail {
     }
 
     inline bool CompleteReleasedAimAtCrosshair(RuntimeState& state,bool noTarget) {
+        if(OW::Config::View_aimbotContourEnabled()) return false;
         if(!state.releasePending) return false;
         const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
         if(!tuning || (!noTarget && GetTickCount()-state.releaseActionStarted<
@@ -3586,14 +3675,18 @@ namespace AimbotDetail {
             EndOrdinaryFlickActivation(state);
             return false;
         }
-        if (FlickRepeat::PrepareSession(state.ordinaryFlick, identity))
+        if (FlickRepeat::PrepareSession(state.ordinaryFlick, identity)) {
+            state.contourContact.Reset();
+            OW::TargetingDetail::ResetContourSelection();
             OW::ResetAimSmoothingState();
+        }
         return true;
     }
 
 
 
     inline void RunFlick(RuntimeState& state, float origin_sens) {
+        if(!ContourModeSupported()) return;
         const std::uint64_t connectionEpoch =
             OW::ProcessConnection::ConnectionEpoch();
         const std::uint64_t outputTransitionEpoch =
@@ -3707,6 +3800,21 @@ namespace AimbotDetail {
 
             const Vector3 vec = OW::GetVector3(OW::Config::View_Prediction());
             OW::AimCandidateConfig selectedSettings6(OW::Config::selectedAimHero);
+            const bool contourEnabled=OW::Config::View_aimbotContourEnabled();
+            const auto contourCandidate=contourEnabled ? OW::TargetingDetail::SnapshotLastTargetCandidate() : OW::TargetCandidate{};
+            bool contourReady=false;
+            if(contourEnabled) {
+                if(!ContourModeSupported()) {state.contourContact.Reset();break;}
+                if(contourCandidate.valid) {
+                    contourReady=state.contourContact.Observe(contourCandidate.contour.evidence,
+                        V2::Vision::MonotonicMs(),contourCandidate.contour.touchDelayMs,contourCandidate.contour.lostGraceMs);
+                    ReportContourStatus(state,contourCandidate);
+                    if(contourCandidate.contour.retained) {
+                        // Keep identity/controller state briefly, but neither move nor fire on a missing capture.
+                        OW::RuntimeWorkerSleep(1);continue;
+                    }
+                } else {state.contourContact.Reset();ReportContourStatus(state,contourCandidate);}
+            }
             if (IsZeroVector(vec)) {
                 CompleteReleasedAimAtCrosshair(state,true);
                 Diagnostics::Aim("flick break reason=no_target_vector targetIndex=%d entities=%zu",
@@ -3730,7 +3838,8 @@ namespace AimbotDetail {
                 if (GlobalAimFirePolicyAllowsGeneratedFire())
                     PrimeDelayedShot(state);
 
-                const TwoStageAimPlan twoStagePlan = ResolveTwoStageAimPlan(vec, target, OW::Config::View_Prediction());
+                const TwoStageAimPlan twoStagePlan = contourEnabled ? TwoStageAimPlan{} :
+                    ResolveTwoStageAimPlan(vec, target, OW::Config::View_Prediction());
                 const Vector3 aimTarget = twoStagePlan.active ? twoStagePlan.target : vec;
                 const float smoothInput = OW::Config::AimBehaviorSmoothInput(
                     behavior,
@@ -3759,8 +3868,9 @@ namespace AimbotDetail {
                         OrdinaryFlickPhase(state).remainingMs,
                         OW::AimSmoothingDetail::ComputeDeltaTime(),
                         OW::Config::flickRepeatMaxSpeedDegPerSec,
-                        OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos,
-                            aimTarget, OW::Config::aimbotEffectiveHitWindow));
+                        contourEnabled ? (contourCandidate.contour.evidence.touching || contourCandidate.contour.evidence.inside) :
+                            OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos,
+                                aimTarget, OW::Config::aimbotEffectiveHitWindow));
                 } else {
                     ApplyAiAimNoise(aim.smoothed_angle, 300.f, false);
                 }
@@ -3792,9 +3902,11 @@ namespace AimbotDetail {
                         Diagnostics::Aim("flick.tick delta_deg=(%.4f,%.4f) hitbox=%.4f missbox=%.4f",
                             deltaDegX, deltaDegY, hitWindow, OW::Config::missbox);
                     }
-                    const bool hitBeforeMove = OW::in_range(
+                    // Pixel contact is the hit evidence in contour mode. A hidden
+                    // bone centre cannot veto an exposed edge of the same body.
+                    const bool hitBeforeMove = contourEnabled ? contourReady : OW::in_range(
                         aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
-                    const bool hitAfterMove = OW::in_range(
+                    const bool hitAfterMove = !contourEnabled && OW::in_range(
                         aim.smoothed_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
                     ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);
                     if (!hitBeforeMove && hitAfterMove) {
@@ -3829,6 +3941,7 @@ namespace AimbotDetail {
                             break;
                         }
                         if (ordinaryFlick) {
+                            if(contourEnabled) state.contourContact.Submitted();
                             if (!FlickRepeat::RecordSubmission(state.ordinaryFlick, submitted,
                                 submittedAt, ordinaryInterval)) break;
                             StampFlickFire(state, submittedAt);
@@ -4129,6 +4242,7 @@ namespace AimbotDetail {
     }
 
     inline void RunConfiguredAimBehavior(RuntimeState& state, float origin_sens) {
+        if(!ContourModeSupported()) return;
         if(state.releaseNeedsActivationUp) return;
         const auto* tuning=OW::Config::ActiveSlotBehaviorTuning();
         if(tuning && tuning->releaseToFire && tuning->autoCharge &&
@@ -4208,6 +4322,7 @@ namespace AimbotDetail {
         MaintainSensitivity(origin_sens);
 
         {
+            ScopedIndependentAimSelection independentSelection;
             ScopedHeroTriggerPresetOverride triggerPresetOverride;
             if (OW::Config::View_triggerbot()) RunTriggerbot(false, origin_sens);
             if (OW::Config::View_triggerbot2()) RunTriggerbot(true, origin_sens);
@@ -4221,14 +4336,20 @@ namespace AimbotDetail {
             ResetShootStateOnRelease(state);
             return;
         }
-        RunAutoScaleFov();
-        RunAutoMelee();
-        RunAutoRmb();
-        RunAutoSkill();
-        RunAutoShootCooldown();
+        {
+            ScopedIndependentAimSelection independentSelection;
+            RunAutoScaleFov();
+            RunAutoMelee();
+            RunAutoRmb();
+            RunAutoSkill();
+            RunAutoShootCooldown();
+        }
         ResetShootStateOnRelease(state);
-        RunReaperReloadCancel();
-        RunSecondAim();
+        {
+            ScopedIndependentAimSelection independentSelection;
+            RunReaperReloadCancel();
+            RunSecondAim();
+        }
     }
 
     inline void RunAimbotTickWithHeroPreset(RuntimeState& state, float& origin_sens) {
@@ -4239,7 +4360,20 @@ namespace AimbotDetail {
         if(!RefreshAimScene(state)) return;
         ScopedHeroPresetOverride heroPresetOverride(state);
         activeAimShotState=&state;
-        MaintainConfiguredAimShot(state);
+        if(state.contourWasEnabled!=OW::Config::View_aimbotContourEnabled()) {
+            state.contourContact.Reset();OW::TargetingDetail::ResetContourSelection();
+            state.contourWasEnabled=OW::Config::View_aimbotContourEnabled();
+        }
+        if(!ContourModeSupported()) {
+            EndOrdinaryFlickActivation(state);CancelConfiguredAimShot(state);
+            static DWORD lastUnsupportedReport=0;
+            const DWORD now=GetTickCount();
+            if(IsAimActivationKeyDown() && (!lastUnsupportedReport || now-lastUnsupportedReport>=1000)) {
+                lastUnsupportedReport=now;
+                Diagnostics::Info("[V2 contour] activation_blocked reason=%s",ContourUnsupportedReason());
+            }
+        }
+        else MaintainConfiguredAimShot(state);
         ObserveAimHoldWindows(state);
         if (InputSequenceBlocksAim("aimbot_preset")) {
             CancelConfiguredAimShot(state);

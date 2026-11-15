@@ -607,12 +607,21 @@ namespace OW {
         return 0;
     }
 
+    struct CnLinkTargetMapIdentity {
+        uint64_t context=0,owner=0,buckets=0,entries=0;
+        uint32_t count=0;
+        bool operator==(const CnLinkTargetMapIdentity&) const = default;
+    };
+
     inline uint64_t ResolveCnLinkTargetMapBase(
         uint64_t linkBase,
         uint64_t idOffset,
-        uint32_t* resolvedId = nullptr) {
+        uint32_t* resolvedId = nullptr,
+        CnLinkTargetMapIdentity* verifiedMap = nullptr) {
         if (resolvedId)
             *resolvedId = 0;
+        if (verifiedMap)
+            *verifiedMap = {};
         if (!IsPlausibleUserPointer(linkBase))
             return 0;
 
@@ -640,6 +649,9 @@ namespace OW {
             return 0;
 
         const uint32_t cappedCount = (std::min)(count, 512u);
+        // A replacement proof needs the complete bucket, not the first matching UID.
+        if(verifiedMap && count!=cappedCount)return 0;
+        uint64_t uniqueTarget=0;
         struct MapEntry { uint32_t id, padding; uint64_t pointer; };
         std::array<MapEntry,16> values{};
         for(uint32_t first=0;first<cappedCount;) {
@@ -647,9 +659,15 @@ namespace OW {
             const auto pageEntries=uint32_t((0x1000-(address&0xFFF))/sizeof(MapEntry));
             const auto length=(std::min)({uint32_t(values.size()),cappedCount-first,pageEntries});
             const bool read=length && SDK->read_range(address,values.data(),size_t(length)*sizeof(MapEntry));
+            if(verifiedMap && !read)return 0;
             if(read)for (uint32_t index = 0; index < length; ++index) {
             if(values[index].id!=id)continue;
             const uint64_t mapBase=values[index].pointer;
+            if(verifiedMap) {
+                if(uniqueTarget || !IsPlausibleUserPointer(mapBase))return 0;
+                uniqueTarget=mapBase;
+                continue;
+            }
             if (IsPlausibleUserPointer(mapBase)) {
                 if (resolvedId)
                     *resolvedId = id;
@@ -657,6 +675,12 @@ namespace OW {
             }
             }
             first+=length?length:1;
+        }
+
+        if(verifiedMap && uniqueTarget) {
+            *verifiedMap={context,bucketOwner,bucketArray,entries,count};
+            if(resolvedId)*resolvedId=id;
+            return uniqueTarget;
         }
 
         return 0;
@@ -1761,14 +1785,19 @@ namespace OW {
             if(IsPlausibleUserPointer(target) &&
                 std::find(components.begin(),components.end(),target)==components.end())components.push_back(target);
         }
-        const auto resolvedComponents=components;
+        auto resolvedComponents=components;
+        struct RecoveredBinding {
+            uint64_t idOffset=0,target=0;
+            CnLinkTargetMapIdentity map;
+        };
+        std::vector<RecoveredBinding> recoveredBindings;
         if(components.empty())components.push_back(parent);
         for(auto component:components) {
             if(!RuntimeWorkersRunning() || !ProcessConnection::IsConnected())break;
             EntityHeaderSnapshot componentHeader{};
             if(component==parent)componentHeader=header;
             else if(headers && headers->contains(component))componentHeader=headers->at(component);
-            else if(!componentHeader.Read(component)){trace(3,component);continue;}
+            else componentHeader.Read(component);
             const auto matchedId=std::find_if(topology.member_ids.begin(),topology.member_ids.end(),[&](const auto& pair) {
                 return pair.first==component && pair.second && (pair.second==linkId || pair.second==targetId);
             });
@@ -1777,8 +1806,32 @@ namespace OW {
             const uint32_t expectedId=context!=contextBindings.end()
                 ? (context->first==offset::Link_TargetId?targetId:linkId) : (matchedById?matchedId->second:0);
             uint32_t componentMatch=0;
-            if(matchedById && (!componentHeader.ReadParentOffset(offset::Entity_MatchId,componentMatch) || componentMatch!=expectedId)) {
-                trace(8,component);continue;
+            bool recoveredRemote=false;
+            if(!componentHeader.valid || (matchedById &&
+                (!componentHeader.ReadParentOffset(offset::Entity_MatchId,componentMatch) || componentMatch!=expectedId))) {
+                // Only repair a failed unique index entry. Stable and ambiguous remote
+                // bindings retain their existing path; this is not local-controller admission.
+                const bool uniqueStaleIndex=!currentController && component!=parent &&
+                    context==contextBindings.end() && matchedId!=topology.member_ids.end() &&
+                    std::count_if(topology.member_ids.begin(),topology.member_ids.end(),
+                        [&](const auto& pair){return pair.second==expectedId && pair.first!=parent;})==1;
+                if(uniqueStaleIndex) {
+                    const uint64_t idOffset=expectedId==targetId?offset::Link_TargetId:offset::Link_UniqueId;
+                    uint32_t resolvedId=0,replacementMatch=0;
+                    CnLinkTargetMapIdentity currentMap;
+                    const auto replacement=ResolveCnLinkTargetMapBase(link,idOffset,&resolvedId,&currentMap);
+                    EntityHeaderSnapshot replacementHeader{};
+                    if(resolvedId==expectedId && IsPlausibleUserPointer(replacement) &&
+                        replacement!=component && replacement!=parent && replacementHeader.Read(replacement) &&
+                        replacementHeader.ReadParentOffset(offset::Entity_MatchId,replacementMatch) && replacementMatch==expectedId) {
+                        for(auto& resolved:resolvedComponents)if(resolved==component)resolved=replacement;
+                        component=replacement;componentHeader=std::move(replacementHeader);
+                        contextBindings.emplace_back(idOffset,replacement);
+                        recoveredBindings.push_back({idOffset,replacement,currentMap});
+                        recoveredRemote=true;
+                    }
+                }
+                if(!recoveredRemote){trace(componentHeader.valid?8:3,component);continue;}
             }
             auto heroBase=DecryptComponent(parent,offset::Active().typeHeroId,&header,true);
             if(!heroBase)heroBase=DecryptComponent(component,offset::Active().typeHeroId,&componentHeader,true);
@@ -1787,7 +1840,7 @@ namespace OW {
                 !GameData::IsKnownHeroId(hero.heroid)){trace(6,component);continue;}
             uint32_t actorMatch=0;
             if(!componentHeader.ReadParentOffset(offset::Entity_MatchId,actorMatch)){trace(2,component);continue;}
-            const bool hotBody=hotActors && std::any_of(hotActors->begin(),hotActors->end(),[&](const auto& actor) {
+            const bool hotBody=!recoveredRemote && hotActors && std::any_of(hotActors->begin(),hotActors->end(),[&](const auto& actor) {
                 return actor.address==component && actor.link==parent && actor.match==actorMatch && actor.hero==hero.heroid;
             });
             if(!hotBody) {
@@ -1799,7 +1852,7 @@ namespace OW {
                     trace(5,component);continue;
                 }
                 HealthPayloadSummary health{};
-                if(!TryParseHealthPayload(hp,health) || (!discoveries && (health.total<=0 || health.isDead))){trace(6,component);continue;}
+                if(!TryParseHealthPayload(hp,health) || ((!discoveries || recoveredRemote) && (health.total<=0 || health.isDead))){trace(6,component);continue;}
                 if(!std::isfinite(location.x)||!std::isfinite(location.y)||!std::isfinite(location.z)||
                     std::fabs(location.x)>100000 || std::fabs(location.y)>100000 || std::fabs(location.z)>100000){trace(7,component);continue;}
             }
@@ -1835,10 +1888,17 @@ namespace OW {
                 SDK->read_range(link+offset::Link_UniqueId,&currentLinkId,sizeof(currentLinkId)) && currentLinkId==linkId &&
                 SDK->read_range(link+offset::Link_TargetId,&currentTargetId,sizeof(currentTargetId)) && currentTargetId==targetId;
             if(link && !idsStable){trace(8);return {};}
-            for(const auto& [idOffset,target]:contextBindings)
-                if(ResolveCnLinkTargetMapBase(link,idOffset)!=target){
+            for(const auto& [idOffset,target]:contextBindings) {
+                const auto recovered=std::find_if(recoveredBindings.begin(),recoveredBindings.end(),[&](const auto& binding) {
+                    return binding.idOffset==idOffset && binding.target==target;
+                });
+                CnLinkTargetMapIdentity currentMap;
+                const auto currentTarget=ResolveCnLinkTargetMapBase(link,idOffset,nullptr,
+                    recovered!=recoveredBindings.end()?&currentMap:nullptr);
+                if(currentTarget!=target || (recovered!=recoveredBindings.end() && currentMap!=recovered->map)){
                     if(discoveries)discoveries->clear();trace(8);return {};
                 }
+            }
             allBindingsResolved=allBindingsResolved && idsStable;
             if(allBindingsResolved && bindingMembers)
                 for(auto component:resolvedComponents)bindingMembers->emplace_back(component,parent);

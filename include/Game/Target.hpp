@@ -45,6 +45,7 @@
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
 #include "Utils/ProcessConnection.hpp"
+#include "vision/ContourService.hpp"
 
 extern std::mutex g_mutex;
 
@@ -680,17 +681,31 @@ namespace OW {
             return index >= 0 && static_cast<size_t>(index) < size;
         }
 
+        inline Contour::Identity ContourIdentity(const c_entity& entity) {
+            return {entity.roster_key ? entity.roster_key : entity.address,
+                entity.actor_generation,entity.scene_generation,entity.connection_epoch};
+        }
+        inline thread_local std::vector<std::pair<Contour::Identity,bool>> contourVisibility;
+        inline thread_local Contour::Observation lastContourObservation;
+        inline bool SelectionVisible(const c_entity& entity) {
+            if(!Config::View_aimbotContourEnabled()) return entity.Vis;
+            const auto identity=ContourIdentity(entity);
+            for(const auto& entry:contourVisibility) if(entry.first==identity) return entry.second;
+            return false;
+        }
+        inline void ResetContourSelection() { contourVisibility.clear();lastContourObservation={}; }
+
         inline bool IsRuntimeTargetValid(const c_entity& entity, bool requireVisible = true) {
             if (!entity.team_known) return false;
             if (!entity.HasUsableBody(GetTickCount(),EntitySceneGeneration())) return false;
             if (entity.roster_state != EntityRosterState::Fresh) return false;
             if (!PresentationTiming::Fresh(entity.anchor_sample_tick_ms, GetTickCount())) return false;
             if (!entity.address || !entity.Alive) return false;
-            if (requireVisible && !entity.Vis) return false;
+            if (requireVisible && !SelectionVisible(entity)) return false;
             if(Config::targetAimPlanEnabled) {
                 const auto& plan=Config::View_aimPlan();
                 if(!AimPlan::Eligible(plan.selection,AimPlan::Resolve(plan,entity.HeroID),
-                    entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,entity.Vis)) return false;
+                    entity.HeroID,entity.PlayerHealth,entity.PlayerHealthMax,SelectionVisible(entity))) return false;
             }
             return true;
         }
@@ -730,27 +745,56 @@ namespace OW {
             return IsRuntimeTargetValid(entity, false) && TargetTeamMatches(entity, teamMode, local);
         }
 
+        inline Vector3 SemanticSkeletonRawPosition(const c_entity& entity, SkeletonSemantics::Slot semantic) {
+            const size_t slot = SkeletonSemantics::SlotIndex(semantic);
+            Vector3 point{};
+            if (!entity.TrySkeletonPoint(slot, point))
+                return {};
+            return point != entity.pos ? point : Vector3{};
+        }
+
         inline Vector3 CachedSkeletonBoneRawPosition(const c_entity& entity,int boneId) {
             const auto ids=entity.GetRenderSkel();
-            for(size_t slot=0;slot<ids.size();++slot)
-                if(ids[slot]==boneId && entity.skeleton_bone_valid[slot])return entity.skeleton_bones[slot];
+            for(size_t slot=0;slot<ids.size();++slot) {
+                if(ids[slot] != boneId)
+                    continue;
+                const auto point = SemanticSkeletonRawPosition(entity, static_cast<SkeletonSemantics::Slot>(slot));
+                if (!IsZeroVector(point))
+                    return point;
+            }
             return {};
         }
 
         inline Vector3 CoreBoneRawPosition(const c_entity& entity, int boneId) {
-            if (boneId == BONE_HEAD) return entity.head_pos;
-            if (boneId == BONE_NECK) return entity.neck_pos;
-            return entity.chest_pos;
+            const size_t slot = boneId == BONE_HEAD ? 0 : boneId == BONE_NECK ? 1 : 2;
+            const auto source = entity.core_anchor_source[slot];
+            if (source == SkeletonSemantics::CoreAnchorSource::Unavailable)
+                return {};
+            if (source == SkeletonSemantics::CoreAnchorSource::ObservedBone) {
+                const bool observedBotChest = slot == 2 && GameData::IsTrainingBotHeroId(entity.HeroID) &&
+                    entity.rotation_valid && entity.skeleton_form != SkeletonSemantics::Form::Unknown && entity.skeleton_revision != 0 &&
+                    entity.cached_bot_chest_bone_valid && IsFiniteVector(entity.cached_bot_chest_bone) &&
+                    !IsZeroVector(entity.cached_bot_chest_bone);
+                if (!observedBotChest &&
+                    IsZeroVector(SemanticSkeletonRawPosition(entity, static_cast<SkeletonSemantics::Slot>(slot))))
+                    return {};
+            }
+            const Vector3 point = slot == 0 ? entity.head_pos : slot == 1 ? entity.neck_pos : entity.chest_pos;
+            return IsFiniteVector(point) && !IsZeroVector(point) && point != entity.pos ? point : Vector3{};
         }
 
         inline Vector3 CoreBoneHitboxCenter(const c_entity& entity, int boneId) {
-            return ResolveBoneHitboxCenter(entity, boneId, CoreBoneRawPosition(entity, boneId));
+            const Vector3 point = CoreBoneRawPosition(entity, boneId);
+            return IsZeroVector(point) || !entity.rotation_valid ? point : ResolveBoneHitboxCenter(entity, boneId, point);
         }
 
         inline bool TryResolveSkeletonBonePoint(const c_entity& entity,
                                                 std::size_t renderSlot,
                                                 int& outBoneId,
-                                                Vector3& outPoint) {
+                                                Vector3& outPoint,
+                                                SkeletonSemantics::CoreAnchorSource* outSource = nullptr) {
+            if (outSource)
+                *outSource = SkeletonSemantics::CoreAnchorSource::Unavailable;
             if (renderSlot >= entity.skeleton_bones.size() ||
                 renderSlot >= entity.skeleton_bone_valid.size()) {
                 return false;
@@ -761,27 +805,26 @@ namespace OW {
                 return false;
 
             Vector3 rawPoint{};
-            if (renderSlot == 0) {
-                rawPoint = entity.head_pos;
-            } else if (renderSlot == 1) {
-                rawPoint = entity.neck_pos;
-            } else if (renderSlot == 2) {
-                rawPoint = entity.chest_pos;
+            SkeletonSemantics::CoreAnchorSource source = SkeletonSemantics::CoreAnchorSource::ObservedBone;
+            if (renderSlot < 3) {
+                rawPoint = CoreBoneRawPosition(entity, boneId);
+                source = entity.core_anchor_source[renderSlot];
             } else {
-                if (!entity.skeleton_bone_valid[renderSlot])
-                    return false;
-                rawPoint = entity.skeleton_bones[renderSlot];
+                rawPoint = SemanticSkeletonRawPosition(entity, static_cast<SkeletonSemantics::Slot>(renderSlot));
             }
 
             if (IsZeroVector(rawPoint) || rawPoint == entity.pos || !IsFiniteVector(rawPoint))
                 return false;
 
-            const Vector3 hitboxCenter = ResolveBoneHitboxCenter(entity, boneId, rawPoint);
+            const Vector3 hitboxCenter = entity.rotation_valid
+                ? ResolveBoneHitboxCenter(entity, boneId, rawPoint) : rawPoint;
             if (IsZeroVector(hitboxCenter) || !IsFiniteVector(hitboxCenter))
                 return false;
 
             outBoneId = boneId;
             outPoint = hitboxCenter;
+            if (outSource)
+                *outSource = source;
             return true;
         }
 
@@ -844,6 +887,123 @@ namespace OW {
                 *outScore = bestScore;
             return found;
         }
+
+        struct ContourProjectionCache {
+            std::uint64_t gameSequence=0,sequence=0,epoch=0,revision=0,scene=0,connection=0;
+            Matrix view{};
+            std::vector<Contour::ProjectedActor> actors;
+            std::map<std::pair<std::size_t,std::uint16_t>,Contour::Observation> observations;
+        };
+        inline thread_local ContourProjectionCache contourProjectionCache;
+        inline thread_local std::optional<V2::Vision::Settings> lastContourSettings;
+
+        struct ContourEvaluation {
+            bool enabled=false;
+            const ConsumptionFrame& game;
+            V2::Vision::Settings settings{};
+            std::shared_ptr<const V2::Vision::Frame> image;
+            std::vector<Contour::ProjectedActor> actors;
+            double now=0;
+            explicit ContourEvaluation(const ConsumptionFrame& frame,bool active) : enabled(active),game(frame) {
+                if(!enabled) return;
+                image=V2::Vision::GetService().Snapshot(settings);now=V2::Vision::MonotonicMs();
+                if(!lastContourSettings || *lastContourSettings!=settings) {
+                    lastContourObservation={};contourProjectionCache={};lastContourSettings=settings;
+                }
+                contourVisibility.clear();
+                if(image && (image->epoch!=lastContourObservation.evidence.epoch ||
+                    image->settingsRevision!=lastContourObservation.evidence.revision)) lastContourObservation={};
+                // Both clocks are local steady-clock receipt/publication times.
+                // This bounds local skew; it does not measure HDMI latency.
+                const double sampled=std::chrono::duration<double,std::milli>(frame.sampledAt.time_since_epoch()).count();
+                if(image && (!std::isfinite(sampled)||std::fabs(sampled-image->arrivalMs)>settings.maxFrameAgeMs)) image.reset();
+                auto& cache=contourProjectionCache;
+                const bool cached=image && game.sequence && cache.gameSequence==game.sequence &&
+                    cache.sequence==image->sequence && cache.epoch==image->epoch && cache.revision==image->settingsRevision &&
+                    cache.scene==game.local.scene_generation && cache.connection==game.local.connection_epoch &&
+                    std::memcmp(&cache.view,&game.view,sizeof(Matrix))==0;
+                if(cached) actors=cache.actors;
+                else {
+                cache={};
+                actors.resize(game.entities.size());
+                for(std::size_t i=0;i<game.entities.size();++i) {
+                    const auto& entity=game.entities[i];auto& actor=actors[i];actor.identity=ContourIdentity(entity);
+                    if(!image || !entity.team_known || !entity.Alive || !entity.address ||
+                        entity.roster_state!=EntityRosterState::Fresh ||
+                        !entity.HasUsableBody(GetTickCount(),EntitySceneGeneration()) ||
+                        !PresentationTiming::Fresh(entity.anchor_sample_tick_ms,GetTickCount())) continue;
+                    Vector2 rootScreen{};
+                    if(entity.pos!=Vector3{} && Contour::Project(game.view,entity.pos,image->width,image->height,rootScreen))
+                        actor.root=rootScreen;
+                    for(std::size_t slot=0;slot<kSkeletonBoneGroupForRenderSlot.size();++slot) {
+                        int id=0;Vector3 world{};Vector2 screen{};
+                        if(TryResolveSkeletonBonePoint(entity,slot,id,world) &&
+                            Contour::Project(game.view,world,image->width,image->height,screen)) {
+                            const float radius=ResolveBoneHitboxRadius(entity.HeroID,id,0.0f);
+                            float supportRadius=0;
+                            if(radius>0) for(const auto& delta:std::array<Vector3,6>{Vector3(radius,0,0),Vector3(-radius,0,0),
+                                Vector3(0,radius,0),Vector3(0,-radius,0),Vector3(0,0,radius),Vector3(0,0,-radius)}) {
+                                Vector2 extent{};
+                                if(Contour::Project(game.view,world+delta,image->width,image->height,extent))
+                                    supportRadius=(std::max)(supportRadius,screen.Distance(extent));
+                            }
+                            if(supportRadius>0) supportRadius=(std::min)(settings.associationRadiusPx,supportRadius*1.5f+2.f);
+                            actor.bones.push_back({id,slot,world,screen,supportRadius});
+                        }
+                    }
+                }
+                if(image) {
+                    cache.gameSequence=game.sequence;cache.sequence=image->sequence;cache.epoch=image->epoch;
+                    cache.revision=image->settingsRevision;cache.scene=game.local.scene_generation;
+                    cache.connection=game.local.connection_epoch;cache.view=game.view;cache.actors=actors;
+                }
+                }
+                for(std::size_t i=0;i<actors.size();++i) {
+                    const auto observation=Resolve(i,0xffffu);
+                    contourVisibility.push_back({actors[i].identity,observation.evidence.exposed||observation.retained});
+                }
+            }
+            Contour::Observation Resolve(std::size_t index,std::uint16_t slots) const {
+                Contour::Observation observation{};
+                if(!enabled || index>=actors.size()) return observation;
+                observation.evidence.identity=actors[index].identity;
+                if(image) {
+                    auto& cache=contourProjectionCache.observations;
+                    const auto key=std::make_pair(index,slots);
+                    const auto found=cache.find(key);
+                    if(found!=cache.end()) observation=found->second;
+                    else {
+                        observation=Contour::Associate(*image,settings,game.view,actors,index,slots,now);
+                        cache.emplace(key,observation);
+                    }
+                }
+                if(observation.evidence.exposed) return observation;
+                const auto& prior=lastContourObservation;
+                const double continuityMs=image ? image->arrivalMs : now;
+                bool priorBoneAllowed=false;
+                for(std::size_t slot=0;slot<16;++slot)
+                    if((slots&(std::uint16_t(1u)<<slot)) && Plexies20260609::HitboxBoneIdForRenderSlot(slot)==prior.boneId)
+                        priorBoneAllowed=true;
+                if(settings.enabled && priorBoneAllowed && prior.evidence.identity==actors[index].identity && prior.evidence.fresh &&
+                    prior.evidence.sequence && continuityMs>=prior.evidence.capturedMs &&
+                    continuityMs-prior.evidence.capturedMs<=settings.lostGraceMs &&
+                    (!image || (image->epoch==prior.evidence.epoch && image->settingsRevision==prior.evidence.revision))) {
+                    observation=prior;observation.retained=true;observation.evidence.fresh=false;
+                    observation.evidence.exposed=false;observation.evidence.touching=false;observation.evidence.inside=false;
+                    if(image) {
+                        observation.evidence.fresh=V2::Vision::IsFresh(*image,settings,now);
+                        observation.evidence.sequence=image->sequence;observation.evidence.capturedMs=image->arrivalMs;
+                    }
+                }
+                return observation;
+            }
+            Contour::Observation ResolveMask(std::size_t index,SkeletonBoneMask mask) const {
+                return Resolve(index,Contour::RenderSlotsForMask(mask));
+            }
+            bool Visible(std::size_t index) const {
+                return index<contourVisibility.size() && contourVisibility[index].second;
+            }
+        };
 
         inline Vector3 ConfiguredBonePosition(const c_entity& entity, int boneSetting) {
             const int normalized = Config::NormalizeAimBone(boneSetting);
@@ -915,10 +1075,7 @@ namespace OW {
             bool found = false;
             float bestScore = (std::numeric_limits<float>::max)();
             for (size_t i = 0; i < limit; ++i) {
-                if (!entity.skeleton_bone_valid[i])
-                    continue;
-
-                const Vector3 point = entity.skeleton_bones[i];
+                const Vector3 point = SemanticSkeletonRawPosition(entity, static_cast<SkeletonSemantics::Slot>(i));
                 if (IsZeroVector(point) || point == entity.pos || !IsFiniteVector(point))
                     continue;
 
@@ -1565,11 +1722,11 @@ namespace OW {
         bool Passes(const c_entity& e) const {
             if(!active) return true;
             const auto& p=Config::View_aimPlan().selection;
-            return AimPlan::Eligible(p,value,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,e.Vis);
+            return AimPlan::Eligible(p,value,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,TargetingDetail::SelectionVisible(e));
         }
         bool Preferred(const c_entity& e) const {
             const auto& p=Config::View_aimPlan().selection;
-            return active && p.mode==1 && AimPlan::PredicateMatches(p,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,e.Vis);
+            return active && p.mode==1 && AimPlan::PredicateMatches(p,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,TargetingDetail::SelectionVisible(e));
         }
     };
     inline void PublishSelectedAimPlan(const TargetCandidate& candidate) {
@@ -1604,6 +1761,7 @@ namespace OW {
         DWORD trackingContinuityGraceMs = 0) {
         TargetCandidate best{};
         Config::ScopedConfigRead configRead;
+        TargetingDetail::ContourEvaluation contour(frame,Config::View_aimbotContourEnabled());
         int TarGetIndex = -1;
         TargetCandidate lockedCandidate{};
         float lockedScore=0;
@@ -1664,6 +1822,8 @@ namespace OW {
         if (entities.size() > 0) {
             for (size_t i = 0; i < entities.size(); i++) {
                 AimCandidateConfig candidateConfig(entities[i].HeroID);
+                if(contour.enabled && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),
+                    weaponSpec,predit)) continue;
                 if(!candidateConfig.Passes(entities[i])) continue;
                 const bool preferred=candidateConfig.Preferred(entities[i]);
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
@@ -1676,8 +1836,8 @@ namespace OW {
                         candidateKey == activeLock.entityKey;
                     const bool applyTrackingExitMargin =
                         trackingContinuityEnabled && currentLockedCandidate;
-                    if (ignoreInvisible && !entities[i].Vis &&
-                        !TargetingDetail::CandidateCanBypassTrace(lockPolicy, activeLock, candidateKey)) {
+                    if (contour.enabled ? !contour.Visible(i) : (ignoreInvisible && !entities[i].Vis &&
+                        !TargetingDetail::CandidateCanBypassTrace(lockPolicy, activeLock, candidateKey))) {
                         continue;
                     }
                     ++selectableCandidates;
@@ -1687,13 +1847,18 @@ namespace OW {
                             applyTrackingExitMargin))
                         continue;
 
-                    const SkeletonBoneMask candidateMask =
-                        TargetingDetail::EffectiveAimBoneMaskForDistance(
-                            Config::slotTargetRules.active && !entities[i].Team ? Config::slotTargetRules.allyBoneMask : Config::View_aimbotBoneMask(),
-                            initialDistance);
+                    const SkeletonBoneMask rawCandidateMask=Config::slotTargetRules.active && !entities[i].Team ?
+                        Config::slotTargetRules.allyBoneMask : Config::View_aimbotBoneMask();
+                    const SkeletonBoneMask candidateMask=contour.enabled ?
+                        Contour::AimMaskForDistance(rawCandidateMask,initialDistance,Config::View_aimbotMaxHead()) :
+                        TargetingDetail::EffectiveAimBoneMaskForDistance(rawCandidateMask,initialDistance);
                     int candidateBoneId = BONE_HEAD;
                     Vector3 rootPosition{};
-                    if (!TargetingDetail::TrySelectClosestSelectedSkeletonPoint(
+                    const auto contourObservation=contour.enabled ? contour.ResolveMask(i,candidateMask) : Contour::Observation{};
+                    if(contour.enabled) {
+                        if(!contourObservation.evidence.exposed && !contourObservation.retained) continue;
+                        candidateBoneId=contourObservation.boneId;rootPosition=contourObservation.aimWorld;
+                    } else if (!TargetingDetail::TrySelectClosestSelectedSkeletonPoint(
                             entities[i],
                             candidateMask,
                             fovContext,
@@ -1708,11 +1873,12 @@ namespace OW {
                         entities[i],
                         rootPosition,
                         projectileSpec,
-                        ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),weaponSpec,predit),
+                        !contour.enabled && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),weaponSpec,predit),
                         false);
                     const float fovEntryHorizonMs =
                         Config::ClampFovEntryPredictionMs(Config::View_aimbotFovEntryPredictionMs());
-                    const Vector3 fovEntryAimPoint = lead.finalAimPoint +
+                    const Vector3 resolvedAimPoint=contour.enabled ? rootPosition : lead.finalAimPoint;
+                    const Vector3 fovEntryAimPoint = resolvedAimPoint +
                         lead.targetVelocity * (fovEntryHorizonMs / 1000.0f);
                     FovGeometry::PredictedEntryEvaluation fovEvaluation{};
                     const float resolvedCandidateFovDeg =
@@ -1726,11 +1892,11 @@ namespace OW {
                     if (FovGeometry::EvaluateCandidateFovWithPredictedEntry(
                             fovContext,
                             rootPosition,
-                            lead.finalAimPoint,
+                            resolvedAimPoint,
                             fovEntryAimPoint,
                             candidateFovDeg,
                             nullptr,
-                            Config::View_aimbotPredictFovEntry(),
+                            !contour.enabled && Config::View_aimbotPredictFovEntry(),
                             Config::ClampFovEntryMaxOutsideDeg(Config::View_aimbotFovEntryMaxOutsideDeg()),
                             fovEvaluation)) {
                         const float distance = fovEvaluation.distance;
@@ -1765,6 +1931,7 @@ namespace OW {
                             !predictedEntryLosesToCurrentInside && (preferCurrentInside || rankWins));
                         if (select || currentLockedCandidate) {
                             TargetCandidate next{};
+                            next.contour=contourObservation;
                             next.valid = true;
                             next.plan=candidateConfig.value; next.planPreferred=preferred;
                             next.entityIndex = static_cast<int>(i);
@@ -1772,7 +1939,7 @@ namespace OW {
                             next.entitySnapshot = entities[i];
                             next.boneId = candidateBoneId;
                             next.rawAimPoint = rootPosition;
-                            next.predictedAimPoint = lead.finalAimPoint;
+                            next.predictedAimPoint = resolvedAimPoint;
                             next.aimPoint = fovEvaluation.acceptedAimPoint;
                             next.screenPoint = Vec2;
                             next.distance = distance;
@@ -1806,7 +1973,8 @@ namespace OW {
         const auto& planSelection=Config::View_aimPlan().selection;
         // Explicit lock duration wins over Prefer while the old target remains admissible.
         // A hard filter cannot trap us on an ineligible current target.
-        if(lockedCandidate.valid && best.valid && TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now)) {
+        if(lockedCandidate.valid && best.valid && (lockedCandidate.contour.retained ||
+            TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now))) {
             best=lockedCandidate; origin=lockedScore; TarGetIndex=best.entityIndex;
         }
         const bool holdAlternateDuringDropout = trackingContinuityEnabled &&
@@ -1885,6 +2053,10 @@ namespace OW {
             best.plan.overrideMotion ? best.plan.motion.method : Config::AimBehaviorMethod(Config::View_aimBehavior()),
             best.planPreferred ? 1 : 0, Config::View_aimPlan().selection.mode, Config::View_aimbotPriority(), origin);
         TargetingDetail::StoreLastTargetCandidate(best);
+        if(contour.enabled && best.valid && best.contour.evidence.fresh && best.contour.evidence.exposed &&
+            (best.contour.evidence.identity!=TargetingDetail::lastContourObservation.evidence.identity ||
+             best.contour.evidence.sequence>TargetingDetail::lastContourObservation.evidence.sequence))
+            TargetingDetail::lastContourObservation=best.contour;
         return best;
     }
 
@@ -2074,9 +2246,10 @@ namespace OW {
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
                     entities[i], Config::View_aimbotTeam(), local_entity);
                 if (TargetingDetail::IsRuntimeTargetValid(entities[i], false) && teamPass) {
-                    if (Config::View_Bone() == 1)       { PreditPos = entities[i].head_pos; RootPos = entities[i].head_pos; }
-                    else if (Config::View_Bone() == 2)  { PreditPos = entities[i].neck_pos; RootPos = entities[i].neck_pos; }
-                    else                         { PreditPos = entities[i].chest_pos; RootPos = entities[i].chest_pos; }
+                    RootPos = TargetingDetail::CoreBoneRawPosition(entities[i],
+                        AimBoneToSkeletonBoneId(Config::View_Bone()));
+                    if (TargetingDetail::IsZeroVector(RootPos))
+                        continue;
                     const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
                         entities[i],
                         RootPos,
@@ -2158,14 +2331,14 @@ namespace OW {
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
                     entities[i], Config::View_aimbotTeam(), local_entity);
                 if (TargetingDetail::IsRuntimeTargetValid(entities[i], false) && teamPass) {
-                    Vector3 PreditPos;
-                    if (!local_entity.skillcd1)
-                        PreditPos = TargetingDetail::CachedSkeletonBoneRawPosition(entities[i],entities[i].GetSkel()[16]);
-                    else
-                        PreditPos = TargetingDetail::CachedSkeletonBoneRawPosition(entities[i],entities[i].GetSkel()[2]);
-                    bool isBot = GameData::IsTrainingBotHeroId(entities[i].HeroID);
+                    const bool isBot = GameData::IsTrainingBotHeroId(entities[i].HeroID);
+                    const auto targetSlot = !local_entity.skillcd1 && !isBot
+                        ? SkeletonSemantics::Slot::FootRight
+                        : SkeletonSemantics::Slot::Chest;
+                    Vector3 PreditPos = TargetingDetail::SemanticSkeletonRawPosition(entities[i], targetSlot);
+                    if (TargetingDetail::IsZeroVector(PreditPos))
+                        continue;
                     if (isBot) {
-                        PreditPos = TargetingDetail::CachedSkeletonBoneRawPosition(entities[i],3);
                         if (!local_entity.skillcd1) PreditPos.Y -= 0.4f;
                     }
                     Vector3 RootPos = PreditPos;
@@ -2232,19 +2405,9 @@ namespace OW {
                     const float initialDistance = camera.DistTo(entities[i].chest_pos);
                     if (!TargetingDetail::DistancePassesAimFilter(initialDistance))
                         continue;
-                    Vector3 rootPosition{};
-                    if (entities[i].Team) {
-                        if (Config::Bone2 == 1)      rootPosition = entities[i].head_pos;
-                        else if (Config::Bone2 == 2) rootPosition = entities[i].neck_pos;
-                        else                         rootPosition = entities[i].chest_pos;
-                    } else {
-                        if (Config::View_Bone() == 1)       rootPosition = entities[i].head_pos;
-                        else if (Config::View_Bone() == 2)  rootPosition = entities[i].neck_pos;
-                        else                         rootPosition = entities[i].chest_pos;
-                    }
-
                     int candidateBoneId = AimBoneToSkeletonBoneId(
                         entities[i].Team ? Config::Bone2 : Config::View_Bone());
+                    Vector3 rootPosition = TargetingDetail::CoreBoneRawPosition(entities[i], candidateBoneId);
                     if (Config::autobone2 &&
                         entities[i].HeroID != 0x16dd &&
                         entities[i].HeroID != 0x16ee) {
@@ -2261,6 +2424,8 @@ namespace OW {
                             rootPosition = closestRoot;
                         }
                     }
+                    if (TargetingDetail::IsZeroVector(rootPosition))
+                        continue;
 
                     const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
                         entities[i],
@@ -2354,8 +2519,10 @@ namespace OW {
                     const float distance = camera.DistTo(entities[i].chest_pos);
                     if (!TargetingDetail::DistancePassesAimFilter(distance))
                         continue;
-                    PreditPos = entities[i].head_pos;
-                    RootPos = entities[i].head_pos;
+                    RootPos = TargetingDetail::CoreBoneRawPosition(entities[i], BONE_HEAD);
+                    if (TargetingDetail::IsZeroVector(RootPos))
+                        continue;
+                    PreditPos = RootPos;
                     float score;
                     if (Config::View_aimbotPriority() == 0) {
                         score = TargetingDetail::FovScoreDeg(fovContext, RootPos);
