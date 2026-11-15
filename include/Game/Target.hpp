@@ -30,7 +30,7 @@
 #include "Game/snapshots/SnapshotAccess.hpp"
 #include "Game/FovGeometry.hpp"
 #include "Game/HeroGeometrySpec.hpp"
-#include "Game/InputOrchestrator.hpp"
+#include "output/InputOrchestrator.hpp"
 #include "Game/LeadPrediction.hpp"
 #include "Game/Motion.hpp"
 #include "Game/RuntimeState.hpp"
@@ -1635,7 +1635,6 @@ namespace OW {
         float origin = 100000.f;
         size_t selectableCandidates = 0;
         float selectedFovScoreDeg = 0.0f;
-        bool targetFromBob = false;
         Diagnostics::Aim("target.primary start prediction=%d predictionMode=%d weapon=%s entities=%zu dynamic=%zu local_addr=0x%llX local_hero=0x%llX fovDeg=%.6f bone=%d autobone=%d boneMask=0x%03X teamMode=%d distance=(%.2f,%.2f) lock=(active=%d key=0x%llX minMs=%.0f maxMs=%.0f hysteresis=%.1f trace=%d unlock=%d) crosshair=(%.3f,%.3f)",
             resolvedPrediction ? 1 : 0,
             Config::View_aimbotPredictionMode(),
@@ -1802,74 +1801,9 @@ namespace OW {
             }
         }
 
-        // Ashe dynamite targeting (existing object-target behavior)
+        // Main aim selects actors only. Object ID/team cannot establish our
+        // own airborne dynamite; that behavior needs a separate verified path.
         const auto& planSelection=Config::View_aimPlan().selection;
-        // The dynamic dynamite record has no trusted hero/health/visibility payload.
-        const bool allowLegacyDynamite=!Config::targetAimPlanEnabled || (planSelection.mode==0 &&
-            planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimbotPriority()!=3);
-        if (local_entity.HeroID == eHero::HERO_ASHE && allowLegacyDynamite) {
-            for (hpanddy hppack : hp_dy_entities) {
-                if (hppack.entityid == 0x400000000002533) {
-                    if(hppack.scene_generation!=EntitySceneGeneration()||!hppack.position_tick_ms||
-                       DWORD(now-hppack.position_tick_ms)>200||!hppack.object_parent)continue;
-                    const auto objectKey=hppack.object_parent;
-                    const bool currentLockedDynamite = activeLock.active &&
-                        activeLock.entityKey == objectKey;
-                    const bool applyTrackingExitMargin =
-                        trackingContinuityEnabled && currentLockedDynamite;
-                    if (TargetingDetail::CandidateBlockedByMinLock(lockPolicy, activeLock, objectKey, now))
-                        continue;
-                    const Vector3 dynamitePosition(hppack.POS.x, hppack.POS.y, hppack.POS.z);
-                    const float dynamiteDistance = TargetingDetail::CameraPosition().DistTo(dynamitePosition);
-                    if (!TargetingDetail::DistancePassesAimFilter(
-                            dynamiteDistance,
-                            applyTrackingExitMargin))
-                        break;
-                    const float effectiveFovDeg =
-                        TrackingContinuityPolicy::EffectiveFovDeg(
-                            Config::ResolveDynamicAimFovForDistance(
-                                Config::View_Fov(),
-                                dynamiteDistance),
-                            applyTrackingExitMargin);
-                    float fovScoreDeg = 0.0f;
-                    if (!TargetingDetail::IsWithinFovDeg(fovContext, dynamitePosition, effectiveFovDeg, &fovScoreDeg))
-                        break;
-                    if (currentLockedDynamite)
-                        activeLockCandidateSelectable = true;
-                    Vector2 Vec2 = CrossHair;
-                    aimViewMatrix.WorldToScreen(dynamitePosition, &Vec2, Vector2(OW::WX, OW::WY));
-                    const float lockAdjustedScore = TargetingDetail::ApplyRetargetHysteresis(fovScoreDeg, lockPolicy, activeLock, objectKey);
-                    if (lockAdjustedScore < origin) {
-                        best = TargetCandidate{};
-                        best.valid = true;
-                        best.entityIndex = -1;
-                        best.entityKey = objectKey;
-                        best.boneId = BONE_CHEST;
-                        best.rawAimPoint = dynamitePosition;
-                        best.predictedAimPoint = best.rawAimPoint;
-                        best.aimPoint = best.rawAimPoint;
-                        best.screenPoint = Vec2;
-                        best.distance = dynamiteDistance;
-                        best.fovScore = fovScoreDeg;
-                        best.effectiveFovDeg = effectiveFovDeg;
-                        best.dynamicFov = Config::IsDynamicAimFovActive();
-                        best.dynamicFovPresetId = best.dynamicFov ? Config::View_aimbotDynamicFovPresetId() : -1;
-                        best.lockPolicy = lockPolicy;
-                        best.weaponSpec = weaponSpec;
-                        best.effectiveHitWindow = ResolveEffectiveHitWindow(
-                            local_entity.HeroID,
-                            best.boneId,
-                            weaponSpec,
-                            Config::View_hitbox(),
-                            Config::kLegacyDefaultHitboxRadius);
-                        origin = lockAdjustedScore;
-                        selectedFovScoreDeg = fovScoreDeg;
-                        targetFromBob = true;
-                    }
-                    break;
-                }
-            }
-        }
         // Explicit lock duration wins over Prefer while the old target remains admissible.
         // A hard filter cannot trap us on an ineligible current target.
         if(lockedCandidate.valid && best.valid && TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now)) {
@@ -1890,7 +1824,6 @@ namespace OW {
             best = TargetCandidate{};
             TarGetIndex = -1;
             origin = TargetingDetail::kNoTargetScore;
-            targetFromBob = false;
         }
         Config::Targetenemyi = best.valid ? best.entityIndex : -1;
         if (best.valid && best.entityIndex >= 0 &&
@@ -1924,13 +1857,6 @@ namespace OW {
                 selectableCandidates,
                 Config::View_Fov(),
                 TarGetIndex);
-        } else if (targetFromBob) {
-            Diagnostics::Aim("target.primary result source=ashe_bob target=(%.9f,%.9f,%.9f) score=%.9f fovScoreDeg=%.9f",
-                best.aimPoint.X,
-                best.aimPoint.Y,
-                best.aimPoint.Z,
-                origin,
-                selectedFovScoreDeg);
         } else if (TarGetIndex >= 0 && static_cast<size_t>(TarGetIndex) < entities.size()) {
             const c_entity& selected = entities[static_cast<size_t>(TarGetIndex)];
             Diagnostics::Aim("target.primary result index=%d target=(%.9f,%.9f,%.9f) score=%.9f fovScoreDeg=%.9f distance=%.3f bone=%d hitWindow=%.4f predictedEntry=%d entryHorizonMs=%.3f currentFov=%.3f projectedFov=%.3f health=%.3f hero=0x%llX address=0x%llX vis=%d team=%d",

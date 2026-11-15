@@ -1,6 +1,7 @@
 #pragma once
 
 #include "output/OutputTypes.hpp"
+#include "output/OutputDevice.hpp"
 #include "output/SerialProtocol.hpp"
 
 #include <atomic>
@@ -68,6 +69,7 @@ namespace V2::Output
         bool operator==(const OutputRuntimeDescriptor&) const = default;
     };
 
+    OutputDeviceCapabilities CapabilitiesFor(const OutputRuntimeDescriptor& descriptor);
     bool SupportsKeyboardOutput(const OutputRuntimeDescriptor& descriptor);
     bool SupportsMouseMask(const OutputRuntimeDescriptor& descriptor);
     bool SupportsTimedMove(const OutputRuntimeDescriptor& descriptor);
@@ -105,7 +107,7 @@ namespace V2::Output
 
     class OutputProductionBackendOps final : public IOutputRuntimeBackendOps
     {
-        std::atomic<OutputRuntimeBackend> activeBackend_{OutputRuntimeBackend::None};
+        std::atomic<IOutputDevice*> activeDevice_{nullptr};
     public:
         bool IsTransportReady() const noexcept override;
         int ReleaseAll(
@@ -132,6 +134,10 @@ namespace V2::Output
         void PauseOutputForTransition();
         int DispatchActive(
             const std::function<int(const OutputRuntimeAppliedState&)>& dispatch);
+
+        int DispatchCleanupForGeneration(
+            std::uint64_t expectedGeneration, bool pauseOutput,
+            const std::function<int(const OutputRuntimeAppliedState&)>& cleanup);
 
         OutputRuntimeDescriptor Desired() const;
         OutputRuntimeAppliedState Applied() const;

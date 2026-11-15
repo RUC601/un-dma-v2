@@ -1,113 +1,170 @@
 #pragma once
-#include "Game/Offsets.hpp"
+#include "Game/NativeOutlineSetting.hpp"
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <atomic>
 #include <mutex>
 
 namespace OW::OutlineBrightness {
-// 155284: constructors, last-item getters and alpha multiply paths in
-// 03_DOWNP/outline-alpha-20261111. World/Nexon are statically verified only.
-constexpr uint64_t VtableRva(offset::RuntimeProfile profile) {
-    switch (profile) {
-    case offset::RuntimeProfile::Cn: return 0x35A1220;
-    case offset::RuntimeProfile::World155284: return 0x2FCB2C0;
-    case offset::RuntimeProfile::Nexon155284: return 0x358B290;
-    default: return 0;
-    }
+// Commands are percentages; native storage is float32 percent / 100.
+// Values above 100 are intentional; 8888% affects newly created outlines.
+inline bool Valid(float percent) {
+    return std::isfinite(percent) && percent >= 0.f && std::isfinite(percent / 100.f);
 }
-inline bool Valid(float value) { return std::isfinite(value) && value >= 0.f; }
-struct Command { float value = 2.f; uint64_t revision = 0; bool enabled = false; };
+struct Command { float value = 100.f; uint64_t revision = 0; bool enabled = false; };
 inline std::mutex commandMutex;
 inline Command command;
 inline Command Snapshot() { std::lock_guard lock(commandMutex); return command; }
-inline bool Submit(float value) {
-    if (!Valid(value)) return false;
+inline bool Submit(float percent) {
+    if (!Valid(percent)) return false;
     std::lock_guard lock(commandMutex);
-    command.value = value;
-    ++command.revision;
+    command.value = percent;
+    if (++command.revision == 0) ++command.revision;
     command.enabled = true;
     return true;
 }
 inline void Disable() { std::lock_guard lock(commandMutex); command.enabled = false; }
 inline std::atomic<uint32_t> AppliedCount{0}, FailureCount{0}, RestoreCount{0};
-enum class Result { Idle, Applied, Changed, ReadFailed, WriteFailed, RestorePending };
-inline bool Pointer(uint64_t p) { return p >= 0x10000 && p <= 0x00007FFFFFFFF000ULL; }
-struct Target {
-    uint64_t component = 0, data = 0, value = 0;
-    int32_t count = 0;
-    bool operator==(const Target&) const = default;
+inline std::atomic<uint64_t> ShutdownRestoreRequest{0}, ShutdownRestoreAcknowledged{0};
+enum class Result {
+    Idle, Applied, Restored, Changed, InvalidValue, UnsupportedProfile,
+    IdentityMismatch, SignatureMismatch, ReadFailed, SettingMissing,
+    AmbiguousSetting, InvalidTarget, TargetChanged, WriteFailed,
+    WriteReadbackFailed, WriteMismatch, RestorePending, RestoreReadFailed,
+    RestoreWriteFailed, RestoreReadbackFailed, RestoreMismatch
 };
+inline std::atomic<Result> LastResult{Result::Idle};
+inline constexpr const char* ResultText(Result result) {
+    switch (result) {
+    case Result::Idle: return "idle";
+    case Result::Applied: return "applied";
+    case Result::Restored: return "restored";
+    case Result::Changed: return "game value changed; ownership released";
+    case Result::InvalidValue: return "invalid percentage";
+    case Result::UnsupportedProfile: return "unsupported native setting profile";
+    case Result::IdentityMismatch: return "native setting image identity mismatch";
+    case Result::SignatureMismatch: return "native setting code/signature mismatch";
+    case Result::ReadFailed: return "native setting read failed";
+    case Result::SettingMissing: return "native setting key absent";
+    case Result::AmbiguousSetting: return "duplicate native setting key";
+    case Result::InvalidTarget: return "invalid native setting structure";
+    case Result::TargetChanged: return "native setting target/session changed";
+    case Result::WriteFailed: return "write reported failure; completion unknown";
+    case Result::WriteReadbackFailed: return "write completed; readback failed";
+    case Result::WriteMismatch: return "write readback differs";
+    case Result::RestorePending: return "restore awaits the same target/session";
+    case Result::RestoreReadFailed: return "restore pre-read failed";
+    case Result::RestoreWriteFailed: return "restore write reported failure";
+    case Result::RestoreReadbackFailed: return "restore readback failed";
+    case Result::RestoreMismatch: return "restore readback differs";
+    }
+    return "unknown";
+}
+inline constexpr bool IsFailure(Result result) {
+    return result != Result::Idle && result != Result::Applied && result != Result::Restored && result != Result::Changed;
+}
+using Target = NativeOutlineSetting::Target;
+inline bool Pointer(uint64_t p) { return NativeOutlineSetting::Pointer(p); }
+inline Result ToResult(NativeOutlineSetting::Status status) {
+    using S = NativeOutlineSetting::Status;
+    switch (status) {
+    case S::Ready: return Result::Idle;
+    case S::UnsupportedProfile: return Result::UnsupportedProfile;
+    case S::IdentityMismatch: return Result::IdentityMismatch;
+    case S::SignatureMismatch: return Result::SignatureMismatch;
+    case S::ReadFailed: return Result::ReadFailed;
+    case S::SettingMissing: return Result::SettingMissing;
+    case S::AmbiguousSetting: return Result::AmbiguousSetting;
+    case S::InvalidTarget: return Result::InvalidTarget;
+    case S::TargetChanged: return Result::TargetChanged;
+    }
+    return Result::InvalidTarget;
+}
 template<class Read>
-bool Resolve(uint64_t component, uint64_t base, offset::RuntimeProfile profile, Read read, Target& target) {
-    const auto vtableRva = VtableRva(profile);
-    uint64_t vtable = 0;
-    uint8_t type = 0;
-    struct List { uint64_t data; int32_t count; } before{}, after{};
-    if (!vtableRva || !Pointer(base) || !Pointer(base + vtableRva) || !Pointer(component) ||
-        !read(component, &vtable, 8) || vtable != base + vtableRva ||
-        !read(component + 0x10, &type, 1) || type != 0x5A ||
-        !read(component + 0x1C0, &before, 12)) return false;
-    if (!Pointer(before.data) || before.data % 4 || before.count <= 0 || before.count > 4096) return false;
-    const uint64_t value = before.data + uint64_t(before.count - 1) * 20 + 16;
-    if (!Pointer(value) || !read(component + 0x1C0, &after, 12) ||
-        before.data != after.data || before.count != after.count) return false;
-    target = {component, before.data, value, before.count};
-    return true;
+bool Resolve(uint64_t base, offset::RuntimeProfile profile, Read read, Target& target, Result* failure = nullptr) {
+    const auto status = NativeOutlineSetting::Resolve(base, profile, read, target);
+    if (failure) *failure = ToResult(status);
+    return status == NativeOutlineSetting::Status::Ready;
 }
 struct State {
     Target target{};
     uint32_t original = 0, written = 0, nextAttempt = 0;
-    uint64_t appliedRevision = 0, triedRevision = 0;
-    bool owned = false;
+    uint64_t appliedRevision = 0, triedRevision = 0, writeRevision = 0;
+    bool owned = false, restoreAttempted = false;
     Result result = Result::Idle;
-    bool Due(uint32_t now, bool enabled, uint64_t revision) const {
-        return (enabled || owned) && (triedRevision != revision || int32_t(now - nextAttempt) >= 0);
+    void SetResult(Result value) { result = value; LastResult.store(value); }
+    // Scheduler owns connection/process identity. Call on disconnect, process
+    // generation or profile change; never restore through a different link.
+    // Preserve the consumed revision so a stale command cannot rewrite.
+    void Abandon() {
+        target = {}; owned = false; restoreAttempted = false;
+        original = written = nextAttempt = 0; appliedRevision = 0;
+        SetResult(Result::Idle);
     }
+    bool Due(uint32_t now, bool enabled, uint64_t revision) const {
+        return ((enabled && revision != writeRevision) || owned) &&
+            (triedRevision != revision || int32_t(now - nextAttempt) >= 0);
+    }
+    // current() must prove the same connection/process generation AND a fresh
+    // Resolve(base,profile) == target. Scene and entity membership are irrelevant.
     template<class Read, class Write, class Current>
     bool Restore(Read read, Write write, Current current) {
         if (!owned) return true;
+        if (!current()) { SetResult(Result::RestorePending); return false; }
         uint32_t value = 0;
-        if (!current() || !read(target.value, &value, 4)) { result = Result::RestorePending; return false; }
-        // Restore only our own last write; a game replacement has a new owner.
-        if (value != written) { owned = false; result = Result::Changed; return true; }
-        if (!current() || !write(target.value, &original, 4) || !current() ||
-            !read(target.value, &value, 4) || value != original) {
-            result = Result::RestorePending;
-            return false;
+        if (!read(target.value, &value, 4)) { SetResult(Result::RestoreReadFailed); return false; }
+        if (!current()) { SetResult(Result::RestorePending); return false; }
+        // Resolve can perform many reads. Sample the payload again after that
+        // proof, immediately before the conditional write, so an intervening
+        // game change is not mistaken for our earlier value. DMA is not a CAS.
+        if (!read(target.value, &value, 4)) { SetResult(Result::RestoreReadFailed); return false; }
+        if (restoreAttempted && value == original) {
+            owned = false; SetResult(Result::Restored); return true;
         }
-        owned = false;
-        result = Result::Idle;
-        return true;
+        if (value != written) { owned = false; SetResult(Result::Changed); return true; }
+        if (original == written) { owned = false; SetResult(Result::Restored); return true; }
+        restoreAttempted = true;
+        if (!write(target.value, &original, 4)) { SetResult(Result::RestoreWriteFailed); return false; }
+        if (!current()) { SetResult(Result::RestorePending); return false; }
+        if (!read(target.value, &value, 4)) { SetResult(Result::RestoreReadbackFailed); return false; }
+        if (value != original) {
+            if (value != written) owned = false;
+            SetResult(Result::RestoreMismatch); return false;
+        }
+        owned = false; SetResult(Result::Restored); return true;
     }
     template<class Read, class Write, class Current>
-    bool Apply(Target next, float value, uint64_t revision, Read read, Write write, Current current) {
-        if (!Valid(value) || !revision || !current()) return false;
-        // A relocated last item is a new allocation; never restore the retired address.
-        if (target != next) { target = next; owned = false; appliedRevision = 0; }
+    bool Apply(Target next, float percent, uint64_t revision, Read read, Write write, Current current) {
+        if (!Valid(percent) || !revision) { SetResult(Result::InvalidValue); return false; }
+        if (!current()) { SetResult(Result::TargetChanged); return false; }
+        const bool moved = target != next;
+        if (moved) { target = next; owned = false; restoreAttempted = false; appliedRevision = 0; }
+        // Relocation never re-arms an already consumed command.
+        if (moved && writeRevision == revision) { SetResult(Result::TargetChanged); return false; }
         uint32_t previous = 0;
-        if (!current() || !read(target.value, &previous, 4) || !Valid(std::bit_cast<float>(previous))) {
-            result = Result::ReadFailed;
-            return false;
+        if (!read(target.value, &previous, 4) || !Valid(std::bit_cast<float>(previous))) {
+            SetResult(Result::ReadFailed); return false;
         }
-        if (appliedRevision == revision) {
-            if (owned && previous != written) { owned = false; result = Result::Changed; }
+        if (writeRevision == revision) {
+            if (owned && previous != written) { owned = false; SetResult(Result::Changed); }
             return result == Result::Applied;
         }
-        if (!owned || previous != written) original = previous;
-        const uint32_t bits = std::bit_cast<uint32_t>(value);
-        if (!current()) return false;
-        written = bits;
-        owned = true; // A backend failure can still leave a completed remote write.
-        if (!write(target.value, &bits, 4) || !current() ||
-            !read(target.value, &previous, 4) || previous != bits) {
-            result = Result::WriteFailed;
-            return false;
+        if (!current()) { SetResult(Result::TargetChanged); return false; }
+        if (!read(target.value, &previous, 4) || !Valid(std::bit_cast<float>(previous))) {
+            SetResult(Result::ReadFailed); return false;
         }
-        appliedRevision = revision;
-        result = Result::Applied;
-        return true;
+        if (!owned || previous != written) original = previous;
+        const uint32_t bits = std::bit_cast<uint32_t>(percent / 100.f);
+        written = bits; owned = true; restoreAttempted = false;
+        // A failed backend can still complete remotely. Consume before writing;
+        // retain conditional restore but require a new Submit to retry the write.
+        writeRevision = triedRevision = revision;
+        if (!write(target.value, &bits, 4)) { SetResult(Result::WriteFailed); return false; }
+        if (!current()) { SetResult(Result::TargetChanged); return false; }
+        if (!read(target.value, &previous, 4)) { SetResult(Result::WriteReadbackFailed); return false; }
+        if (previous != bits) { owned = false; SetResult(Result::WriteMismatch); return false; }
+        appliedRevision = revision; SetResult(Result::Applied); return true;
     }
 };
-}
+} // namespace OW::OutlineBrightness

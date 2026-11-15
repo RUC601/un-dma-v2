@@ -14,6 +14,7 @@ using namespace DirectX;
 #include "Game/PresentationTiming.hpp"
 #include "Game/EntityRosterPolicy.hpp"
 #include "Game/OverlayStatus.hpp"
+#include "Game/HeroSkillSignals.hpp"
 #include "Game/RuntimeState.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/SDK.hpp"
@@ -130,6 +131,7 @@ namespace OW {
         float  skillready = 0.f;
         std::array<OverlayStatus::CooldownSample, 2> display_cooldowns{};
         uint32_t display_ultimate_tick = 0;
+        HeroSkillSignals::Sample hero_skill_signals{};
 
         // --- Positions ---
         Vector3 head_pos{};

@@ -96,8 +96,6 @@ inline const char* kPriority[]     = { "Lowest FOV", "Lowest HP", "Distance", "S
 inline const char* kTeam[]         = { "Enemies", "Allies", "All" };
 inline const char* kTrace[]        = { "Strict", "Relaxed", "Off" };
 inline const char* kUnlock[]       = { "Anytime", "On Release", "Never" };
-inline const char* kOutputDeviceTypes[] = { "KMBox Net", "KMBox Serial", "Mock", "MAKCU 4M", "MAKCU 115200", "Ferrum Software API", "CatBox" };
-inline const char* kMockFaultModes[] = { "None", "Output Timeout", "Drop Output" };
 inline const char* kMenuToggleKeys[] = {
     "Home", "Insert", "End", "Delete",
     "F1", "F2", "F3", "F4", "F5", "F6",
@@ -159,8 +157,6 @@ std::string GetFirePatternRecorderStatus(bool& interrupted);
 bool IsFirePatternRecorderRunning();
 void StartFirePatternRecorder();
 void StopFirePatternRecorder();
-OutputConnectionTestResult AllowOutputMonitorFirewall();
-OutputConnectionTestResult RestartOutputNetworkAdapter();
 OutputConnectionTestResult TestOutputConnection();
 OutputConnectionTestResult ApplyOutputRuntimeFromCurrentConfig(
         std::chrono::milliseconds timeout = std::chrono::milliseconds(500));

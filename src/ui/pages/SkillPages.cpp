@@ -14,7 +14,7 @@ using UI::Text::kUiLanguageOptions;
 #include "Features/UiLabels.hpp"
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
-#include "output/MockBackend.hpp"
+#include "output/MockDiagnostics.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
@@ -216,6 +216,33 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     if (definition.automation == OW::SkillAutomation::GenjiBlade) {
         ImGui::TextWrapped("%s", L("Manually use the mapped ultimate key at full charge. After drawing the blade, assists aim, dashes beyond 5 m and swings within 5 m. Ends after 7 seconds. Does not cast Q. Timing needs in-game calibration."));
         if (ImGui::SmallButton(L("Edit hero action keys..."))) UI::state.activeTab=UI::TAB_KEYS;
+    }
+    if (definition.automation == OW::SkillAutomation::MercyBeam)
+        ImGui::TextWrapped("%s",L("Hold the activation key: heal the connected ally at or below the threshold; damage boost above it. Releasing the key returns manual control. Requires mouse primary/secondary mappings and physical-button masking. Connection reading is a candidate awaiting in-game verification."));
+    if (definition.automation == OW::SkillAutomation::LucioSong) {
+        ImGui::TextWrapped("%s",L("Switches to healing when enough nearby allies meet the health threshold. Returns to speed after the condition stays clear for 0.8 seconds. Waits for an observed song change before toggling again. Song reading is a candidate awaiting in-game verification."));
+        ImGui::TextWrapped("%s",L("Use toggle Crossfade in the game; hold-to-crossfade is not supported."));
+    }
+    if (definition.automation == OW::SkillAutomation::ProjectileDefense) {
+        SettingRow("Low Health Condition",kAimbotRightLabelWidth);
+        changed |= UICheckbox("##projectileLowHealth",&settings.healthTriggerEnabled);
+        SettingRow("Incoming Projectile Condition",kAimbotRightLabelWidth);
+        changed |= UICheckbox("##incomingProjectiles",&settings.projectileThreatEnabled);
+        const char* names[]{"Ana Biotic Grenade","Bastion Tactical Grenade"};
+        for(int i=0;i<2;++i) {
+            bool checked=(settings.projectileThreatMask&(1<<i))!=0;
+            if(UICheckbox(L(names[i]),&checked)) { settings.projectileThreatMask^=1<<i;changed=true; }
+        }
+        if(definition.heroId==OW::eHero::HERO_DVA) {
+            SettingRow("Assist Turning",kAimbotRightLabelWidth);
+            changed |= UICheckbox("##matrixTurn",&settings.automaticAim);
+            if(settings.automaticAim) {
+                SettingRow("Turning Speed",kAimbotRightLabelWidth);PushControlWidth();
+                changed |= UISlider("##matrixTurnSpeed",&settings.tracking.speedScale,1.f,200.f,Number(0," %"));
+                ImGui::PopItemWidth();
+            }
+        }
+        ImGui::TextWrapped("%s",L("Uses enemy team and consecutive projectile positions to estimate an approach toward you within 250 ms. Unknown, stationary, friendly and already handled objects are ignored. Only the listed projectiles are supported; resources and gameplay interception still need verification."));
     }
     if (definition.automation == OW::SkillAutomation::RecentDamageDeflect)
         ImGui::TextWrapped("%s", L("Deflects at low health after recent damage reaches 5% of maximum health, with a visible enemy in range. The damage window expires 450 ms after the last hit. Does not identify incoming projectiles or turn the camera."));

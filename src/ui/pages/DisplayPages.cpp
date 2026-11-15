@@ -16,7 +16,7 @@ using UI::Text::kUiLanguageOptions;
 #include "Features/UiLabels.hpp"
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
-#include "output/MockBackend.hpp"
+#include "output/MockDiagnostics.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
@@ -95,25 +95,61 @@ void OutlineControls() {
     SettingRow("Rainbow Color");UICheckbox("##outlineRainbow",&OW::Config::gameOutlineRainbow);
 #ifndef UNLEASHED_OBSERVATION_ONLY
     namespace Brightness = OW::OutlineBrightness;
-    static float brightnessDraft = 2.f;
+    static float brightnessDraft = 100.f;
     const auto brightnessCommand = Brightness::Snapshot();
-    SettingRow("Outline Brightness (alpha multiplier)");
+    SettingRow("Native Outline Brightness (%)");
     const float buttonWidth = ImGui::CalcTextSize(L("Apply")).x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::SetNextItemWidth((std::max)(80.f, ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x));
-    ImGui::InputFloat("##outlineAlphaDraft", &brightnessDraft, 0.f, 0.f, "%.7g");
+    ImGui::InputFloat("##outlineBrightnessPercentDraft", &brightnessDraft, 0.f, 0.f, "%.7g");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!Brightness::Valid(brightnessDraft) || !OW::Config::gameOutlines);
+    ImGui::BeginDisabled(!Brightness::Valid(brightnessDraft));
     if (ImGui::Button(L("Apply"))) Brightness::Submit(brightnessDraft);
     ImGui::EndDisabled();
-    if (!Brightness::Valid(brightnessDraft)) ImGui::TextWrapped("%s", L("Enter a finite multiplier of zero or greater."));
+    if (!Brightness::Valid(brightnessDraft)) ImGui::TextWrapped("%s", L("Enter a finite percentage of zero or greater."));
     if (brightnessCommand.enabled || Brightness::RestoreCount.load()) {
-        if (ImGui::Button(L("Restore Brightness"))) Brightness::Disable();
+        if (ImGui::Button(L("Restore Original Setting"))) Brightness::Disable();
         ImGui::SameLine();
-        ImGui::Text("%s %.7g", L("Committed Multiplier"), brightnessCommand.value);
-        ImGui::Text("%s %u / %s %u / %s %u", L("Applied Targets"), Brightness::AppliedCount.load(),
-            L("Failed Targets"), Brightness::FailureCount.load(), L("Restore Pending"), Brightness::RestoreCount.load());
-    } else ImGui::TextWrapped("%s", L("Edit the number, then click Apply to write."));
-    ImGui::TextWrapped("%s", L("Alpha multiplier; supports scientific notation. Fully opaque outlines stop brightening at alpha 255."));
+        ImGui::Text(L("Submitted Brightness: %.7g%%"), brightnessCommand.value);
+        ImGui::Text(L("Applied: %u / Failed: %u / Restore pending: %u"), Brightness::AppliedCount.load(),
+            Brightness::FailureCount.load(), Brightness::RestoreCount.load());
+    } else ImGui::TextWrapped("%s", L("Edit the percentage, then click Apply."));
+    const char* brightnessStatus = nullptr;
+    switch (Brightness::LastResult.load()) {
+    case Brightness::Result::Restored:
+        brightnessStatus = "Original brightness setting restored."; break;
+    case Brightness::Result::Changed:
+        brightnessStatus = "The game changed this setting. Click Apply to use your value again."; break;
+    case Brightness::Result::InvalidValue:
+        brightnessStatus = "Enter a finite percentage of zero or greater."; break;
+    case Brightness::Result::UnsupportedProfile:
+    case Brightness::Result::IdentityMismatch:
+    case Brightness::Result::SignatureMismatch:
+        brightnessStatus = "This game version is not supported. Use the game's brightness setting until support is available."; break;
+    case Brightness::Result::ReadFailed:
+        brightnessStatus = "Could not read brightness. Check the game connection, then click Apply again."; break;
+    case Brightness::Result::SettingMissing:
+    case Brightness::Result::AmbiguousSetting:
+    case Brightness::Result::InvalidTarget:
+        brightnessStatus = "Could not locate the brightness setting. Reconnect to the game, then click Apply again."; break;
+    case Brightness::Result::TargetChanged:
+        brightnessStatus = "The game setting changed while applying. Click Apply again."; break;
+    case Brightness::Result::WriteFailed:
+        brightnessStatus = "Could not apply brightness. Check the game connection, then click Apply again."; break;
+    case Brightness::Result::WriteReadbackFailed:
+    case Brightness::Result::WriteMismatch:
+        brightnessStatus = "Brightness could not be confirmed after applying. Check the game connection before trying again."; break;
+    case Brightness::Result::RestorePending:
+        brightnessStatus = "Waiting to restore the original setting. Keep the game connected."; break;
+    case Brightness::Result::RestoreReadFailed:
+    case Brightness::Result::RestoreWriteFailed:
+    case Brightness::Result::RestoreReadbackFailed:
+    case Brightness::Result::RestoreMismatch:
+        brightnessStatus = "Could not confirm the original setting was restored. Check the game connection, then try Restore Original Setting again."; break;
+    default: break;
+    }
+    if (brightnessStatus) ImGui::TextWrapped("%s", L(brightnessStatus));
+    ImGui::TextWrapped("%s", L("Uses the game's original outline brightness setting, independently of Game Outlines. Values above 100% are allowed."));
+    ImGui::TextWrapped("%s", L("New objects use the new brightness; existing objects may not update immediately. Reopening game settings limits the value to the game's range."));
 #endif
 }
 void Card(const char* title,const std::function<void()>& content) {

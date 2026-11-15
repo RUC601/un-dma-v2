@@ -36,7 +36,7 @@ namespace OW {int RunSkillModeScopeSelfTest();}
 #include "Game/FovGeometry.hpp"   // shared angular FOV and overlay projection rules
 #include "Game/HeroPerkRuntime.hpp" // manual perk variant runtime
 #include "Game/HeroSkills.hpp"    // generic hero skill primitives
-#include "Game/InputOrchestrator.hpp" // shared generated-output ownership
+#include "output/InputOrchestrator.hpp" // shared generated-output ownership
 #include "Game/SDK.hpp"           // OW::SDK
 #include "Game/Decrypt.hpp"       // OW::GetGlobalKey, OW::DecryptComponent
 #include "game/profiles/ProfileState.hpp"
@@ -288,6 +288,7 @@ using V2::Output::ShutdownOutputRuntime;
 
 static void ShutdownHeadlessRuntime(const char* reason = "headless_shutdown")
 {
+    V2::Runtime::RestoreNativeOutlineBeforeShutdown();
     OW::RequestRuntimeShutdown([] {
         OW::SetRuntimeOutputSessionEnabled(false);
     });

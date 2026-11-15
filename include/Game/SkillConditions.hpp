@@ -64,8 +64,15 @@ inline bool HealthAtOrBelow(float hp, float maximum, float threshold, bool absol
     if (absolute) return hp <= threshold;
     return std::isfinite(maximum) && maximum > 0 && hp / maximum * 100.f <= threshold;
 }
+inline bool FreshSample(uint32_t sample, uint32_t now) {
+    return sample != 0 && uint32_t(now - sample) <= 250;
+}
+inline bool FreshHealth(float health, float maximum, uint32_t sample, uint32_t now) {
+    return FreshSample(sample, now) && std::isfinite(health) && health > 0 &&
+        std::isfinite(maximum) && maximum > 0;
+}
 inline bool FreshActive(bool active, uint32_t sample, uint32_t now) {
-    return active && sample != 0 && uint32_t(now - sample) <= 250;
+    return active && FreshSample(sample, now);
 }
 // Pure 1106 0xE5710 / 0xE59C0, conservative mode: 5% recent loss,
 // expiring 450 ms after the last loss. Feed only successful health samples.
@@ -123,6 +130,7 @@ struct ObservationNeeds {
     uint64_t localHero = 0;
     bool localSkills = false;
     bool enemyThreats = false;
+    bool heroSignals = false;
     bool Fast(uint64_t hero) const {
         return (localSkills && hero == localHero) || (enemyThreats && NormalThreatIndex(hero) >= 0);
     }

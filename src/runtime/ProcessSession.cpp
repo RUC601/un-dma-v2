@@ -197,6 +197,26 @@ void DrainProcessRuntimeWorkers(const char* reason)
     OW::CancelActiveSkill();
 }
 
+void RestoreNativeOutlineBeforeShutdown()
+{
+#ifndef UNLEASHED_OBSERVATION_ONLY
+    namespace Brightness = OW::OutlineBrightness;
+    OW::SetRuntimeOutputSessionEnabled(false);
+    Brightness::Disable();
+    if (!OW::RuntimeWorkersRunning() || !OW::ProcessConnection::IsConnected()) return;
+    const auto connection = OW::ProcessConnection::ConnectionEpoch();
+    const auto request = Brightness::ShutdownRestoreRequest.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (Brightness::ShutdownRestoreAcknowledged.load(std::memory_order_acquire) != request &&
+           OW::RuntimeWorkersRunning() && OW::ProcessConnection::IsConnected() &&
+           OW::ProcessConnection::ConnectionEpoch() == connection && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (Brightness::ShutdownRestoreAcknowledged.load(std::memory_order_acquire) != request)
+        Diagnostics::Warn("Native outline brightness: pre-shutdown restore did not complete; continuing bounded shutdown.");
+#endif
+}
+
 void ResumeConnectionOperations()
 {
     // Shutdown and reset of the cancellation flag must be indivisible. A late

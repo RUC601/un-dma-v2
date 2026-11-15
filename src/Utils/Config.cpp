@@ -1,3 +1,4 @@
+#include "output/DeviceRegistry.hpp"
 #ifndef _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING
 #define _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING
 #endif
@@ -319,11 +320,7 @@ namespace OW { namespace Config {
         constexpr const char* kAimMethodSection = "AimMethod";
         constexpr int kMaxAimCustomPresets = 64;
         constexpr int kMaxAimBehaviorPresets = kMaxAimCustomPresets + kAimBehaviorCount;
-        constexpr const char* kDefaultOutputIp = "192.168.2.188";
-        constexpr int kDefaultOutputPort = 8808;
-        constexpr int kDefaultOutputMonitorPort = kDefaultOutputPort + 1;
-        constexpr const char* kDefaultOutputMac = "12525C53";
-        constexpr const char* kDefaultOutputComPort = "COM3";
+        constexpr int kDefaultOutputPort = V2::Output::KmBoxNetConfig::Settings{}.commandPort;
         constexpr int kDefaultOutputInputDelayMs = 0;
         constexpr float kDefaultHostMouseDpi = 1600.0f;
 
@@ -370,32 +367,28 @@ namespace OW { namespace Config {
 
         void NormalizeOutputPortsUnlocked(const char* reason)
         {
+            using V2::Output::KmBoxNetConfig::MonitorAdjustment;
+            const auto adjustment = V2::Output::KmBoxNetConfig::MonitorPortAdjustment(
+                V2::Output::DeviceSettings::Network());
             const int recommendedMonitorPort = RecommendedOutputMonitorPort(outputPort);
-
-            if (!outputMonitorPortManualOverride) {
-                SetOutputMonitorPortUnlocked(
-                    recommendedMonitorPort,
-                    reason,
+            switch (adjustment) {
+            case MonitorAdjustment::Automatic:
+                SetOutputMonitorPortUnlocked(recommendedMonitorPort, reason,
                     Diagnostics::LogLevel::Info,
                     "Auto-synced outputMonitorPort to the recommended KMBox monitor port.");
-                return;
-            }
-
-            if (!IsValidOutputUdpPort(outputMonitorPort)) {
-                SetOutputMonitorPortUnlocked(
-                    recommendedMonitorPort,
-                    reason,
+                break;
+            case MonitorAdjustment::InvalidPort:
+                SetOutputMonitorPortUnlocked(recommendedMonitorPort, reason,
                     Diagnostics::LogLevel::Warn,
                     "outputMonitorPort was invalid; using the recommended KMBox monitor port.");
-                return;
-            }
-
-            if (outputMonitorPort == outputPort) {
-                SetOutputMonitorPortUnlocked(
-                    recommendedMonitorPort,
-                    reason,
+                break;
+            case MonitorAdjustment::CommandPortCollision:
+                SetOutputMonitorPortUnlocked(recommendedMonitorPort, reason,
                     Diagnostics::LogLevel::Warn,
                     "outputMonitorPort matched outputPort; using the recommended separate KMBox monitor port.");
+                break;
+            case MonitorAdjustment::None:
+                break;
             }
         }
 
@@ -2075,6 +2068,7 @@ namespace OW { namespace Config {
             settings.maxAimTimeMs = std::clamp(settings.maxAimTimeMs, 0.0f, 5000.0f);
             settings.targetRoleMask &= 7;
             settings.normalThreatMask &= (1 << OW::SkillConditions::kNormalThreats.size())-1;
+            settings.projectileThreatMask &= 3;
             settings.moveForwardMs = std::clamp(settings.moveForwardMs,50,1000);
             settings.jumpLeadMs = std::clamp(settings.jumpLeadMs,0,500);
             settings.meleeRadius = std::clamp(settings.meleeRadius, 0.0f, 2.0f);
@@ -3040,15 +3034,7 @@ namespace OW { namespace Config {
             fovcol = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);       // default: 1,1,1,1
             aimFovRingStyles = MakeDefaultFovRingStyles(FovRingSlotKind::Aim);
 
-            outputEnabled = false;         // default: disabled
-            CopyString(catBoxIp, "");CopyString(catBoxUuid, "");catBoxPort=0;catBoxMonitorPort=0;
-            outputDeviceType = 0;          // default: Network/UDP
-            CopyString(outputIp, kDefaultOutputIp);
-            outputPort = kDefaultOutputPort;
-            outputMonitorPort = kDefaultOutputMonitorPort;
-            outputMonitorPortManualOverride = false;
-            CopyString(outputMac, kDefaultOutputMac);
-            CopyString(outputComPort, kDefaultOutputComPort);
+            V2::Output::DeviceSettings::ResetConnections();
             outputCountsPerRadian = 100.0f;       // default: reference-project manual baseline
             gameMouseSensitivity = 15.0f;        // default manual/effective current game sensitivity
             referenceGameSensitivity = 15.0f;    // default calibration point
@@ -3854,6 +3840,8 @@ namespace OW { namespace Config {
             AddJsonBool(value, "healthTriggerEnabled", settings.healthTriggerEnabled, allocator);
             AddJsonBool(value, "threatTriggerEnabled", settings.threatTriggerEnabled, allocator);
             AddJsonInt(value, "normalThreatMask", settings.normalThreatMask, allocator);
+            AddJsonInt(value, "projectileThreatMask", settings.projectileThreatMask, allocator);
+            AddJsonBool(value, "projectileThreatEnabled", settings.projectileThreatEnabled, allocator);
             AddJsonBool(value,"automaticAim",settings.automaticAim,allocator);
             AddJsonInt(value,"moveForwardMs",settings.moveForwardMs,allocator);
             AddJsonInt(value,"jumpLeadMs",settings.jumpLeadMs,allocator);
@@ -4376,6 +4364,8 @@ namespace OW { namespace Config {
             defaults.healthTriggerEnabled = ReadJsonBool(value, "healthTriggerEnabled", defaults.healthTriggerEnabled);
             defaults.threatTriggerEnabled = ReadJsonBool(value, "threatTriggerEnabled", defaults.threatTriggerEnabled);
             defaults.normalThreatMask = ReadJsonInt(value, "normalThreatMask", defaults.normalThreatMask);
+            defaults.projectileThreatMask = ReadJsonInt(value, "projectileThreatMask", defaults.projectileThreatMask);
+            defaults.projectileThreatEnabled = ReadJsonBool(value, "projectileThreatEnabled", defaults.projectileThreatEnabled);
             defaults.automaticAim=ReadJsonBool(value,"automaticAim",defaults.automaticAim);
             defaults.moveForwardMs=ReadJsonInt(value,"moveForwardMs",defaults.moveForwardMs);
             defaults.jumpLeadMs=ReadJsonInt(value,"jumpLeadMs",defaults.jumpLeadMs);
@@ -6453,22 +6443,12 @@ namespace OW { namespace Config {
         {
             constexpr const char* section = "KMBox";
 
-            CopyString(catBoxIp,ReadString(ini,section,"catBoxIp",catBoxIp));
-            CopyString(catBoxUuid,ReadString(ini,section,"catBoxUuid",catBoxUuid));
-            catBoxPort=ReadInt(ini,section,"catBoxPort",catBoxPort);
-            catBoxMonitorPort=ReadInt(ini,section,"catBoxMonitorPort",catBoxMonitorPort);
-            outputEnabled = ReadBool(ini, section, "kmboxEnabled", outputEnabled);
-            outputDeviceType = ReadInt(ini, section, "kmboxDeviceType", outputDeviceType);
-            CopyString(outputIp, ReadString(ini, section, "kmboxIp", outputIp));
-            outputPort = ReadInt(ini, section, "kmboxPort", outputPort);
-            outputMonitorPort = ReadInt(ini, section, "kmboxMonitorPort", RecommendedOutputMonitorPort(outputPort));
-            outputMonitorPortManualOverride = ReadBool(
-                ini,
-                section,
-                "kmboxMonitorPortManualOverride",
-                false);
-            CopyString(outputMac, ReadString(ini, section, "kmboxMac", outputMac));
-            CopyString(outputComPort, ReadString(ini, section, "kmboxComPort", outputComPort));
+            V2::Output::DeviceSettings::LoadConnections(
+                [&](const char* key, auto& value) {
+                    CopyString(value, ReadString(ini, section, key, value));
+                },
+                [&](const char* key, int fallback) { return ReadInt(ini, section, key, fallback); },
+                [&](const char* key, bool fallback) { return ReadBool(ini, section, key, fallback); });
             outputCountsPerRadian = ReadFixedFloat(
                 ini,
                 section,
@@ -6516,18 +6496,10 @@ namespace OW { namespace Config {
 
         void SaveOutputSettingsUnlocked(const std::string& path)
         {
-            WriteStringValue(path,"KMBox","catBoxIp",catBoxIp);
-            WriteStringValue(path,"KMBox","catBoxUuid",catBoxUuid);
-            WriteIntValue(path,"KMBox","catBoxPort",catBoxPort);
-            WriteIntValue(path,"KMBox","catBoxMonitorPort",catBoxMonitorPort);
-            WriteBoolValue(path, "KMBox", "kmboxEnabled", outputEnabled);
-            WriteIntValue(path, "KMBox", "kmboxDeviceType", outputDeviceType);
-            WriteStringValue(path, "KMBox", "kmboxIp", outputIp);
-            WriteIntValue(path, "KMBox", "kmboxPort", outputPort);
-            WriteIntValue(path, "KMBox", "kmboxMonitorPort", outputMonitorPort);
-            WriteBoolValue(path, "KMBox", "kmboxMonitorPortManualOverride", outputMonitorPortManualOverride);
-            WriteStringValue(path, "KMBox", "kmboxMac", outputMac);
-            WriteStringValue(path, "KMBox", "kmboxComPort", outputComPort);
+            V2::Output::DeviceSettings::SaveConnections(
+                [&](const char* key, const char* value) { WriteStringValue(path, "KMBox", key, value); },
+                [&](const char* key, int value) { WriteIntValue(path, "KMBox", key, value); },
+                [&](const char* key, bool value) { WriteBoolValue(path, "KMBox", key, value); });
             WriteFixedFloatValue(path, "KMBox", "kmboxCountsPerRadian", outputCountsPerRadian);
             WriteFixedFloatValue(path, "KMBox", "kmboxAimSensitivity", outputCountsPerRadian);
             WriteFixedFloatValue(path, "KMBox", "gameMouseSensitivity", gameMouseSensitivity);
@@ -6831,10 +6803,21 @@ namespace OW { namespace Config {
             AimPlan::Normalize(aimPlan);
             ClampSetting("uiLanguage", uiLanguage, 0, kUiLanguageCount - 1, kUiLanguageEnglish);
             ClampSetting("overlayFrameLimit", overlayFrameLimit, 0, 2000, 0);
-            ClampSetting("catBoxPort",catBoxPort,0,65535,0);
-            ClampSetting("catBoxMonitorPort",catBoxMonitorPort,0,65535,0);
-            ClampSetting("kmboxDeviceType", outputDeviceType, 0, 6, 0);
-            ClampSetting("kmboxPort", outputPort, 1, 65535, kDefaultOutputPort);
+            ClampSetting("catBoxPort", catBoxPort, V2::Output::CatBoxConfig::kMinimumPort,
+                V2::Output::CatBoxConfig::kMaximumPort, 0);
+            ClampSetting("catBoxMonitorPort", catBoxMonitorPort, V2::Output::CatBoxConfig::kMinimumPort,
+                V2::Output::CatBoxConfig::kMaximumPort, 0);
+            const int previousDeviceType = outputDeviceType;
+            outputDeviceType = V2::Output::NormalizeLegacyDeviceId(outputDeviceType);
+            if (previousDeviceType != outputDeviceType) {
+                LogConfig(Diagnostics::LogLevel::Warn,
+                    "kmboxDeviceType out of range (%d); clamped to %d.",
+                    previousDeviceType, outputDeviceType);
+                Diagnostics::Aim("config.clamp name=kmboxDeviceType old=%d new=%d",
+                    previousDeviceType, outputDeviceType);
+            }
+            ClampSetting("kmboxPort", outputPort, V2::Output::KmBoxNetConfig::kMinimumCommandPort,
+            V2::Output::KmBoxNetConfig::kMaximumCommandPort, kDefaultOutputPort);
             NormalizeOutputPortsUnlocked("validate");
             ClampSetting("kmboxInputDelayMs", outputInputDelayMs, 0, 20, kDefaultOutputInputDelayMs);
             ClampSetting("manualScreenWidth", manualScreenWidth, 0, 16384, 1920);
@@ -7828,7 +7811,8 @@ namespace OW { namespace Config {
     {
         std::lock_guard<std::mutex> lock(mutex);
         ScopedConfigAuthority authority;
-        ClampSetting("kmboxPort", outputPort, 1, 65535, kDefaultOutputPort);
+        ClampSetting("kmboxPort", outputPort, V2::Output::KmBoxNetConfig::kMinimumCommandPort,
+            V2::Output::KmBoxNetConfig::kMaximumCommandPort, kDefaultOutputPort);
         NormalizeOutputPortsUnlocked("runtime");
     }
 

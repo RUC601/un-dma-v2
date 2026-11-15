@@ -13,7 +13,7 @@ using UI::Text::kUiLanguageOptions;
 #include "Features/UiLabels.hpp"
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
-#include "output/MockBackend.hpp"
+#include "output/MockDiagnostics.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"

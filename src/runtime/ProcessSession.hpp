@@ -5,6 +5,8 @@ namespace V2::Runtime {
 void StartProcessConnectionThread();
 void StopProcessConnectionThread();
 void DrainProcessRuntimeWorkers(const char* reason);
+// Ask the acquisition owner to restore its setting before DMA cancellation.
+void RestoreNativeOutlineBeforeShutdown();
 // 回归检查也走真实入口，验证最终停止不能被晚到的启动撤销。
 bool StartBackgroundThreads();
 void ResumeConnectionOperations();

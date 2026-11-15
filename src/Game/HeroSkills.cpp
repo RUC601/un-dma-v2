@@ -3,7 +3,8 @@
 
 #include "Game/HeroSkills.hpp"
 #ifdef UNLEASHED_SELF_TESTS
-#include "output/MockBackend.hpp"
+#include "output/devices/mock/Backend.hpp"
+#include "output/game_actions/MemoryPulse.hpp"
 #endif
 
 #include "Game/AimFirePhase.hpp"
@@ -15,7 +16,9 @@
 #include "Game/SkillCooldownTimers.hpp"
 #include "Game/SkillConditions.hpp"
 #include "Game/GenjiAssist.hpp"
+#include "Game/ProjectileThreat.hpp"
 #include "output/OutputRuntime.hpp"
+#include "output/GameMemoryActions.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
 #include "Utils/ProcessConnection.hpp"
@@ -219,6 +222,10 @@ namespace {
     };
 
     struct SkillAimCandidate {
+        // Dynamic objects supply their own motion identity and original position
+        // sample. They must not be represented as fictitious player entities.
+        SkillConditions::BodyIdentity motionIdentity{};
+        uint32_t motionSampleTick = 0;
         bool valid = false;
         c_entity entity{};
         int entityIndex = -1;
@@ -333,6 +340,12 @@ namespace {
     std::unordered_map<std::string, int> g_skillOutputVks;
     struct PendingSkillCast { int vk; unsigned activeSlot; SkillConditions::CastConfirmation confirmation; };
     std::unordered_map<std::string, PendingSkillCast> g_pendingSkillCasts;
+    struct SkillMemoryOwnership {
+        std::string key;
+        uint64_t releaseAt = 0;
+        bool releasing = false;
+    };
+    SkillMemoryOwnership g_skillMemoryOwnership;
     std::atomic<bool> g_projectileOwnsAim{false};
     std::unordered_map<std::string, Clock::time_point> g_lastSkillGuardLogs;
     std::unordered_map<std::string, AmmoGuardLogState> g_lastAmmoGuardSamples;
@@ -437,6 +450,7 @@ namespace {
     bool StartSkillMemoryPulse(const std::string& runtimeKey, const c_entity& local,
                                uint32_t actionMask, uint64_t holdMs = 55);
     uint32_t MemoryMaskForInputAction(HeroSkillInputAction action);
+    void CancelSkillMemoryPulse(const std::string& runtimeKey);
     bool StartSkillOutput(const std::string& runtimeKey,
                           const HeroSkillDefinition& definition,
                           const Config::HeroSkillSettings& settings,
@@ -449,6 +463,60 @@ namespace {
                                           int reserveAmmo);
 
     int MapHotkeyToVK(int hotkey);
+
+    bool SkillLogicalOutputAllowed()
+    {
+        return !Config::aimDryRun && RuntimeOutputSessionEnabled() &&
+            !V2::HostInteraction::paused.load(std::memory_order_acquire) &&
+            !Config::calibrationInProgress.load(std::memory_order_acquire) &&
+            !Config::OutputSuppressedByMenu();
+    }
+
+    bool FreshHealthForSkill(const c_entity& entity)
+    {
+        return SkillConditions::FreshHealth(entity.PlayerHealth, entity.PlayerHealthMax,
+            entity.health_sample_tick_ms, GetTickCount());
+    }
+
+    bool FreshLocalActionReady(const HeroSkillDefinition& definition, const c_entity& local)
+    {
+        const auto now = GetTickCount();
+        switch (definition.inputAction) {
+        case HeroSkillInputAction::Ability1:
+            return SkillConditions::FreshSample(local.skill_active_tick_ms[0], now) && !local.skill1act;
+        case HeroSkillInputAction::Ability2:
+            return SkillConditions::FreshSample(local.skill_active_tick_ms[1], now) && !local.skill2act;
+        case HeroSkillInputAction::Ultimate:
+            return SkillConditions::FreshSample(local.display_ultimate_tick, now) &&
+                std::isfinite(local.ultimate) && local.ultimate >= 100.f;
+        default:
+            return true;
+        }
+    }
+
+    bool CanSubmitSkillAction(const std::string& runtimeKey, int vk)
+    {
+        if (std::any_of(g_pendingSkillCasts.begin(), g_pendingSkillCasts.end(), [&](const auto& item) {
+                return item.first == runtimeKey || item.second.vk == vk;
+            })) return false;
+        const auto previous = g_lastOutputActions.find(vk);
+        return previous == g_lastOutputActions.end() || Clock::now() - previous->second >= kActionPulseDebounce;
+    }
+
+    bool UpdateOwnedSkillMemoryPulse(bool keepHolding)
+    {
+        g_skillMemoryOwnership.releasing |= !keepHolding;
+        const bool ok = V2::Output::GameActions::UpdateSkill(keepHolding && !g_skillMemoryOwnership.releasing);
+        if (ok && (g_skillMemoryOwnership.releasing || GetTickCount64() >= g_skillMemoryOwnership.releaseAt))
+            g_skillMemoryOwnership = {};
+        return ok;
+    }
+
+    void CancelSkillMemoryPulse(const std::string& runtimeKey)
+    {
+        if (g_skillMemoryOwnership.key == runtimeKey)
+            UpdateOwnedSkillMemoryPulse(false);
+    }
 
     bool UseSequenceWorker()
     {
@@ -1782,6 +1850,22 @@ namespace {
         return best;
     }
 
+    bool SkillAimWindowContains(const Vector3& observed, const Vector3& source,
+                                const Vector3& point, float radius)
+    {
+        if (!IsFiniteVector(observed) || !IsFiniteVector(source) || !IsFiniteVector(point) ||
+            !std::isfinite(radius) || radius <= 0.f) return false;
+        const auto delta = point - source;
+        const float distance = delta.Size();
+        if (!std::isfinite(distance) || distance <= 0.0001f) return false;
+        auto direction = delta / distance;
+        direction.Y = std::clamp(direction.Y, -1.f, 1.f);
+        auto target = DirectionToAimEuler(direction);
+        // Compare the shortest yaw difference across the +/-pi boundary.
+        target.Y = observed.Y + NormalizeAngle(target.Y - observed.Y);
+        return IsFiniteVector(target) && OW::in_range(observed, target, source, point, radius);
+    }
+
     SkillAimCandidate FindBestSkillAimCandidate(const Config::HeroSkillSettings& settings,
                                                 const SkillProjectileRuntime& projectile,
                                                 float minRange = 0.0f,
@@ -1834,8 +1918,7 @@ namespace {
                 continue;
             if (settings.requireVisible && !entity.Vis)
                 continue;
-            if (!std::isfinite(entity.PlayerHealth) || entity.PlayerHealth <= 0 ||
-                !std::isfinite(entity.PlayerHealthMax) || entity.PlayerHealthMax <= 0) continue;
+            if (!FreshHealthForSkill(entity)) continue;
             if (!SkillConditions::RoleAllowed(entity.HeroID, settings.targetRoleMask))
                 continue;
             if (entity.HeroID == eHero::HERO_SOMBRA && !settings.allowInvisibleSombra &&
@@ -1898,7 +1981,7 @@ namespace {
             }
 
             const float hitWindow=ResolveSkillHitWindow(entity,selectedBoneId,projectile,settings.tracking.hitbox);
-            if (reticleOnly && !OW::in_range(observedAngles,DirectionToAimEuler(aimPoint-source),source,aimPoint,hitWindow))
+            if (reticleOnly && !SkillAimWindowContains(observedAngles,source,aimPoint,hitWindow))
                 continue;
             ++matchingTargets;
 
@@ -1979,7 +2062,8 @@ namespace {
 
         auto& motion = g_skillAimMotions[runtimeKey];
         thread_local std::string previousSkill;
-        const auto target=SkillBodyIdentity(candidate.entity);
+        const bool hasMotionIdentity = candidate.motionIdentity != SkillConditions::BodyIdentity{};
+        const auto target = hasMotionIdentity ? candidate.motionIdentity : SkillBodyIdentity(candidate.entity);
         if(motion.target!=target) {
             motion={};motion.target=target;
             ResetAimSmoothingState();
@@ -1987,11 +2071,12 @@ namespace {
         if(previousSkill!=runtimeKey) {
             ResetAimSmoothingState();previousSkill=runtimeKey;
         }
-        Config::selectedAimHero=candidate.entity.HeroID;
-        Config::selectedAimActor=candidate.entity.actor_generation;
-        Config::selectedAimEpoch=candidate.entity.connection_epoch;
-        Config::selectedAimScene=candidate.entity.scene_generation;
-        Config::selectedAimSample=candidate.entity.sample_time_us?candidate.entity.sample_time_us:
+        Config::selectedAimHero=target[1];
+        Config::selectedAimActor=target[2];
+        Config::selectedAimEpoch=target[3];
+        Config::selectedAimScene=target[4];
+        Config::selectedAimSample=hasMotionIdentity ? uint64_t(candidate.motionSampleTick)*1000 :
+            candidate.entity.sample_time_us?candidate.entity.sample_time_us:
             uint64_t(candidate.entity.anchor_sample_tick_ms)*1000;
         const int behavior = Config::ClampAimBehaviorIndex(settings.tracking.aimBehavior);
         if (settings.tracking.fov <= 0.0f || settings.tracking.speedScale <= 0.0f)
@@ -2118,28 +2203,24 @@ namespace {
 
     bool StartTimedHotkey(const std::string& runtimeKey, int vk, std::chrono::milliseconds duration)
     {
+        if (!CanSubmitSkillAction(runtimeKey, vk)) return false;
         const auto local = TargetingDetail::SnapshotLocalEntity();
         if (mem.IsProcessInitialized() && local.HeroID) {
             const auto key = [&](V2::HeroSettings::Action action) {
                 return V2::HeroSettings::Key(local.HeroID, action);
             };
             uint32_t memoryMask = 0;
-            if (vk == key(V2::HeroSettings::Action::Ability1)) memoryMask = 0x8;
-            else if (vk == key(V2::HeroSettings::Action::Ability2)) memoryMask = 0x10;
-            else if (vk == key(V2::HeroSettings::Action::Ability3)) memoryMask = 0x40;
-            else if (vk == key(V2::HeroSettings::Action::Ultimate)) memoryMask = 0x20;
-            else if (vk == key(V2::HeroSettings::Action::Melee)) memoryMask = AutoMelee::kActionMask;
+            if (vk == key(V2::HeroSettings::Action::Ability1)) memoryMask = V2::Output::GameActions::ActionMask(V2::Output::GameActions::Action::Ability1);
+            else if (vk == key(V2::HeroSettings::Action::Ability2)) memoryMask = V2::Output::GameActions::ActionMask(V2::Output::GameActions::Action::Ability2);
+            else if (vk == key(V2::HeroSettings::Action::Ability3)) memoryMask = V2::Output::GameActions::ActionMask(V2::Output::GameActions::Action::Ability3);
+            else if (vk == key(V2::HeroSettings::Action::Ultimate)) memoryMask = V2::Output::GameActions::ActionMask(V2::Output::GameActions::Action::Ultimate);
+            else if (vk == key(V2::HeroSettings::Action::Melee)) memoryMask = V2::Output::GameActions::ActionMask(V2::Output::GameActions::Action::Melee);
             if (memoryMask)
                 return StartSkillMemoryPulse(runtimeKey, local, memoryMask, 55);
         }
         OutputControl control{};
         if (vk <= 0 || !TryMapVkToOutputControl(vk, control))
             return false;
-        if (std::any_of(g_pendingSkillCasts.begin(),g_pendingSkillCasts.end(),[&](const auto& item){return item.second.vk==vk;})) return false;
-        const auto previous = g_lastOutputActions.find(vk);
-        if (previous != g_lastOutputActions.end() && Clock::now() - previous->second < kActionPulseDebounce)
-            return false;
-
         duration = (std::max)(duration, kBriefPulse);
         const bool scheduled = TimedOutputScheduler().ScheduleTimedHold(
             runtimeKey,
@@ -3157,7 +3238,8 @@ namespace {
 
         // Secondary projectiles are not Ability 2. Their release latch and
         // explicit local interval work without pretending to know an active slot.
-        if (SkillControls(definition, HeroSkillControls::TrajectoryAction) &&
+        if ((SkillControls(definition, HeroSkillControls::TrajectoryAction) ||
+             definition.automation==SkillAutomation::ProjectileDefense) &&
             definition.inputAction == HeroSkillInputAction::SecondaryFire)
             return false;
 
@@ -3631,128 +3713,45 @@ namespace {
         return true;
     }
 
-    AutoMelee::MemoryPulse g_meleeMemoryPulse;
-    c_entity g_meleeMemoryBody;
-    int g_meleeMemoryPid = 0;
-    offset::RuntimeProfile g_meleeMemoryProfile = offset::kProductRuntimeProfile;
-
-    bool MeleeMemoryTargetCurrent() {
-        if (!SDK || !SDK->IsInitialized() || !mem.IsProcessInitialized() || g_meleeMemoryPid <= 0 ||
-            mem.GetCurrentProcessId() != g_meleeMemoryPid ||
-            !ProcessConnection::IsConnected() || offset::ActiveProfile() != g_meleeMemoryProfile ||
-            ProcessConnection::ConnectionEpoch() != g_meleeMemoryBody.connection_epoch ||
-            SDK->g_player_controller.load() != g_meleeMemoryBody.AngleBase)
-            return false;
-        const auto local = SnapshotFrame()->local;
-        return local.AngleBase == g_meleeMemoryBody.AngleBase &&
-            local.LinkParent == g_meleeMemoryBody.LinkParent && local.match_id == g_meleeMemoryBody.match_id &&
-            local.body_authority_revision == g_meleeMemoryBody.body_authority_revision &&
-            SkillBodyIdentity(local) == SkillBodyIdentity(g_meleeMemoryBody) &&
-            local.HasUsableBody(GetTickCount(), EntitySceneGeneration());
-    }
-
     bool UpdateMeleeMemoryPulse(bool keepHolding) {
-        const bool wasOwned = g_meleeMemoryPulse.owned;
-        const bool ok = g_meleeMemoryPulse.Update(GetTickCount64(), keepHolding,
-            [](uint64_t address, void* value, size_t bytes) { return mem.ReadFreshExact(address, value, bytes); },
-            [](uint64_t address, const void* value, size_t bytes) { return mem.Write(address, value, bytes, g_meleeMemoryPid); },
-            MeleeMemoryTargetCurrent);
-        if (wasOwned && !g_meleeMemoryPulse.owned)
-            Diagnostics::Info("Auto melee memory pulse ended. cleared=%d", ok ? 1 : 0);
-        if (!ok && g_meleeMemoryPulse.owned && ShouldLogSkillGuard("melee_memory_release"))
+        const auto update = V2::Output::GameActions::UpdateMelee(keepHolding);
+        if (update.wasOwned && !update.owned)
+            Diagnostics::Info("Auto melee memory pulse ended. cleared=%d", update.ok ? 1 : 0);
+        if (!update.ok && update.owned && ShouldLogSkillGuard("melee_memory_release"))
             Diagnostics::Warn("Auto melee memory cleanup pending; retrying only on the same current body.");
-        return ok;
+        return update.ok;
     }
-
-    bool StartMeleeMemoryPulse(const c_entity& local) {
-#ifdef UNLEASHED_OBSERVATION_ONLY
-        return false;
-#else
-        const auto profile = offset::ActiveProfile();
-        if (Config::aimDryRun || !local.AngleBase || g_meleeMemoryPulse.owned ||
-            (profile != offset::RuntimeProfile::Cn && profile != offset::RuntimeProfile::World155284 &&
-             profile != offset::RuntimeProfile::Nexon155284)) return false;
-        g_meleeMemoryBody = local;
-        g_meleeMemoryPid = mem.GetCurrentProcessId();
-        g_meleeMemoryProfile = profile;
-        return g_meleeMemoryPulse.Start(local.AngleBase + AutoMelee::kActionOffset, GetTickCount64(),
-            [](uint64_t address, void* value, size_t bytes) { return mem.ReadFreshExact(address, value, bytes); },
-            [](uint64_t address, const void* value, size_t bytes) { return mem.Write(address, value, bytes, g_meleeMemoryPid); },
-            MeleeMemoryTargetCurrent);
-#endif
-    }
-
-    AutoMelee::MemoryPulse g_skillMemoryPulse;
-    c_entity g_skillMemoryBody;
-    int g_skillMemoryPid = 0;
-    offset::RuntimeProfile g_skillMemoryProfile = offset::kProductRuntimeProfile;
-    std::string g_skillMemoryKey;
 
     uint32_t MemoryMaskForInputAction(HeroSkillInputAction action) {
+        using V2::Output::GameActions::Action;
+        using V2::Output::GameActions::ActionMask;
         switch (action) {
-        case HeroSkillInputAction::Ability1: return 0x8;
-        case HeroSkillInputAction::Ability2: return 0x10;
-        case HeroSkillInputAction::Ability3: return 0x40; // candidate from the legacy action-word layout
-        case HeroSkillInputAction::Ultimate: return 0x20;
-        case HeroSkillInputAction::QuickMelee: return AutoMelee::kActionMask;
+        case HeroSkillInputAction::Ability1: return ActionMask(Action::Ability1);
+        case HeroSkillInputAction::Ability2: return ActionMask(Action::Ability2);
+        case HeroSkillInputAction::Ability3: return ActionMask(Action::Ability3);
+        case HeroSkillInputAction::Ultimate: return ActionMask(Action::Ultimate);
+        case HeroSkillInputAction::QuickMelee: return ActionMask(Action::Melee);
         default: return 0;
         }
     }
 
-    bool SkillMemoryTargetCurrent() {
-        if (!SDK || !SDK->IsInitialized() || !mem.IsProcessInitialized() || g_skillMemoryPid <= 0 ||
-            mem.GetCurrentProcessId() != g_skillMemoryPid || !ProcessConnection::IsConnected() ||
-            offset::ActiveProfile() != g_skillMemoryProfile ||
-            ProcessConnection::ConnectionEpoch() != g_skillMemoryBody.connection_epoch ||
-            SDK->g_player_controller.load() != g_skillMemoryBody.AngleBase)
-            return false;
-        const auto local = SnapshotFrame()->local;
-        return local.AngleBase == g_skillMemoryBody.AngleBase &&
-            local.LinkParent == g_skillMemoryBody.LinkParent &&
-            local.match_id == g_skillMemoryBody.match_id &&
-            local.body_authority_revision == g_skillMemoryBody.body_authority_revision &&
-            SkillBodyIdentity(local) == SkillBodyIdentity(g_skillMemoryBody) &&
-            local.HasUsableBody(GetTickCount(), EntitySceneGeneration());
-    }
-
-    bool UpdateSkillMemoryPulse(bool keepHolding) {
-        return g_skillMemoryPulse.Update(GetTickCount64(), keepHolding,
-            [](uint64_t address, void* value, size_t bytes) {
-                return mem.ReadFreshExact(address, value, bytes);
-            },
-            [](uint64_t address, const void* value, size_t bytes) {
-                return mem.Write(address, value, bytes, g_skillMemoryPid);
-            },
-            SkillMemoryTargetCurrent);
-    }
-
     bool StartSkillMemoryPulse(const std::string& runtimeKey, const c_entity& local,
                                uint32_t actionMask, uint64_t holdMs) {
-#ifdef UNLEASHED_OBSERVATION_ONLY
-        return false;
-#else
-        if (!actionMask || Config::aimDryRun || !local.AngleBase || g_skillMemoryPulse.owned ||
-            (offset::ActiveProfile() != offset::RuntimeProfile::Cn &&
-             offset::ActiveProfile() != offset::RuntimeProfile::World155284 &&
-             offset::ActiveProfile() != offset::RuntimeProfile::Nexon155284))
+        if (!SkillLogicalOutputAllowed() || !g_skillMemoryOwnership.key.empty()) return false;
+        using Action = V2::HeroSettings::Action;
+        const auto action = actionMask == 0x8 ? Action::Ability1 : actionMask == 0x10 ? Action::Ability2 :
+            actionMask == 0x40 ? Action::Ability3 : actionMask == 0x20 ? Action::Ultimate : Action::Melee;
+        const int vk = V2::HeroSettings::Key(local.HeroID, action);
+        if (!CanSubmitSkillAction(runtimeKey, vk)) return false;
+        // Retain the owner even on a partial failed write until release cleanup succeeds.
+        g_skillMemoryOwnership = {runtimeKey, GetTickCount64() + holdMs, false};
+        if (!V2::Output::GameActions::StartSkill(local, actionMask, holdMs, Config::aimDryRun)) {
+            UpdateOwnedSkillMemoryPulse(false);
             return false;
-        g_skillMemoryBody = local;
-        g_skillMemoryPid = mem.GetCurrentProcessId();
-        g_skillMemoryProfile = offset::ActiveProfile();
-        g_skillMemoryKey = runtimeKey;
-        return g_skillMemoryPulse.Start(
-            local.AngleBase + AutoMelee::kActionOffset,
-            GetTickCount64(),
-            [](uint64_t address, void* value, size_t bytes) {
-                return mem.ReadFreshExact(address, value, bytes);
-            },
-            [](uint64_t address, const void* value, size_t bytes) {
-                return mem.Write(address, value, bytes, g_skillMemoryPid);
-            },
-            SkillMemoryTargetCurrent,
-            actionMask,
-            holdMs);
-#endif
+        }
+        // An accepted request is a bounded attempt, not a confirmed cooldown.
+        g_lastOutputActions[vk] = Clock::now();
+        return true;
     }
 
     bool StartSkillOutput(const std::string& runtimeKey,
@@ -3789,7 +3788,7 @@ namespace {
         if (IsActionDebounced(runtimeKey))
             return false;
 
-        if (!StartMeleeMemoryPulse(TargetingDetail::SnapshotLocalEntity())) {
+        if (!V2::Output::GameActions::StartMelee(TargetingDetail::SnapshotLocalEntity(), Config::aimDryRun)) {
             if (ShouldLogSkillGuard(runtimeKey + ":melee_output"))
                 Diagnostics::Warn("Auto melee memory press rejected. skill=%s", runtimeKey.c_str());
             return false;
@@ -4035,7 +4034,8 @@ namespace {
     {
         const bool absolute = SkillControls(definition, HeroSkillControls::HealthAbsolute);
         const float currentHealth = absolute ? local.PlayerHealth : VitalityPercent(local);
-        if (!settings.healthTriggerEnabled || !SkillConditions::HealthAtOrBelow(
+        if (!FreshHealthForSkill(local) || !FreshLocalActionReady(definition, local) ||
+            !settings.healthTriggerEnabled || !SkillConditions::HealthAtOrBelow(
                 local.PlayerHealth, local.PlayerHealthMax, settings.healthThreshold, absolute) ||
             IsActionDebounced(runtimeKey))
             return false;
@@ -4169,14 +4169,14 @@ namespace {
                                          const Config::HeroSkillSettings& settings,
                                          const c_entity& local)
     {
-        if (IsActionDebounced(runtimeKey))
+        if (!FreshLocalActionReady(definition, local) || IsActionDebounced(runtimeKey))
             return false;
 
         const std::string skillId = definition.skillId ? definition.skillId : "";
         bool healthTrigger = false;
         if (settings.healthTriggerEnabled && (SkillControls(definition, HeroSkillControls::HealthAbsolute) ||
             SkillControls(definition, HeroSkillControls::HealthThreshold))) {
-            healthTrigger = SkillConditions::HealthAtOrBelow(local.PlayerHealth, local.PlayerHealthMax,
+            healthTrigger = FreshHealthForSkill(local) && SkillConditions::HealthAtOrBelow(local.PlayerHealth, local.PlayerHealthMax,
                 settings.healthThreshold, SkillControls(definition, HeroSkillControls::HealthAbsolute));
         }
 
@@ -4212,7 +4212,7 @@ namespace {
                                       const Config::HeroSkillSettings& settings,
                                       const c_entity& local)
     {
-        if (!local.team_known || !std::isfinite(settings.radius) || settings.radius <= 0 ||
+        if (!FreshLocalActionReady(definition, local) || !local.team_known || !std::isfinite(settings.radius) || settings.radius <= 0 ||
             IsActionDebounced(runtimeKey)) return false;
         const Vector3 source = SourcePositionForAction(local);
         if (!IsUsablePosition(source)) return false;
@@ -4224,8 +4224,8 @@ namespace {
                 !std::isfinite(target.PlayerHealth) || target.PlayerHealth <= 0 ||
                 target.Team == allies || (settings.requireVisible && !target.Vis)) continue;
             if (!allies && (target.imort || target.barrprot)) continue;
-            if (allies && !SkillConditions::HealthAtOrBelow(target.PlayerHealth, target.PlayerHealthMax,
-                    settings.allyHealthThreshold, false)) continue;
+            if (allies && (!FreshHealthForSkill(target) || !SkillConditions::HealthAtOrBelow(target.PlayerHealth, target.PlayerHealthMax,
+                    settings.allyHealthThreshold, false))) continue;
             const auto position = CandidatePositionForAction(target);
             if (!IsUsablePosition(position)) continue;
             const float distance = source.DistTo(position);
@@ -4240,10 +4240,18 @@ namespace {
     }
 
     #include "HeroSkillAutomation.inl"
+    #include "HeroSkillSignalActions.inl"
 
 
     void CancelSkill(const std::string& skillId, bool cancelTimedAction)
     {
+        if (cancelTimedAction) CancelSignalSkill(skillId);
+        g_automaticAimWindows.erase(skillId);
+        if (cancelTimedAction) {
+            CancelSkillMemoryPulse(skillId);
+            g_pendingSkillCasts.erase(skillId);
+            g_skillAimMotions.erase(skillId);
+        }
         if (cancelTimedAction) CancelAutomation(skillId);
         if (g_rocketPunch.maskKey == skillId + ":physical_rmb_mask")
             CancelRocketPunch();
@@ -4287,7 +4295,7 @@ namespace {
             HasFreshViewMatrices() && !(pause & SkillConditions::Skills) &&
             !g_specialOwnsAim.load(std::memory_order_acquire) && !g_genjiBladeOwnsAim.load(std::memory_order_acquire);
         UpdateMeleeMemoryPulse(allowed);
-        if (!allowed || g_meleeMemoryPulse.owned) return;
+        if (!allowed || V2::Output::GameActions::MeleeOwned()) return;
         const auto definition = std::find_if(AllHeroSkillDefinitions().begin(), AllHeroSkillDefinitions().end(),
             [&](const auto& item) { return IsAutoMeleeDefinition(item) && IsHeroSkillDefinitionActiveForRuntime(item, local.HeroID); });
         const auto key = RuntimeSkillKey(local.HeroID, "auto-melee");
@@ -4316,6 +4324,8 @@ ExecutionToken ActiveInputSequenceToken()
 
 bool ShouldBlockForActiveSequence(ExecutionSource requester)
 {
+    if (g_beamOwnsOutputs.load(std::memory_order_acquire) &&
+        (requester==ExecutionSource::GlobalAim || requester==ExecutionSource::Trigger)) return true;
     if (g_projectileOwnsAim.load(std::memory_order_acquire) &&
         (requester==ExecutionSource::GlobalAim || requester==ExecutionSource::Trigger)) return true;
     if (g_specialOwnsAim.load(std::memory_order_acquire)) return true;
@@ -4366,6 +4376,9 @@ SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
         if (!IsHeroSkillDefinitionActiveForRuntime(definition, needs.localHero)) continue;
         const auto settings = Config::GetHeroSkillSettings(needs.localHero, definition.skillId, definition.defaultSettings);
         if (!settings.enabled) continue;
+        needs.heroSignals |= definition.automation==SkillAutomation::MercyBeam ||
+            definition.automation==SkillAutomation::LucioSong ||
+            (definition.automation==SkillAutomation::ProjectileDefense && definition.heroId==eHero::HERO_DVA);
         needs.localSkills |= SkillControls(definition, HeroSkillControls::TrajectoryAction) || settings.cooldownGuard || SkillControls(definition, HeroSkillControls::PausePolicy) ||
             definition.automation==SkillAutomation::RecastReturn || definition.automation==SkillAutomation::GenjiBlade ||
             definition.automation==SkillAutomation::RecentDamageDeflect || definition.automation==SkillAutomation::HealthSurvival;
@@ -4374,6 +4387,16 @@ SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
         needs.enemyThreats |= definition.automation==SkillAutomation::NormalInterrupt && settings.normalThreatMask!=0;
     }
     return needs;
+}
+
+bool HeroSkillNeedsProjectileObservations(uint64_t localHero)
+{
+    for (const auto& definition : AllHeroSkillDefinitions()) {
+        if (definition.heroId!=localHero || definition.automation!=SkillAutomation::ProjectileDefense) continue;
+        const auto settings=Config::GetHeroSkillSettings(localHero,definition.skillId,definition.defaultSettings);
+        if (settings.enabled && settings.projectileThreatEnabled && settings.projectileThreatMask) return true;
+    }
+    return false;
 }
 
 void RunInputSequence(const std::string& skillId,
@@ -4703,8 +4726,9 @@ namespace {
 
 void CancelActiveSkillStateLocked()
 {
+    CancelSignalActions();
     UpdateMeleeMemoryPulse(false);
-    UpdateSkillMemoryPulse(false);
+    UpdateOwnedSkillMemoryPulse(false);
     CancelGenjiBlade();
     g_lastGenjiDashTry = 0;
     for(auto& [key,state]:g_superJumps)CancelSuperJump(key,state);
@@ -4768,7 +4792,10 @@ void ProcessHeroSkills()
 
     const OutputRuntimeState outputRuntime =
         CurrentOutputRuntimeState();
-    UpdateSkillMemoryPulse(outputRuntime.outputGateOpen && RuntimeWorkersRunning() &&
+    // The game action word does not require a device connection. It still obeys
+    // the same session, host interaction, menu, calibration and dry-run gates.
+    const bool logicalOutputAllowed = SkillLogicalOutputAllowed();
+    UpdateOwnedSkillMemoryPulse(logicalOutputAllowed && RuntimeWorkersRunning() &&
         ProcessConnection::IsConnected());
     const bool generationChanged =
         g_lastTimedOutputGeneration != 0 &&
@@ -4788,7 +4815,7 @@ void ProcessHeroSkills()
     g_lastTimedOutputGeneration = outputRuntime.backendGeneration;
     g_lastTimedOutputGateOpen = outputRuntime.outputGateOpen;
 
-    if (!RuntimeWorkersRunning() || !ProcessConnection::IsConnected()) {
+    if (!RuntimeWorkersRunning() || !ProcessConnection::IsConnected() || !logicalOutputAllowed) {
         CancelActiveSkillStateLocked();
         (void)RetryPendingPhysicalMouseMaskLeases();
         return;
@@ -4829,8 +4856,9 @@ void ProcessHeroSkills()
             localSnapshot.health_sample_tick_ms, GetTickCount());
     bool processedAnyForHero = false;
     bool anySequenceActivationHeld = false;
-    g_automaticOwnsAim.store(false,std::memory_order_release);
+    g_automaticOwnsAim.store(SignalAimHeld(),std::memory_order_release);
     ObserveDefensiveThreats();
+    ObserveProjectileThreats(localSnapshot);
     if(heroId==eHero::HERO_MIZUKI) {
         const auto tick=localSnapshot.skill_active_tick_ms[0];
         const auto age=uint32_t(GetTickCount()-tick);
@@ -4915,6 +4943,13 @@ void ProcessHeroSkills()
         g_skillOutputVks[skillKey]=settings.runtimeOutputVk;
         settings.runtimeJumpVk=V2::HeroSettings::Key(heroId,MappedAction::Jump);
 
+        if (definition.automation==SkillAutomation::MercyBeam) {
+            EvaluateMercyBeam(skillKey,settings,localSnapshot);continue;
+        }
+        if (definition.automation==SkillAutomation::LucioSong) {
+            EvaluateLucioSong(skillKey,definition,settings,localSnapshot);continue;
+        }
+
         if(g_specialOwnsAim.load(std::memory_order_acquire) && definition.automation!=SkillAutomation::EmreJump) {
             CancelSkill(skillKey,true);continue;
         }
@@ -4926,7 +4961,7 @@ void ProcessHeroSkills()
         }
 
         if (definition.inputAction == HeroSkillInputAction::Ultimate &&
-            (!std::isfinite(localSnapshot.ultimate) || localSnapshot.ultimate < 100.f)) {
+            !FreshLocalActionReady(definition, localSnapshot)) {
             CancelSkill(skillKey, false);
             continue;
         }
@@ -4976,6 +5011,7 @@ void ProcessHeroSkills()
 
         if (!sequenceActive && !genjiComboActive &&
             IsManualCooldownActive(skillKey, settings)) {
+            g_automaticAimWindows.erase(skillKey);
             if (aimedProjectile && IsActivationKeyHeld(settings.key)) g_skillAimSessions[skillKey].Block();
             if (ShouldLogSkillGuard(skillKey)) {
                 Diagnostics::Aim("skill.manual_cooldown block skill=%s cooldown=%.3f",
@@ -4988,6 +5024,7 @@ void ProcessHeroSkills()
         const auto sharedCast = g_confirmedOutputActions.find(settings.runtimeOutputVk);
         if (!sequenceActive && !genjiComboActive && sharedCast != g_confirmedOutputActions.end() &&
             Clock::now() - sharedCast->second < std::chrono::duration<float>(settings.cooldown)) {
+            g_automaticAimWindows.erase(skillKey);
             if (aimedProjectile && IsActivationKeyHeld(settings.key)) g_skillAimSessions[skillKey].Block();
             continue;
         }
@@ -4999,6 +5036,9 @@ void ProcessHeroSkills()
         }
 
         if(definition.automation!=SkillAutomation::None) {
+            if (definition.automation==SkillAutomation::ProjectileDefense) {
+                EvaluateProjectileDefense(skillKey,definition,settings,localSnapshot);continue;
+            }
             if (definition.automation == SkillAutomation::HealthSurvival) {
                 EvaluateSurvivalAction(skillKey, definition, settings, localSnapshot);
                 continue;
@@ -5075,12 +5115,12 @@ bool RunHeroSkillRuntimeStopSelfTest()
         runtime.jumpDown = true;
         runtime.jumpVk = VK_SPACE;
         return SetViewpointOutputs(key, runtime) &&
-            V2::Output::MockHardwareMgr.Snapshot().outputMouseButtons != 0 &&
-            V2::Output::MockHardwareMgr.Snapshot().outputKeyboardKeys != 0;
+            V2::Output::SnapshotMock().outputMouseButtons != 0 &&
+            V2::Output::SnapshotMock().outputKeyboardKeys != 0;
     };
     auto released = [&] {
         const auto& runtime = g_viewpoints[key];
-        const auto output = V2::Output::MockHardwareMgr.Snapshot();
+        const auto output = V2::Output::SnapshotMock();
         return runtime.phase == ViewpointPhase::Cancelled &&
             !runtime.secondaryDown && !runtime.jumpDown &&
             output.outputMouseButtons == 0 && output.outputKeyboardKeys == 0;
@@ -5109,15 +5149,16 @@ bool RunHeroSkillRuntimeStopSelfTest()
     g_rocketPunch.masked = AcquirePhysicalMouseMaskLease(g_rocketPunch.maskKey,
         OutputOwnerSource::HeroTimedAction, 0x02u, generation);
     ok &= g_rocketPunch.masked && ReleaseRocketPunchInput(key, generation);
-    ok &= V2::Output::MockHardwareMgr.Snapshot().maskedButtons == 0x02u &&
-        V2::Output::MockHardwareMgr.Snapshot().outputMouseButtons == 0;
+    ok &= V2::Output::SnapshotMock().maskedButtons == 0x02u &&
+        V2::Output::SnapshotMock().outputMouseButtons == 0;
     g_rocketPunchOwnsAim.store(true, std::memory_order_release);
     ok &= ShouldBlockForActiveSequence(ExecutionSource::GlobalAim) &&
         ShouldBlockForActiveSequence(ExecutionSource::Trigger);
     ProcessHeroSkills();
-    ok &= V2::Output::MockHardwareMgr.Snapshot().maskedButtons == 0 &&
+    ok &= V2::Output::SnapshotMock().maskedButtons == 0 &&
         !g_rocketPunchOwnsAim.load(std::memory_order_acquire);
     #include "HeroSkillAutomationSelfTest.inl"
+    #include "HeroSkillSignalActionsSelfTest.inl"
     CancelActiveSkill();
     g_viewpoints.erase(key);
     return ok;

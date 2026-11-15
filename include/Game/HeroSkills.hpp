@@ -4,7 +4,7 @@
 #include "Game/HeroPerkRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Utils/InputLabels.hpp"
-#include "Game/InputOrchestrator.hpp"
+#include "output/InputOrchestrator.hpp"
 #include "Game/Structs.hpp"
 #include "Game/SkillConditions.hpp"
 
@@ -160,7 +160,8 @@ namespace HeroSkillHotkey {
 
 enum class SkillAutomation {
     None, Reticle, LowEnemyHealth, NormalInterrupt, FollowAim,
-    RecastReturn, EmreJump, GenjiBlade, RecentDamageDeflect, HealthSurvival, ShieldBash
+    RecastReturn, EmreJump, GenjiBlade, RecentDamageDeflect, HealthSurvival, ShieldBash,
+    MercyBeam, LucioSong, ProjectileDefense
 };
 
 struct HeroSkillDefinition {
@@ -254,6 +255,7 @@ bool ShouldBlockForActiveSequence(ExecutionSource requester);
 bool ShouldPauseHeroAssist(ExecutionSource requester);
 bool HasEnabledDefensiveHeroSkill(uint64_t heroId);
 SkillConditions::ObservationNeeds HeroSkillObservationNeeds();
+bool HeroSkillNeedsProjectileObservations(uint64_t localHero);
 void CancelActiveSkill();
 void ProcessHeroSkills();
 
@@ -1284,6 +1286,51 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
             HeroSkillControls::Enabled | HeroSkillControls::Distance | HeroSkillControls::Cooldown |
             HeroSkillControls::TrackingOverlay,bash});
         result.back().automation = SkillAutomation::ShieldBash;
+
+        auto beam = MakeHealthActionDefaults(90, 0);
+        beam.key = HeroSkillHotkey::Mouse4;
+        beam.skillKey = HeroSkillHotkey::LeftMouse;
+        result.push_back({eHero::HERO_MERCY,"mercy","beam-switch","Healing / Damage Boost","caduceus-staff",
+            HeroSkillInputAction::PrimaryFire,HeroSkillCategory::Skill,
+            HeroSkillControls::Enabled | HeroSkillControls::Key | HeroSkillControls::AllyHealthThreshold,beam});
+        result.back().defaultSettings.allyHealthThreshold = 90;
+        result.back().automation = SkillAutomation::MercyBeam;
+
+        auto song = MakeHealthActionDefaults(0, 0);
+        song.key = song.skillKey = HeroSkillHotkey::LeftShift;
+        song.allyHealthThreshold = 90; song.minTargets = 1; song.radius = 12;
+        song.assistanceDelayMs = 800;
+        result.push_back({eHero::HERO_LUCIO,"lucio","crossfade","Automatic Crossfade","crossfade",
+            HeroSkillInputAction::Ability1,HeroSkillCategory::Skill,
+            HeroSkillControls::Enabled | HeroSkillControls::AllyHealthThreshold |
+            HeroSkillControls::MinTargets | HeroSkillControls::Radius,song});
+        result.back().automation = SkillAutomation::LucioSong;
+
+        // Existing low-health cards keep their thresholds and saved settings.
+        // Incoming projectiles use a distinct whitelist, but the same action/cooldown.
+        for (auto& d : result) {
+            if ((d.heroId == eHero::HERO_GENJI && std::string(d.skillId) == "deflect") ||
+                (d.heroId == eHero::HERO_SIGMA && std::string(d.skillId) == "kinetic-grasp")) {
+                d.automation = SkillAutomation::ProjectileDefense;
+                d.controls |= HeroSkillControls::Distance;
+                d.defaultSettings.distance = 10;
+            }
+        }
+        const auto defense = [&](uint64_t hero, const char* slug, const char* id,
+                                 const char* name, HeroSkillInputAction action, float interval) {
+            auto s = MakeHealthActionDefaults(40, interval);
+            s.key = s.skillKey = DefaultHeroSkillOutputHotkey(action);
+            s.healthTriggerEnabled = false; s.distance = 10; s.automaticAim = false;
+            s.projectileThreatEnabled = true;
+            s.tracking = MakeProjectileAimSkillDefaults(10,interval,0,0,0).tracking;
+            s.tracking.fov = 180;
+            result.push_back({hero,slug,id,name,id,action,HeroSkillCategory::Skill,
+                HeroSkillControls::Enabled | HeroSkillControls::HealthThreshold | HeroSkillControls::Distance |
+                HeroSkillControls::Cooldown | HeroSkillControls::CooldownGuard,s});
+            result.back().automation = SkillAutomation::ProjectileDefense;
+        };
+        defense(eHero::HERO_DVA,"dva","defense-matrix","Defense Matrix",HeroSkillInputAction::SecondaryFire,1);
+        defense(eHero::HERO_ORISA,"orisa","javelin-spin","Javelin Spin",HeroSkillInputAction::Ability2,8);
 
         for (const auto hero : {eHero::HERO_REAPER, eHero::HERO_TRACER, eHero::HERO_MEI,
                                 eHero::HERO_VENTURE, eHero::HERO_DOOMFIST}) {

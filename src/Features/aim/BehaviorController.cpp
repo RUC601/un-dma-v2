@@ -1,6 +1,6 @@
-﻿#include "Game/HeroSettings.hpp"
+#include "Game/HeroSettings.hpp"
 #ifdef UNLEASHED_SELF_TESTS
-#include "output/MockBackend.hpp"
+#include "output/devices/mock/Backend.hpp"
 #endif
 #include "Game/WeaponCharge.hpp"
 #include <optional>

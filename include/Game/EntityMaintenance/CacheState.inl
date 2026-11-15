@@ -87,7 +87,6 @@
     };
     struct RosterEntry : ComponentBaseCache {
         OW::EdOutline::State outlineState{};
-        OW::OutlineBrightness::State brightnessState{};
         std::array<uint64_t, 6> outlineIdentity{};
         // Actor state must survive replacing the component-address cache in CacheRebuild.inl.
         DWORD skillUpdateTick = 0;
@@ -100,6 +99,10 @@
         bool skill1act = false;
         bool skill2act = false;
         std::array<uint32_t, 2> skillActiveTick{};
+        OW::HeroSkillSignals::Sample heroSkillSignals{};
+        OW::HeroSkillSignals::ScalarCache heroSkillScalarCache{};
+        std::array<uint64_t, 10> heroSkillSignalIdentity{};
+        uint32_t heroSkillSignalAttemptTick = 0;
         float ultimate = 0.0f;
         bool ultimateValid = false;
         DWORD displayUltimateTick = 0;

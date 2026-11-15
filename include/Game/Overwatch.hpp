@@ -48,7 +48,7 @@
 #include "config/HeroProfileWorker.hpp"
 #include "Game/snapshots/PresentationWorker.hpp"
 #include "Game/WeaponCadence.hpp"
-#include "output/MockBackend.hpp"
+#include "output/MockDiagnostics.hpp"
 #include "Renderer/IconManager.hpp"
 #include "Renderer/Renderer.hpp"
 #include "Utils/Config.hpp"

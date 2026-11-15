@@ -15,6 +15,8 @@ std::atomic<bool> g_genjiBladeOwnsAim{false};
 
 void CancelGenjiBlade() {
     if (!g_genjiBlade.key.empty()) {
+        CancelSkillMemoryPulse(g_genjiBlade.key + ":dash");
+        CancelSkillMemoryPulse(g_genjiBlade.key + ":swing");
         TimedOutputScheduler().Cancel(g_genjiBlade.key + ":dash");
         TimedOutputScheduler().Cancel(g_genjiBlade.key + ":swing");
         g_skillAimMotions.erase(g_genjiBlade.key);
@@ -67,6 +69,10 @@ bool EvaluateRecentDamageDeflect(const std::string& key, const HeroSkillDefiniti
 
 void EvaluateGenjiBlade(const std::string& key, const Config::HeroSkillSettings& settings,
                        const c_entity& local) {
+    if (!SkillConditions::FreshSample(local.display_ultimate_tick, GetTickCount())) {
+        CancelGenjiBlade();
+        return;
+    }
     const auto input = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Ultimate));
     const auto now = GetTickCount64();
     const bool wasActive = g_genjiBlade.window.active;
@@ -134,13 +140,17 @@ bool IsSkillAimConfirmed(const SkillAimCandidate& candidate) {
     Vector3 current{};
     const auto source=SourcePositionForAction(TargetingDetail::SnapshotLocalEntity());
     return candidate.valid && candidate.hitWindow > 0 && TryReadCurrentViewAngles(current) &&
-        OW::in_range(current, DirectionToAimEuler(candidate.aimPoint-source),source,candidate.aimPoint,candidate.hitWindow);
+        SkillAimWindowContains(current,source,candidate.aimPoint,candidate.hitWindow);
 }
 
 bool EvaluateAutomaticAim(const std::string& key, const HeroSkillDefinition& definition,
                           const Config::HeroSkillSettings& settings) {
     const auto kind = definition.automation;
     auto& window=g_automaticAimWindows[key];
+    if (!FreshLocalActionReady(definition, TargetingDetail::SnapshotLocalEntity())) {
+        window.Reset();
+        return false;
+    }
     if (kind == SkillAutomation::ShieldBash) {
         const auto input = KeyState::SampleVk(V2::HeroSettings::Key(definition.heroId,V2::HeroSettings::Action::Secondary));
         if (!input.available || !input.down) { window.Reset(); return false; }
@@ -198,7 +208,8 @@ bool EvaluateAutomaticAim(const std::string& key, const HeroSkillDefinition& def
 }
 
 bool EvaluateReturn(const std::string& key, const Config::HeroSkillSettings& settings, const c_entity& local) {
-    if (!SkillConditions::FreshActive(local.skill1act,local.skill_active_tick_ms[0],GetTickCount()) ||
+    if (!FreshHealthForSkill(local) || !settings.healthTriggerEnabled ||
+        !SkillConditions::FreshActive(local.skill1act,local.skill_active_tick_ms[0],GetTickCount()) ||
         !g_returnWindow.Ready(GetTickCount64()) ||
         !SkillConditions::HealthAtOrBelow(local.PlayerHealth,local.PlayerHealthMax,settings.healthThreshold,true)) return false;
     bool sent = false;
@@ -263,6 +274,7 @@ void EvaluateSuperJump(const std::string& key, const HeroSkillDefinition& defini
         if (IsManualCooldownActive(key,settings)) return;
         auto shiftDefinition=definition;
         shiftDefinition.inputAction=HeroSkillInputAction::Ability1;
+        if (!FreshLocalActionReady(definition,local) || !FreshLocalActionReady(shiftDefinition,local)) return;
         if (IsInRechargeInterval(definition,settings,local) || IsInRechargeInterval(shiftDefinition,settings,local)) return;
         state.phase = 1;state.started = now;state.lastTick=now;
         g_specialOwnsAim.store(true,std::memory_order_release);

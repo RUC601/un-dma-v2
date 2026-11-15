@@ -1,0 +1,34 @@
+# Shared source lists keep production and the offline output checks aligned.
+set(UNLEASHED_OUTPUT_BACKEND_SOURCES
+    src/output/core/OutputRuntime.cpp
+    src/output/core/TimerResolution.cpp
+    src/output/registry/Descriptor.cpp
+    src/output/registry/DeviceRegistry.cpp
+    src/output/settings/RuntimeConfig.cpp
+    src/output/settings/ProductOutputServices.cpp
+    src/output/transport/serial/SerialTransport.cpp
+    src/output/transport/serial/SerialOutputDevice.cpp
+    src/output/protocols/KmTextSession.cpp
+    src/output/devices/kmbox_net/Backend.cpp
+    src/output/devices/kmbox_net/Device.cpp
+    src/output/devices/catbox/Backend.cpp
+    src/output/devices/catbox/Protocol.cpp
+    src/output/devices/catbox/Device.cpp
+    src/output/devices/mock/Backend.cpp
+    src/output/devices/mock/Device.cpp
+    src/output/devices/kmbox_serial/Backend.cpp
+    src/output/devices/kmbox_serial/Session.cpp
+    src/output/devices/makcu/Backend.cpp
+    src/output/devices/makcu/Session.cpp
+    src/output/devices/ferrum/Backend.cpp
+    src/output/devices/ferrum/Session.cpp
+)
+set(UNLEASHED_OUTPUT_ACTION_SOURCES
+    src/output/game_actions/MemoryActions.cpp
+    src/output/core/Actions.cpp
+    src/output/core/PhysicalMask.cpp
+    src/output/core/MotionTelemetry.cpp
+    src/output/core/OutputOwnership.cpp
+    src/output/core/OutputScheduler.cpp
+    src/output/settings/DeviceConnection.cpp
+)

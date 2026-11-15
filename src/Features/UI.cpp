@@ -12,12 +12,11 @@
 #include "ui/EditorSupport.hpp"
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
-#include "output/DeviceCapabilities.hpp"
+#include "output/DeviceRegistry.hpp"
 #include "game/profiles/ProfileState.hpp"
 #include "Features/UiLabels.hpp"
 #include "Features/UiValueFormat.hpp"
 using namespace UI::ValueFormat;
-#include "output/MockBackend.hpp"
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
@@ -335,151 +334,6 @@ void StopFirePatternRecorder() {
             (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
     }
 
-    std::string Win32ErrorMessage(const char* prefix, DWORD error)
-    {
-        char buffer[96]{};
-        std::snprintf(buffer, sizeof(buffer), "%s (error %lu)", prefix, static_cast<unsigned long>(error));
-        return buffer;
-    }
-
-    std::wstring PowerShellSingleQuoted(const char* text)
-    {
-        std::wstring quoted = L"'";
-        if (text != nullptr) {
-            for (const char* current = text; *current != '\0'; ++current) {
-                if (*current == '\'')
-                    quoted += L"''";
-                else
-                    quoted += static_cast<unsigned char>(*current);
-            }
-        }
-        quoted += L"'";
-        return quoted;
-    }
-
-    std::wstring PowerShellSingleQuoted(const std::wstring& text)
-    {
-        std::wstring quoted = L"'";
-        for (const wchar_t ch : text) {
-            if (ch == L'\'')
-                quoted += L"''";
-            else
-                quoted += ch;
-        }
-        quoted += L"'";
-        return quoted;
-    }
-
-    std::wstring CurrentExecutablePath()
-    {
-        std::array<wchar_t, MAX_PATH> stackBuffer{};
-        DWORD length = GetModuleFileNameW(nullptr, stackBuffer.data(), static_cast<DWORD>(stackBuffer.size()));
-        if (length == 0)
-            return {};
-
-        if (length < static_cast<DWORD>(stackBuffer.size()))
-            return std::wstring(stackBuffer.data(), length);
-
-        std::vector<wchar_t> dynamicBuffer(32768);
-        length = GetModuleFileNameW(nullptr, dynamicBuffer.data(), static_cast<DWORD>(dynamicBuffer.size()));
-        if (length == 0 || length >= static_cast<DWORD>(dynamicBuffer.size()))
-            return {};
-
-        return std::wstring(dynamicBuffer.data(), length);
-    }
-
-OutputConnectionTestResult AllowOutputMonitorFirewall() {
-        if (OW::Config::outputDeviceType != 0)
-            return { false, "Network mode only" };
-
-        const int monitorPort = OW::Config::EffectiveOutputMonitorPort();
-        if (monitorPort <= 0 || monitorPort > 65535)
-            return { false, "Invalid monitor port" };
-
-        const std::wstring executablePath = CurrentExecutablePath();
-        if (executablePath.empty())
-            return { false, "EXE path unavailable" };
-
-        const std::wstring exe = PowerShellSingleQuoted(executablePath);
-        const std::wstring displayName =
-            PowerShellSingleQuoted(L"UNDMA CN KMBox Monitor UDP " + std::to_wstring(monitorPort));
-        const std::wstring command =
-            L"-NoProfile -ExecutionPolicy Bypass -Command "
-            L"\"$exe = " + exe + L"; "
-            L"$port = " + std::to_wstring(monitorPort) + L"; "
-            L"$portText = [string]$port; "
-            L"$name = " + displayName + L"; "
-            L"$blocks = Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | "
-            L"Where-Object { "
-            L"try { "
-            L"$app = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $_ -ErrorAction Stop; "
-            L"$pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_ -ErrorAction Stop; "
-            L"($app.Program -eq $exe) -and "
-            L"(($pf.Protocol -eq 'UDP') -or ($pf.Protocol -eq 'Any')) -and "
-            L"((@($pf.LocalPort) -contains $portText) -or (@($pf.LocalPort) -contains 'Any')) "
-            L"} catch { $false } "
-            L"}; "
-            L"$blocks | Disable-NetFirewallRule -ErrorAction SilentlyContinue; "
-            L"Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | "
-            L"Remove-NetFirewallRule -ErrorAction SilentlyContinue; "
-            L"New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow "
-            L"-Program $exe -Protocol UDP -LocalPort $port -Profile Any -ErrorAction Stop | Out-Null\"";
-
-        HINSTANCE result = ShellExecuteW(
-            nullptr,
-            L"runas",
-            L"powershell.exe",
-            command.c_str(),
-            nullptr,
-            SW_HIDE);
-
-        const auto resultCode = reinterpret_cast<intptr_t>(result);
-        if (resultCode <= 32)
-            return { false, Win32ErrorMessage("Firewall launch failed", static_cast<DWORD>(resultCode)) };
-
-        Diagnostics::Info("KMBox monitor firewall allow requested. effectiveMonitorPort=%d commandPort=%d manualOverride=%d",
-            monitorPort,
-            OW::Config::outputPort,
-            OW::Config::outputMonitorPortManualOverride ? 1 : 0);
-        Diagnostics::Aim("output.firewall allow_requested effectiveMonitorPort=%d commandPort=%d manualOverride=%d",
-            monitorPort,
-            OW::Config::outputPort,
-            OW::Config::outputMonitorPortManualOverride ? 1 : 0);
-        return { true, "Firewall rule requested" };
-    }
-
-OutputConnectionTestResult RestartOutputNetworkAdapter() {
-        const std::wstring targetIp = PowerShellSingleQuoted(OW::Config::outputIp);
-        const std::wstring command =
-            L"-NoProfile -ExecutionPolicy Bypass -Command "
-            L"\"$target = " + targetIp + L"; "
-            L"$adapter = $null; "
-            L"try { "
-            L"$route = Find-NetRoute -RemoteIPAddress $target -ErrorAction Stop | "
-            L"Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; "
-            L"if ($route) { $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop; } "
-            L"} catch {} "
-            L"if (-not $adapter) { "
-            L"$adapter = Get-NetAdapter -InterfaceDescription 'USB 2.0 Ethernet Adapter' -ErrorAction Stop | "
-            L"Select-Object -First 1; "
-            L"} "
-            L"Restart-NetAdapter -Name $adapter.Name -Confirm:$false\"";
-
-        HINSTANCE result = ShellExecuteW(
-            nullptr,
-            L"runas",
-            L"powershell.exe",
-            command.c_str(),
-            nullptr,
-            SW_HIDE);
-
-        const auto resultCode = reinterpret_cast<intptr_t>(result);
-        if (resultCode <= 32)
-            return { false, Win32ErrorMessage("Restart launch failed", static_cast<DWORD>(resultCode)) };
-
-        return { true, "NIC restart requested" };
-    }
-
 OutputConnectionTestResult TestOutputConnection() {
         const V2::Output::OutputRuntimeAppliedState applied =
             V2::Output::RuntimeController().Applied();
@@ -495,14 +349,7 @@ OutputConnectionTestResult TestOutputConnection() {
             return { false, "Runtime inactive" };
         }
 
-        const char* backend = "unknown";
-        switch (applied.descriptor.backend) {
-        case V2::Output::OutputRuntimeBackend::Network: backend = "network"; break;
-        case V2::Output::OutputRuntimeBackend::Serial:  backend = "serial"; break;
-        case V2::Output::OutputRuntimeBackend::CatBox:  backend="catbox";break;
-        case V2::Output::OutputRuntimeBackend::Mock:    backend = "mock"; break;
-        default: break;
-        }
+        const char* backend = V2::Output::OutputDeviceName(applied.descriptor);
 
         const OutputConnectionState connectionState =
             V2::Output::ActiveRuntimeConnectionState();

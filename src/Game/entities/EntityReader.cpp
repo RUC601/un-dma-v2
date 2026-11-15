@@ -11,6 +11,7 @@
 #include "Renderer/VisualSettings.hpp"
 #include "Game/OutlineBrightness.hpp"
 #include "Game/WorldObjectRead.hpp"
+#include "Game/ProjectileThreat.hpp"
 #include "Game/HeroSettings.hpp"
 
 void entity_thread() {
@@ -30,6 +31,10 @@ void entity_thread() {
     OW::EntityRosterPolicy::DiscoveryBook cycleDiscoveries;
     std::vector<std::pair<uint64_t,uint64_t>> cycleMemberPairs;
     auto lastRuntimeProfile = OW::offset::ActiveProfile();
+#ifndef UNLEASHED_OBSERVATION_ONLY
+    // The native HUD setting belongs to the process, not an actor or scene.
+    OW::OutlineBrightness::State nativeBrightnessState{};
+#endif
     Vector3 lastpos{};
     size_t lastLoggedRawCount = static_cast<size_t>(-1);
     size_t lastLoggedValidatedCount = static_cast<size_t>(-1);
@@ -414,6 +419,14 @@ void entity_thread() {
 
     while (OW::RuntimeWorkersRunning()) {
         if (!OW::ProcessConnection::IsConnected()) {
+#ifndef UNLEASHED_OBSERVATION_ONLY
+            nativeBrightnessState.Abandon();
+            OW::OutlineBrightness::Disable();
+            OW::OutlineBrightness::AppliedCount = 0;
+            OW::OutlineBrightness::FailureCount = 0;
+            OW::OutlineBrightness::RestoreCount = 0;
+            OW::OutlineBrightness::LastResult = OW::OutlineBrightness::Result::Idle;
+#endif
             nextProcessTick = std::chrono::steady_clock::now();
             OW::RuntimeWorkerSleep(100);
             continue;
@@ -427,10 +440,14 @@ void entity_thread() {
             connectionEpoch != lastConnectionEpoch ||
             runtimeProfile != lastRuntimeProfile) {
             if (connectionEpoch != lastConnectionEpoch || runtimeProfile != lastRuntimeProfile) {
+#ifndef UNLEASHED_OBSERVATION_ONLY
+                nativeBrightnessState.Abandon();
                 OW::OutlineBrightness::Disable();
                 OW::OutlineBrightness::AppliedCount = 0;
                 OW::OutlineBrightness::FailureCount = 0;
                 OW::OutlineBrightness::RestoreCount = 0;
+                OW::OutlineBrightness::LastResult = OW::OutlineBrightness::Result::Idle;
+#endif
             }
             componentBaseCache.clear();
             dynamicEntityCache.clear();
@@ -456,6 +473,8 @@ void entity_thread() {
         }
 
         V2::Acquisition::Wait(nextProcessTick, entityProcessPeriod);
+
+#include "Game/EntityMaintenance/NativeOutlineBrightness.inl"
 
         const auto pipelineCycleStartedAt = std::chrono::steady_clock::now();
         const Diagnostics::DmaReadStats pipelineDmaStart = Diagnostics::SnapshotDmaReadStats();
@@ -758,6 +777,7 @@ void entity_thread() {
 
         const auto objectSettings=V2::HeroSettings::Snapshot();
         const auto& worldSettings=objectSettings->display.world;
+        const bool skillProjectileObservations=OW::HeroSkillNeedsProjectileObservations(localCycleSnapshot.HeroID);
         auto readObjectRange=[&](uint64_t address,void* destination,size_t bytes) {
             return SDK->read_range(address,destination,bytes);
         };
@@ -781,13 +801,15 @@ void entity_thread() {
                 cached.positionOffset=positionOffset;
                 if(positionRead){cached.pos=position;cached.updateTick=GetTickCount();}
             }
-            if(cached.statusAttemptTick && DWORD(now-cached.statusAttemptTick)<100)return;
+            const bool skillProjectile=skillProjectileObservations && OW::ProjectileThreat::Supported(cached.entityId);
+            const DWORD statusInterval=skillProjectile ? 25 : 100;
+            if(cached.statusAttemptTick && DWORD(now-cached.statusAttemptTick)<statusInterval)return;
             cached.statusAttemptTick=now;
             cached.teamKnown=false;cached.healthKnown=false;cached.statusTick=0;
             const int index=V2::WorldObjects::ObjectIndex(cached.entityId);
             if(index<0 || V2::WorldObjects::kObjects[index].group==V2::WorldObjects::Group::Health)return;
             const auto& profile=offset::Active();
-            if(worldSettings.hideTeam) {
+            if(worldSettings.hideTeam || skillProjectile) {
                 const auto base=OW::DecryptComponent(parent,profile.typeTeam,header,true);
                 uint32_t flags=0;
                 if(base && readObjectRange(base+offset::Team_FlagsOffset,&flags,sizeof(flags))) {
@@ -2533,6 +2555,49 @@ void entity_thread() {
                     (isNearCamera && hasKnownName);
 
                 if (shouldSelectLocal) {
+                    const bool needsHeroSignals = skillObservationNeeds.heroSignals &&
+                        skillObservationNeeds.localHero == entity.HeroID && entity.Alive &&
+                        (entity.HeroID==OW::eHero::HERO_DVA ? entity.LinkBase!=0 : entity.SkillBase!=0);
+                    const std::array<uint64_t,10> signalIdentity{entity.HeroID,entity.SkillBase,
+                        slowCache.entity.actor_generation,connectionEpoch,processSceneGeneration,
+                        entity.address,entity.LinkParent,entity.match_id,entity.body_absence_revision,entity.LinkBase};
+                    if (!needsHeroSignals || slowCache.heroSkillSignalIdentity != signalIdentity) {
+                        slowCache.heroSkillSignals = {};
+                        slowCache.heroSkillScalarCache.Reset();
+                        slowCache.heroSkillSignalAttemptTick = 0;
+                        slowCache.heroSkillSignalIdentity = signalIdentity;
+                    }
+                    if (needsHeroSignals && (!slowCache.heroSkillSignalAttemptTick ||
+                        uint32_t(slowNow-slowCache.heroSkillSignalAttemptTick) >= 50)) {
+                        slowCache.heroSkillSignalAttemptTick = slowNow;
+                        OW::HeroSkillSignals::Sample sample{};
+                        const auto read = [](uint64_t address,void* bytes,size_t size) {
+                            return OW::SDK->read_range(address,bytes,size);
+                        };
+                        if (entity.HeroID == OW::eHero::HERO_LUCIO) {
+                            sample.lucioSong = OW::HeroSkillSignals::ReadLucioSong(entity.SkillBase,read,&slowCache.heroSkillScalarCache);
+                            if (sample.lucioSong >= 0) sample.sampledTick = slowNow;
+                        } else if (entity.HeroID == OW::eHero::HERO_MERCY) {
+                            __m128 context{}; context.m128_u64[1] = entity.SkillBase + 0x110;
+                            uint16_t ids[2]{0,0x217};
+                            const auto targetState = OW::FnSkillStruct(&context,ids);
+                            sample = OW::HeroSkillSignals::ReadMercyBeam(entity.SkillBase,targetState,read,&slowCache.heroSkillScalarCache);
+                            if (sample.mercyBeamKnown && OW::FnSkillStruct(&context,ids) == targetState)
+                                sample.sampledTick = slowNow;
+                            else {
+                                // Keep an incomplete scalar discovery, but a changed target node
+                                // invalidates all addresses used by an otherwise complete sample.
+                                if (sample.mercyBeamKnown) slowCache.heroSkillScalarCache.Reset();
+                                sample = {};
+                            }
+                        } else if (entity.HeroID == OW::eHero::HERO_DVA) {
+                            sample.dvaMechKnown=OW::HeroSkillSignals::ReadDvaMech(entity.LinkBase,sample.dvaInMech,read);
+                            if (sample.dvaMechKnown) sample.dvaMechTick=slowNow;
+                        }
+                        // Failed reads are unknown. Publication never renews an old sample's time.
+                        slowCache.heroSkillSignals = sample;
+                    }
+                    entity.hero_skill_signals = slowCache.heroSkillSignals;
                     if (refreshLocalSkillStatus && entity.SkillBase) {
                         pipelineStats.skillDueCount++;
                         dmaFieldWindow.skillRefresh++;
@@ -2907,28 +2972,22 @@ void entity_thread() {
     }
 #ifndef UNLEASHED_OBSERVATION_ONLY
     OW::OutlineBrightness::Disable();
-    uint32_t restorePending = 0;
-    for (auto& [key, record] : entityRoster) {
-        auto& brightness = record->brightnessState;
-        if (!brightness.owned) continue;
-        const auto& actor = record->entity;
+    if (nativeBrightnessState.owned) {
         auto read = [](uint64_t at, void* data, size_t size) { return mem.ReadFreshExact(at, data, size); };
         auto write = [](uint64_t at, const void* data, size_t size) { return mem.Write(at, data, size); };
         auto current = [&] {
-            uint32_t match = 0;
             OW::OutlineBrightness::Target checked{};
             return OW::ProcessConnection::IsConnected() &&
                 OW::ProcessConnection::ConnectionEpoch() == lastConnectionEpoch &&
                 OW::offset::ActiveProfile() == lastRuntimeProfile &&
-                read(actor.address + OW::offset::Entity_MatchId, &match, 4) && match == actor.match_id &&
-                OW::DecryptComponent(actor.address, 0x5A) == brightness.target.component &&
-                OW::OutlineBrightness::Resolve(brightness.target.component, SDK->dwGameBase,
-                    lastRuntimeProfile, read, checked) && checked == brightness.target;
+                OW::OutlineBrightness::Resolve(SDK->dwGameBase,
+                    lastRuntimeProfile, read, checked) && checked == nativeBrightnessState.target;
         };
-        if (!brightness.Restore(read, write, current)) ++restorePending;
+        nativeBrightnessState.Restore(read, write, current);
     }
     OW::OutlineBrightness::AppliedCount = 0;
-    OW::OutlineBrightness::RestoreCount = restorePending;
-    if (restorePending) Diagnostics::Info("Outline opacity: shutdown restore pending for %u targets.", restorePending);
+    OW::OutlineBrightness::RestoreCount = nativeBrightnessState.owned ? 1 : 0;
+    OW::OutlineBrightness::LastResult = nativeBrightnessState.result;
+    if (nativeBrightnessState.owned) Diagnostics::Info("Native outline brightness: shutdown restore pending.");
 #endif
 }

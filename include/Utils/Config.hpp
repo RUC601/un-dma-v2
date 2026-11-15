@@ -21,6 +21,8 @@
 #include "Game/GameData.hpp"
 #include "Utils/InputLabels.hpp"
 #include "Game/TriggerBoneSelection.hpp"
+#include "output/DeviceSettings.hpp"
+#include "output/DeviceRegistry.hpp"
 
 // -----------------------------------------------------------------------
 // OW::Config -- Single source of truth for all cheat configuration.
@@ -1258,20 +1260,20 @@ namespace OW { namespace Config {
     inline std::atomic<bool> Menu{ true };
     inline std::string nowhero = "Unknown";
 
-    // ---- Output devices (legacy INI section: KMBox) ----
-    inline char catBoxIp[64]="";
-    inline int catBoxPort=0;
-    inline char catBoxUuid[32]="";
-    inline int catBoxMonitorPort=0;
+    // Existing configuration names remain aliases to the owning settings model.
+    inline auto& catBoxIp = V2::Output::DeviceSettings::CatBox().ip;
+    inline int& catBoxPort = V2::Output::DeviceSettings::CatBox().commandPort;
+    inline auto& catBoxUuid = V2::Output::DeviceSettings::CatBox().uuid;
+    inline int& catBoxMonitorPort = V2::Output::DeviceSettings::CatBox().monitorPort;
 
-    inline bool outputEnabled = false;
-    inline int  outputDeviceType = 0; // 0=Network, 1=Serial, 2=Mock, 3=MAKCU 4M, 4=MAKCU 115200, 5=Ferrum Software API, 6=CatBox
-    inline char outputIp[32] = "192.168.2.188";
-    inline int  outputPort = 8808;
-    inline int  outputMonitorPort = 8809;
-    inline bool outputMonitorPortManualOverride = false;
-    inline char outputMac[32] = "12525C53";
-    inline char outputComPort[16] = "COM3";
+    inline bool& outputEnabled = V2::Output::DeviceSettings::Selection().enabled;
+    inline int& outputDeviceType = V2::Output::DeviceSettings::Selection().legacyDeviceId;
+    inline auto& outputIp = V2::Output::DeviceSettings::Network().ip;
+    inline int& outputPort = V2::Output::DeviceSettings::Network().commandPort;
+    inline int& outputMonitorPort = V2::Output::DeviceSettings::Network().monitorPort;
+    inline bool& outputMonitorPortManualOverride = V2::Output::DeviceSettings::Network().manualMonitorPort;
+    inline auto& outputMac = V2::Output::DeviceSettings::Network().mac;
+    inline auto& outputComPort = V2::Output::DeviceSettings::Serial().port;
     inline float outputCountsPerRadian = 100.0f;       // KMBox relative mouse counts needed for one radian at the reference game sens
     inline float gameMouseSensitivity = 15.0f;        // manual/effective current in-game sensitivity used for scaling
     inline float referenceGameSensitivity = 15.0f;    // game sens used when counts-per-radian was measured
@@ -1299,26 +1301,18 @@ namespace OW { namespace Config {
 
     inline int RecommendedOutputMonitorPort(int commandPort)
     {
-        if (commandPort >= 1 && commandPort < 65535)
-            return commandPort + 1;
-        if (commandPort == 65535)
-            return commandPort - 1;
-        return 8809;
+        return V2::Output::KmBoxNetConfig::RecommendedMonitorPort(commandPort);
     }
 
     inline bool IsValidOutputUdpPort(int port)
     {
-        return port >= 1 && port <= 65535;
+        return V2::Output::DeviceSettings::IsValidUdpPort(port);
     }
 
     inline int EffectiveOutputMonitorPort()
     {
-        const int recommended = RecommendedOutputMonitorPort(outputPort);
-        if (!outputMonitorPortManualOverride)
-            return recommended;
-        if (!IsValidOutputUdpPort(outputMonitorPort) || outputMonitorPort == outputPort)
-            return recommended;
-        return outputMonitorPort;
+        return V2::Output::KmBoxNetConfig::EffectiveMonitorPort(
+            V2::Output::DeviceSettings::Network());
     }
 
     // ---- Diagnostics / Dry-run ----
@@ -1740,6 +1734,8 @@ namespace OW { namespace Config {
         bool automaticAim = true;
         int moveForwardMs = 300;
         int jumpLeadMs = 50;
+        int projectileThreatMask = 3; // 1 Ana grenade, 2 Bastion grenade; separate from active-cast threats.
+        bool projectileThreatEnabled = false;
     };
 
     using HeroSkillPresetStore = std::unordered_map<uint64_t, std::unordered_map<std::string, HeroSkillSettings>>;

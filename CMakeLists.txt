@@ -48,13 +48,13 @@ set(GAME_HEADERS
     include/Game/HeroPerkRuntime.hpp
     include/Game/HeroPerks.hpp
     include/Game/HeroSkills.hpp
-    include/Game/InputOrchestrator.hpp
+    include/output/InputOrchestrator.hpp
     include/Game/LeadPrediction.hpp
     include/Game/Offsets.hpp
     include/Game/Overwatch.hpp
     include/Game/ProductImageIdentity.hpp
-    include/Game/OutputOwnership.hpp
-    include/Game/OutputScheduler.hpp
+    include/output/OutputOwnership.hpp
+    include/output/OutputScheduler.hpp
     include/Game/RuntimeState.hpp
     include/Game/SDK.hpp
     include/Game/Structs.hpp
@@ -62,13 +62,10 @@ set(GAME_HEADERS
     include/Game/TriggerBoneSelection.hpp
     include/Game/WeaponCadence.hpp
     include/Game/WeaponSpec.hpp
-    include/output/SerialTransport.hpp
     include/output/OutputRuntime.hpp
     include/output/TimerResolution.hpp
     include/output/OutputTypes.hpp
-    include/Output/OutputData.h
-    include/output/MockBackend.hpp
-    include/output/KmBoxNetBackend.hpp
+    include/output/MockDiagnostics.hpp
     include/Memory/KeyState.hpp
     include/Memory/Memory.h
     include/Memory/MemoryRanges.h
@@ -83,6 +80,8 @@ set(GAME_HEADERS
     include/Utils/Types.hpp
     include/Features/UI.hpp
 )
+
+include(cmake/OutputSources.cmake)
 
 set(UNLEASHED_SOURCES
     src/main.cpp
@@ -110,13 +109,9 @@ set(UNLEASHED_SOURCES
     src/ui/pages/AlertPage.cpp
     src/ui/pages/DisplayPages.cpp
     src/ui/pages/SettingsPages.cpp
-    src/output/DeviceConnection.cpp
     src/runtime/ProcessSession.cpp
     src/runtime/WorkerGroup.cpp
     src/features/aim/BehaviorController.cpp
-    src/output/PhysicalMask.cpp
-    src/output/Actions.cpp
-    src/output/MotionTelemetry.cpp
     src/features/aim/Smoothing.cpp
     src/features/aim/SessionState.cpp
     src/features/alerts/Settings.cpp
@@ -137,18 +132,23 @@ set(UNLEASHED_SOURCES
     src/Game/HeroPerkRuntime.cpp
     src/Game/HeroSkills.cpp
     src/Game/Offsets.cpp
-    src/Game/OutputOwnership.cpp
-    src/Game/OutputScheduler.cpp
     src/Game/WeaponCadence.cpp
     src/Game/WeaponSpec.cpp
-    src/output/SerialTransport.cpp
-    src/output/CatBoxProtocol.cpp
-    src/output/CatBoxBackend.cpp
-    src/output/OutputRuntime.cpp
-    src/output/TimerResolution.cpp
-    src/output/MockBackend.cpp
-    src/output/KmBoxNetBackend.cpp
     vendor/stb/stb_image.cpp
+    ${UNLEASHED_OUTPUT_BACKEND_SOURCES}
+    ${UNLEASHED_OUTPUT_ACTION_SOURCES}
+    src/ui/output/OutputPage.cpp
+    src/ui/output/DevicePanels.cpp
+    src/ui/output/SerialFields.cpp
+    src/ui/output/kmbox_net/Panel.cpp
+    src/ui/output/kmbox_serial/Panel.cpp
+    src/ui/output/makcu/Panel.cpp
+    src/ui/output/ferrum/Panel.cpp
+    src/ui/output/catbox/Panel.cpp
+    src/ui/output/mock/Panel.cpp
+    src/output/settings/DeviceMaintenance.cpp
+    src/output/devices/kmbox_net/Maintenance.cpp
+    src/output/platform/NetworkMaintenance.cpp
 )
 
 # ============================================================================
