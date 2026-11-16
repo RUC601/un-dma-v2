@@ -1324,6 +1324,10 @@ namespace OW { namespace Config {
     inline int& catBoxPort = V2::Output::DeviceSettings::CatBox().commandPort;
     inline auto& catBoxUuid = V2::Output::DeviceSettings::CatBox().uuid;
     inline int& catBoxMonitorPort = V2::Output::DeviceSettings::CatBox().monitorPort;
+    inline auto& dhzBoxIp = V2::Output::DeviceSettings::DhzBox().ip;
+    inline int& dhzBoxPort = V2::Output::DeviceSettings::DhzBox().commandPort;
+    inline int& dhzBoxRandomShift = V2::Output::DeviceSettings::DhzBox().randomShift;
+    inline int& dhzBoxMonitorPort = V2::Output::DeviceSettings::DhzBox().monitorPort;
 
     inline bool& outputEnabled = V2::Output::DeviceSettings::Selection().enabled;
     inline bool& outputAutoDetect = V2::Output::DeviceSettings::Selection().autoDetect;

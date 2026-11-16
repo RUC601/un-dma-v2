@@ -6,19 +6,21 @@
 #include "output/devices/ferrum/Backend.hpp"
 #include "output/devices/catbox/Device.hpp"
 #include "output/devices/mock/Device.hpp"
+#include "output/devices/dhzbox/Device.hpp"
 #include <array>
 #include <algorithm>
 
 namespace V2::Output {
 namespace {
-constexpr std::array<DeviceChoice, 7> choices{{
+constexpr std::array<DeviceChoice, 8> choices{{
     {0, "KMBox Net", SettingsKind::Network},
     {1, "KMBox Serial", SettingsKind::Serial},
     {2, "Mock", SettingsKind::Mock},
     {3, "MAKCU 4M", SettingsKind::Serial},
     {4, "MAKCU 115200", SettingsKind::Serial},
     {5, "Ferrum Software API", SettingsKind::Serial},
-    {6, "CatBox", SettingsKind::CatBox}
+    {6, "CatBox", SettingsKind::CatBox},
+    {7, "DHZ Box", SettingsKind::DhzBox}
 }};
 }
 std::span<const DeviceChoice> DeviceChoices() { return choices; }
@@ -33,6 +35,7 @@ IOutputDevice* ResolveOutputDevice(const OutputRuntimeDescriptor& descriptor) {
     case OutputRuntimeBackend::Network: return &KmBoxNetDevice();
     case OutputRuntimeBackend::Mock: return &MockDevice();
     case OutputRuntimeBackend::CatBox: return &CatBoxDevice();
+    case OutputRuntimeBackend::DhzBox: return &DhzBoxDevice();
     case OutputRuntimeBackend::Serial: {
         const auto* endpoint = std::get_if<OutputSerialEndpoint>(&descriptor.endpoint);
         if (!endpoint) return nullptr;
@@ -51,6 +54,7 @@ const char* OutputTransportTag(const OutputRuntimeDescriptor& descriptor) {
     case OutputRuntimeBackend::Network: return "network";
     case OutputRuntimeBackend::Serial: return "serial";
     case OutputRuntimeBackend::CatBox: return "catbox";
+    case OutputRuntimeBackend::DhzBox: return "dhzbox";
     case OutputRuntimeBackend::Mock: return "mock";
     case OutputRuntimeBackend::None: return "none";
     default: return "unknown";
@@ -61,6 +65,7 @@ const char* OutputDeviceName(const OutputRuntimeDescriptor& descriptor) {
     case OutputRuntimeBackend::Network: return "KMBox Net";
     case OutputRuntimeBackend::Mock: return "Mock / 离线";
     case OutputRuntimeBackend::CatBox: return "CatBox / 社区协议 / 实机待验证";
+    case OutputRuntimeBackend::DhzBox: return "DHZ Box / Caesar UDP / 实机待验证";
     case OutputRuntimeBackend::Serial: {
         const auto* endpoint = std::get_if<OutputSerialEndpoint>(&descriptor.endpoint);
         if (!endpoint) return "KMBox Serial";

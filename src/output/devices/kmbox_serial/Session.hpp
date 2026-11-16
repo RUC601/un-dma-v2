@@ -13,7 +13,10 @@ public:
     bool Heartbeat(SerialChannel&, bool) override { return true; }
     bool SupportsKeyboard() const override { return false; }
     bool SupportsMask() const override { return false; }
-    bool SupportsTimedMove() const override { return true; }
+    // KMBox B+ interprets km.move(x,y,third) as a segment count, while the
+    // runtime API's third argument is milliseconds. Treat it as unsupported
+    // so timed requests safely fall back to a plain relative move.
+    bool SupportsTimedMove() const override { return false; }
     PhysicalInputSnapshot PhysicalInput() const override { return {}; }
     void ClearPhysicalInput() override {}
     bool EncodeMove(int x, int y, int duration, std::string& command) const override;

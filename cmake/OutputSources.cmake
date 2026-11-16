@@ -14,6 +14,8 @@ set(UNLEASHED_OUTPUT_BACKEND_SOURCES
     src/output/devices/catbox/Backend.cpp
     src/output/devices/catbox/Protocol.cpp
     src/output/devices/catbox/Device.cpp
+    src/output/devices/dhzbox/Backend.cpp
+    src/output/devices/dhzbox/Device.cpp
     src/output/devices/mock/Backend.cpp
     src/output/devices/mock/Device.cpp
     src/output/devices/kmbox_serial/Backend.cpp

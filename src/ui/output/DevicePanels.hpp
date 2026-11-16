@@ -29,6 +29,10 @@ namespace CatBox {
 void DrawFields(const ConfigChanged& changed);
 void DrawNotes(bool physicalAvailable);
 }
+namespace DhzBox {
+void DrawFields(const ConfigChanged& changed);
+void DrawNotes(bool physicalAvailable);
+}
 namespace Mock {
 void DrawFields(const ConfigChanged& changed);
 void DrawDiagnostics();

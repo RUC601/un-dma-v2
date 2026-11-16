@@ -27,6 +27,7 @@ constexpr std::array panels{
     Panel{DeviceId::Makcu115200, Makcu::DrawFields, Makcu::DrawNotes},
     Panel{DeviceId::Ferrum, Ferrum::DrawFields, Ferrum::DrawNotes},
     Panel{DeviceId::CatBox, CatBox::DrawFields, CatBox::DrawNotes},
+    Panel{DeviceId::DhzBox, DhzBox::DrawFields, DhzBox::DrawNotes},
 };
 
 const Panel* FindPanel(int legacyDeviceId)

@@ -70,8 +70,11 @@ inline bool Decode(const std::string& json, Store& destination)
             !integer("inputDelayMs", profile.inputDelayMs) ||
             !IsValidProfile(static_cast<Family>(index), profile)) return false;
     }
-    // An incomplete document cannot silently erase another family's settings.
-    for (bool present : seen) if (!present) return false;
+    // Older V2 profiles predate DHZ Box. Seed that one family from defaults;
+    // every previously supported family must still be present so malformed
+    // or partial documents cannot erase saved settings.
+    for (std::size_t i = 0; i < kFamilyCount; ++i)
+        if (!seen[i] && static_cast<Family>(i) != Family::DhzBox) return false;
     destination = std::move(candidate);
     return true;
 }

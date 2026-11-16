@@ -158,6 +158,7 @@ set(UNLEASHED_SOURCES
     src/ui/output/makcu/Panel.cpp
     src/ui/output/ferrum/Panel.cpp
     src/ui/output/catbox/Panel.cpp
+    src/ui/output/dhzbox/Panel.cpp
     src/ui/output/mock/Panel.cpp
     src/output/settings/DeviceMaintenance.cpp
     src/output/devices/kmbox_net/Maintenance.cpp

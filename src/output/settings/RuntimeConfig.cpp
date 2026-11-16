@@ -28,7 +28,10 @@ namespace V2::Output {
                     : 0);
         }
         case DeviceId::KmBoxSerial:
-            return OutputRuntimeDescriptor::Serial(OW::Config::outputComPort);
+            // KMBox B+ uses the fixed 2,000,000 baud ASCII transport. The
+            // old 115200 default silently throttled movement and caused
+            // held-trigger commands to arrive late or out of order.
+            return OutputRuntimeDescriptor::Serial(OW::Config::outputComPort, 2000000);
         case DeviceId::Mock:
             return OutputRuntimeDescriptor::Mock();
         case DeviceId::Makcu4M:
@@ -40,6 +43,11 @@ namespace V2::Output {
                 OW::Config::IsValidOutputUdpPort(OW::Config::catBoxPort) ? static_cast<uint16_t>(OW::Config::catBoxPort) : 0,
                 OW::Config::catBoxUuid,
                 OW::Config::IsValidOutputUdpPort(OW::Config::catBoxMonitorPort) ? static_cast<uint16_t>(OW::Config::catBoxMonitorPort) : 0);
+        case DeviceId::DhzBox:
+            return OutputRuntimeDescriptor::DhzBox(OW::Config::dhzBoxIp,
+                OW::Config::IsValidOutputUdpPort(OW::Config::dhzBoxPort) ? static_cast<uint16_t>(OW::Config::dhzBoxPort) : 0,
+                static_cast<uint8_t>(std::clamp(OW::Config::dhzBoxRandomShift, 0, 25)),
+                OW::Config::IsValidOutputUdpPort(OW::Config::dhzBoxMonitorPort) ? static_cast<uint16_t>(OW::Config::dhzBoxMonitorPort) : 0);
         case DeviceId::Ferrum:
             return OutputRuntimeDescriptor::Serial(OW::Config::outputComPort,115200,V2::Output::SerialProtocol::Ferrum);
         default:

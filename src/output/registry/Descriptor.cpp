@@ -40,4 +40,8 @@ namespace V2::Output {
         OutputRuntimeDescriptor d;d.backend=OutputRuntimeBackend::CatBox;
         d.endpoint=CatBoxEndpoint{std::move(ip),port,std::move(uuid),monitorPort};return d;
     }
+    OutputRuntimeDescriptor OutputRuntimeDescriptor::DhzBox(std::string ip,uint16_t port,uint8_t randomShift,uint16_t monitorPort) {
+        OutputRuntimeDescriptor d; d.backend=OutputRuntimeBackend::DhzBox;
+        d.endpoint=DhzBoxEndpoint{std::move(ip),port,randomShift,monitorPort}; return d;
+    }
 }

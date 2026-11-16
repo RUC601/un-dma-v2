@@ -1014,6 +1014,9 @@ namespace OW { namespace Config {
                    setting == "aim_key2" ||
                    setting == "catBoxPort" ||
                    setting == "catBoxMonitorPort" ||
+                   setting == "dhzBoxPort" ||
+                   setting == "dhzBoxRandomShift" ||
+                   setting == "dhzBoxMonitorPort" ||
                    setting == "kmboxDeviceType" ||
                    setting == "kmboxPort" ||
                    setting == "kmboxMonitorPort" ||
@@ -6724,6 +6727,12 @@ namespace OW { namespace Config {
                 V2::Output::CatBoxConfig::kMaximumPort, 0);
             ClampSetting("catBoxMonitorPort", catBoxMonitorPort, V2::Output::CatBoxConfig::kMinimumPort,
                 V2::Output::CatBoxConfig::kMaximumPort, 0);
+            ClampSetting("dhzBoxPort", dhzBoxPort, V2::Output::DhzBoxConfig::kMinimumPort,
+                V2::Output::DhzBoxConfig::kMaximumPort, 8888);
+            ClampSetting("dhzBoxRandomShift", dhzBoxRandomShift, V2::Output::DhzBoxConfig::kMinimumShift,
+                V2::Output::DhzBoxConfig::kMaximumShift, 0);
+            ClampSetting("dhzBoxMonitorPort", dhzBoxMonitorPort, V2::Output::DhzBoxConfig::kMinimumPort,
+                V2::Output::DhzBoxConfig::kMaximumPort, 0);
             const int previousDeviceType = outputDeviceType;
             outputDeviceType = V2::Output::NormalizeLegacyDeviceId(outputDeviceType);
             if (previousDeviceType != outputDeviceType) {

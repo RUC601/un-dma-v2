@@ -23,8 +23,12 @@ std::string FindPort() {
         const std::string description = name;
         const auto port = description.find("COM");
         const auto end = description.find(')', port);
-        if (port != std::string::npos && end != std::string::npos &&
-            description.find("USB-SERIAL CH340") != std::string::npos) {
+        const bool likelyKmbox = description.find("USB-SERIAL CH340") != std::string::npos ||
+            description.find("KMBOX") != std::string::npos ||
+            description.find("KMBox") != std::string::npos ||
+            description.find("BPRO") != std::string::npos ||
+            description.find("B+") != std::string::npos;
+        if (port != std::string::npos && end != std::string::npos && likelyKmbox) {
             SetupDiDestroyDeviceInfoList(devices);
             return description.substr(port, end - port);
         }

@@ -20,7 +20,8 @@ namespace V2::Output
         Network,
         Serial,
         Mock,
-        CatBox
+        CatBox,
+        DhzBox
     };
 
     struct OutputNetworkEndpoint {
@@ -47,10 +48,17 @@ namespace V2::Output
         std::uint16_t monitorPort=0;
         bool operator==(const CatBoxEndpoint&) const = default;
     };
+    struct DhzBoxEndpoint {
+        std::string ip;
+        std::uint16_t commandPort = 0;
+        std::uint8_t randomShift = 0;
+        std::uint16_t monitorPort = 0;
+        bool operator==(const DhzBoxEndpoint&) const = default;
+    };
     using OutputRuntimeEndpoint = std::variant<
         std::monostate,
         OutputNetworkEndpoint,
-        OutputSerialEndpoint, CatBoxEndpoint>;
+        OutputSerialEndpoint, CatBoxEndpoint, DhzBoxEndpoint>;
 
     struct OutputRuntimeDescriptor {
         OutputRuntimeBackend backend = OutputRuntimeBackend::None;
@@ -65,6 +73,7 @@ namespace V2::Output
         static OutputRuntimeDescriptor Serial(std::string port, uint32_t baud = 115200, V2::Output::SerialProtocol protocol=V2::Output::SerialProtocol::KmBox);
         static OutputRuntimeDescriptor Mock();
         static OutputRuntimeDescriptor CatBox(std::string ip, uint16_t port, std::string uuid, uint16_t monitorPort);
+        static OutputRuntimeDescriptor DhzBox(std::string ip, uint16_t port, uint8_t randomShift, uint16_t monitorPort);
 
         bool operator==(const OutputRuntimeDescriptor&) const = default;
     };

@@ -10,12 +10,12 @@
 
 namespace V2::Output::ProfileConfig {
 
-enum class Family : std::size_t { Network, KmBoxSerial, Mock, Makcu, Ferrum, CatBox, Count };
+enum class Family : std::size_t { Network, KmBoxSerial, Mock, Makcu, Ferrum, CatBox, DhzBox, Count };
 inline constexpr std::size_t kFamilyCount = static_cast<std::size_t>(Family::Count);
 inline constexpr std::array<const char*, kFamilyCount> kFamilyNames{
-    "network", "kmboxSerial", "mock", "makcu", "ferrum", "catbox" };
+    "network", "kmboxSerial", "mock", "makcu", "ferrum", "catbox", "dhzbox" };
 
-inline constexpr bool IsDeviceId(int id) noexcept { return id >= 0 && id <= 6; }
+inline constexpr bool IsDeviceId(int id) noexcept { return id >= 0 && id <= 7; }
 inline constexpr int NormalizeDeviceId(int id) noexcept { return IsDeviceId(id) ? id : 0; }
 inline constexpr Family FamilyForDeviceId(int id) noexcept
 {
@@ -26,6 +26,7 @@ inline constexpr Family FamilyForDeviceId(int id) noexcept
     case DeviceId::Makcu115200: return Family::Makcu;
     case DeviceId::Ferrum: return Family::Ferrum;
     case DeviceId::CatBox: return Family::CatBox;
+    case DeviceId::DhzBox: return Family::DhzBox;
     default: return Family::Network;
     }
 }
@@ -35,7 +36,7 @@ inline constexpr bool IsSerialFamily(Family family) noexcept
 }
 inline constexpr int DefaultDeviceId(Family family) noexcept
 {
-    constexpr std::array<int, kFamilyCount> ids{ 0, 1, 2, 3, 5, 6 };
+    constexpr std::array<int, kFamilyCount> ids{ 0, 1, 2, 3, 5, 6, 7 };
     return ids[static_cast<std::size_t>(family)];
 }
 
