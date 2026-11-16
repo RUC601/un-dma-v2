@@ -688,6 +688,9 @@ namespace OW {
         inline thread_local std::vector<std::pair<Contour::Identity,bool>> contourVisibility;
         inline thread_local Contour::Observation lastContourObservation;
         inline bool SelectionVisible(const c_entity& entity) {
+            // Preserve the native UN visibility result. Contour is only a
+            // fallback for candidates rejected by the native visibility test.
+            if (entity.Vis) return true;
             if(!Config::View_aimbotContourEnabled()) return entity.Vis;
             const auto identity=ContourIdentity(entity);
             for(const auto& entry:contourVisibility) if(entry.first==identity) return entry.second;
@@ -1822,7 +1825,8 @@ namespace OW {
         if (entities.size() > 0) {
             for (size_t i = 0; i < entities.size(); i++) {
                 AimCandidateConfig candidateConfig(entities[i].HeroID);
-                if(contour.enabled && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),
+                const bool contourFallback = contour.enabled && !entities[i].Vis;
+                if(contourFallback && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),
                     weaponSpec,predit)) continue;
                 if(!candidateConfig.Passes(entities[i])) continue;
                 const bool preferred=candidateConfig.Preferred(entities[i]);
@@ -1836,7 +1840,7 @@ namespace OW {
                         candidateKey == activeLock.entityKey;
                     const bool applyTrackingExitMargin =
                         trackingContinuityEnabled && currentLockedCandidate;
-                    if (contour.enabled ? !contour.Visible(i) : (ignoreInvisible && !entities[i].Vis &&
+                    if (contourFallback ? !contour.Visible(i) : (ignoreInvisible && !entities[i].Vis &&
                         !TargetingDetail::CandidateCanBypassTrace(lockPolicy, activeLock, candidateKey))) {
                         continue;
                     }
@@ -1849,13 +1853,13 @@ namespace OW {
 
                     const SkeletonBoneMask rawCandidateMask=Config::slotTargetRules.active && !entities[i].Team ?
                         Config::slotTargetRules.allyBoneMask : Config::View_aimbotBoneMask();
-                    const SkeletonBoneMask candidateMask=contour.enabled ?
+                    const SkeletonBoneMask candidateMask=contourFallback ?
                         Contour::AimMaskForDistance(rawCandidateMask,initialDistance,Config::View_aimbotMaxHead()) :
                         TargetingDetail::EffectiveAimBoneMaskForDistance(rawCandidateMask,initialDistance);
                     int candidateBoneId = BONE_HEAD;
                     Vector3 rootPosition{};
-                    const auto contourObservation=contour.enabled ? contour.ResolveMask(i,candidateMask) : Contour::Observation{};
-                    if(contour.enabled) {
+                    const auto contourObservation=contourFallback ? contour.ResolveMask(i,candidateMask) : Contour::Observation{};
+                    if(contourFallback) {
                         if(!contourObservation.evidence.exposed && !contourObservation.retained) continue;
                         candidateBoneId=contourObservation.boneId;rootPosition=contourObservation.aimWorld;
                     } else if (!TargetingDetail::TrySelectClosestSelectedSkeletonPoint(
@@ -1873,11 +1877,11 @@ namespace OW {
                         entities[i],
                         rootPosition,
                         projectileSpec,
-                        !contour.enabled && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),weaponSpec,predit),
+                        !contourFallback && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),weaponSpec,predit),
                         false);
                     const float fovEntryHorizonMs =
                         Config::ClampFovEntryPredictionMs(Config::View_aimbotFovEntryPredictionMs());
-                    const Vector3 resolvedAimPoint=contour.enabled ? rootPosition : lead.finalAimPoint;
+                    const Vector3 resolvedAimPoint=contourFallback ? rootPosition : lead.finalAimPoint;
                     const Vector3 fovEntryAimPoint = resolvedAimPoint +
                         lead.targetVelocity * (fovEntryHorizonMs / 1000.0f);
                     FovGeometry::PredictedEntryEvaluation fovEvaluation{};
@@ -1896,7 +1900,7 @@ namespace OW {
                             fovEntryAimPoint,
                             candidateFovDeg,
                             nullptr,
-                            !contour.enabled && Config::View_aimbotPredictFovEntry(),
+                            !contourFallback && Config::View_aimbotPredictFovEntry(),
                             Config::ClampFovEntryMaxOutsideDeg(Config::View_aimbotFovEntryMaxOutsideDeg()),
                             fovEvaluation)) {
                         const float distance = fovEvaluation.distance;

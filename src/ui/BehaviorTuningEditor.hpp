@@ -4,17 +4,20 @@
 #include "output/DeviceCapabilities.hpp"
 
 namespace UI {
-inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior) {
+inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior,
+                                 bool showFirePolicy = true) {
     using namespace AimPlanEditor;
     bool changed=false;
     changed|=Float("Speed Scale","##smooth",t.smooth,0,100," %");
     changed|=Float("Base Speed Scale","##base",t.baseSpeed,0,100," %");
     changed|=Float("Pitch Scale","##pitch",t.pitchScale,.1f,3);
-    SettingRow("Fire Policy");PushControlWidth();
-    if(UISelect("##policy",&t.firePolicy,kFirePolicy,IM_ARRAYSIZE(kFirePolicy))) {
-        t.keepFiring=t.firePolicy==1;t.autoshot=t.firePolicy>=2;changed=true;
+    if (showFirePolicy) {
+        SettingRow("Fire Policy");PushControlWidth();
+        if(UISelect("##policy",&t.firePolicy,kFirePolicy,IM_ARRAYSIZE(kFirePolicy))) {
+            t.keepFiring=t.firePolicy==1;t.autoshot=t.firePolicy>=2;changed=true;
+        }
+        ImGui::PopItemWidth();
     }
-    ImGui::PopItemWidth();
     if(behavior==1||behavior==2||behavior==4) {
         SettingRow("Release to fire");changed|=UICheckbox("##releaseToFire",&t.releaseToFire);
         if(t.releaseToFire) {

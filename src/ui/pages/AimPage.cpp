@@ -181,17 +181,18 @@ void UI::AimbotPage() {
             SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##aimIgnoreInvis", &activePreset.ignoreInvisible);
 
-            const bool contourSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick;
+            const bool contourSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
+                activePreset.aimBehavior == OW::Config::kAimBehaviorMagneticTrigger;
             SettingRow(OW::Config::uiLanguage == 1 ? "轮廓确认" : "Contour confirmation", kAimbotRightLabelWidth);
             ImGui::BeginDisabled(!contourSupported && !activePreset.contourEnabled);
             presetChanged |= UICheckbox("##aimContour", &activePreset.contourEnabled);
             ImGui::EndDisabled();
             if (activePreset.contourEnabled || !contourSupported) {
                 ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
-                    ? (contourSupported ? "以采集画面确认露出部位；三种状态颜色均参与匹配。请在设置 → 屏幕开启采集。首版仅支持普通 Flick 和即时命中武器，需关闭提前量；弹道、蓄力释放及松热键执行暂不支持，不符合时暂停该 Slot。"
-                                        : "轮廓确认仅支持普通 Flick。切换 Behavior 后若保留开启，该 Slot 暂停执行；可在此关闭。")
-                    : (contourSupported ? "Uses captured contours to confirm the exposed part. All three colors are matched. Start capture under Settings > Screen. This version supports ordinary Flick with hitscan weapons and prediction off. Projectile weapons, charge-release and execution after key release pause this Slot."
-                                        : "Contour confirmation supports ordinary Flick only. This Slot stays paused while it is enabled for another behavior; turn it off here to resume."));
+                    ? (contourSupported ? "原生判定可见的目标继续走 UN 算法；仅对原生判定不可见的目标用采集画面确认露出部位。三种状态颜色均参与匹配，请在设置 → 屏幕开启采集。"
+                                        : "轮廓确认仅支持 Flick 和磁性扳机。切换 Behavior 后若保留开启，该 Slot 不会对不可见目标补充确认；可在此关闭。")
+                    : (contourSupported ? "Targets accepted by native visibility keep the UN path. Captured contours are used only to supplement targets native visibility marked as hidden. Start capture under Settings > Screen."
+                                        : "Contour confirmation supports Flick and Magnetic Trigger. It does not supplement hidden targets for another behavior; turn it off here if needed."));
             }
             if (activePreset.contourEnabled) {
                 V2::Vision::Settings captureSettings;
@@ -303,6 +304,29 @@ void UI::AimbotPage() {
             }
             ImGui::PopItemWidth();
 
+            if (activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
+                activePreset.aimBehavior == OW::Config::kAimBehaviorMagneticTrigger) {
+                SettingRow(OW::Config::uiLanguage == 1 ? "开火模式" : "Firing mode", kAimbotLeftLabelWidth);
+                PushControlWidth();
+                const char* const firingModes[] = {
+                    OW::Config::uiLanguage == 1 ? "持续开火" : "Continuous fire",
+                    OW::Config::uiLanguage == 1 ? "单发" : "Single shot"
+                };
+                int firingMode = activePreset.keepFiring ? 0 : 1;
+                if (UISelect("##aimFiringMode", &firingMode, firingModes, IM_ARRAYSIZE(firingModes))) {
+                    activePreset.firePolicy = static_cast<int>(
+                        firingMode == 0 ? OW::FirePolicyType::HoldWhileTracking
+                                        : OW::FirePolicyType::TapOnHitWindow);
+                    activePreset.keepFiring = firingMode == 0;
+                    activePreset.autoshot = firingMode != 0;
+                    presetChanged = true;
+                }
+                ImGui::PopItemWidth();
+                ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
+                    ? "连续开火会在当前激活期间按节奏重复开火；单发命中后结束本次开火。"
+                    : "Continuous fire repeats during the active slot; single shot stops after one hit-window shot.");
+            }
+
             SettingRow("Require Action Held", kAimbotLeftLabelWidth);
             const bool actionHasPhysicalMouseButton =
                 OW::MouseButtonForAttackAction(activePreset.trigger.action) >= 0;
@@ -341,7 +365,7 @@ void UI::AimbotPage() {
     ImGui::SetNextWindowSize(ImVec2(650,650),ImGuiCond_FirstUseEver);
     if(ImGui::BeginPopup("##MotionEditor",ImGuiWindowFlags_NoSavedSettings)) {
         if(ImGui::Button(L("Restore mode defaults"))) {OW::Config::ResolveHeroBehaviorMode(activePreset,true);presetChanged=true;}
-        presetChanged|=UI::BehaviorTuningEditor(activePreset,activePreset.aimBehavior);
+        presetChanged|=UI::BehaviorTuningEditor(activePreset,activePreset.aimBehavior,false);
         presetChanged|=UI::AimPlanEditor::Motion(activePreset.aimPlan.motion,false);
         if(activePreset.aimBehavior==OW::Config::kAimBehaviorFlick2nd && activePreset.flick2ndInnerMethod>=0 &&
             activePreset.flick2ndInnerMethod!=activePreset.aimMethod) {
