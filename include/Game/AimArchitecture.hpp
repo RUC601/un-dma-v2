@@ -55,11 +55,14 @@ enum class AimBehaviorType : int {
 
 enum class FirePolicyType : int {
     ManualOnly = 0,
-    HoldWhileTracking = 1,
-    TapOnHitWindow = 2,
+    TrackingWithHold = 1,
+    SingleShot = 2,
     ReleaseAfterDelay = 3,
     TimedBurst = 4,
     ChargeRelease = 5,
+    // Compatibility names preserve the persisted values used by older V2 configs.
+    HoldWhileTracking = TrackingWithHold,
+    TapOnHitWindow = SingleShot,
 };
 
 enum class RuntimeVariantRequirement : int {
@@ -110,6 +113,12 @@ struct ProjectileSpec {
     float launchDirectionUpBias = 0.0f;
     float gravityAcceleration = 9.8f;
     float castDelayMs = 0.0f;
+};
+
+struct PredictionProfile {
+    const char* profileId = "default";
+    int configVersion = 1;
+    ProjectileSpec projectile{};
 };
 
 struct FirePolicy {

@@ -237,6 +237,16 @@ const WeaponSpec* ResolveDefaultWeaponSpec(uint64_t heroId)
     return ResolveWeaponSpec(heroId, 0);
 }
 
+PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
+{
+    PredictionProfile profile{};
+    if (weapon) {
+        profile.profileId = weapon->weaponId.data();
+        profile.projectile = weapon->projectile;
+    }
+    return profile;
+}
+
 const WeaponSpec* WeaponSpecsBegin()
 {
     return kWeaponSpecs.data();
@@ -392,8 +402,8 @@ const char* FirePolicyName(FirePolicyType value)
 {
     switch (value) {
     case FirePolicyType::ManualOnly: return "ManualOnly";
-    case FirePolicyType::HoldWhileTracking: return "HoldWhileTracking";
-    case FirePolicyType::TapOnHitWindow: return "TapOnHitWindow";
+    case FirePolicyType::TrackingWithHold: return "TrackingWithHold";
+    case FirePolicyType::SingleShot: return "SingleShot";
     case FirePolicyType::ReleaseAfterDelay: return "ReleaseAfterDelay";
     case FirePolicyType::TimedBurst: return "TimedBurst";
     case FirePolicyType::ChargeRelease: return "ChargeRelease";

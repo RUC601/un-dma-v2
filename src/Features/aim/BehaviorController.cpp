@@ -1002,7 +1002,7 @@ namespace AimbotDetail {
             captureStatus.state==V2::Vision::ServiceState::Faulted?"faulted":"stopped";
         // Keep acquisition evidence distinct from the selected candidate. A zero
         // candidate sequence can mean either missing capture or rejected targets.
-        Diagnostics::Info("[V2 contour] target=0x%llX body=%llu frame=%llu epoch=%llu ageMs=%.1f exposed=%d retained=%d edge=%d inside=%d contact=%d ready=%d hero=0x%llX slot=%d key=%d captureEnabled=%d captureState=%s captureFrame=%llu captureAgeMs=%.1f received=%llu processed=%llu pieces=%zu",
+        Diagnostics::Info("[V2 leak] target=0x%llX body=%llu frame=%llu epoch=%llu ageMs=%.1f exposed=%d retained=%d edge=%d inside=%d contact=%d ready=%d hero=0x%llX slot=%d key=%d captureEnabled=%d captureState=%s captureFrame=%llu captureAgeMs=%.1f received=%llu processed=%llu pieces=%zu",
             static_cast<unsigned long long>(e.identity.entity),static_cast<unsigned long long>(e.identity.body),
             static_cast<unsigned long long>(e.sequence),static_cast<unsigned long long>(e.epoch),
             e.sequence?V2::Vision::MonotonicMs()-e.capturedMs:-1.0,e.exposed?1:0,candidate.contour.retained?1:0,
@@ -1486,7 +1486,7 @@ namespace AimbotDetail {
                 const DWORD now = GetTickCount();
                 if (lastContourRejectLogTick == 0 || now - lastContourRejectLogTick >= 100) {
                     lastContourRejectLogTick = now;
-                    Diagnostics::Aim("fire.submit rejected reason=contour_not_fresh_or_consumable");
+                    Diagnostics::Aim("fire.submit rejected reason=leak_not_fresh_or_consumable");
                 }
             }
             return false;
@@ -4002,7 +4002,7 @@ namespace AimbotDetail {
                         Diagnostics::Aim("flick.tick delta_deg=(%.4f,%.4f) hitbox=%.4f missbox=%.4f",
                             deltaDegX, deltaDegY, hitWindow, OW::Config::missbox);
                     }
-                    // Pixel contact is the hit evidence in contour mode. A hidden
+                    // Pixel contact is the hit evidence in leak mode. A hidden
                     // bone centre cannot veto an exposed edge of the same body.
                     const bool hitAfterMove = !contourActive && OW::in_range(
                         aim.smoothed_angle, aim.target_angle, aim.local_pos, aimTarget, hitWindow);
@@ -4490,7 +4490,7 @@ namespace AimbotDetail {
             const DWORD now=GetTickCount();
             if(IsAimActivationKeyDown() && (!lastUnsupportedReport || now-lastUnsupportedReport>=1000)) {
                 lastUnsupportedReport=now;
-                Diagnostics::Info("[V2 contour] fallback_unavailable reason=%s; native_visibility_path_remains_active",ContourUnsupportedReason());
+                Diagnostics::Info("[V2 leak] fallback_unavailable reason=%s; native_visibility_path_remains_active",ContourUnsupportedReason());
             }
         }
         MaintainConfiguredAimShot(state);

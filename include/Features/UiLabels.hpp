@@ -450,6 +450,8 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Ally key", "仅队友键" }, { "Ally HP limit", "队友生命上限" },
     { "Ally skeleton", "队友骨骼" }, { "Ignore Sombra stealth", "忽略黑影隐身" },
     { "Protection filter", "保护状态过滤" },
+    { "Skip known protected targets", "跳过已知保护状态目标" },
+    { "Leak", "漏打" },
     { "Existing protection signals; full targetability pending validation.", "使用现有保护信号；完整可攻击状态待验。" },
     { "Target Team", "目标阵营" },
     { "Max Aim Time", "瞄准时限" },

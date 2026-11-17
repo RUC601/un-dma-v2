@@ -188,18 +188,18 @@ void UI::AimbotPage() {
             }
             ImGui::PopItemWidth();
 
-            const bool contourSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
+            const bool leakSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
                 activePreset.aimBehavior == OW::Config::kAimBehaviorMagneticTrigger;
-            SettingRow(OW::Config::uiLanguage == 1 ? "轮廓确认" : "Contour confirmation", kAimbotRightLabelWidth);
-            ImGui::BeginDisabled(!contourSupported && !activePreset.contourEnabled);
+            SettingRow(L("Leak"), kAimbotRightLabelWidth);
+            ImGui::BeginDisabled(!leakSupported && !activePreset.contourEnabled);
             presetChanged |= UICheckbox("##aimContour", &activePreset.contourEnabled);
             ImGui::EndDisabled();
-            if (activePreset.contourEnabled || !contourSupported) {
+            if (activePreset.contourEnabled || !leakSupported) {
                 ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
-                    ? (contourSupported ? "原生判定可见的目标继续走 UN 算法；仅对原生判定不可见的目标用采集画面确认露出部位。三种状态颜色均参与匹配，请在设置 → 屏幕开启采集。"
-                                        : "轮廓确认仅支持 Flick 和磁性扳机。切换 Behavior 后若保留开启，该 Slot 不会对不可见目标补充确认；可在此关闭。")
-                    : (contourSupported ? "Targets accepted by native visibility keep the UN path. Captured contours are used only to supplement targets native visibility marked as hidden. Start capture under Settings > Screen."
-                                        : "Contour confirmation supports Flick and Magnetic Trigger. It does not supplement hidden targets for another behavior; turn it off here if needed."));
+                    ? (leakSupported ? "原生判定可见的目标继续走 UN 算法；仅对原生判定不可见的目标用采集画面确认露出部位。三种状态颜色均参与匹配，请在设置 → 屏幕开启采集。"
+                                        : "漏打仅支持 Flick 和磁性扳机。切换 Behavior 后若保留开启，该 Slot 不会对不可见目标补充确认；可在此关闭。")
+                    : (leakSupported ? "Targets accepted by native visibility keep the UN path. Captured leak evidence are used only to supplement targets native visibility marked as hidden. Start capture under Settings > Screen."
+                                        : "Leak supports Flick and Magnetic Trigger. It does not supplement hidden targets for another behavior; turn it off here if needed."));
             }
             if (activePreset.contourEnabled) {
                 V2::Vision::Settings captureSettings;
@@ -208,24 +208,24 @@ void UI::AimbotPage() {
                 const bool zh = OW::Config::uiLanguage == 1;
                 const char* captureMessage = nullptr;
                 if (!captureSettings.enabled || captureStatus.state == V2::Vision::ServiceState::Stopped)
-                    captureMessage = zh ? "轮廓采集未开启：当前 Slot 等待画面，不会瞄准或开火。请先开始采集。"
+                    captureMessage = zh ? "漏打采集未开启：当前 Slot 等待画面，不会瞄准或开火。请先开始采集。"
                                         : "Capture is stopped. This Slot waits for an image and cannot aim or fire. Start capture first.";
                 else if (captureStatus.state == V2::Vision::ServiceState::Faulted)
-                    captureMessage = zh ? "轮廓采集失败：当前 Slot 已暂停，请到采集设置查看原因。"
+                    captureMessage = zh ? "漏打采集失败：当前 Slot 已暂停，请到采集设置查看原因。"
                                         : "Capture failed. This Slot is paused; check the capture settings for details.";
                 else if (captureStatus.state == V2::Vision::ServiceState::Starting)
-                    captureMessage = zh ? "轮廓采集正在连接：当前 Slot 等待新画面。"
+                    captureMessage = zh ? "漏打采集正在连接：当前 Slot 等待新画面。"
                                         : "Capture is starting. This Slot is waiting for a new image.";
                 else if (!captureFrame)
-                    captureMessage = zh ? "轮廓采集没有新鲜画面：当前 Slot 等待画面恢复。"
+                    captureMessage = zh ? "漏打采集没有新鲜画面：当前 Slot 等待画面恢复。"
                                         : "No fresh capture frame. This Slot is waiting for the image to recover.";
                 if (captureMessage) {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.64f, 0.25f, 1.0f));
                     ImGui::TextWrapped("%s", captureMessage);
                     ImGui::PopStyleColor();
                 } else {
-                    ImGui::TextWrapped("%s", zh ? "已收到新鲜采集画面；目标部位仍须通过轮廓关联与触边确认。"
-                                                : "Fresh capture frames are available. The target part still requires contour association and contact confirmation.");
+                    ImGui::TextWrapped("%s", zh ? "已收到新鲜采集画面；目标部位仍须通过漏打关联与触边确认。"
+                                                : "Fresh capture frames are available. The target part still requires leak association and contact confirmation.");
                 }
                 if (ImGui::SmallButton(zh ? "打开采集设置" : "Open capture settings")) {
                     state.activeTab = TAB_MISC;

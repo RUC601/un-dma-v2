@@ -733,7 +733,13 @@ namespace OW {
                 } else {
                     if(rules.ignoreSombraStealth && entity.HeroID==eHero::HERO_SOMBRA &&
                        (!entity.sombraStealthKnown || entity.sombraStealth))return false;
-                    if(rules.requireTargetable && (entity.imort||entity.barrprot))return false;
+                    if (rules.requireTargetable) {
+                        const DWORD now = GetTickCount();
+                        const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
+                            now - entity.health_sample_tick_ms <= 500;
+                        if (!protectionFresh || entity.imort || entity.barrprot)
+                            return false;
+                    }
                 }
             }
             switch (teamMode) {
@@ -1342,6 +1348,7 @@ namespace OW {
         inline ProjectileRuntimeSpec ResolveProjectileRuntimeSpec(const WeaponSpec* weapon,
                                                                   const c_entity& local,
                                                                   bool secondary) {
+            const PredictionProfile predictionProfile = ResolvePredictionProfile(weapon);
             if (Config::hanzoautospeed &&
                 local.HeroID == eHero::HERO_HANJO) {
                 Config::predit_level = readult(local.SkillBase + 0x40, 0xB, 0x2A5) * 85.f + 25.f;
@@ -1359,22 +1366,22 @@ namespace OW {
                 fallbackSpeed > 0.0f) {
                 return ProjectileRuntimeSpec{
                     fallbackSpeed,
-                    weapon ? weapon->projectile.gravity : true,
+                    predictionProfile.projectile.gravity,
                     weapon != nullptr,
-                    weapon ? weapon->projectile.launchDirectionUpBias : 0.0f,
-                    weapon ? weapon->projectile.gravityAcceleration : 9.8f,
-                    weapon ? weapon->projectile.castDelayMs : 0.0f
+                    predictionProfile.projectile.launchDirectionUpBias,
+                    predictionProfile.projectile.gravityAcceleration,
+                    predictionProfile.projectile.castDelayMs
                 };
             }
 
-            if (weapon && weapon->projectile.projectileSpeed > 0.0f) {
+            if (predictionProfile.projectile.projectileSpeed > 0.0f) {
                 return ProjectileRuntimeSpec{
-                    weapon->projectile.projectileSpeed,
-                    weapon->projectile.gravity,
+                    predictionProfile.projectile.projectileSpeed,
+                    predictionProfile.projectile.gravity,
                     true,
-                    weapon->projectile.launchDirectionUpBias,
-                    weapon->projectile.gravityAcceleration,
-                    weapon->projectile.castDelayMs
+                    predictionProfile.projectile.launchDirectionUpBias,
+                    predictionProfile.projectile.gravityAcceleration,
+                    predictionProfile.projectile.castDelayMs
                 };
             }
 
@@ -1959,7 +1966,7 @@ namespace OW {
                             next.lockPolicy = lockPolicy;
                             next.weaponSpec = weaponSpec;
                             next.effectiveHitWindow = ResolveEffectiveHitWindow(
-                                entities[i].HeroID,
+                                entities[i],
                                 next.boneId,
                                 weaponSpec,
                                 Config::View_hitbox(),

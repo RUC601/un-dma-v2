@@ -168,7 +168,7 @@ void UI::TriggerPage() {
             ImGui::PopItemWidth();
             SettingRow(L("Ignore Sombra stealth"), kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##stealthFilter",&activePreset.ignoreSombraStealth);
-            SettingRow(L("Protection filter"), kAimbotRightLabelWidth);
+            SettingRow(L("Skip known protected targets"), kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
             SettingRow(L("Visibility"), kAimbotRightLabelWidth);

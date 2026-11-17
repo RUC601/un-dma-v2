@@ -9,6 +9,7 @@ namespace OW {
 
 const WeaponSpec* ResolveWeaponSpec(uint64_t heroId, int action = 0);
 const WeaponSpec* ResolveDefaultWeaponSpec(uint64_t heroId);
+PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon);
 const WeaponSpec* WeaponSpecsBegin();
 const WeaponSpec* WeaponSpecsEnd();
 std::size_t WeaponSpecCount();

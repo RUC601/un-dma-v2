@@ -103,6 +103,25 @@ float ResolveEffectiveHitWindow(uint64_t heroId,
     return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
 }
 
+float ResolveEffectiveHitWindow(const c_entity& entity,
+                                int boneId,
+                                const WeaponSpec* weapon,
+                                float hitboxScalePercent,
+                                float fallbackBoneRadius)
+{
+    float boneRadius = ResolveBoneHitboxRadius(entity.HeroID, boneId, fallbackBoneRadius);
+    if (entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision)) {
+        float nativeRadius = 0.0f;
+        for (const auto& shape : entity.native_hitboxes.shapes)
+            nativeRadius = (std::max)(nativeRadius, shape.radius);
+        if (nativeRadius > 0.0f && std::isfinite(nativeRadius))
+            boneRadius = nativeRadius;
+    }
+    const float projectileRadius = weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f;
+    return (std::max)(0.0f, boneRadius + projectileRadius) *
+        Config::HitboxScaleMultiplier(hitboxScalePercent);
+}
+
 int AimBoneToSkeletonBoneId(int aimBone)
 {
     switch (aimBone) {
