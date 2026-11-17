@@ -20,6 +20,16 @@
 #include "Game/HeroSettings.hpp"
 #include "vision/ContourService.hpp"
 
+namespace {
+// Native shape acquisition is shared by the three independent ESP layers.
+// Keep this separate from draw_hitbox: contour/fill must still receive a
+// fresh native snapshot when the wireframe layer is disabled.
+bool NativeHitboxDisplayEnabled() {
+    const auto settings=V2::HeroSettings::Snapshot();
+    return OW::Config::draw_hitbox || settings->display.hitboxContour || settings->display.hitboxFill;
+}
+}
+
 void entity_thread() {
     const auto entityAdmissionNow = [] { return GetTickCount(); };
     Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::EntityDecrypt);
@@ -1081,7 +1091,7 @@ void entity_thread() {
                     cached.skeletonCache.valid=false;
                 }
                 const auto& skeleton=cached.skeletonCache;
-                const bool nativeGeometry=OW::Config::draw_hitbox && offset::IsCnProfile() && item.skeletonPrepared;
+                const bool nativeGeometry=NativeHitboxDisplayEnabled() && offset::IsCnProfile() && item.skeletonPrepared;
                 if(nativeGeometry && !cached.nativeHitboxLayout.Matches(cached.velocity,skeleton.revision)) {
                     ++pipelineStats.hotGeometryLayoutLoads;
                     OW::NativeHitboxes::LoadLayout(cached.nativeHitboxLayout,cached.velocity,skeleton.revision,skeleton.boneCount,
@@ -1265,7 +1275,7 @@ void entity_thread() {
             item.readCompletedTick = skeletonCompleted;
             std::fill(next.model_shapes.valid.begin(),next.model_shapes.valid.end(),false);
             if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
-                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && OW::Config::draw_hitbox)
+                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxDisplayEnabled())
                     next.native_hitboxes=item.nativeHitboxes.Commit(cached.skeletonCache.revision,item.readStartedTick,next.model_world,item.geometryPoses);
                 if(item.nativeHitboxes.Complete()) {
                     if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount))cached.nativeHitboxLayout={};

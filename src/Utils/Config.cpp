@@ -5012,6 +5012,8 @@ namespace OW { namespace Config {
                 display.radar.enemy=enargb;display.radar.ally=allyargb;
                 display.elements[int(V2::VisualSettings::Element::Crosshair)].visible=fovcol;
                 display.elements[int(V2::VisualSettings::Element::Crosshair)].size=float(therad>0?therad:8)*2;
+                display.crosshair.color=fovcol;
+                display.crosshair.size=float(therad>0?therad:8)*2;
                 display.world.enabled=draw_hp_pack;display.world.types[0]=draw_hp_pack;
                 V2::HeroSettings::SetDisplay(display);
             } else {

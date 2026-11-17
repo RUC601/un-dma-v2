@@ -30,6 +30,7 @@ using namespace UI::ValueFormat;
 #include "Game/WeaponSpec.hpp"
 #include "Renderer/Overlay.hpp"
 #include "Renderer/Renderer.hpp"
+#include "Renderer/Crosshair.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
 #include "Utils/ProcessConnection.hpp"
@@ -59,30 +60,35 @@ namespace {
 using V2::VisualSettings::Element;
 using V2::VisualSettings::Settings;
 using V2::VisualSettings::Style;
+using V2::VisualSettings::CrosshairSettings;
+using V2::VisualSettings::CrosshairPrimitiveKind;
 bool StyleDetails(Style& style,Element element) {
-    const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Health||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair;
+    const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Health||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair||element==Element::CenterArrow;
     const bool line=element==Element::Box||element==Element::Health||element==Element::Resources||element==Element::Skeleton||element==Element::Prediction||element==Element::Hitbox||element==Element::Snapline||element==Element::EyeRay||element==Element::Crosshair;
     bool changed=false;
     if(size){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Size"),&style.size,6,80,"%.1f");}
+    if(element==Element::CenterArrow){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Ring Radius"),&style.radius,40,600,"%.0f px");}
     if(line){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Thickness"),&style.thickness,.5f,8,"%.1f px");}
     ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("X",&style.offsetX,-300,300,"%.0f px");
     ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("Y",&style.offsetY,-300,300,"%.0f px");
-    ImGui::TextDisabled("%s",L("Ally"));ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
-    ImGui::TextDisabled("%s",L("Target"));ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
     return changed;
 }
 bool ElementRow(Settings& settings,Element element,bool& enabled) {
     const int index=int(element);ImGui::PushID(index);
     const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
-    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
+    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+4*30.f+26.f+ImGui::GetStyle().ItemSpacing.x*5;
     const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
     SettingRow(V2::VisualSettings::kElementNames[index],labelWidth);
     bool changed=UICheckbox("##enabled",&enabled);
     auto& style=settings.elements[index];
     ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
-    ImGui::SetItemTooltip("%s",L("Visible"));
+    ImGui::SetItemTooltip("%s",L("Enemy"));
     ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
-    ImGui::SetItemTooltip("%s",L("Hidden"));
+    ImGui::SetItemTooltip("%s",L("Invisible Enemy"));
+    ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
+    ImGui::SetItemTooltip("%s",L("Target"));
+    ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
+    ImGui::SetItemTooltip("%s",L("Ally"));
     const std::string detailsLabel=std::string("...##")+V2::VisualSettings::kElementNames[index];
     ImGui::SameLine();if(ImGui::Button(detailsLabel.c_str(),ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
     ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
@@ -112,6 +118,74 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
         ImGui::EndPopup();
     }
     ImGui::PopID();return changed;
+}
+bool CustomStyleRow(const char* label,const char* id,Style& style,bool& enabled) {
+    ImGui::PushID(id);
+    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+4*30.f+26.f+ImGui::GetStyle().ItemSpacing.x*5;
+    const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
+    SettingRow(label,labelWidth);
+    bool changed=UICheckbox("##enabled",&enabled);
+    ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
+    ImGui::SetItemTooltip("%s",L("Enemy"));
+    ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
+    ImGui::SetItemTooltip("%s",L("Invisible Enemy"));
+    ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
+    ImGui::SetItemTooltip("%s",L("Target"));
+    ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
+    ImGui::SetItemTooltip("%s",L("Ally"));
+    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
+    if(ImGui::BeginPopup("##details")) {
+        ImGui::TextUnformatted(L(label));ImGui::Spacing();
+        changed|=StyleDetails(style,Element::Hitbox);
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();return changed;
+}
+bool CrosshairRow(Settings& settings,bool& enabled) {
+    auto& crosshair=settings.crosshair;
+    const bool zh=OW::Config::uiLanguage==1;
+    const char* stylesZh[]={"圆圈","十字","圆圈 + 十字","实心点","方框","四点","T 形"};
+    const char* stylesEn[]={"Circle","Cross","Circle + Cross","Dot","Square","Four Dots","T"};
+    const char* const* styles=zh?stylesZh:stylesEn;
+    bool changed=false;
+    ImGui::PushID("crosshair");
+    SettingRow(zh?"准星":"Crosshair");
+    changed|=UICheckbox("##enabled",&enabled);
+    ImGui::SameLine();changed|=UI::ColorPicker("##color",crosshair.color);
+    ImGui::SetItemTooltip("%s",zh?"颜色":"Color");
+    ImGui::SameLine();ImGui::SetNextItemWidth(142);changed|=UISelect("##style",&crosshair.style,styles,int(V2::VisualSettings::CrosshairStyle::Count),false);
+    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SetItemTooltip("%s",zh?"调整样式、间隙、粗细和轮廓":"Adjust style, gap, thickness and outline");
+    if(ImGui::BeginPopup("##details")) {
+        ImGui::TextUnformatted(zh?"准星样式":"Crosshair style");ImGui::Spacing();
+        SettingRow(zh?"样式":"Style");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISelect("##popupStyle",&crosshair.style,styles,int(V2::VisualSettings::CrosshairStyle::Count),false);
+        SettingRow(zh?"颜色":"Color");changed|=UI::ColorPicker("##popupColor",crosshair.color);
+        SettingRow(zh?"轮廓颜色":"Outline color");changed|=UI::ColorPicker("##outlineColor",crosshair.outlineColor);
+        SettingRow(zh?"显示轮廓":"Show outline");changed|=UICheckbox("##outline",&crosshair.outline);
+        SettingRow(zh?"整体尺寸":"Size");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##size",&crosshair.size,2,80,Number(0," px"));
+        SettingRow(zh?"线条粗细":"Thickness");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##thickness",&crosshair.thickness,.5f,8,Number(1," px"));
+        SettingRow(zh?"中心间隙":"Center gap");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##gap",&crosshair.gap,0,40,Number(0," px"));
+        SettingRow(zh?"点大小":"Dot size");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##dotSize",&crosshair.dotSize,1,24,Number(1," px"));
+        SettingRow(zh?"轮廓粗细":"Outline thickness");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##outlineThickness",&crosshair.outlineThickness,0,6,Number(1," px"));
+        SettingRow("X");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##offsetX",&crosshair.offsetX,-300,300,Number(0," px"));
+        SettingRow("Y");ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##offsetY",&crosshair.offsetY,-300,300,Number(0," px"));
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return changed;
+}
+void DrawCrosshairPreview(ImDrawList* draw,const ImVec2& center,const CrosshairSettings& settings) {
+    auto pass=[&](ImU32 color,float thickness,float expand) {
+        V2::VisualSettings::ForEachCrosshairPrimitive(settings,center.x,center.y,[&](const V2::VisualSettings::CrosshairPrimitive& primitive) {
+            if(primitive.kind==CrosshairPrimitiveKind::Line)draw->AddLine(ImVec2(primitive.x1,primitive.y1),ImVec2(primitive.x2,primitive.y2),color,thickness);
+            else if(primitive.filled)draw->AddCircleFilled(ImVec2(primitive.x1,primitive.y1),primitive.radius+expand,color,48);
+            else draw->AddCircle(ImVec2(primitive.x1,primitive.y1),primitive.radius,color,48,thickness);
+        });
+    };
+    if(settings.outline&&settings.outlineThickness>0)pass(ImGui::ColorConvertFloat4ToU32(settings.outlineColor),settings.thickness+2*settings.outlineThickness,settings.outlineThickness);
+    pass(ImGui::ColorConvertFloat4ToU32(settings.color),settings.thickness,0);
 }
 void OutlineControls() {
     bool paletteChanged=false;
@@ -258,7 +332,13 @@ void Preview(const Settings& settings) {
     if(OW::Config::drawline)draw->AddLine(ImVec2(cx,p.y+315),position(Element::Snapline,cx,bottom),color(Element::Snapline),style(Element::Snapline).thickness);
     if(OW::Config::eyeray)draw->AddLine(position(Element::EyeRay,cx,top+30),position(Element::EyeRay,right+30,top+40),color(Element::EyeRay),style(Element::EyeRay).thickness);
     if(settings.offscreen){const auto tip=position(Element::Offscreen,p.x+width-18,top+110);const float size=style(Element::Offscreen).size;draw->AddTriangleFilled(tip,ImVec2(tip.x-size,tip.y-size*.5f),ImVec2(tip.x-size,tip.y+size*.5f),color(Element::Offscreen));}
-    if(OW::Config::crosscircle){const auto center=position(Element::Crosshair,cx,top+100);draw->AddCircle(center,style(Element::Crosshair).size*.5f,color(Element::Crosshair),24,style(Element::Crosshair).thickness);}
+    if(settings.centerArrow){
+        const auto& st=style(Element::CenterArrow);const ImVec2 center(cx+st.offsetX,top+100+st.offsetY);
+        const float radius=(std::min)(st.radius,(std::min)(width*.5f-8.f,150.f));
+        const float size=st.size;const ImU32 c=color(Element::CenterArrow);
+        for(int i=0;i<6;++i){const float a=IM_PI*2.f*float(i)/6.f;const ImVec2 dir(std::cos(a),std::sin(a));const ImVec2 tip(center.x+dir.x*radius,center.y+dir.y*radius);const ImVec2 back(tip.x-dir.x*size,tip.y-dir.y*size);const ImVec2 side(-dir.y*size*.5f,dir.x*size*.5f);draw->AddTriangleFilled(tip,ImVec2(back.x+side.x,back.y+side.y),ImVec2(back.x-side.x,back.y-side.y),c);}
+    }
+    if(OW::Config::crosscircle){const auto& crosshair=settings.crosshair;DrawCrosshairPreview(draw,ImVec2(cx+crosshair.offsetX,top+100+crosshair.offsetY),crosshair);}
 }
 
 }
@@ -290,33 +370,14 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Skeleton,OW::Config::draw_skel);
         changed|=ElementRow(settings,Element::Skills,OW::Config::skillinfo);
         changed|=ElementRow(settings,Element::Prediction,settings.prediction);
-        {
-            const bool zh=OW::Config::uiLanguage==1;
-            auto& wireStyle=settings.elements[int(Element::Hitbox)];
-            const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
-            const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
-            const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
-            SettingRow(zh?"碰撞体线框":"Hitbox wireframe",labelWidth);
-            changed|=UICheckbox("##hitboxWireframe",&OW::Config::draw_hitbox);
-            ImGui::SameLine();changed|=UI::ColorPicker("hitboxWireVisible",wireStyle.visible);
-            ImGui::SameLine();changed|=UI::ColorPicker("hitboxWireHidden",wireStyle.hidden);
-        }
-        {
-            const bool zh=OW::Config::uiLanguage==1;
-            const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
-            const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
-            const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
-            SettingRow(zh?"碰撞体轮廓":"Hitbox contour",labelWidth);
-            changed|=UICheckbox("##hitboxContour",&settings.hitboxContour);
-            ImGui::SameLine();changed|=UI::ColorPicker("hitboxContourColor",settings.hitboxContourColor);
-            SettingRow(zh?"碰撞体填色":"Hitbox fill",labelWidth);
-            changed|=UICheckbox("##hitboxFill",&settings.hitboxFill);
-            ImGui::SameLine();changed|=UI::ColorPicker("hitboxFillColor",settings.hitboxFillColor);
-        }
+        changed|=ElementRow(settings,Element::Hitbox,OW::Config::draw_hitbox);
+        changed|=CustomStyleRow(OW::Config::uiLanguage==1?"碰撞体轮廓":"Hitbox contour","hitboxContour",settings.hitboxContourStyle,settings.hitboxContour);
+        changed|=CustomStyleRow(OW::Config::uiLanguage==1?"碰撞体填色":"Hitbox fill","hitboxFill",settings.hitboxFillStyle,settings.hitboxFill);
         changed|=ElementRow(settings,Element::Offscreen,settings.offscreen);
+        changed|=ElementRow(settings,Element::CenterArrow,settings.centerArrow);
         changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
         changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);
-        changed|=ElementRow(settings,Element::Crosshair,OW::Config::crosscircle);
+        changed|=CrosshairRow(settings,OW::Config::crosscircle);
     });
     Card("Game Outlines",[]{OutlineControls();});
     Card("World",[&]{

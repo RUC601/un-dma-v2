@@ -6,6 +6,7 @@
 #include "Game/HeroSkills.hpp"
 #include "Game/FovGeometry.hpp"
 #include "Renderer/Renderer.hpp"
+#include "Renderer/Crosshair.hpp"
 #include "Renderer/IconManager.hpp"
 #include "Features/UiLabels.hpp"
 #include "Utils/Diagnostics.hpp"
@@ -804,15 +805,21 @@ namespace {
             return;
 
         const auto settings=V2::HeroSettings::Snapshot();
-        const auto& style=settings->display.elements[int(V2::VisualSettings::Element::Crosshair)];
-        const OW::Vector2 center(width*.5f+style.offsetX,height*.5f+style.offsetY);
-        const Render::Color color=ToRenderColor(style.visible);
-        const float arm=style.size*.5f;
-        const float radius=style.size*.5f;
-
-        Render::DrawLine(OW::Vector2(center.X - arm, center.Y), OW::Vector2(center.X + arm, center.Y), color, style.thickness);
-        Render::DrawLine(OW::Vector2(center.X, center.Y - arm), OW::Vector2(center.X, center.Y + arm), color, style.thickness);
-        Render::DrawCircle(center, radius, color, 48, style.thickness);
+        const auto& crosshair=settings->display.crosshair;
+        const float centerX=width*.5f+crosshair.offsetX,centerY=height*.5f+crosshair.offsetY;
+        auto drawPass=[&](const ImVec4& color,float thickness,float expand){
+            const Render::Color renderColor=ToRenderColor(color);
+            V2::VisualSettings::ForEachCrosshairPrimitive(crosshair,centerX,centerY,[&](const V2::VisualSettings::CrosshairPrimitive& primitive){
+                if(primitive.kind==V2::VisualSettings::CrosshairPrimitiveKind::Line)
+                    Render::DrawLine(OW::Vector2(primitive.x1,primitive.y1),OW::Vector2(primitive.x2,primitive.y2),renderColor,thickness);
+                else if(primitive.filled)
+                    Render::DrawFilledCircle(OW::Vector2(primitive.x1,primitive.y1),primitive.radius+expand,renderColor,48);
+                else
+                    Render::DrawCircle(OW::Vector2(primitive.x1,primitive.y1),primitive.radius,renderColor,48,thickness);
+            });
+        };
+        if(crosshair.outline&&crosshair.outlineThickness>0)drawPass(crosshair.outlineColor,crosshair.thickness+2*crosshair.outlineThickness,crosshair.outlineThickness);
+        drawPass(crosshair.color,crosshair.thickness,0);
     }
 
     static void DrawRadar(const std::vector<OW::c_entity>& entitySnapshot,
