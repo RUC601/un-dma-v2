@@ -9,7 +9,7 @@ namespace V2::VisualSettings {
 enum class Element:int {Box,Name,BattleTag,Health,Resources,Distance,Skeleton,Avatar,Skills,Ultimate,Prediction,Hitbox,Offscreen,Snapline,EyeRay,Crosshair,Count};
 inline constexpr std::array<const char*,int(Element::Count)> kElementNames{
     "Box","Hero Name","BattleTag","Health Bar","Health Bar 2","Distance","Skeleton","Hero Avatar",
-    "World Skill Cooldowns","Ultimate Charge","Prediction point","Model Shapes (research)","Out of FOV arrows","Snapline","Eye Ray","Crosshair"};
+    "World Skill Cooldowns","Ultimate Charge","Prediction point","Hitbox wireframe","Out of FOV arrows","Snapline","Eye Ray","Crosshair"};
 struct Style {
     ImVec4 visible{1,1,1,1},hidden{1,.25f,.3f,1},target{1,.85f,.2f,1},ally{.3f,1,.6f,1};
     float size=14,thickness=1.5f,offsetX=0,offsetY=0;
@@ -34,6 +34,11 @@ struct Settings {
     bool worldUltimate=false,prediction=false,offscreen=false;
     int boxType=0,nameType=0;
     int healthBarStyle=1;
+    // Independent native hitbox layers. Legacy hitboxMode is read only during migration.
+    bool hitboxContour=false;
+    bool hitboxFill=false;
+    ImVec4 hitboxContourColor{1.f,.85f,.2f,1.f};
+    ImVec4 hitboxFillColor{1.f,.15f,.2f,.18f};
     std::array<Style,int(Element::Count)> elements=[] {std::array<Style,int(Element::Count)> values{};
         values[int(Element::Avatar)].size=24;values[int(Element::Skills)].size=18;
         values[int(Element::Health)].visible=ImVec4(.2f,1,.35f,1);return values;}();

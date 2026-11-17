@@ -135,6 +135,7 @@ set(UNLEASHED_SOURCES
     src/config/FileTransaction.cpp
     src/config/HeroSlotStore.cpp
     src/features/visuals/EntityVisuals.cpp
+    src/features/visuals/HitboxContour.cpp
     src/features/visuals/SceneRenderer.cpp
     src/Game/camera/CameraWorker.cpp
     src/Game/map/MapReader.cpp

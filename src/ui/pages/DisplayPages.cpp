@@ -290,7 +290,29 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Skeleton,OW::Config::draw_skel);
         changed|=ElementRow(settings,Element::Skills,OW::Config::skillinfo);
         changed|=ElementRow(settings,Element::Prediction,settings.prediction);
-        changed|=ElementRow(settings,Element::Hitbox,OW::Config::draw_hitbox);
+        {
+            const bool zh=OW::Config::uiLanguage==1;
+            auto& wireStyle=settings.elements[int(Element::Hitbox)];
+            const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+            const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
+            const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
+            SettingRow(zh?"碰撞体线框":"Hitbox wireframe",labelWidth);
+            changed|=UICheckbox("##hitboxWireframe",&OW::Config::draw_hitbox);
+            ImGui::SameLine();changed|=UI::ColorPicker("hitboxWireVisible",wireStyle.visible);
+            ImGui::SameLine();changed|=UI::ColorPicker("hitboxWireHidden",wireStyle.hidden);
+        }
+        {
+            const bool zh=OW::Config::uiLanguage==1;
+            const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
+            const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+78+ImGui::GetStyle().ItemSpacing.x*3;
+            const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
+            SettingRow(zh?"碰撞体轮廓":"Hitbox contour",labelWidth);
+            changed|=UICheckbox("##hitboxContour",&settings.hitboxContour);
+            ImGui::SameLine();changed|=UI::ColorPicker("hitboxContourColor",settings.hitboxContourColor);
+            SettingRow(zh?"碰撞体填色":"Hitbox fill",labelWidth);
+            changed|=UICheckbox("##hitboxFill",&settings.hitboxFill);
+            ImGui::SameLine();changed|=UI::ColorPicker("hitboxFillColor",settings.hitboxFillColor);
+        }
         changed|=ElementRow(settings,Element::Offscreen,settings.offscreen);
         changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
         changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);

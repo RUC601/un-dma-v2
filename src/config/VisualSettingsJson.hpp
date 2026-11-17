@@ -16,6 +16,10 @@ template<class Allocator> inline rapidjson::Value Encode(const Settings& setting
     out.AddMember("infoX",settings.infoX,allocator);out.AddMember("infoY",settings.infoY,allocator);out.AddMember("infoScale",settings.infoScale,allocator);
     text("font",settings.font);text("chineseFont",settings.chineseFont);
     auto color=[&](const ImVec4& c){rapidjson::Value value(rapidjson::kArrayType);for(int i=0;i<4;++i)value.PushBack((&c.x)[i],allocator);return value;};
+    out.AddMember("hitboxContour",settings.hitboxContour,allocator);
+    out.AddMember("hitboxFill",settings.hitboxFill,allocator);
+    out.AddMember("hitboxContourColor",color(settings.hitboxContourColor),allocator);
+    out.AddMember("hitboxFillColor",color(settings.hitboxFillColor),allocator);
     rapidjson::Value styles(rapidjson::kArrayType);
     for(const auto& style:settings.elements){rapidjson::Value v(rapidjson::kObjectType);
         v.AddMember("visible",color(style.visible),allocator);v.AddMember("hidden",color(style.hidden),allocator);v.AddMember("ally",color(style.ally),allocator);v.AddMember("target",color(style.target),allocator);
@@ -43,6 +47,16 @@ inline Settings Decode(const rapidjson::Value& root,Settings settings={}) {
     boolean(root,"dynamicFont",settings.dynamicFont);boolean(root,"worldUltimate",settings.worldUltimate);boolean(root,"prediction",settings.prediction);boolean(root,"offscreen",settings.offscreen);
     boolean(root,"pauseOnChat",settings.pauseOnChat);boolean(root,"pauseOnFocusLoss",settings.pauseOnFocusLoss);
     if(root.HasMember("healthBarStyle")&&root["healthBarStyle"].IsInt())settings.healthBarStyle=std::clamp(root["healthBarStyle"].GetInt(),1,3);
+    int legacyHitboxMode=0;
+    if(root.HasMember("hitboxMode")&&root["hitboxMode"].IsInt())legacyHitboxMode=std::clamp(root["hitboxMode"].GetInt(),0,2);
+    const bool hasHitboxContour=root.HasMember("hitboxContour")&&root["hitboxContour"].IsBool();
+    const bool hasHitboxFill=root.HasMember("hitboxFill")&&root["hitboxFill"].IsBool();
+    boolean(root,"hitboxContour",settings.hitboxContour);
+    boolean(root,"hitboxFill",settings.hitboxFill);
+    if(!hasHitboxContour)settings.hitboxContour=legacyHitboxMode>=1;
+    if(!hasHitboxFill)settings.hitboxFill=legacyHitboxMode>=2;
+    color(root,"hitboxContourColor",settings.hitboxContourColor);
+    color(root,"hitboxFillColor",settings.hitboxFillColor);
     if(root.HasMember("boxType")&&root["boxType"].IsInt())settings.boxType=std::clamp(root["boxType"].GetInt(),0,2);
     if(root.HasMember("nameType")&&root["nameType"].IsInt())settings.nameType=std::clamp(root["nameType"].GetInt(),0,2);
     if(root.HasMember("font")&&root["font"].IsString()&&root["font"].GetStringLength()<1024)settings.font=root["font"].GetString();
