@@ -223,6 +223,15 @@ target_link_libraries(Unleashed PRIVATE
 # ============================================================================
 
 function(copy_leechcore_runtime target_name)
+    # Supplier/SDK components are optional; selecting their source still requires them at runtime.
+    foreach(optional_dll FTD2XX.dll vmsavedstatedumpprovider.dll)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/leechcore/${optional_dll}")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/vendor/leechcore/${optional_dll}"
+                    "$<TARGET_FILE_DIR:${target_name}>")
+        endif()
+    endforeach()
     add_custom_command(TARGET ${target_name} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/vendor/leechcore/info.db"
@@ -257,6 +266,9 @@ function(copy_leechcore_runtime target_name)
             "-DSOURCE_CONFIG=${CMAKE_SOURCE_DIR}/config/dma_device.cfg"
             "-DOUTPUT_CONFIG=$<TARGET_FILE_DIR:${target_name}>/config/dma_device.cfg"
             -P "${CMAKE_SOURCE_DIR}/cmake/CopyDefaultConfig.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/config/dma-examples"
+            "$<TARGET_FILE_DIR:${target_name}>/config/dma-examples"
     )
 endfunction()
 

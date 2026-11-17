@@ -401,6 +401,8 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Draw Enemy", "显示敌方" },
     { "Draw Ally", "显示队友" },
     { "Visible Only", "仅可见" },
+    { "Visibility", "可见性" },
+    { "All", "全部" },
     { "Appearance preview", "外观预览" },
     { "Player ESP", "玩家 ESP" },
     { "Dynamic Font Scaling", "动态字体缩放" },

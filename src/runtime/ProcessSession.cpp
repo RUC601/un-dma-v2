@@ -372,7 +372,7 @@ static bool TryConnectTargetProcess(bool forceReconnect, bool manualRequest)
         Diagnostics::SetProcessAttached(true);
         OW::ProcessConnection::SetStatus(true, false, attachedPid, OW::SDK->dwGameBase,
             std::string("Connected to Overwatch.exe (") + matched->Offsets().name + ")");
-        OW::SetRuntimeOutputSessionEnabled(true);
+        OW::SetRuntimeOutputSessionEnabled(!mem.IsStaticSource());
     }))
         return false;
     Diagnostics::Info("Process attached: %s pid=%d base=0x%llX. Region %s %s (request=%d).",

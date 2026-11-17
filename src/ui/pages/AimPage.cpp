@@ -177,9 +177,16 @@ void UI::AimbotPage() {
                                       OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
             ImGui::PopItemWidth();
 
-            // Ignore Invisible Targets
-            SettingRow("Ignore Invisible Targets", kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox("##aimIgnoreInvis", &activePreset.ignoreInvisible);
+            // Visibility is the user-facing form of the legacy ignoreInvisible bool.
+            SettingRow(L("Visibility"), kAimbotRightLabelWidth);
+            PushControlWidth();
+            static const char* const kVisibility[] = { "Visible Only", "All" };
+            int visibility = activePreset.ignoreInvisible ? 0 : 1;
+            if (UISelect("##aimVisibility", &visibility, kVisibility, IM_ARRAYSIZE(kVisibility))) {
+                activePreset.ignoreInvisible = visibility == 0;
+                presetChanged = true;
+            }
+            ImGui::PopItemWidth();
 
             const bool contourSupported = activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
                 activePreset.aimBehavior == OW::Config::kAimBehaviorMagneticTrigger;

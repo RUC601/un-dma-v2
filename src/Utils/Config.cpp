@@ -383,7 +383,7 @@ namespace OW { namespace Config {
 
     namespace Detail {
 
-        constexpr int kCurrentConfigVersion = 16;
+        constexpr int kCurrentConfigVersion = 17;
         constexpr int kPresetBonesStoredAsAimBonesVersion = 3;
         constexpr int kFovAnglesStoredAsHalfAnglesVersion = 5;
         constexpr int kAimBehaviorSemanticsVersion = 6;
@@ -1295,6 +1295,20 @@ namespace OW { namespace Config {
         {
             std::string value;
             return ini.TryGet(section, key, value);
+        }
+
+        TargetVisibilityMode ReadTargetVisibilityMode(const IniFile& ini,
+                                                      const char* section,
+                                                      const char* key,
+                                                      const char* legacyKey,
+                                                      bool legacyDefault)
+        {
+            if (KeyExists(ini, section, key))
+                return ClampTargetVisibilityMode(ReadInt(
+                    ini, section, key,
+                    static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(legacyDefault))));
+            return TargetVisibilityFromLegacyIgnoreInvisible(
+                ReadBool(ini, section, legacyKey, legacyDefault));
         }
 
         float LegacyHitboxRadiusToScalePercent(float radius)
@@ -3478,7 +3492,8 @@ namespace OW { namespace Config {
             slot.preset.maxAimTime = ReadFixedFloat(ini, section, "aimbotMaxAim", slot.preset.maxAimTime);
             slot.preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", slot.preset.minCharge);
             slot.preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", slot.preset.maxCharge);
-            slot.preset.ignoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", slot.preset.ignoreInvisible);
+            slot.preset.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "visibilityMode", "aimbotIgnoreInvisible", slot.preset.ignoreInvisible));
             slot.preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             slot.preset.traceCondition = ReadInt(ini, section, "aimbotTrace", slot.preset.traceCondition);
             slot.preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", slot.preset.unlockCondition);
@@ -3524,7 +3539,8 @@ namespace OW { namespace Config {
                 section,
                 "triggerDisableWhileReloading",
                 slot.preset.trigger.disableWhileReloading);
-            slot.preset.trigger.ignoreInvisible = ReadBool(ini, section, "triggerIgnoreInvisible", slot.preset.trigger.ignoreInvisible);
+            slot.preset.trigger.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode", "triggerIgnoreInvisible", slot.preset.trigger.ignoreInvisible));
             slot.preset.trigger.boneMask = static_cast<TriggerBoneMask>(
                 ReadInt(ini, section, "triggerBoneMask", static_cast<int>(slot.preset.trigger.boneMask)));
             slot.preset.trigger.drawHitbox = ReadBool(ini, section, "triggerDrawHitbox", slot.preset.trigger.drawHitbox);
@@ -3595,7 +3611,8 @@ namespace OW { namespace Config {
             preset.maxAimTime = ReadFixedFloat(ini, section, "aimbotMaxAim", preset.maxAimTime);
             preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", preset.minCharge);
             preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", preset.maxCharge);
-            preset.ignoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", preset.ignoreInvisible);
+            preset.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "visibilityMode", "aimbotIgnoreInvisible", preset.ignoreInvisible));
             preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             preset.traceCondition = ReadInt(ini, section, "aimbotTrace", preset.traceCondition);
             preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", preset.unlockCondition);
@@ -3624,7 +3641,8 @@ namespace OW { namespace Config {
             }
             preset.trigger.enabled = ReadBool(ini, section, "triggerbot", preset.trigger.enabled);
             preset.trigger.action = ReadInt(ini, section, "aimbotAttack", preset.trigger.action);
-            preset.trigger.ignoreInvisible = ReadBool(ini, section, "triggerIgnoreInvisible", preset.trigger.ignoreInvisible);
+            preset.trigger.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode", "triggerIgnoreInvisible", preset.trigger.ignoreInvisible));
             preset.trigger.boneMask = static_cast<TriggerBoneMask>(
                 ReadInt(ini, section, "triggerBoneMask", static_cast<int>(preset.trigger.boneMask)));
             return ValidateHeroPresetValue(preset);
@@ -3671,7 +3689,8 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotMaxAim", preset.maxAimTime);
             WriteFixedFloatValue(path, section, "aimbotMinCharge", preset.minCharge);
             WriteFixedFloatValue(path, section, "aimbotMaxCharge", preset.maxCharge);
-            WriteBoolValue(path, section, "aimbotIgnoreInvisible", preset.ignoreInvisible);
+            WriteIntValue(path, section, "visibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.ignoreInvisible)));
             WriteBoolValue(path, section, "aimbotContourEnabled", preset.contourEnabled);
             WriteIntValue(path, section, "aimbotTrace", preset.traceCondition);
             WriteIntValue(path, section, "aimbotUnlock", preset.unlockCondition);
@@ -3704,7 +3723,8 @@ namespace OW { namespace Config {
             WriteBoolValue(path, section, "triggerChargeAware", preset.trigger.chargeAware);
             WriteFixedFloatValue(path, section, "triggerMinCharge", preset.trigger.minCharge);
             WriteBoolValue(path, section, "triggerDisableWhileReloading", preset.trigger.disableWhileReloading);
-            WriteBoolValue(path, section, "triggerIgnoreInvisible", preset.trigger.ignoreInvisible);
+            WriteIntValue(path, section, "triggerVisibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.trigger.ignoreInvisible)));
             WriteIntValue(path, section, "triggerBoneMask", static_cast<int>(preset.trigger.boneMask));
             WriteBoolValue(path, section, "triggerDrawHitbox", preset.trigger.drawHitbox);
         }
@@ -3756,7 +3776,8 @@ namespace OW { namespace Config {
             AddJsonBool(value, "chargeAware", preset.chargeAware, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
             AddJsonBool(value, "disableWhileReloading", preset.disableWhileReloading, allocator);
-            AddJsonBool(value, "ignoreInvisible", preset.ignoreInvisible, allocator);
+            AddJsonInt(value, "visibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.ignoreInvisible)), allocator);
             AddJsonInt(value, "boneMask", static_cast<int>(preset.boneMask), allocator);
             AddJsonBool(value, "drawHitbox", preset.drawHitbox, allocator);
             return value;
@@ -3808,7 +3829,8 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "maxAimTime", preset.maxAimTime, allocator);
             AddJsonFloat(value, "minCharge", preset.minCharge, allocator);
             AddJsonFloat(value, "maxCharge", preset.maxCharge, allocator);
-            AddJsonBool(value, "ignoreInvisible", preset.ignoreInvisible, allocator);
+            AddJsonInt(value, "visibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.ignoreInvisible)), allocator);
             AddJsonInt(value, "traceCondition", preset.traceCondition, allocator);
             AddJsonInt(value, "unlockCondition", preset.unlockCondition, allocator);
             AddJsonFloat(value, "lockTime", preset.lockTime, allocator);
@@ -4352,6 +4374,19 @@ namespace OW { namespace Config {
                 : def;
         }
 
+        TargetVisibilityMode ReadTargetVisibilityMode(const rapidjson::Value& object,
+                                                      const char* key,
+                                                      const char* legacyKey,
+                                                      bool legacyDefault)
+        {
+            if (object.HasMember(key))
+                return ClampTargetVisibilityMode(ReadJsonInt(
+                    object, key,
+                    static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(legacyDefault))));
+            return TargetVisibilityFromLegacyIgnoreInvisible(
+                ReadJsonBool(object, legacyKey, legacyDefault));
+        }
+
         float ReadJsonFloat(const rapidjson::Value& object, const char* key, float def)
         {
             const auto item = object.FindMember(key);
@@ -4707,7 +4742,8 @@ namespace OW { namespace Config {
                 value,
                 "disableWhileReloading",
                 defaults.disableWhileReloading);
-            defaults.ignoreInvisible = ReadJsonBool(value, "ignoreInvisible", defaults.ignoreInvisible);
+            defaults.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                value, "visibilityMode", "ignoreInvisible", defaults.ignoreInvisible));
             defaults.boneMask = static_cast<TriggerBoneMask>(
                 ReadJsonInt(value, "boneMask", static_cast<int>(defaults.boneMask)));
             defaults.drawHitbox = ReadJsonBool(value, "drawHitbox", defaults.drawHitbox);
@@ -4789,7 +4825,8 @@ namespace OW { namespace Config {
             defaults.maxAimTime = ReadJsonFloat(value, "maxAimTime", defaults.maxAimTime);
             defaults.minCharge = ReadJsonFloat(value, "minCharge", defaults.minCharge);
             defaults.maxCharge = ReadJsonFloat(value, "maxCharge", defaults.maxCharge);
-            defaults.ignoreInvisible = ReadJsonBool(value, "ignoreInvisible", defaults.ignoreInvisible);
+            defaults.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                value, "visibilityMode", "ignoreInvisible", defaults.ignoreInvisible));
             defaults.traceCondition = ReadJsonInt(value, "traceCondition", defaults.traceCondition);
             defaults.unlockCondition = ReadJsonInt(value, "unlockCondition", defaults.unlockCondition);
             defaults.lockTime = ReadJsonFloat(value, "lockTime", defaults.lockTime);
@@ -5393,9 +5430,11 @@ namespace OW { namespace Config {
             AutoRMBhealth = ReadFixedFloat(ini, section, "AutoRMBhealth", AutoRMBhealth);
             secondaim = ReadBool(ini, section, "secondaim", secondaim);
             triggerbot = ReadBool(ini, section, "triggerbot", triggerbot);
-            triggerbotIgnoreInvisible = ReadBool(ini, section, "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible);
+            triggerbotIgnoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode", "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible));
             triggerbot2 = ReadBool(ini, section, "triggerbot2", triggerbot2);
-            triggerbotIgnoreInvisible2 = ReadBool(ini, section, "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2);
+            triggerbotIgnoreInvisible2 = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode2", "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2));
             Tracking2 = ReadBool(ini, section, "Tracking2", Tracking2);
             Flick2 = ReadBool(ini, section, "Flick2", Flick2);
             aim_key2 = ReadInt(ini, section, "aim_key2", aim_key2);
@@ -5460,7 +5499,8 @@ namespace OW { namespace Config {
             aimbotMaxAim = ReadFixedFloat(ini, section, "aimbotMaxAim", aimbotMaxAim);
             aimbotMinCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", aimbotMinCharge);
             aimbotMaxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", aimbotMaxCharge);
-            aimbotIgnoreInvisible = ReadBool(ini, section, "aimbotIgnoreInvisible", aimbotIgnoreInvisible);
+            aimbotIgnoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "visibilityMode", "aimbotIgnoreInvisible", aimbotIgnoreInvisible));
             aimbotContourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
             aimbotTrace = ReadInt(ini, section, "aimbotTrace", aimbotTrace);
             aimbotUnlock = ReadInt(ini, section, "aimbotUnlock", aimbotUnlock);
@@ -5535,7 +5575,8 @@ namespace OW { namespace Config {
                 section,
                 "triggerbotDisableWhileReloading",
                 triggerbotDisableWhileReloading);
-            triggerbotIgnoreInvisible = ReadBool(ini, section, "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible);
+            triggerbotIgnoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode", "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible));
             triggerbotBoneMask = static_cast<TriggerBoneMask>(
                 ReadInt(ini, section, "triggerbotBoneMask", static_cast<int>(triggerbotBoneMask)));
 
@@ -5549,7 +5590,8 @@ namespace OW { namespace Config {
                 section,
                 "triggerbotDisableWhileReloading2",
                 triggerbotDisableWhileReloading2);
-            triggerbotIgnoreInvisible2 = ReadBool(ini, section, "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2);
+            triggerbotIgnoreInvisible2 = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
+                ini, section, "triggerVisibilityMode2", "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2));
             triggerbotBoneMask2 = static_cast<TriggerBoneMask>(
                 ReadInt(ini, section, "triggerbotBoneMask2", static_cast<int>(triggerbotBoneMask2)));
 
@@ -5939,7 +5981,8 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotMaxAim", aimbotMaxAim);
             WriteFixedFloatValue(path, section, "aimbotMinCharge", aimbotMinCharge);
             WriteFixedFloatValue(path, section, "aimbotMaxCharge", aimbotMaxCharge);
-            WriteBoolValue(path, section, "aimbotIgnoreInvisible", aimbotIgnoreInvisible);
+            WriteIntValue(path, section, "visibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(aimbotIgnoreInvisible)));
             WriteBoolValue(path, section, "aimbotContourEnabled", aimbotContourEnabled);
             WriteIntValue(path, section, "aimbotTrace", aimbotTrace);
             WriteIntValue(path, section, "aimbotUnlock", aimbotUnlock);
@@ -5991,7 +6034,8 @@ namespace OW { namespace Config {
             WriteBoolValue(path, section, "triggerbotChargeAware", triggerbotChargeAware);
             WriteFixedFloatValue(path, section, "triggerbotMinCharge", triggerbotMinCharge);
             WriteBoolValue(path, section, "triggerbotDisableWhileReloading", triggerbotDisableWhileReloading);
-            WriteBoolValue(path, section, "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible);
+            WriteIntValue(path, section, "triggerVisibilityMode",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(triggerbotIgnoreInvisible)));
             WriteIntValue(path, section, "triggerbotBoneMask", static_cast<int>(triggerbotBoneMask));
 
             WriteIntValue(path, section, "triggerbotMode2", triggerbotMode2);
@@ -6000,7 +6044,8 @@ namespace OW { namespace Config {
             WriteBoolValue(path, section, "triggerbotChargeAware2", triggerbotChargeAware2);
             WriteFixedFloatValue(path, section, "triggerbotMinCharge2", triggerbotMinCharge2);
             WriteBoolValue(path, section, "triggerbotDisableWhileReloading2", triggerbotDisableWhileReloading2);
-            WriteBoolValue(path, section, "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2);
+            WriteIntValue(path, section, "triggerVisibilityMode2",
+                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(triggerbotIgnoreInvisible2)));
             WriteIntValue(path, section, "triggerbotBoneMask2", static_cast<int>(triggerbotBoneMask2));
         }
 

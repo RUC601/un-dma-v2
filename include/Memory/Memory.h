@@ -12,6 +12,7 @@
 #include <memory>
 #include "Memory/DmaSessionAccess.hpp"
 #include "Memory/ProcessLifetime.hpp"
+#include "Memory/DmaDeviceConfig.hpp"
 #include <TlHelp32.h>
 #include "leechcore.h"
 #include "vmmdll.h"
@@ -19,14 +20,6 @@
 #ifndef LOG
 #define LOG(...) printf(__VA_ARGS__)
 #endif
-
-enum class DmaDeviceType
-{
-	FTD3XX = 0,
-	FTD3XXWU,
-	RAWTCP,
-	HVSAVEDSTATE
-};
 
 class Memory
 {
@@ -69,6 +62,7 @@ private:
 	HMODULE hVMM = nullptr;
 	HMODULE hFTD3XX = nullptr;
 	HMODULE hFTD3XXWU = nullptr;
+	HMODULE hFTD2XX = nullptr;
 	HMODULE hLEECHCORE = nullptr;
 	HMODULE hLEECHCORE_DEVICE_RAWTCP = nullptr;
 	HMODULE hLEECHCORE_DEVICE_HVSAVEDSTATE = nullptr;
@@ -76,7 +70,7 @@ private:
 	HMODULE hHELPER64 = nullptr;
 
 	DmaDeviceType m_deviceType = DmaDeviceType::FTD3XX;
-	std::string m_rawTcpHost = "";
+	DmaDeviceConfig m_deviceConfig;
 	std::string m_deviceString = "fpga://algo=0";
 
 	bool EnsureRuntimeLibrariesLoaded();
@@ -101,6 +95,7 @@ public:
 	bool LoadDmaDeviceConfig(const std::string& configPath = "");
 	DmaDeviceType GetDmaDeviceType() const { return m_deviceType; }
 	const std::string& GetDmaDeviceString() const { return m_deviceString; }
+	bool IsStaticSource() const { return m_deviceConfig.IsStatic(); }
 	bool InitDma(DmaDeviceType deviceType, bool memMap = true, bool debug = false);
 	bool InitDma(bool memMap = true, bool debug = false);
 	bool AttachToProcess(const std::string& process_name, bool applyCr3Fix = true);

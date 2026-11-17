@@ -27,6 +27,29 @@ namespace {
 	std::mutex g_runtimeLibraryMutex;
 	std::mutex g_fixCr3Mutex;
 
+    VMM_HANDLE InitializeVmm(DWORD argc, LPSTR* args)
+    {
+#if defined(UNLEASHED_DMA_SESSION_SELFTEST)
+        return VMMDLL_Initialize(argc, args);
+#else
+        PLC_CONFIG_ERRORINFO error = nullptr;
+        const auto handle = VMMDLL_InitializeEx(argc, args, &error);
+        if (error) {
+            if (error->dwVersion == LC_CONFIG_ERRORINFO_VERSION &&
+                error->cbStruct >= sizeof(LC_CONFIG_ERRORINFO) && error->cwszUserText &&
+                error->cwszUserText <= (error->cbStruct - sizeof(LC_CONFIG_ERRORINFO)) / sizeof(WCHAR)) {
+                const int count = int(std::min<DWORD>(error->cwszUserText, 2048));
+                char message[8193]{};
+                const int length = WideCharToMultiByte(CP_UTF8, 0, error->wszUserText, count,
+                    message, 8192, nullptr, nullptr);
+                if (length > 0) LOG("[ERROR] LeechCore initialization: %.*s\n", length, message);
+            }
+            LcMemFree(error);
+        }
+        return handle;
+#endif
+    }
+
 	std::wstring Utf8ToWide(const std::string& text)
 	{
 		if (text.empty())
@@ -56,8 +79,8 @@ namespace {
 
 	std::filesystem::path GetExecutableDirectory()
 	{
-		char path[MAX_PATH] = {};
-		const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
+		wchar_t path[MAX_PATH] = {};
+		const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
 		if (length == 0 || length == MAX_PATH)
 			return std::filesystem::current_path();
 		return std::filesystem::path(path).parent_path();
@@ -68,7 +91,7 @@ namespace {
 		if (configPath.empty())
 			return GetExecutableDirectory() / "config" / "dma_device.cfg";
 
-		std::filesystem::path path(configPath);
+		std::filesystem::path path = DmaDeviceConfig::Utf8Path(configPath);
 		if (path.is_relative())
 			path = std::filesystem::current_path() / path;
 		return path;
@@ -102,32 +125,6 @@ namespace {
 		return StartsWithNoCase(value, std::string(prefix ? prefix : ""));
 	}
 
-	bool ParseDmaDeviceType(const std::string& value, DmaDeviceType& deviceType)
-	{
-		const std::string normalized = ToLower(Trim(value));
-		if (normalized == "fpga" || normalized == "ftd3xx")
-		{
-			deviceType = DmaDeviceType::FTD3XX;
-			return true;
-		}
-		if (normalized == "ftd3xxwu")
-		{
-			deviceType = DmaDeviceType::FTD3XXWU;
-			return true;
-		}
-		if (normalized == "rawtcp")
-		{
-			deviceType = DmaDeviceType::RAWTCP;
-			return true;
-		}
-		if (normalized == "hvsavedstate")
-		{
-			deviceType = DmaDeviceType::HVSAVEDSTATE;
-			return true;
-		}
-		return false;
-	}
-
 	bool TryLoadLibrary(const char* libraryName, HMODULE& handle, bool required)
 	{
 		if (handle)
@@ -136,7 +133,8 @@ namespace {
 			return true;
 		}
 
-		handle = LoadLibraryA(libraryName);
+		const auto path = GetExecutableDirectory() / libraryName;
+        handle = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
 		if (handle)
 		{
 			LOG("[INFO] Loaded runtime library: %s (%p).\n", libraryName, handle);
@@ -194,136 +192,49 @@ Memory::~Memory()
 
 const char* Memory::GetDeviceTypeName(DmaDeviceType deviceType) const
 {
-	switch (deviceType)
-	{
-	case DmaDeviceType::FTD3XX:
-		return "fpga";
-	case DmaDeviceType::FTD3XXWU:
-		return "ftd3xxwu";
-	case DmaDeviceType::RAWTCP:
-		return "rawtcp";
-	case DmaDeviceType::HVSAVEDSTATE:
-		return "hvsavedstate";
-	default:
-		return "unknown";
-	}
+    switch (deviceType) {
+    case DmaDeviceType::FTD3XX: return "fpga";
+    case DmaDeviceType::FTD3XXWU: return "ft601";
+    case DmaDeviceType::DRIVER: return "driver";
+    case DmaDeviceType::RAWTCP: return "rawtcp";
+    case DmaDeviceType::RAWUDP: return "rawudp";
+    case DmaDeviceType::FT2232H: return "ft2232h";
+    case DmaDeviceType::HVSAVEDSTATE: return "hvsavedstate";
+    case DmaDeviceType::FILE_DUMP: return "file";
+    default: return "unknown";
+    }
 }
 
 std::string Memory::BuildDeviceString(DmaDeviceType deviceType) const
 {
-	switch (deviceType)
-	{
-	case DmaDeviceType::FTD3XX:
-	case DmaDeviceType::FTD3XXWU:
-		return "fpga://algo=0";
-	case DmaDeviceType::RAWTCP:
-	{
-		const std::string host = Trim(m_rawTcpHost);
-		if (host.empty())
-			return "";
-		if (StartsWithNoCase(host, "tcp://"))
-			return host;
-		return "tcp://" + host;
-	}
-	case DmaDeviceType::HVSAVEDSTATE:
-		return "hvsavedstate";
-	default:
-		return "";
-	}
+    if (deviceType == m_deviceConfig.type) return m_deviceConfig.device;
+    std::istringstream input(std::string("device=") + GetDeviceTypeName(deviceType));
+    DmaDeviceConfig config;
+    std::string error;
+    return DmaDeviceConfig::Parse(input, GetExecutableDirectory(), config, error) ? config.device : "";
 }
 
 bool Memory::LoadDmaDeviceConfig(const std::string& configPath)
 {
-	std::lock_guard<std::mutex> lifecycleLock(m_sessionLifecycleMutex);
-	const std::filesystem::path path = ResolveConfigPath(configPath);
-	std::ifstream file(path);
-	if (!file)
-	{
-		LOG("[WARN] DMA device config not found at %s. Existing settings retained.\n",
-			path.string().c_str());
-		return false;
-	}
-
-	DmaDeviceType parsedDeviceType = DmaDeviceType::FTD3XX;
-	std::string parsedRawTcpHost;
-	bool configValid = true;
-	bool sawDevice = false;
-	std::string line;
-	int lineNumber = 0;
-
-	while (std::getline(file, line))
-	{
-		lineNumber++;
-
-		const size_t hash = line.find('#');
-		if (hash != std::string::npos)
-			line.erase(hash);
-		const size_t semicolon = line.find(';');
-		if (semicolon != std::string::npos)
-			line.erase(semicolon);
-
-		line = Trim(line);
-		if (line.empty())
-			continue;
-
-		const size_t equals = line.find('=');
-		if (equals == std::string::npos)
-		{
-			LOG("[WARN] Ignoring malformed DMA config line %d: %s\n",
-				lineNumber, line.c_str());
-			configValid = false;
-			continue;
-		}
-
-		const std::string key = ToLower(Trim(line.substr(0, equals)));
-		const std::string value = Trim(line.substr(equals + 1));
-
-		if (key == "device")
-		{
-			DmaDeviceType deviceType = DmaDeviceType::FTD3XX;
-			if (!ParseDmaDeviceType(value, deviceType))
-			{
-				LOG("[WARN] Unknown DMA device '%s' in %s line %d. Valid values: fpga, ftd3xxwu, rawtcp, hvsavedstate.\n",
-					value.c_str(), path.string().c_str(), lineNumber);
-				configValid = false;
-				continue;
-			}
-			parsedDeviceType = deviceType;
-			sawDevice = true;
-		}
-		else if (key == "host" || key == "address")
-		{
-			parsedRawTcpHost = value;
-		}
-		else
-		{
-			LOG("[WARN] Ignoring unknown DMA config key '%s' in %s line %d.\n",
-				key.c_str(), path.string().c_str(), lineNumber);
-		}
-	}
-
-	if (!sawDevice) {
-		LOG("[ERROR] DMA config has no valid device= entry.\n");
-		configValid = false;
-	}
-
-	if (parsedDeviceType == DmaDeviceType::RAWTCP && Trim(parsedRawTcpHost).empty())
-	{
-		LOG("[ERROR] DMA config selected rawtcp but did not provide host=.\n");
-		configValid = false;
-	}
-	if (!configValid) {
-		LOG("[ERROR] Invalid DMA device configuration; existing settings retained.\n");
-		return false;
-	}
-	m_deviceType = parsedDeviceType;
-	m_rawTcpHost = parsedRawTcpHost;
-	m_deviceString = BuildDeviceString(m_deviceType);
-
-	LOG("[INFO] DMA device config loaded: %s -> %s\n",
-		GetDeviceTypeName(m_deviceType),
-		m_deviceString.empty() ? "<invalid>" : m_deviceString.c_str());
-	return configValid;
+    if (IsDmaInitialized()) {
+        LOG("[ERROR] Close the active DMA session before changing its source.\n");
+        return false;
+    }
+    const auto path = ResolveConfigPath(configPath);
+    std::ifstream file(path);
+    DmaDeviceConfig config;
+    std::string error;
+    if (!file || !DmaDeviceConfig::Parse(file, path.parent_path(), config, error)) {
+        LOG("[ERROR] DMA config %s: %s; previous settings retained.\n",
+            path.string().c_str(), file ? error.c_str() : "file unavailable");
+        return false;
+    }
+    m_deviceConfig = std::move(config);
+    m_deviceType = m_deviceConfig.type;
+    m_deviceString = m_deviceConfig.device;
+    LOG("[INFO] DMA source configured: type=%s device=%s static=%d (connection not yet verified).\n",
+        GetDeviceTypeName(m_deviceType), m_deviceString.c_str(), IsStaticSource());
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -341,30 +252,37 @@ bool Memory::EnsureRuntimeLibrariesLoaded()
 	LOG("[INFO] Loading DMA runtime libraries for device=%s.\n",
 		GetDeviceTypeName(m_deviceType));
 
-	switch (m_deviceType)
-	{
-	case DmaDeviceType::FTD3XX:
-		TryLoadLibrary("FTD3XX.dll", hFTD3XX, false);
-		break;
-	case DmaDeviceType::FTD3XXWU:
-		TryLoadLibrary("FTD3XXWU.dll", hFTD3XXWU, false);
-		break;
-	case DmaDeviceType::RAWTCP:
-		TryLoadLibrary("leechcore_device_rawtcp.dll", hLEECHCORE_DEVICE_RAWTCP, false);
-		break;
-	case DmaDeviceType::HVSAVEDSTATE:
-		TryLoadLibrary("leechcore_device_hvsavedstate.dll", hLEECHCORE_DEVICE_HVSAVEDSTATE, false);
-		break;
-	default:
-		break;
-	}
-
-	const bool vmmLoaded = TryLoadLibrary("vmm.dll", hVMM, true);
-	const bool leechCoreLoaded = TryLoadLibrary("leechcore.dll", hLEECHCORE, true);
-	TryLoadLibrary("Helper64.dll", hHELPER64, false);
-
-	if (m_deviceType != DmaDeviceType::RAWTCP)
-		TryLoadLibrary("leechcore_driver.dll", hLEECHCORE_DRIVER, false);
+    const bool vmmLoaded = TryLoadLibrary("vmm.dll", hVMM, true);
+    const bool leechCoreLoaded = TryLoadLibrary("leechcore.dll", hLEECHCORE, true);
+    bool transportLoaded = true;
+    switch (m_deviceType) {
+    case DmaDeviceType::FTD3XX: {
+        const bool custom = TryLoadLibrary("leechcore_driver.dll", hLEECHCORE_DRIVER, false);
+        const bool modern = TryLoadLibrary("FTD3XXWU.dll", hFTD3XXWU, false);
+        const bool legacy = TryLoadLibrary("FTD3XX.dll", hFTD3XX, false);
+        transportLoaded = custom || modern || legacy;
+        break;
+    }
+    case DmaDeviceType::FTD3XXWU: {
+        const bool modern = TryLoadLibrary("FTD3XXWU.dll", hFTD3XXWU, false);
+        const bool legacy = TryLoadLibrary("FTD3XX.dll", hFTD3XX, false);
+        transportLoaded = modern || legacy;
+        break;
+    }
+    case DmaDeviceType::DRIVER:
+        transportLoaded = TryLoadLibrary("leechcore_driver.dll", hLEECHCORE_DRIVER, true); break;
+    case DmaDeviceType::FT2232H:
+        transportLoaded = TryLoadLibrary("FTD2XX.dll", hFTD2XX, true); break;
+    case DmaDeviceType::RAWTCP:
+        transportLoaded = TryLoadLibrary("leechcore_device_rawtcp.dll", hLEECHCORE_DEVICE_RAWTCP, true); break;
+    case DmaDeviceType::HVSAVEDSTATE:
+        transportLoaded = TryLoadLibrary("leechcore_device_hvsavedstate.dll", hLEECHCORE_DEVICE_HVSAVEDSTATE, true); break;
+    default: break; // File and FPGA RawUDP are built into LeechCore.
+    }
+    if (!transportLoaded) {
+        LOG("[ERROR] Required source transport is unavailable: %s.\n", GetDeviceTypeName(m_deviceType));
+        return false;
+    }
 
 	if (!vmmLoaded || !leechCoreLoaded)
 	{
@@ -372,7 +290,7 @@ bool Memory::EnsureRuntimeLibrariesLoaded()
 		return false;
 	}
 
-	LOG("[INFO] Runtime libraries loaded successfully.\n");
+	LOG("[INFO] Runtime libraries loaded; device connection and reads are not yet verified.\n");
 	return true;
 #endif
 }
@@ -400,7 +318,7 @@ bool Memory::DumpMemoryMap(const std::string& outputPath, bool debug)
 		args[argc++] = (LPSTR)"-printf";
 	}
 
-	VMM_HANDLE handle = VMMDLL_Initialize(argc, args);
+	VMM_HANDLE handle = InitializeVmm(argc, args);
 	if (!handle)
 	{
 		LOG("[ERROR] Failed to open VMM handle for memory-map dump.\n");
@@ -474,19 +392,22 @@ bool Memory::SetFPGA()
 
 	if ((qwVersionMajor >= 4) && ((qwVersionMajor >= 5) || (qwVersionMinor >= 7)))
 	{
-		HANDLE handle;
-		LC_CONFIG config = { .dwVersion = LC_CONFIG_VERSION, .szDevice = "existing" };
-		handle = LcCreate(&config);
-		if (!handle)
+        // Borrow this VMM session's device, never LeechCore's first "existing" device.
+        ULONG64 deviceHandle = 0;
+        if (!VMMDLL_ConfigGet(vHandle, VMMDLL_OPT_CORE_LEECHCORE_HANDLE, &deviceHandle) || !deviceHandle)
 		{
 			LOG("[ERROR] Failed to create FPGA configuration handle.\n");
 			return false;
 		}
 
-		LcCommand(handle, LC_CMD_FPGA_CFGREGPCIE_MARKWR | 0x002,
-			4, reinterpret_cast<PBYTE>(&abort2), NULL, NULL);
-		LOG("[INFO] FPGA PCIe register flag reset completed.\n");
-		LcClose(handle);
+#if !defined(UNLEASHED_OBSERVATION_ONLY)
+        if (!LcCommand(reinterpret_cast<HANDLE>(deviceHandle), LC_CMD_FPGA_CFGREGPCIE_MARKWR | 0x002,
+            4, reinterpret_cast<PBYTE>(&abort2), NULL, NULL)) {
+            LOG("[WARN] FPGA PCIe register flag reset unavailable; continuing with the initialized transport.\n");
+        } else {
+            LOG("[INFO] FPGA PCIe register flag reset completed.\n");
+        }
+#endif
 	}
 
 	return true;
@@ -507,16 +428,30 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 	if (m_cancelPending.load(std::memory_order_acquire))
 		return false;
 	if (DMA_INITIALIZED)
-		return true;
+        return deviceType == m_deviceType;
 
-	m_deviceType = deviceType;
-	m_deviceString = BuildDeviceString(m_deviceType);
-	if (m_deviceString.empty())
+    const auto deviceString = BuildDeviceString(deviceType);
+	if (deviceString.empty())
 	{
 		LOG("[ERROR] DMA device '%s' is missing required configuration.\n",
-			GetDeviceTypeName(m_deviceType));
+			GetDeviceTypeName(deviceType));
 		return false;
 	}
+    if (deviceType != m_deviceType) m_deviceConfig = {};
+    m_deviceString = deviceString;
+    m_deviceType = deviceType;
+    m_deviceConfig.type = deviceType;
+    m_deviceConfig.device = m_deviceString;
+
+    if (IsStaticSource()) {
+        const auto file = m_deviceType == DmaDeviceType::HVSAVEDSTATE ? m_deviceString.substr(15) : m_deviceString;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(DmaDeviceConfig::Utf8Path(file), error)) {
+            LOG("[ERROR] Static memory source is not a readable file: %s\n", file.c_str());
+            return false;
+        }
+        LOG("[INFO] Static source: target writes and physical runtime output disabled.\n");
+    }
 
 	if (!EnsureRuntimeLibrariesLoaded())
 		return false;
@@ -524,7 +459,7 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 	LOG("[INFO] DMA subsystem initialization started with device=%s (%s).\n",
 		GetDeviceTypeName(m_deviceType), m_deviceString.c_str());
 
-	bool useMemMap = memMap;
+	bool useMemMap = !IsStaticSource() && (m_deviceConfig.memoryMap < 0 ? memMap : m_deviceConfig.memoryMap != 0);
 	while (!m_cancelPending.load(std::memory_order_acquire))
 	{
 		// Argument storage must survive until VMMDLL_Initialize has returned.
@@ -559,7 +494,7 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 			return false;
 		{
             RuntimeTrace::SdkSpan activity(RuntimeTrace::SdkPhase::Initialize);
-            this->vHandle = VMMDLL_Initialize(argc, args);
+			this->vHandle = InitializeVmm(argc, args);
             activity.Result(this->vHandle!=nullptr);
         }
 		if (this->vHandle)
@@ -583,7 +518,7 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 		return false;
 	}
 
-	if (m_deviceType == DmaDeviceType::FTD3XX || m_deviceType == DmaDeviceType::FTD3XXWU)
+	if (m_deviceConfig.IsFpga())
 	{
 		ULONG64 FPGA_ID = 0, DEVICE_ID = 0;
 		VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_FPGA_ID, &FPGA_ID);
@@ -615,7 +550,8 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 	}
 	DMA_INITIALIZED = true;
 	m_sessionAccess.Open();
-	LOG("[INFO] DMA subsystem initialization completed successfully.\n");
+	LOG("[INFO] DMA subsystem initialized: source=%s static=%d; target attachment remains separate.\n",
+        GetDeviceTypeName(m_deviceType), IsStaticSource());
 	return true;
 }
 
@@ -1559,7 +1495,7 @@ bool Memory::Write(uintptr_t address, const void* buffer, size_t size) const
     return false;
 #endif
 	auto session = AcquireSession();
-	if (!session || m_cancelPending.load(std::memory_order_acquire))
+	if (!session || IsStaticSource() || m_cancelPending.load(std::memory_order_acquire))
 		return false;
 	_is_invalid(vHandle);
 
@@ -1579,7 +1515,7 @@ bool Memory::Write(uintptr_t address, const void* buffer, size_t size, int pid) 
     return false;
 #endif
 	auto session = AcquireSession();
-	if (!session || m_cancelPending.load(std::memory_order_acquire))
+	if (!session || IsStaticSource() || m_cancelPending.load(std::memory_order_acquire))
 		return false;
 	_is_invalid(vHandle);
 
