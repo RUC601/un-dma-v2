@@ -379,7 +379,7 @@ inline Config::HeroSkillSettings MakeFrejaSequenceSetDefaults()
         0,
         0.0f,
         100.0f,
-        0.0f,
+        Config::kDefaultFovDeg,
         Config::kAimBoneChest,
         Config::kDefaultHitboxScalePercent
     };
@@ -629,6 +629,12 @@ inline Config::HeroSkillSettings MakeSigmaAccretionDefaults()
                                           HeroSkillHotkey::EKey, true);
 }
 
+inline Config::HeroSkillSettings MakeHanzoStormArrowsDefaults()
+{
+    return MakeProjectileAimSkillDefaults(30.0f, 8.0f, 110.0f, 0.125f, 0.0f,
+                                          HeroSkillHotkey::EKey, true);
+}
+
 inline Config::HeroSkillSettings MakeHealthActionDefaults(float hp, float cooldown)
 {
     Config::HeroSkillSettings settings{};
@@ -659,36 +665,6 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         { false, HeroSkillHotkey::LeftShift, 50.0f, 50.0f, 50.0f, 15.0f, 0, 10.0f, true, false, 1, 0.0f }
     },
     {
-        OW::eHero::HERO_ASHE,
-        "ashe",
-        "dynamite",
-        "Dynamite",
-        "dynamite",
-        HeroSkillInputAction::Ability2,
-        HeroSkillCategory::Skill,
-        HeroSkillControls::Enabled | HeroSkillControls::Key |
-            HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::AllyHealthThreshold |
-            HeroSkillControls::Distance | HeroSkillControls::CooldownGuard |
-            HeroSkillControls::Prediction | HeroSkillControls::MinTargets |
-            HeroSkillControls::Radius | HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::EKey, 50.0f, 50.0f, 50.0f, 35.0f, 0, 12.0f, true, true, 1, 1.5f }
-    },
-    {
-        OW::eHero::HERO_HANJO,
-        "hanzo",
-        "sonic-arrow",
-        "Sonic Arrow",
-        "sonic-arrow",
-        HeroSkillInputAction::Ability1,
-        HeroSkillCategory::Skill,
-        HeroSkillControls::Enabled | HeroSkillControls::Key |
-            HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
-            HeroSkillControls::CooldownGuard | HeroSkillControls::Prediction |
-            HeroSkillControls::MinTargets | HeroSkillControls::Radius |
-            HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::LeftShift, 50.0f, 50.0f, 50.0f, 40.0f, 0, 12.0f, true, true, 1, 9.0f }
-    },
-    {
         OW::eHero::HERO_HANJO,
         "hanzo",
         "storm-arrows",
@@ -697,10 +673,10 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillInputAction::Ability2,
         HeroSkillCategory::Skill,
         HeroSkillControls::Enabled | HeroSkillControls::Key |
-            HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::AllyHealthThreshold |
-            HeroSkillControls::CooldownGuard | HeroSkillControls::Prediction |
-            HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::EKey, 50.0f, 50.0f, 50.0f, 30.0f, 0, 8.0f, true, true, 1, 0.0f }
+            HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::CooldownGuard |
+            HeroSkillControls::Prediction | HeroSkillControls::Cooldown |
+            HeroSkillControls::TrackingOverlay | HeroSkillControls::TrajectoryAction,
+        MakeHanzoStormArrowsDefaults()
     },
     {
         OW::eHero::HERO_ASHE,
@@ -727,7 +703,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillCategory::Skill,
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown |
-            HeroSkillControls::AmmoGuard |
+            HeroSkillControls::AmmoGuard | HeroSkillControls::TrackingOverlay |
             HeroSkillControls::SequenceSteps,
         MakeFrejaSequenceSetDefaults()
     },
@@ -1305,6 +1281,7 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
             result.back().automation = SkillAutomation::ProjectileDefense;
         };
         defense(eHero::HERO_DVA,"dva","defense-matrix","Defense Matrix",HeroSkillInputAction::SecondaryFire,1);
+        result.back().controls |= HeroSkillControls::TrackingOverlay;
         defense(eHero::HERO_ORISA,"orisa","javelin-spin","Javelin Spin",HeroSkillInputAction::Ability2,8);
 
         for (const auto hero : {eHero::HERO_REAPER, eHero::HERO_TRACER, eHero::HERO_MEI,

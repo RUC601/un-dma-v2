@@ -92,7 +92,7 @@ add_library(UnContourVision STATIC
     src/vision/ContourService.cpp
     src/config/ContourSettings.cpp
 )
-target_include_directories(UnContourVision PUBLIC include PRIVATE src vendor/imgui vendor/rapidjson)
+target_include_directories(UnContourVision PUBLIC include PRIVATE src vendor/leechcore vendor/imgui vendor/rapidjson)
 target_link_libraries(UnContourVision PUBLIC strmiids ole32 oleaut32 uuid)
 
 set(UNLEASHED_SOURCES

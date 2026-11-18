@@ -2127,8 +2127,9 @@ void ApplyAimBehaviorToHeroPreset(OW::Config::HeroPreset& preset, int behavior) 
     if (preset.firePolicy == 0 || preset.firePolicy == 1 || preset.firePolicy == 2) {
         preset.firePolicy = static_cast<int>(OW::DefaultFirePolicyForBehavior(
             OW::ClampAimBehavior(preset.aimBehavior)));
-        preset.keepFiring = preset.firePolicy == 1;
-        preset.autoshot = preset.firePolicy != 0 && preset.firePolicy != 1;
+        preset.keepFiring = preset.firePolicy == static_cast<int>(OW::FirePolicyType::KeepFiring) ||
+            preset.firePolicy == static_cast<int>(OW::FirePolicyType::TrackingWithHold);
+        preset.autoshot = preset.firePolicy == static_cast<int>(OW::FirePolicyType::SingleShot);
     }
 }
 
@@ -2761,11 +2762,11 @@ void UI::Render() {
     int page = 0;
     if(state.activeTab==TAB_AIMING) page=ImClamp(state.aimingSubTab,0,3);
     else if(state.activeTab==TAB_ALERT) page=4;
-    else if(state.activeTab==TAB_KEYS) page=15;
+    else if(state.activeTab==TAB_KEYS) page=16;
     else if(state.activeTab==TAB_VISUALS) page=5;
-    else if(state.activeTab==TAB_PREDICTION) page=16;
+    else if(state.activeTab==TAB_PREDICTION) page=17;
     else if(state.activeTab==TAB_THEME) page=6+ImClamp(state.themeSubTab,0,1);
-    else { const int mapping[]={13,14,8,9,10,11,12}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
+    else { const int mapping[]={14,15,8,9,10,11,12,13}; page=mapping[ImClamp(state.miscSubTab,0,7)]; }
     // Keep historical page keys while routing retired duplicate pages to their owner.
     if(page==6)page=5;
     else if(page==9)page=8;
@@ -2784,6 +2785,7 @@ void UI::Render() {
         {chinese?"动态范围":"Dynamic FOV", chinese?"共享参数":"Shared settings"},
         {chinese?"输入与设备":"Input and devices", chinese?"系统":"System"},
         {chinese?"Overlay 与字体":"Overlay and fonts", chinese?"系统":"System"},
+        {chinese?"采集与轮廓":"Capture and contours", chinese?"系统":"System"},
         {chinese?"配置与界面":"Configuration", chinese?"系统":"System"},
         {chinese?"诊断":"Diagnostics", chinese?"系统":"System"},
         {chinese?"按键映射":"Action keys", chinese?"系统":"System"},
@@ -2807,10 +2809,10 @@ void UI::Render() {
         if (page<4) { state.activeTab=TAB_AIMING; state.aimingSubTab=page; }
         else if (page==4) state.activeTab=TAB_ALERT;
         else if (page==5) state.activeTab=TAB_VISUALS;
-        else if (page==15) state.activeTab=TAB_KEYS;
-        else if (page==16) state.activeTab=TAB_PREDICTION;
+        else if (page==16) state.activeTab=TAB_KEYS;
+        else if (page==17) state.activeTab=TAB_PREDICTION;
         else if (page<8) { state.activeTab=TAB_THEME; state.themeSubTab=page-6; }
-        else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,0,1}; state.miscSubTab=mapping[page-8]; }
+        else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,7,0,1}; state.miscSubTab=mapping[page-8]; }
         DrawEditingContext();
         switch(page) {
         case 0: AimbotPage(); break; case 1: TriggerPage(); break;
@@ -2820,8 +2822,8 @@ void UI::Render() {
         case 7: DrawThemeFovRingsPage(); break; case 8: DrawMiscBehaviorPage(); break;
         case 9: DrawMiscBehaviorPage(); break; case 10: DrawMiscDynamicFovPage(); break;
         case 11: DrawMiscOutputPage(); break; case 12: DrawMiscScreenPage(); break;
-        case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break; case 15: DrawHeroKeyPage(); break;
-        case 16: DrawPredictionDataPage(); break;
+        case 13: DrawMiscCapturePage(); break; case 14: DrawMiscGeneralPage(); break; case 15: DrawMiscDiagnosticsPage(); break;
+        case 16: DrawHeroKeyPage(); break; case 17: DrawPredictionDataPage(); break;
         }
         CloseGroupBox();
     }, DrawHeroContextToolbar);

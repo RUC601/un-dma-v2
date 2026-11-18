@@ -305,8 +305,8 @@ inline int LegacyAimModeFromBehavior(AimBehaviorType behavior)
 inline FirePolicyType DefaultFirePolicyForBehavior(AimBehaviorType behavior)
 {
     return behavior == AimBehaviorType::Tracking
-        ? FirePolicyType::ManualOnly
-        : FirePolicyType::HoldWhileTracking;
+        ? FirePolicyType::TrackingWithHold
+        : FirePolicyType::SingleShot;
 }
 
 inline bool AllowsGeneratedAimFire(FirePolicyType policy)

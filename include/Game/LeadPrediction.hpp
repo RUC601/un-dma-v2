@@ -15,6 +15,7 @@ struct ProjectileRuntimeSpec {
     float launchDirectionUpBias = 0.0f;
     float gravityAcceleration = 9.8f;
     float castDelayMs = 0.0f;
+    float projectileRadius = 0.0f;
 };
 
 struct LeadTimingEstimate {

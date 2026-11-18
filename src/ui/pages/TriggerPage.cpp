@@ -166,8 +166,6 @@ void UI::TriggerPage() {
             PushControlWidth();
             presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
             ImGui::PopItemWidth();
-            SettingRow(L("Ignore Sombra stealth"), kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox("##stealthFilter",&activePreset.ignoreSombraStealth);
             SettingRow(L("Skip known protected targets"), kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
@@ -179,6 +177,12 @@ void UI::TriggerPage() {
                 activePreset.trigger.ignoreInvisible = visibility == 0;
                 presetChanged = true;
             }
+            ImGui::PopItemWidth();
+
+            SettingRow("Fast Target Limit", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##triggerMaxTargetSpeed", &activePreset.maxTargetSpeedMps,
+                                      0.0f, 100.0f, AtOrBelow("Unlimited", 0, Number(1, " m/s")));
             ImGui::PopItemWidth();
 
         }

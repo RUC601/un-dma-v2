@@ -62,6 +62,7 @@ void DrawMiscMethodPage();
 void DrawMiscDynamicFovPage();
 void DrawMiscOutputPage();
 void DrawMiscScreenPage();
+void DrawMiscCapturePage();
 
 void UI::MiscPage() {
     ImGui::PushID("MiscPage");
@@ -88,6 +89,9 @@ void UI::MiscPage() {
             break;
         case 6:
             DrawMiscScreenPage();
+            break;
+        case 7:
+            DrawMiscCapturePage();
             break;
         default:
             DrawMiscGeneralPage();
@@ -438,7 +442,8 @@ void DrawMiscBehaviorPage() {
         if(!selected) {
             mode.firePolicy=static_cast<int>(OW::DefaultFirePolicyForBehavior(
                 static_cast<OW::AimBehaviorType>(mode.behavior)));
-            mode.keepFiring=mode.behavior!=kAimBehaviorTracking;
+            mode.keepFiring=mode.firePolicy==static_cast<int>(OW::FirePolicyType::KeepFiring) ||
+                mode.firePolicy==static_cast<int>(OW::FirePolicyType::TrackingWithHold);
         }
         changed=true;
     }
@@ -911,7 +916,6 @@ void DrawMiscDynamicFovPage() {
 }
 
 void DrawMiscScreenPage() {
-    UI::Vision::DrawControls();
     auto display=V2::HeroSettings::Snapshot()->display;
     bool displayChanged=false;
     UIGroupBox(OW::Config::uiLanguage==1?"ESP / HUD 字体":"ESP / HUD fonts");
@@ -1005,6 +1009,10 @@ void DrawMiscScreenPage() {
     CloseGroupBox();
 }
 
+void DrawMiscCapturePage() {
+    UI::Vision::DrawPage();
+}
+
 void DrawHeroKeyPage() {
     using namespace V2::HeroSettings;
     const auto hero=CurrentHeroOption();
@@ -1066,7 +1074,7 @@ void DrawHeroKeyPage() {
     ImGui::PopItemWidth();CloseGroupBox();
 }
 
-void DrawPredictionDataPage() {
+void UI::DrawPredictionDataPage() {
     const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
     auto profiles = OW::SnapshotPredictionProfiles();
     UIGroupBox(zh ? "预测数据" : "Prediction Data");

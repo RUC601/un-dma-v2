@@ -490,6 +490,7 @@ namespace OW { namespace Config {
     struct SlotTargetRules {
         bool active=false, ignoreSombraStealth=false, requireTargetable=false;
         float allyHealthMaxPercent=100;
+        float maxTargetSpeedMps=0.0f;
         SkeletonBoneMask allyBoneMask=kDefaultAimBoneMask;
     };
     inline thread_local SlotTargetRules slotTargetRules{};
@@ -1539,6 +1540,8 @@ namespace OW { namespace Config {
         float lockTime = 20.0f;
         float maxDistance = 100.0f;
         float minDistance = 0.0f;
+        // 0 means unlimited. This is a Basic hard eligibility gate.
+        float maxTargetSpeedMps = 0.0f;
         TriggerPreset trigger{};
     };
 
@@ -1765,7 +1768,11 @@ namespace OW { namespace Config {
         int mode = 0;
         float cooldown = 0.0f;
         bool cooldownGuard = true;
-        bool prediction = false;
+        // V2 skill prediction is always part of the runtime target-point
+        // pipeline.  Keep the field for loading older profiles and for the
+        // JSON compatibility projection, but do not expose it as a runtime
+        // enable/disable switch.
+        bool prediction = true;
         int minTargets = 1;
         float radius = 0.0f;
         float meleeRadius = 0.35f; // extra world-space tolerance around every melee bone
@@ -1838,6 +1845,7 @@ namespace OW { namespace Config {
     // serialized in WeaponSpec.cpp so runtime reads receive a complete copy.
     inline PredictionProfileStore predictionProfiles;
     inline std::mutex predictionProfilesMutex;
+    inline std::atomic<std::uint64_t> predictionProfilesVersion{0};
     inline int targetPriority = 0;
 
     // UI-only placeholders for heroes not present in the current local eHero enum.

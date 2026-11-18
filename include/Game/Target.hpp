@@ -727,19 +727,28 @@ namespace OW {
 
             const auto& rules=Config::slotTargetRules;
             if(rules.active) {
+                if (rules.maxTargetSpeedMps > 0.0f) {
+                    const Vector3 velocity = entity.velocity;
+                    const float speed = std::sqrt(
+                        velocity.X * velocity.X +
+                        velocity.Y * velocity.Y +
+                        velocity.Z * velocity.Z);
+                    if (std::isfinite(speed) && speed > rules.maxTargetSpeedMps)
+                        return false;
+                }
+                if (rules.requireTargetable) {
+                    const DWORD now = GetTickCount();
+                    const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
+                        now - entity.health_sample_tick_ms <= 500;
+                    if (!protectionFresh || entity.imort || entity.barrprot)
+                        return false;
+                }
                 if(!entity.Team) {
                     if(!std::isfinite(entity.PlayerHealthMax)||entity.PlayerHealthMax<=0 ||
                        entity.PlayerHealth/entity.PlayerHealthMax*100.f>rules.allyHealthMaxPercent) return false;
                 } else {
                     if(rules.ignoreSombraStealth && entity.HeroID==eHero::HERO_SOMBRA &&
                        (!entity.sombraStealthKnown || entity.sombraStealth))return false;
-                    if (rules.requireTargetable) {
-                        const DWORD now = GetTickCount();
-                        const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
-                            now - entity.health_sample_tick_ms <= 500;
-                        if (!protectionFresh || entity.imort || entity.barrprot)
-                            return false;
-                    }
                 }
             }
             switch (teamMode) {
@@ -1370,7 +1379,8 @@ namespace OW {
                     weapon != nullptr,
                     predictionProfile.projectile.launchDirectionUpBias,
                     predictionProfile.projectile.gravityAcceleration,
-                    predictionProfile.projectile.castDelayMs
+                    predictionProfile.projectile.castDelayMs,
+                    predictionProfile.projectile.projectileRadius
                 };
             }
 
@@ -1381,14 +1391,19 @@ namespace OW {
                     true,
                     predictionProfile.projectile.launchDirectionUpBias,
                     predictionProfile.projectile.gravityAcceleration,
-                    predictionProfile.projectile.castDelayMs
+                    predictionProfile.projectile.castDelayMs,
+                    predictionProfile.projectile.projectileRadius
                 };
             }
 
             return ProjectileRuntimeSpec{
                 fallbackSpeed,
                 fallbackGravity,
-                false
+                false,
+                0.0f,
+                9.8f,
+                0.0f,
+                predictionProfile.projectile.projectileRadius
             };
         }
 
@@ -1972,7 +1987,8 @@ namespace OW {
                                 next.boneId,
                                 weaponSpec,
                                 Config::View_hitbox(),
-                                Config::kLegacyDefaultHitboxRadius);
+                                Config::kLegacyDefaultHitboxRadius,
+                                projectileSpec.projectileRadius);
                             if(currentLockedCandidate) { lockedCandidate=next; lockedScore=score; }
                             if(select) { best=std::move(next); origin=score; TarGetIndex=int(i); selectedFovScoreDeg=fovScoreDeg; }
                         }
@@ -2150,7 +2166,8 @@ namespace OW {
                         boneId,
                         weaponSpec,
                         hitboxScale,
-                        Config::kLegacyDefaultHitboxRadius);
+                        Config::kLegacyDefaultHitboxRadius,
+                        projectileSpec.projectileRadius);
                     const float distance = fovContext.camera.DistTo(aimPoint);
                     if (!std::isfinite(hitWindow) || hitWindow <= 0.0f ||
                         !std::isfinite(distance) || distance <= 0.0001f) {
@@ -2500,7 +2517,8 @@ namespace OW {
                     selectedBoneId,
                     weaponSpec,
                     Config::hitbox2,
-                    Config::kLegacyDefaultHitboxRadius);
+                    Config::kLegacyDefaultHitboxRadius,
+                    projectileSpec.projectileRadius);
             }
         } else {
             Config::aimbotEffectiveHitWindow2 = 0.0f;

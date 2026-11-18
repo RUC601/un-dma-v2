@@ -114,7 +114,7 @@ void ReleasePreviewResources(){texture.Reset();preview.reset();previewFrozen=fal
 #ifdef UNLEASHED_ASSET_PREVIEW
 void SetPreviewDevice(ID3D11Device* device,ID3D11DeviceContext* context){ReleasePreviewResources();previewDevice=device;previewContext=context;}
 #endif
-void DrawControls() {
+void DrawPage() {
     using namespace V2::Vision;
     if(!V2::Vision::Preferences::Loaded())V2::Vision::Preferences::Load();
     static Settings draft=GetService().GetSettings();static bool edited=false;static std::string feedback;

@@ -215,6 +215,9 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     const bool hasAbsoluteHealth = hasControl(OW::HeroSkillControls::HealthAbsolute);
     const bool hasAbsoluteEnemyHealth = hasControl(OW::HeroSkillControls::EnemyHealthAbsolute);
     const bool hasPunchAssist = hasControl(OW::HeroSkillControls::PunchAssist);
+    const bool isDvaMatrix = definition.heroId == OW::eHero::HERO_DVA &&
+        std::string(definition.skillId ? definition.skillId : "") == "defense-matrix";
+    const bool hasSkillAimDetails = hasTrackingOverlay && !hasPunchAssist && !isDvaMatrix;
     if (hasControl(OW::HeroSkillControls::PausePolicy)) {
         SettingRow("Pause Aim", kAimbotRightLabelWidth);
         changed |= UICheckbox("##pauseAim", &settings.pauseAim);
@@ -418,7 +421,9 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
 
     if (hasControl(OW::HeroSkillControls::Prediction)) {
         SettingRow("Prediction", kAimbotRightLabelWidth);
-        changed |= UICheckbox("##skillPrediction", &settings.prediction);
+        ImGui::TextDisabled("Automatic");
+        ImGui::SetItemTooltip("%s", L("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data."));
+        settings.prediction = true;
     }
 
     if (hasControl(OW::HeroSkillControls::CooldownGuard)) {
@@ -477,9 +482,10 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         ImGui::PopItemWidth();
     }
 
-    if (hasTrackingOverlay && settings.enabled) {
+    if ((hasTrackingOverlay || hasPunchAssist) && settings.enabled) {
         const bool canMoveAim=definition.automation==OW::SkillAutomation::None ||
             definition.automation==OW::SkillAutomation::GenjiBlade ||
+            (isDvaMatrix && settings.automaticAim) ||
             (settings.automaticAim && (definition.automation==OW::SkillAutomation::LowEnemyHealth ||
                 definition.automation==OW::SkillAutomation::NormalInterrupt));
         ImGui::Spacing();
@@ -535,7 +541,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         if (isAsheCombo && koiPresetListFull)
             ImGui::TextWrapped("%s", L("The mode list is full (64). Delete an unused mode to add another."));
         }
-        {
+        if (hasSkillAimDetails) {
             SettingRow("Priority", kAimbotRightLabelWidth);
             PushControlWidth();
             const char* priorities[] = {L("FOV"), L("Health"), L("Distance")};
@@ -546,26 +552,26 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             PushControlWidth();
             changed |= UISlider("##skillAssistanceDelay", &settings.assistanceDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
             ImGui::PopItemWidth();
+            SettingRow("Require Visible", kAimbotRightLabelWidth);
+            changed |= UICheckbox("##skillRequireVisible", &settings.requireVisible);
+            SettingRow("Allow Invisible Sombra", kAimbotRightLabelWidth);
+            changed |= UICheckbox("##skillStealth", &settings.allowInvisibleSombra);
+            SettingRow("Target Roles", kAimbotRightLabelWidth);
+            const char* roleNames[] = {L("Damage"), L("Tank"), L("Support")};
+            for (int i = 0; i < 3; ++i) {
+                bool selected = (settings.targetRoleMask & (1 << i)) != 0;
+                ImGui::PushID(i);
+                if (UICheckbox(roleNames[i], &selected)) { settings.targetRoleMask ^= 1 << i; changed = true; }
+                ImGui::PopID();
+                if (i != 2) ImGui::SameLine();
+            }
+            SettingRow("Draw FOV", kAimbotRightLabelWidth);
+            changed |= UICheckbox("##skillDrawFov", &settings.drawSkillFov);
+            ImGui::SameLine();
+            changed |= UI::ColorPicker("skillFovColor", settings.skillFovColor);
         }
-        SettingRow("Require Visible", kAimbotRightLabelWidth);
-        changed |= UICheckbox("##skillRequireVisible", &settings.requireVisible);
-        SettingRow("Allow Invisible Sombra", kAimbotRightLabelWidth);
-        changed |= UICheckbox("##skillStealth", &settings.allowInvisibleSombra);
-        SettingRow("Target Roles", kAimbotRightLabelWidth);
-        const char* roleNames[] = {L("Damage"), L("Tank"), L("Support")};
-        for (int i = 0; i < 3; ++i) {
-            bool selected = (settings.targetRoleMask & (1 << i)) != 0;
-            ImGui::PushID(i);
-            if (UICheckbox(roleNames[i], &selected)) { settings.targetRoleMask ^= 1 << i; changed = true; }
-            ImGui::PopID();
-            if (i != 2) ImGui::SameLine();
-        }
-        SettingRow("Draw FOV", kAimbotRightLabelWidth);
-        changed |= UICheckbox("##skillDrawFov", &settings.drawSkillFov);
-        ImGui::SameLine();
-        changed |= UI::ColorPicker("skillFovColor", settings.skillFovColor);
 
-        if(canMoveAim) {
+        if(canMoveAim && !isDvaMatrix) {
         SettingRow("Speed Scale", kAimbotRightLabelWidth);
         PushControlWidth();
         changed |= UISlider("##skillTrackingSpeedScale", &settings.tracking.speedScale, 0.0f, 100.0f, Number(0, " %"));
@@ -578,28 +584,34 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         }
         }
 
-        SettingRow("FOV (deg)", kAimbotRightLabelWidth);
-        PushControlWidth();
-        changed |= UISlider("##skillTrackingFov", &settings.tracking.fov,
-                            OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
-        ImGui::PopItemWidth();
+        if (!isDvaMatrix) {
+            SettingRow("FOV (deg)", kAimbotRightLabelWidth);
+            PushControlWidth();
+            changed |= UISlider("##skillTrackingFov", &settings.tracking.fov,
+                                OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
+            ImGui::PopItemWidth();
+        }
 
-        SettingRow("Bone", kAimbotRightLabelWidth);
-        PushControlWidth();
-        changed |= UISelect("##skillTrackingBone", &settings.tracking.bone,
-                            kHeroSkillTrackingBones, IM_ARRAYSIZE(kHeroSkillTrackingBones));
-        ImGui::PopItemWidth();
+        if (!hasPunchAssist && !isDvaMatrix) {
+            SettingRow("Bone", kAimbotRightLabelWidth);
+            PushControlWidth();
+            changed |= UISelect("##skillTrackingBone", &settings.tracking.bone,
+                                kHeroSkillTrackingBones, IM_ARRAYSIZE(kHeroSkillTrackingBones));
+            ImGui::PopItemWidth();
+        }
 
-        SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
-        PushControlWidth();
-        changed |= UISlider("##skillTrackingHitbox", &settings.tracking.hitbox,
-                            OW::Config::kMinHitboxScalePercent,
-                            OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
-        ImGui::PopItemWidth();
+        if (!isDvaMatrix) {
+            SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
+            PushControlWidth();
+            changed |= UISlider("##skillTrackingHitbox", &settings.tracking.hitbox,
+                                OW::Config::kMinHitboxScalePercent,
+                                OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
+            ImGui::PopItemWidth();
+        }
 
-        if (isAsheCombo) {
+        if (hasTrackingOverlay && isAsheCombo) {
             ImGui::TextWrapped("%s", L("After every shot, vertical tracking pauses for 35 ms while horizontal tracking continues."));
-        } else if (hasSequenceControls) {
+        } else if (hasTrackingOverlay && hasSequenceControls) {
             ImGui::Spacing();
             ImGui::TextColored(
                 ImGui::ColorConvertU32ToFloat4(kColTextMuted),
@@ -667,26 +679,13 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
             }
         }
 
-        if (hasControl(OW::HeroSkillControls::Prediction)) {
-            SettingRow("Projectile Speed", kAimbotRightLabelWidth);
-            PushControlWidth();
-            changed |= UISlider("##skillProjectileSpeed", &settings.projectileSpeed, 0.0f, 300.0f, Number(0, " m/s"));
-            ImGui::PopItemWidth();
-
-            SettingRow("Projectile Radius", kAimbotRightLabelWidth);
-            PushControlWidth();
-            changed |= UISlider("##skillProjectileRadius", &settings.projectileRadius, 0.0f, 2.0f, Number(1, " m"));
-            ImGui::PopItemWidth();
-
-            SettingRow("Projectile Gravity", kAimbotRightLabelWidth);
-            changed |= UICheckbox("##skillProjectileGravity", &settings.projectileGravity);
-
-            SettingRow("Aim Wind-up", kAimbotRightLabelWidth);
-            PushControlWidth();
-            changed |= UISlider("##skillPreFireDelay", &settings.preFireDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
-            ImGui::PopItemWidth();
+        if (hasSkillAimDetails && hasControl(OW::HeroSkillControls::Prediction)) {
+            SettingRow("Prediction Profile", kAimbotRightLabelWidth);
+            ImGui::TextDisabled("skill:%s", definition.skillId ? definition.skillId : "unknown");
+            ImGui::SetItemTooltip("Shared by Aim, Trigger and Hero Skills. Edit it under Prediction Data.");
+            ImGui::TextWrapped("Projectile speed, radius, gravity and cast delay are resolved from this shared profile. Legacy skill fields remain readable for migration.");
         }
-        if (hasControl(OW::HeroSkillControls::Prediction) || hasControl(OW::HeroSkillControls::TrajectoryAction)) {
+        if (hasSkillAimDetails && (hasControl(OW::HeroSkillControls::Prediction) || hasControl(OW::HeroSkillControls::TrajectoryAction))) {
             SettingRow("Max Aim Time", kAimbotRightLabelWidth);
             PushControlWidth();
             changed |= UISlider("##skillMaxAimTime", &settings.maxAimTimeMs, 0.0f, 5000.0f, Number(0, " ms"));
@@ -727,9 +726,6 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         drawFloatSlider("Auto-release Total Time", "##punchMaxHold", settings.punchMaxHoldMs, settings.punchFullChargeMs + 100.0f, 5000.0f, Number(0, " ms"));
         drawFloatSlider("Release Lead", "##punchLead", settings.punchReleaseLeadMs, 20.0f, settings.punchMaxHoldMs - 50.0f, Number(0, " ms"));
         ImGui::TextWrapped("%s", L("Full charge sets punch strength. Total time includes charging and holding before automatic release; both times are estimates."));
-        drawFloatSlider("FOV (deg)", "##punchFov", settings.tracking.fov, OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
-        drawFloatSlider("Speed Scale", "##punchSpeed", settings.tracking.speedScale, 0.0f, 100.0f, Number(0, " %"));
-        drawFloatSlider("Hitbox Scale", "##punchHitbox", settings.tracking.hitbox, OW::Config::kMinHitboxScalePercent, OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
         if (!V2::Output::SupportsMouseMask(V2::Output::ActiveRuntimeSnapshot().descriptor))
             ImGui::TextWrapped("%s", L("Rocket Punch assist needs mouse masking from the output device."));
     }

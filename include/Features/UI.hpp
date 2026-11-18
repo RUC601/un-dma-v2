@@ -11,7 +11,7 @@ namespace UI {
         int   aimingSubTab   = 0;   // 0 = Aimbot, 1 = Trigger, 2 = Skills, 3 = Combo
         int   visualsSubTab  = 0;   // 0 = Players
         int   themeSubTab    = 0;   // 0 = General, 1 = Aim FOV
-        int   miscSubTab     = 0;   // General, Diagnostics, Behavior, Method, Dynamic FOV, Device, Screen
+        int   miscSubTab     = 0;   // General, Diagnostics, Behavior, Method, Dynamic FOV, Device, Screen, Capture and contours
         int   aimHeroSegActive = 0;     // Current hero Aim config slot (0-11)
         int   triggerHeroSegActive = 0; // Current hero Trigger config slot (0-11)
         int   selectedTypeIndex = 0; // 0 edits current runtime settings

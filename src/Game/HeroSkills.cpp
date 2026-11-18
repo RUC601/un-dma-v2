@@ -1859,27 +1859,29 @@ namespace {
     {
         ProjectileSpec fallback{};
         fallback.enabledByDefault = params.speed > 0.0f;
-        fallback.projectileSpeed = params.speed;
-        fallback.gravity = params.gravity > 0.0f;
-        fallback.projectileRadius = params.projectileRadius;
+        // Legacy skill fields are used only while creating a missing shared
+        // profile. Once created, all consumers read the shared profile.
+        fallback.projectileSpeed = settings.projectileSpeed > 0.0f
+            ? settings.projectileSpeed : params.speed;
+        fallback.gravity = settings.projectileGravity || params.gravity > 0.0f;
+        fallback.projectileRadius = settings.projectileRadius > 0.0f
+            ? settings.projectileRadius : params.projectileRadius;
         fallback.gravityAcceleration = params.gravity > 0.0f ? params.gravity : 9.8f;
-        fallback.castDelayMs = params.preFireDelayMs;
+        fallback.castDelayMs = settings.preFireDelayMs > 0.0f
+            ? settings.preFireDelayMs : params.preFireDelayMs;
         const PredictionProfile profile = profileId.empty()
             ? PredictionProfile{}
             : ResolvePredictionProfile(profileId, 0, 0, fallback);
         const ProjectileSpec& shared = profileId.empty() ? fallback : profile.projectile;
         SkillProjectileRuntime runtime{};
-        runtime.speed = settings.projectileSpeed > 0.0f ? settings.projectileSpeed : shared.projectileSpeed;
+        runtime.speed = shared.projectileSpeed;
         runtime.maxRange = params.maxRange;
-        runtime.gravity = settings.projectileGravity || shared.gravity;
+        runtime.gravity = shared.gravity;
         runtime.gravityAcceleration = shared.gravityAcceleration > 0.0f
             ? shared.gravityAcceleration : (runtime.gravity ? 9.8f : 0.0f);
         runtime.launchDirectionUpBias = shared.launchDirectionUpBias;
-        runtime.projectileRadius = settings.projectileRadius > 0.0f
-            ? settings.projectileRadius : shared.projectileRadius;
-        runtime.preFireDelayMs = settings.preFireDelayMs > 0.0f
-            ? settings.preFireDelayMs
-            : shared.castDelayMs;
+        runtime.projectileRadius = shared.projectileRadius;
+        runtime.preFireDelayMs = shared.castDelayMs;
         return runtime;
     }
 
@@ -2096,7 +2098,7 @@ namespace {
             if (!FreshHealthForSkill(entity)) continue;
             if (!SkillConditions::RoleAllowed(entity.HeroID, settings.targetRoleMask))
                 continue;
-            if (entity.HeroID == eHero::HERO_SOMBRA && !settings.allowInvisibleSombra &&
+            if (settings.requireVisible && entity.HeroID == eHero::HERO_SOMBRA &&
                 (!entity.sombraStealthKnown || entity.sombraStealth))
                 continue;
             if ((entity.imort || entity.barrprot) && !Config::switch_team)
@@ -2126,7 +2128,7 @@ namespace {
             }
 
             Vector3 aimPoint = rawAimPoint;
-            if (settings.prediction && projectile.speed > 0.0f) {
+            if (projectile.speed > 0.0f || projectile.preFireDelayMs > 0.0f) {
                 const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
                     entity,
                     rawAimPoint,
@@ -2309,7 +2311,7 @@ namespace {
                 behavior,
                 settings.tracking.speedScale,
                 settings.tracking.fov,
-                settings.prediction ? 1 : 0,
+                1,
                 projectile.speed,
                 projectile.preFireDelayMs,
                 candidate.entityIndex,
@@ -2674,7 +2676,7 @@ namespace {
             return false;
 
         Vector3 aimPoint = rawAimPoint;
-        if (settings.prediction && projectile.speed > 0.0f) {
+        if (projectile.speed > 0.0f || projectile.preFireDelayMs > 0.0f) {
             const ProjectileRuntimeSpec projectileSpec{
                 projectile.speed,
                 projectile.gravity,
@@ -4042,16 +4044,16 @@ namespace {
             if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
                     settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
                 continue;
-            if (settings.prediction) {
-                // Predict travel on the ground plane; vertical velocity never tilts the punch.
-                if (!IsFiniteVector(entity.velocity))
-                    continue;
-                point = point + entity.velocity * (distance / speed);
-                distance = DoomfistPunch::HorizontalDistance(point.X-local.pos.X, point.Z-local.pos.Z);
-                if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
-                        settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
-                    continue;
-            }
+            // Prediction is always part of the V2 skill target pipeline.
+            // Predict travel on the ground plane. Vertical velocity never
+            // tilts the punch.
+            if (!IsFiniteVector(entity.velocity))
+                continue;
+            point = point + entity.velocity * (distance / speed);
+            distance = DoomfistPunch::HorizontalDistance(point.X-local.pos.X, point.Z-local.pos.Z);
+            if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
+                    settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
+                continue;
             point.Y = source.Y;
             float score = 0.0f;
             if (!TargetingDetail::IsWithinFovDeg(fov, point, settings.tracking.fov, &score) ||
@@ -5343,7 +5345,7 @@ void ProcessHeroSkills()
                              settings.sequenceSteps,
                              settings.key,
                              settings.tracking,
-                             settings.prediction,
+                             true,
                              settings,
                              settings.ammoGuard,
                              settings.ammoGuardReserve);

@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "Game/HeroPerkRuntime.hpp"
+#include "Game/HeroSkills.hpp"
 #include "Game/ProjectilePhysics.hpp"
 #include "Game/Structs.hpp"
 #include "Utils/InputLabels.hpp"
@@ -275,12 +276,14 @@ PredictionProfile ResolvePredictionProfile(std::string_view profileId,
     if (it != Config::predictionProfiles.end())
         return it->second;
     Config::predictionProfiles.emplace(profile.profileId, profile);
+    Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
     return profile;
 }
 
 std::vector<PredictionProfile> SnapshotPredictionProfiles()
 {
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    bool changed = false;
     for (const WeaponSpec& weapon : kWeaponSpecs) {
         const std::string profileId(weapon.weaponId);
         if (Config::predictionProfiles.find(profileId) != Config::predictionProfiles.end())
@@ -291,7 +294,42 @@ std::vector<PredictionProfile> SnapshotPredictionProfiles()
         profile.actionId = weapon.action;
         profile.projectile = weapon.projectile;
         Config::predictionProfiles.emplace(profileId, std::move(profile));
+        changed = true;
     }
+    for (const HeroSkillDefinition& definition : AllHeroSkillDefinitions()) {
+        if (!definition.skillId || !*definition.skillId)
+            continue;
+        const std::string profileId = std::string("skill:") + definition.skillId;
+        if (Config::predictionProfiles.find(profileId) != Config::predictionProfiles.end())
+            continue;
+
+        PredictionProfile profile{};
+        profile.profileId = profileId;
+        profile.heroId = definition.heroId;
+        profile.actionId = static_cast<int>(definition.inputAction);
+        profile.projectile.enabledByDefault = definition.defaultSettings.projectileSpeed > 0.0f;
+        profile.projectile.projectileSpeed = definition.defaultSettings.projectileSpeed;
+        profile.projectile.gravity = definition.defaultSettings.projectileGravity;
+        profile.projectile.projectileRadius = definition.defaultSettings.projectileRadius;
+        profile.projectile.castDelayMs = definition.defaultSettings.preFireDelayMs;
+        const std::string physicsId = definition.castGroup && *definition.castGroup
+            ? definition.castGroup : definition.skillId;
+        if (const auto* physics = FindProjectilePhysicsProfile(
+                physicsId == "energy-javelin" ? "orisa_energy_javelin" :
+                physicsId == "particle-bomb" ? "zarya_particle_cannon_alt" : physicsId)) {
+            if (profile.projectile.projectileSpeed <= 0.0f)
+                profile.projectile.projectileSpeed = physics->referenceSpeed;
+            profile.projectile.gravity = profile.projectile.gravity || physics->gravityAcceleration > 0.0f;
+            profile.projectile.gravityAcceleration = physics->gravityAcceleration;
+            profile.projectile.launchDirectionUpBias = physics->launchDirectionUpBias;
+            profile.projectile.castDelayMs = (std::max)(profile.projectile.castDelayMs,
+                                                         physics->castDelayMs);
+        }
+        Config::predictionProfiles.emplace(profileId, std::move(profile));
+        changed = true;
+    }
+    if (changed)
+        Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
     std::vector<PredictionProfile> profiles;
     profiles.reserve(Config::predictionProfiles.size());
     for (const auto& item : Config::predictionProfiles)
@@ -320,6 +358,7 @@ bool UpdatePredictionProfile(const PredictionProfile& profile)
     normalized.projectile.castDelayMs = (std::max)(0.0f, normalized.projectile.castDelayMs);
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
     Config::predictionProfiles[normalized.profileId] = std::move(normalized);
+    Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
     return true;
 }
 

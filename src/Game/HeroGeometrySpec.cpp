@@ -95,10 +95,13 @@ float ResolveEffectiveHitWindow(uint64_t heroId,
                                 int boneId,
                                 const WeaponSpec* weapon,
                                 float hitboxScalePercent,
-                                float fallbackBoneRadius)
+                                float fallbackBoneRadius,
+                                float projectileRadiusOverride)
 {
     const float boneRadius = ResolveBoneHitboxRadius(heroId, boneId, fallbackBoneRadius);
-    const float projectileRadius = weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f;
+    const float projectileRadius = projectileRadiusOverride >= 0.0f
+        ? (std::max)(0.0f, projectileRadiusOverride)
+        : (weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f);
     const float resolvedWindow = (std::max)(0.0f, boneRadius + projectileRadius);
     return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
 }
@@ -107,7 +110,8 @@ float ResolveEffectiveHitWindow(const c_entity& entity,
                                 int boneId,
                                 const WeaponSpec* weapon,
                                 float hitboxScalePercent,
-                                float fallbackBoneRadius)
+                                float fallbackBoneRadius,
+                                float projectileRadiusOverride)
 {
     float boneRadius = ResolveBoneHitboxRadius(entity.HeroID, boneId, fallbackBoneRadius);
     if (entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision)) {
@@ -119,7 +123,9 @@ float ResolveEffectiveHitWindow(const c_entity& entity,
         if (nativeRadius > 0.0f && std::isfinite(nativeRadius))
             boneRadius = nativeRadius;
     }
-    const float projectileRadius = weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f;
+    const float projectileRadius = projectileRadiusOverride >= 0.0f
+        ? (std::max)(0.0f, projectileRadiusOverride)
+        : (weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f);
     return (std::max)(0.0f, boneRadius + projectileRadius) *
         Config::HitboxScaleMultiplier(hitboxScalePercent);
 }

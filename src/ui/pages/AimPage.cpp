@@ -59,12 +59,14 @@ enum class AimFireMode : int {
     KeepFiring = 0,
     SingleShot = 1,
     TrackingWithHold = 2,
+    Legacy = 3,
 };
 
 constexpr const char* kAimFireModes[] = {
     "Keep Firing",
     "Single Shot",
     "Tracking With Hold",
+    "Legacy policy (choose a new behavior)",
 };
 
 AimFireMode AimFireModeFromPolicy(int policy)
@@ -75,8 +77,9 @@ AimFireMode AimFireModeFromPolicy(int policy)
     case OW::FirePolicyType::SingleShot:
         return AimFireMode::SingleShot;
     case OW::FirePolicyType::TrackingWithHold:
-    default:
         return AimFireMode::TrackingWithHold;
+    default:
+        return AimFireMode::Legacy;
     }
 }
 
@@ -224,9 +227,9 @@ void UI::AimbotPage() {
             ImGui::EndDisabled();
             if (activePreset.contourEnabled || !leakSupported) {
                 ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
-                    ? (leakSupported ? "原生判定可见的目标继续走 UN 算法；仅对原生判定不可见的目标用采集画面确认露出部位。三种状态颜色均参与匹配，请在设置 → 屏幕开启采集。"
+                    ? (leakSupported ? "原生判定可见的目标继续走 UN 算法；仅对原生判定不可见的目标用采集画面确认露出部位。三种状态颜色均参与匹配，请在设置 → 采集与轮廓开启采集。"
                                         : "漏打仅支持 Flick 和磁性扳机。切换 Behavior 后若保留开启，该 Slot 不会对不可见目标补充确认；可在此关闭。")
-                    : (leakSupported ? "Targets accepted by native visibility keep the UN path. Captured leak evidence are used only to supplement targets native visibility marked as hidden. Start capture under Settings > Screen."
+                    : (leakSupported ? "Targets accepted by native visibility keep the UN path. Captured leak evidence are used only to supplement targets native visibility marked as hidden. Start capture under Settings > Capture and contours."
                                         : "Leak supports Flick and Magnetic Trigger. It does not supplement hidden targets for another behavior; turn it off here if needed."));
             }
             if (activePreset.contourEnabled) {
@@ -257,7 +260,7 @@ void UI::AimbotPage() {
                 }
                 if (ImGui::SmallButton(zh ? "打开采集设置" : "Open capture settings")) {
                     state.activeTab = TAB_MISC;
-                    state.miscSubTab = 6;
+                    state.miscSubTab = 7;
                 }
             }
 
@@ -278,6 +281,14 @@ void UI::AimbotPage() {
             PushControlWidth();
             presetChanged |= UISlider("##aimMinDist", &activePreset.minDistance, 0.0f, 500.0f, Number(0, " m"));
             ImGui::PopItemWidth();
+
+            SettingRow("Fast Target Limit", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##aimMaxTargetSpeed", &activePreset.maxTargetSpeedMps,
+                                      0.0f, 100.0f, AtOrBelow("Unlimited", 0, Number(1, " m/s")));
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("0 means unlimited. Faster targets stay out of the Basic candidate set.");
         presetChanged |= UI::AimPlanEditor::Policy(activePreset);
         CloseGroupBox();
     }, [&]() {
@@ -370,21 +381,30 @@ void UI::AimbotPage() {
 
             SettingRow(OW::Config::uiLanguage == 1 ? "开火模式" : "Fire behavior", kAimbotLeftLabelWidth);
             PushControlWidth();
+            const int storedFirePolicy = activePreset.firePolicy;
             AimFireMode fireMode = AimFireModeFromPolicy(activePreset.firePolicy);
             int fireModeIndex = static_cast<int>(fireMode);
             if (UISelect("##aimFireMode", &fireModeIndex,
                          kAimFireModes, IM_ARRAYSIZE(kAimFireModes))) {
-                fireMode = static_cast<AimFireMode>(std::clamp(fireModeIndex, 0, 2));
-                activePreset.firePolicy = AimFirePolicyFromMode(fireMode);
-                activePreset.keepFiring = fireMode != AimFireMode::SingleShot;
-                activePreset.autoshot = fireMode != AimFireMode::KeepFiring;
-                // The old field represented a physical-action gate. The new
-                // fire modes own their activation cycle and no longer expose
-                // that gate as a second user-facing control.
-                activePreset.requireActionHeld = false;
-                presetChanged = true;
+                if (fireModeIndex >= 0 && fireModeIndex <= 2) {
+                    fireMode = static_cast<AimFireMode>(fireModeIndex);
+                    activePreset.firePolicy = AimFirePolicyFromMode(fireMode);
+                    activePreset.keepFiring = fireMode != AimFireMode::SingleShot;
+                    activePreset.autoshot = fireMode == AimFireMode::SingleShot;
+                    // The old field represented a physical-action gate. The
+                    // new fire modes own their activation cycle.
+                    activePreset.requireActionHeld = false;
+                    presetChanged = true;
+                }
             }
             ImGui::PopItemWidth();
+            if (storedFirePolicy == static_cast<int>(OW::FirePolicyType::ManualOnly) ||
+                storedFirePolicy == static_cast<int>(OW::FirePolicyType::ReleaseAfterDelay) ||
+                storedFirePolicy == static_cast<int>(OW::FirePolicyType::TimedBurst) ||
+                storedFirePolicy == static_cast<int>(OW::FirePolicyType::ChargeRelease)) {
+                ImGui::TextWrapped("Legacy internal policy %s is still loaded. Select one of the three user-facing Fire behaviors to migrate this Slot.",
+                                   OW::FirePolicyName(OW::ClampFirePolicy(storedFirePolicy)));
+            }
             ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
                 ? "持续按住会在激活键按下期间持有攻击键；单发在本轮只提交一次并等待松开重按；跟踪并持续按住只在跟踪会话中持有攻击键。"
                 : "Keep Firing owns the attack button while the activation key is down; Single Shot submits once per press cycle; Tracking With Hold owns it only during a tracking session.");
@@ -464,13 +484,15 @@ void UI::AimbotPage() {
                                        "Create a Dynamic FOV preset in Misc first.");
                 }
                 SettingRow("Fallback FOV", kAimbotLeftLabelWidth);
+                ImGui::TextDisabled("%.0f deg (internal safety fallback)", OW::Config::ClampFovDeg(activePreset.fov));
+                ImGui::SetItemTooltip("Used only when the Dynamic FOV preset is unavailable or invalid.");
             } else {
                 SettingRow("FOV (deg)", kAimbotLeftLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISlider("##aimFov", &activePreset.fov,
+                                          OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
+                ImGui::PopItemWidth();
             }
-            PushControlWidth();
-            presetChanged |= UISlider("##aimFov", &activePreset.fov,
-                                      OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
-            ImGui::PopItemWidth();
 
             SettingRow("Target Priority", kAimbotLeftLabelWidth);
             PushControlWidth();

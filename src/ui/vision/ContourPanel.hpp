@@ -2,7 +2,7 @@
 struct ID3D11Device;
 struct ID3D11DeviceContext;
 namespace UI::Vision {
-void DrawControls();
+void DrawPage();
 // Render-thread only; call before releasing Overlay's D3D device.
 void ReleasePreviewResources();
 #ifdef UNLEASHED_ASSET_PREVIEW

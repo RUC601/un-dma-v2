@@ -1115,6 +1115,12 @@ namespace AimbotDetail {
             FirePolicyType::SingleShot;
     }
 
+    inline void MarkAimShot(RuntimeState& state) {
+        OW::Config::shooted = true;
+        if (IsSingleShotFirePolicy())
+            state.singleShotIssued = true;
+    }
+
     inline bool IsKeepFiringFirePolicy() {
         return ClampFirePolicy(OW::Config::View_aimbotFirePolicy()) ==
             FirePolicyType::KeepFiring;
@@ -2619,7 +2625,7 @@ namespace AimbotDetail {
         DWORD submittedAt=0;
         if(SubmitConfiguredAimShot(OW::OutputOwnerSource::GlobalAim,kGlobalAimGeneratedFireOwnerKey,
                                    false,&submittedAt,true)) {
-            StampFlickFire(state,submittedAt);OW::Config::shooted=true;++g_flickFires;
+            StampFlickFire(state,submittedAt);MarkAimShot(state);++g_flickFires;
             Diagnostics::Info("[V2 shot] release.crosshair reason=%s",noTarget?"no_target":"aim_limit");
         }
         // A rejected submission retains the owned press for cleanup/retry and records no shot.
@@ -3632,7 +3638,7 @@ namespace AimbotDetail {
                     static_cast<unsigned long long>(local.HeroID));
                 if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                 StampFlickFire(state);
-                OW::Config::shooted = true;
+                MarkAimShot(state);
                 continue;
             }
 
@@ -3761,7 +3767,7 @@ namespace AimbotDetail {
                 StampFlickFire(state);
                 ++g_flickFires;
                 SetSensitivityLocked(false, origin_sens);
-                OW::Config::shooted = true;
+                MarkAimShot(state);
                 if (OW::Config::dontshot)
                     OW::Config::shotcount++;
                 break;
@@ -3783,7 +3789,7 @@ namespace AimbotDetail {
                 if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                 OW::Config::shotcount = 0;
                 StampFlickFire(state);
-                OW::Config::shooted = true;
+                MarkAimShot(state);
                 continue;
             }
 
@@ -3870,13 +3876,16 @@ namespace AimbotDetail {
                 PauseOrdinaryFlickMovement(state);
                 return;
             }
-            OW::Config::shooted = false;
+            if (!IsSingleShotFirePolicy() || !state.singleShotIssued)
+                OW::Config::shooted = false;
         }
         ObserveReleaseFireInput(state);
         if (!ordinaryFlick) UpdateFlickShotCooldown(state);
         if (!ordinaryFlick && FlickPostFireLockoutActive(state))
             return;
-        if (!IsAimKeyPressed() || OW::Config::shooted || OW::Config::reloading)
+        if (!IsAimKeyPressed() || OW::Config::shooted ||
+            (IsSingleShotFirePolicy() && state.singleShotIssued) ||
+            OW::Config::reloading)
             return;
         g_flickAttempts++;
 
@@ -4057,7 +4066,7 @@ namespace AimbotDetail {
                             static_cast<unsigned long long>(local.HeroID));
                         if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                         StampFlickFire(state);
-                        OW::Config::shooted = true;
+                        MarkAimShot(state);
                         continue;
                     }
 
@@ -4142,7 +4151,7 @@ namespace AimbotDetail {
                             StampFlickFire(state);
                         }
                         g_flickFires++;
-                        OW::Config::shooted = true;
+                        MarkAimShot(state);
                         if (!ordinaryFlick && OW::Config::dontshot) OW::Config::shotcount++;
                         break;
                     }
@@ -4161,7 +4170,7 @@ namespace AimbotDetail {
                             OW::Config::missbox);
                         if(!FirePrimaryNormal()) {OW::RuntimeWorkerSleep(1);continue;}
                         StampFlickFire(state);
-                        OW::Config::shooted = true;
+                        MarkAimShot(state);
                         continue;
                     }
                 } else {
@@ -4214,6 +4223,7 @@ namespace AimbotDetail {
         EndOrdinaryFlickActivation(state);
 
         OW::Config::shooted = false;
+        state.singleShotIssued = false;
         OW::Config::lasttime = 0;
         if (OW::Config::reloading) {
             OW::Config::lasttime = 0;

@@ -1964,6 +1964,7 @@ namespace OW { namespace Config {
             if (!std::isfinite(preset.lockTime)) preset.lockTime = 20.0f;
             if (!std::isfinite(preset.maxDistance)) preset.maxDistance = 100.0f;
             if (!std::isfinite(preset.minDistance)) preset.minDistance = 0.0f;
+            if (!std::isfinite(preset.maxTargetSpeedMps)) preset.maxTargetSpeedMps = 0.0f;
             if (!std::isfinite(preset.trackingDeadzone)) preset.trackingDeadzone = 0.0f;
             if (!std::isfinite(preset.flickShotClampMs)) preset.flickShotClampMs = 0.0f;
             if (!std::isfinite(preset.flickPostFireDelayMs)) preset.flickPostFireDelayMs = 0.0f;
@@ -2010,6 +2011,10 @@ namespace OW { namespace Config {
             preset.bezierCurvature = std::clamp(preset.bezierCurvature, 0.0f, 1.0f);
             preset.bezierSpeed = std::clamp(preset.bezierSpeed, 1.0f, 200.0f);
             preset.key = std::clamp(preset.key, 0, MaxAimActivationKeyIndex());
+            // The old physical-action gate no longer participates in V2 slot
+            // activation.  Keep the key readable for migration, then publish
+            // one normalized value so runtime and saved config agree.
+            preset.requireActionHeld = false;
             preset.predictionMode = 0;
             preset.prediction = true;
             preset.fovEntryPredictionMs = ClampFovEntryPredictionMs(preset.fovEntryPredictionMs);
@@ -2039,6 +2044,7 @@ namespace OW { namespace Config {
             preset.lockTime = std::clamp(preset.lockTime, 0.0f, 5000.0f);
             preset.maxDistance = std::clamp(preset.maxDistance, 0.0f, 500.0f);
             preset.minDistance = std::clamp(preset.minDistance, 0.0f, 500.0f);
+            preset.maxTargetSpeedMps = std::clamp(preset.maxTargetSpeedMps, 0.0f, 250.0f);
             preset.trackingDeadzone = ClampTrackingDeadzonePixels(preset.trackingDeadzone);
             preset.flickShotClampMs = ClampFlickShotClampMs(preset.flickShotClampMs);
             preset.flickPostFireDelayMs = ClampFlickPostFireDelayMs(preset.flickPostFireDelayMs);
@@ -2135,6 +2141,9 @@ namespace OW { namespace Config {
             settings.distance = std::clamp(settings.distance, 0.0f, 100.0f);
             settings.mode = std::clamp(settings.mode, 0, 2);
             settings.cooldown = std::clamp(settings.cooldown, 0.0f, 60.0f);
+            // Prediction is a shared V2 runtime capability.  The legacy
+            // boolean is retained only as a compatibility projection.
+            settings.prediction = true;
             settings.minTargets = std::clamp(settings.minTargets, 1, 8);
             settings.radius = std::clamp(settings.radius, 0.0f, 30.0f);
             if (settings.sequenceSteps.size() > static_cast<size_t>(kMaxHeroSkillSequenceSteps))
@@ -2755,7 +2764,8 @@ namespace OW { namespace Config {
             mode.behavior = behavior;
             mode.firePolicy = static_cast<int>(OW::DefaultFirePolicyForBehavior(
                 static_cast<OW::AimBehaviorType>(behavior)));
-            mode.keepFiring = behavior != kAimBehaviorTracking;
+            mode.keepFiring = mode.firePolicy == static_cast<int>(OW::FirePolicyType::KeepFiring) ||
+                mode.firePolicy == static_cast<int>(OW::FirePolicyType::TrackingWithHold);
             mode.method = method;
             mode.motion = motion;
             mode.motion.method = method;
@@ -3513,6 +3523,7 @@ namespace OW { namespace Config {
             slot.preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", slot.preset.lockTime);
             slot.preset.maxDistance = ReadFixedFloat(ini, section, "aimbotMaxDist", slot.preset.maxDistance);
             slot.preset.minDistance = ReadFixedFloat(ini, section, "aimbotMinDist", slot.preset.minDistance);
+            slot.preset.maxTargetSpeedMps = ReadFixedFloat(ini, section, "maxTargetSpeedMps", slot.preset.maxTargetSpeedMps);
             slot.preset.trackingDeadzone = ReadFixedFloat(ini, section, "trackingDeadzone", slot.preset.trackingDeadzone);
             slot.preset.flickShotClampMs = ReadFixedFloat(ini, section, "flickShotClampMs", slot.preset.flickShotClampMs);
             slot.preset.flickPostFireDelayMs = ReadFixedFloat(ini, section, "flickPostFireDelayMs", slot.preset.flickPostFireDelayMs);
@@ -3632,6 +3643,7 @@ namespace OW { namespace Config {
             preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", preset.lockTime);
             preset.maxDistance = ReadFixedFloat(ini, section, "aimbotMaxDist", preset.maxDistance);
             preset.minDistance = ReadFixedFloat(ini, section, "aimbotMinDist", preset.minDistance);
+            preset.maxTargetSpeedMps = ReadFixedFloat(ini, section, "maxTargetSpeedMps", preset.maxTargetSpeedMps);
             preset.trackingDeadzone = ReadFixedFloat(ini, section, "trackingDeadzone", preset.trackingDeadzone);
             preset.flickShotClampMs = ReadFixedFloat(ini, section, "flickShotClampMs", preset.flickShotClampMs);
             preset.flickPostFireDelayMs = ReadFixedFloat(ini, section, "flickPostFireDelayMs", preset.flickPostFireDelayMs);
@@ -3710,6 +3722,7 @@ namespace OW { namespace Config {
             WriteFixedFloatValue(path, section, "aimbotLockTime", preset.lockTime);
             WriteFixedFloatValue(path, section, "aimbotMaxDist", preset.maxDistance);
             WriteFixedFloatValue(path, section, "aimbotMinDist", preset.minDistance);
+            WriteFixedFloatValue(path, section, "maxTargetSpeedMps", preset.maxTargetSpeedMps);
             WriteFixedFloatValue(path, section, "trackingDeadzone", preset.trackingDeadzone);
             WriteFixedFloatValue(path, section, "flickShotClampMs", preset.flickShotClampMs);
             WriteFixedFloatValue(path, section, "flickPostFireDelayMs", preset.flickPostFireDelayMs);
@@ -3886,6 +3899,7 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "lockTime", preset.lockTime, allocator);
             AddJsonFloat(value, "maxDistance", preset.maxDistance, allocator);
             AddJsonFloat(value, "minDistance", preset.minDistance, allocator);
+            AddJsonFloat(value, "maxTargetSpeedMps", preset.maxTargetSpeedMps, allocator);
             AddJsonFloat(value, "trackingDeadzone", preset.trackingDeadzone, allocator);
             AddJsonFloat(value, "flickShotClampMs", preset.flickShotClampMs, allocator);
             AddJsonFloat(value, "flickPostFireDelayMs", preset.flickPostFireDelayMs, allocator);
@@ -4347,6 +4361,12 @@ namespace OW { namespace Config {
                 }
             }
 
+            UpsertJsonMember(
+                document,
+                "predictionProfiles",
+                PredictionProfilesToJson(allocator),
+                allocator);
+
             const std::string runtimeHeroKey = std::to_string(heroId);
             rapidjson::Document currentUi;currentUi.Parse(V2::HeroSettings::Encode().c_str());
             auto* savedUi=FindOrAddObjectMember(document,"heroSettings");
@@ -4379,6 +4399,12 @@ namespace OW { namespace Config {
                 rapidjson::Value skillStore = HeroSkillPresetStoreToJson(heroSkillPresets, allocator);
                 skillObject->Swap(skillStore);
             }
+
+            UpsertJsonMember(
+                document,
+                "predictionProfiles",
+                PredictionProfilesToJson(allocator),
+                allocator);
 
             return WriteJsonDocument(heroConfigPath, document);
         }
@@ -4568,6 +4594,8 @@ namespace OW { namespace Config {
             defaults.mode = ReadJsonInt(value, "mode", defaults.mode);
             defaults.cooldown = ReadJsonFloat(value, "cooldown", defaults.cooldown);
             defaults.cooldownGuard = ReadJsonBool(value, "cooldownGuard", defaults.cooldownGuard);
+            // Read the legacy key for compatibility, then normalize below to
+            // the V2 always-on prediction contract.
             defaults.prediction = ReadJsonBool(value, "prediction", defaults.prediction);
             defaults.minTargets = ReadJsonInt(value, "minTargets", defaults.minTargets);
             defaults.radius = ReadJsonFloat(value, "radius", defaults.radius);
@@ -4603,6 +4631,7 @@ namespace OW { namespace Config {
                 defaults.tracking.fov,
                 legacyFovApertureValues);
             defaults.targetPriority = ReadJsonInt(value, "targetPriority", defaults.targetPriority);
+            defaults.prediction = true;
             defaults.healthTriggerEnabled = ReadJsonBool(value, "healthTriggerEnabled", defaults.healthTriggerEnabled);
             defaults.threatTriggerEnabled = ReadJsonBool(value, "threatTriggerEnabled", defaults.threatTriggerEnabled);
             defaults.normalThreatMask = ReadJsonInt(value, "normalThreatMask", defaults.normalThreatMask);
@@ -4734,6 +4763,7 @@ namespace OW { namespace Config {
         {
             return (heroId == static_cast<uint64_t>(OW::eHero::HERO_ANA) && skillId == "sleep-dart") ||
                 (heroId == static_cast<uint64_t>(OW::eHero::HERO_ROADHOG) && skillId == "chain-hook") ||
+                (heroId == static_cast<uint64_t>(OW::eHero::HERO_HANJO) && skillId == "storm-arrows") ||
                 (heroId == static_cast<uint64_t>(OW::eHero::HERO_TRACER) && skillId == "pulse-bomb") ||
                 (heroId == static_cast<uint64_t>(OW::eHero::HERO_SOLDIER76) && skillId == "helix-rockets") ||
                 (heroId == static_cast<uint64_t>(OW::eHero::HERO_ECHO) && skillId == "sticky-bombs") ||
@@ -4747,6 +4777,8 @@ namespace OW { namespace Config {
                 return OW::MakeAnaSleepDartDefaults();
             if (heroId == static_cast<uint64_t>(OW::eHero::HERO_ROADHOG) && skillId == "chain-hook")
                 return OW::MakeRoadhogChainHookDefaults();
+            if (heroId == static_cast<uint64_t>(OW::eHero::HERO_HANJO) && skillId == "storm-arrows")
+                return OW::MakeHanzoStormArrowsDefaults();
             if (heroId == static_cast<uint64_t>(OW::eHero::HERO_TRACER) && skillId == "pulse-bomb")
                 return OW::MakeTracerPulseBombDefaults();
             if (heroId == static_cast<uint64_t>(OW::eHero::HERO_SOLDIER76) && skillId == "helix-rockets")
@@ -4934,6 +4966,7 @@ namespace OW { namespace Config {
             defaults.lockTime = ReadJsonFloat(value, "lockTime", defaults.lockTime);
             defaults.maxDistance = ReadJsonFloat(value, "maxDistance", defaults.maxDistance);
             defaults.minDistance = ReadJsonFloat(value, "minDistance", defaults.minDistance);
+            defaults.maxTargetSpeedMps = ReadJsonFloat(value, "maxTargetSpeedMps", defaults.maxTargetSpeedMps);
             defaults.trackingDeadzone = ReadJsonFloat(value, "trackingDeadzone", defaults.trackingDeadzone);
             defaults.flickShotClampMs = ReadJsonFloat(value, "flickShotClampMs", defaults.flickShotClampMs);
             defaults.flickPostFireDelayMs = ReadJsonFloat(value, "flickPostFireDelayMs", defaults.flickPostFireDelayMs);
@@ -7347,6 +7380,7 @@ namespace OW { namespace Config {
         struct HeroDocumentCache {
             std::string path;
             uint64_t configVersion = 0;
+            uint64_t predictionProfilesVersion = 0;
             std::shared_ptr<const V2::HeroSettings::Store> settings;
             std::shared_ptr<const std::string> contents;
         } heroDocumentCache;
@@ -7378,6 +7412,7 @@ namespace OW { namespace Config {
             if (!reuseHeroDocument || !heroDocumentCache.contents ||
                 heroDocumentCache.path != path ||
                 heroDocumentCache.configVersion != configValuesVersion ||
+                heroDocumentCache.predictionProfilesVersion != predictionProfilesVersion.load(std::memory_order_acquire) ||
                 heroDocumentCache.settings != settings) {
                 rapidjson::StringBuffer buffer;
                 rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -7386,7 +7421,13 @@ namespace OW { namespace Config {
                 // Retain identity when a publication only changed the runtime view.
                 if (heroDocumentCache.contents && *heroDocumentCache.contents == *next)
                     next = heroDocumentCache.contents;
-                heroDocumentCache = {path, configValuesVersion, settings, std::move(next)};
+                heroDocumentCache = {
+                    path,
+                    configValuesVersion,
+                    predictionProfilesVersion.load(std::memory_order_acquire),
+                    settings,
+                    std::move(next)
+                };
 #ifdef UNLEASHED_SELF_TESTS
                 ++autoSaveHeroDocumentBuilds;
 #endif
@@ -7982,7 +8023,7 @@ namespace OW { namespace Config {
         void ApplyLocalHeroAimPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
-            slotTargetRules={true,preset.ignoreSombraStealth,preset.requireTargetable,preset.allyHealthMaxPercent,preset.allyBoneMask};
+            slotTargetRules={true,preset.ignoreInvisible,preset.requireTargetable,preset.allyHealthMaxPercent,preset.maxTargetSpeedMps,preset.allyBoneMask};
             View_aimModeState()={true,static_cast<const AimBehaviorTuning&>(preset),preset.aimPlan.motion,preset.behaviorConfigs};
             View_Fov() = preset.fov;
             View_minFov1() = preset.fov;
@@ -8056,7 +8097,7 @@ namespace OW { namespace Config {
         void ApplyLocalHeroTriggerPreset(const HeroPreset& rawPreset)
         {
             const HeroPreset preset = ValidateHeroPresetValue(rawPreset);
-            slotTargetRules={true,preset.ignoreSombraStealth,preset.requireTargetable,preset.allyHealthMaxPercent,preset.allyBoneMask};
+            slotTargetRules={true,preset.trigger.ignoreInvisible,preset.requireTargetable,preset.allyHealthMaxPercent,preset.maxTargetSpeedMps,preset.allyBoneMask};
             View_aimPlan() = {};
             View_aimPlan().selection = preset.aimPlan.selection;
             View_triggerbot() = preset.trigger.enabled;

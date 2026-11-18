@@ -157,14 +157,18 @@ inline bool Editor(OW::Config::HeroPreset& preset) {
                 changed|=Float("Maximum HP (0 = any)","##maxHP",g.limits.maxHealth,0,2000," HP");
             }
             const bool wasPoint=g.overrideAimPoint;
-            changed|=UICheckbox(L("Override aim point and prediction"),&g.overrideAimPoint);
-            if(!wasPoint && g.overrideAimPoint) g.point={uint16_t(preset.aimBoneMask),preset.predictionMode};
+            changed|=UICheckbox(L("Override aim point"),&g.overrideAimPoint);
+            if(!wasPoint && g.overrideAimPoint)
+                g.point={uint16_t(preset.aimBoneMask),static_cast<int>(OW::PredictionOverrideMode::Auto)};
             if(g.overrideAimPoint) {
                 int bone=g.point.boneMask==1?1:g.point.boneMask==2?2:g.point.boneMask==4?0:3;
                 static const char* bones[]={"Chest","Head","Neck","Closest"};
                 SettingRow("Aim Bone"); PushControlWidth();
                 if(UISelect("##bone",&bone,bones,4)) {g.point.boneMask=bone==0?4:bone==1?1:bone==2?2:7;changed=true;} ImGui::PopItemWidth();
-                SettingRow("Prediction"); PushControlWidth(); changed|=UISelect("##prediction",&g.point.predictionMode,kPredictionMode,3); ImGui::PopItemWidth();
+                g.point.predictionMode = static_cast<int>(OW::PredictionOverrideMode::Auto);
+                SettingRow("Prediction");
+                ImGui::TextDisabled("Automatic");
+                ImGui::SetItemTooltip("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data.");
             }
             const bool wasMotion=g.overrideMotion;
             changed|=UICheckbox(L("Override motion"),&g.overrideMotion);
@@ -188,7 +192,7 @@ inline bool Editor(OW::Config::HeroPreset& preset) {
         while(std::any_of(p.groups.begin(),p.groups.end(),[&](const auto& old){return old.id==g.id;})) ++g.id;
         g.name=L("Hero exception"); g.motion=p.motion;
         g.limits={preset.minDistance,preset.maxDistance,preset.fov,p.selection.minHealth,p.selection.maxHealth};
-        g.point={uint16_t(preset.aimBoneMask),preset.predictionMode};
+        g.point={uint16_t(preset.aimBoneMask),static_cast<int>(OW::PredictionOverrideMode::Auto)};
         p.groups.push_back(std::move(g));changed=true;
     }
     ImGui::EndDisabled();

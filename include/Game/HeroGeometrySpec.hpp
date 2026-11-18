@@ -13,12 +13,14 @@ float ResolveEffectiveHitWindow(uint64_t heroId,
                                 int boneId,
                                 const WeaponSpec* weapon,
                                 float hitboxScalePercent,
-                                float fallbackBoneRadius);
+                                float fallbackBoneRadius,
+                                float projectileRadiusOverride = -1.0f);
 float ResolveEffectiveHitWindow(const c_entity& entity,
                                 int boneId,
                                 const WeaponSpec* weapon,
                                 float hitboxScalePercent,
-                                float fallbackBoneRadius);
+                                float fallbackBoneRadius,
+                                float projectileRadiusOverride = -1.0f);
 int AimBoneToSkeletonBoneId(int aimBone);
 bool IsCoreHitboxBoneId(int boneId);
 Vector3 ResolveBoneHitboxOffsetLocal(uint64_t heroId, int boneId);

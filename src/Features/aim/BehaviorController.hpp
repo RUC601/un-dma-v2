@@ -38,6 +38,7 @@ namespace AimbotDetail {
         DWORD releaseChargeStarted=0;
         std::uint64_t releaseOutputGeneration=0;
         bool trackingSessionActive = false;
+        bool singleShotIssued = false;
         std::array<OW::AimHoldWindow::State, OW::Labels::kAimActivationKeyStateCount> aimHoldWindows{};
         bool keepFiringHeld = false;
         int keepFiringButton = -1;
