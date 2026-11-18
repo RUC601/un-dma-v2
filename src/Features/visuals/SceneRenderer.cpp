@@ -855,8 +855,8 @@ namespace {
         OW::GetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
         DirectX::XMFLOAT3 forward = renderViewMatrixXor.get_rotation();
         const float yaw = static_cast<float>(radar.rotate?std::atan2(forward.x,forward.z):0.f);
-        const float cosYaw = std::cos(-yaw);
-        const float sinYaw = std::sin(-yaw);
+        const float cosYaw = std::cos(yaw);
+        const float sinYaw = std::sin(yaw);
         const float scale=radius/radar.rangeM;
 
         for (size_t index = 0; index < entitySnapshot.size(); ++index) {
@@ -869,7 +869,7 @@ namespace {
             const float dx = entity.pos.X - localSnapshot.pos.X;
             const float dz = entity.pos.Z - localSnapshot.pos.Z;
             float rx = (dx * cosYaw - dz * sinYaw) * scale;
-            float rz = (dx * sinYaw + dz * cosYaw) * scale;
+            float rz = -(dx * sinYaw + dz * cosYaw) * scale;
 
             const float len = std::sqrt(rx * rx + rz * rz);
             const float maxLen = (std::max)(0.0f, radius-radar.markerSize*.5f-2);

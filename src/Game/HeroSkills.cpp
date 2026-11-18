@@ -2,6 +2,7 @@
 #include <Windows.h>
 
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroGeometrySpec.hpp"
 #ifdef UNLEASHED_SELF_TESTS
 #include "output/devices/mock/Backend.hpp"
 #include "output/game_actions/MemoryPulse.hpp"
@@ -224,6 +225,12 @@ namespace {
         float preFireDelayMs = 0.0f;
         float launchDirectionUpBias = 0.0f;
         float gravityAcceleration = 9.8f;
+        int algorithm = static_cast<int>(PredictionAlgorithm::BallisticIntercept);
+
+        ProjectileRuntimeSpec LeadSpec() const {
+            return {speed, gravity, false, launchDirectionUpBias, gravityAcceleration,
+                preFireDelayMs, projectileRadius, algorithm};
+        }
     };
 
     struct SkillAimCandidate {
@@ -1882,6 +1889,7 @@ namespace {
         runtime.launchDirectionUpBias = shared.launchDirectionUpBias;
         runtime.projectileRadius = shared.projectileRadius;
         runtime.preFireDelayMs = shared.castDelayMs;
+        runtime.algorithm = OW::ClampPredictionAlgorithm(settings.predictionAlgorithm);
         return runtime;
     }
 
@@ -1932,20 +1940,33 @@ namespace {
                                 const SkillProjectileRuntime& projectile,
                                 float hitboxScalePercent)
     {
-        float boneRadius = ResolveBoneHitboxRadius(
-            entity.HeroID,
+        // Aim, Trigger and Hero Skill consumers use the same native-shape
+        // resolver.  The compiled bone radius remains the documented offline
+        // fallback when the current native sample is unavailable.
+        return ResolveEffectiveHitWindow(
+            entity,
             boneId,
+            nullptr,
+            hitboxScalePercent,
+            Config::kLegacyDefaultHitboxRadius,
+            projectile.projectileRadius);
+    }
+
+    float ResolveMeleeHitWindow(const c_entity& entity,
+                                int boneId,
+                                float hitboxScalePercent,
+                                float expansion)
+    {
+        // Melee range expansion is a separate world-space trigger margin. It
+        // must not be treated as projectile radius or be scaled by the
+        // per-skill hitbox percentage.
+        const float baseWindow = ResolveEffectiveHitWindow(
+            entity,
+            boneId,
+            nullptr,
+            hitboxScalePercent,
             Config::kLegacyDefaultHitboxRadius);
-        if (entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision)) {
-            float nativeRadius = 0.0f;
-            for (const auto& shape : entity.native_hitboxes.shapes)
-                if (shape.boneId == boneId)
-                    nativeRadius = (std::max)(nativeRadius, shape.radius);
-            if (nativeRadius > 0.0f && std::isfinite(nativeRadius))
-                boneRadius = nativeRadius;
-        }
-        const float resolvedWindow = (std::max)(0.0f, boneRadius + projectile.projectileRadius);
-        return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
+        return (std::max)(0.0f, baseWindow) + (std::max)(0.0f, expansion);
     }
 
     struct AutoMeleeScanStats {
@@ -1997,8 +2018,11 @@ namespace {
                 if (!std::isfinite(distance) || distance > effectiveRange)
                     continue;
                 ++stats.rangeReadyBones;
-                const float radius = ResolveBoneHitboxRadius(
-                    entity.HeroID, boneId, Config::kLegacyDefaultHitboxRadius) + expansion;
+                const float radius = ResolveMeleeHitWindow(
+                    entity,
+                    boneId,
+                    settings.tracking.hitbox,
+                    expansion);
                 if (!AutoMelee::InWindow(view, point, radius, effectiveRange))
                     continue;
                 const float score = TargetingDetail::FovScoreDeg(view, point);
@@ -2074,13 +2098,7 @@ namespace {
             : Config::NormalizeAimBone(settings.tracking.bone);
         const TargetingDetail::FovRuntimeContext fovContext =
             TargetingDetail::SnapshotFovRuntimeContext();
-        const ProjectileRuntimeSpec projectileSpec{
-            projectile.speed,
-            projectile.gravity,
-            false,
-            projectile.launchDirectionUpBias,
-            projectile.gravityAcceleration
-        };
+        const ProjectileRuntimeSpec projectileSpec = projectile.LeadSpec();
 
         int matchingTargets = 0;
         float bestScore = (std::numeric_limits<float>::max)();
@@ -2129,8 +2147,7 @@ namespace {
                     rawAimPoint,
                     projectileSpec,
                     true,
-                    false,
-                    projectile.preFireDelayMs);
+                    false);
                 aimPoint = lead.finalAimPoint;
             }
 
@@ -2672,20 +2689,12 @@ namespace {
 
         Vector3 aimPoint = rawAimPoint;
         if (projectile.speed > 0.0f || projectile.preFireDelayMs > 0.0f) {
-            const ProjectileRuntimeSpec projectileSpec{
-                projectile.speed,
-                projectile.gravity,
-                false,
-                projectile.launchDirectionUpBias,
-                projectile.gravityAcceleration
-            };
             const LeadPredictionResult lead = TargetingDetail::ResolveLeadPrediction(
                 entity,
                 rawAimPoint,
-                projectileSpec,
+                projectile.LeadSpec(),
                 true,
-                false,
-                projectile.preFireDelayMs);
+                false);
             aimPoint = lead.finalAimPoint;
         }
 
@@ -4566,6 +4575,10 @@ SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
         needs.enemyThreats |= settings.threatTriggerEnabled && (id == "wraith-form" || id == "recall" || id == "dancing-blaze");
         needs.enemyThreats |= definition.automation==SkillAutomation::NormalInterrupt && settings.normalThreatMask!=0;
     }
+    // Sojourn's secondary shot consumes the rail resource observed from the
+    // local skill scalar list. It is a local read, independent of hero-skill
+    // automation settings.
+    if (needs.localHero == eHero::HERO_SOJOURN) needs.heroSignals = true;
     return needs;
 }
 

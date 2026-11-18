@@ -1294,6 +1294,8 @@ inline const std::vector<HeroSkillDefinition>& AllHeroSkillDefinitions()
         }
         for (auto& definition : result) {
             const std::string id = definition.skillId;
+            if (definition.heroId == eHero::HERO_ZARYA && id == "particle-bomb")
+                definition.iconSlug = "particle-cannon-alt-fire";
             if (id == "sleep-dart" || id == "chain-hook" || id == "pulse-bomb" ||
                 id == "helix-rockets" || id == "sticky-bombs" || id == "whip-shot" || id == "accretion")
                 definition.controls |= HeroSkillControls::TrajectoryAction;

@@ -10,18 +10,6 @@
 #include "vision/ContourTypes.hpp"
 
 namespace OW::Contour {
-// Shared by contour Slot preselection and final acquisition. Keep the legacy
-// route's resolver untouched; both contour consumers must use the same mask.
-inline SkeletonBoneMask AimMaskForDistance(SkeletonBoneMask rawMask,float distance,float maxHeadDistance) {
-    auto mask=NormalizeSkeletonBoneMask(rawMask);
-    const float limit=std::clamp(maxHeadDistance,0.0f,500.0f);
-    if(limit>0 && std::isfinite(distance) && distance>limit &&
-        SkeletonBoneMaskIncludesGroup(mask,kSkeletonBoneHead)) {
-        mask&=~kSkeletonBoneHead;
-        if(mask==0) mask=kSkeletonBoneNeck;
-    }
-    return NormalizeSkeletonBoneMask(mask);
-}
 inline std::uint16_t RenderSlotsForMask(SkeletonBoneMask mask) {
     std::uint16_t slots=0;
     for(std::size_t i=0;i<16;++i) if(SkeletonBoneMaskIncludesRenderSlot(mask,i)) slots|=std::uint16_t(1u<<i);

@@ -237,7 +237,6 @@ namespace OW { namespace Config {
     inline bool Gravitypredit   = false;
     inline float predit_level   = 110.f;
     inline bool hanzoautospeed  = false;
-
     // ---- Keys ----
     inline int AimKey      = 0x01;   // VK_LBUTTON
     inline int aim_key     = 1;
@@ -285,6 +284,12 @@ namespace OW { namespace Config {
     inline bool autobone2   = false;
     inline SkeletonBoneMask aimbotBoneMask = kDefaultAimBoneMask;
     inline decltype(aimbotBoneMask)& View_aimbotBoneMask();
+    // 0 = only the mask, 1 = prefer the configured point while it is valid,
+    // 2 = closest point in the mask.  The actor lock and bone lock are kept
+    // separate so a target can move from head to chest without a hard actor
+    // retarget.
+    inline int aimBoneSelectionMode = 2;
+    inline int aimPreferredBone = kAimBoneChest;
     inline SkeletonBoneMask aimbotBoneMask2 = kDefaultAimBoneMask;
     inline bool switch_team  = false;
     inline bool switch_team2 = false;
@@ -492,6 +497,9 @@ namespace OW { namespace Config {
         float allyHealthMaxPercent=100;
         float maxTargetSpeedMps=0.0f;
         SkeletonBoneMask allyBoneMask=kDefaultAimBoneMask;
+        int predictionAlgorithm = static_cast<int>(PredictionAlgorithm::BallisticIntercept);
+        int boneSelectionMode = 2;
+        int preferredBone = kAimBoneChest;
     };
     inline thread_local SlotTargetRules slotTargetRules{};
     inline thread_local bool targetAimPlanEnabled = false;
@@ -1503,6 +1511,8 @@ namespace OW { namespace Config {
         int bone = kAimBoneHead;  // aim-bone choice: 0=chest, 1=head, 2=neck
         bool autoBone = false;    // true = choose closest visible skeleton bone at runtime
         SkeletonBoneMask aimBoneMask = kDefaultAimBoneMask;
+        int boneSelectionMode = 2;
+        int preferredBone = kAimBoneChest;
         float hitbox = kDefaultHitboxScalePercent; // percentage of resolved bone+projectile window
         int aimMode = 0;         // 0=Tracking, 1=Flick
         int aimBehavior = kAimBehaviorTracking; // 0=Tracking, 1=Flick, 2=Flick2nd, 3=Reacquire, 4=MagneticTrigger
@@ -1521,6 +1531,7 @@ namespace OW { namespace Config {
         bool requireActionHeld = false; // legacy compatibility projection; no longer an activation gate
         bool prediction = true; // legacy compatibility projection; prediction is always enabled in V2
         int predictionMode = 0;   // legacy compatibility, normalized to Auto
+        int predictionAlgorithm = static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept);
         bool predictFovEntry = false;
         float fovEntryPredictionMs = 60.0f;
         float fovEntryMaxOutsideDeg = 1.5f;
@@ -1773,6 +1784,7 @@ namespace OW { namespace Config {
         // JSON compatibility projection, but do not expose it as a runtime
         // enable/disable switch.
         bool prediction = true;
+        int predictionAlgorithm = static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept);
         int minTargets = 1;
         float radius = 0.0f;
         float meleeRadius = 0.35f; // extra world-space tolerance around every melee bone
@@ -1845,6 +1857,7 @@ namespace OW { namespace Config {
     // serialized in WeaponSpec.cpp so runtime reads receive a complete copy.
     inline PredictionProfileStore predictionProfiles;
     inline std::mutex predictionProfilesMutex;
+    inline float instantHitDefaultRadius = kDefaultInstantHitRadius; // guarded by predictionProfilesMutex
     inline std::atomic<std::uint64_t> predictionProfilesVersion{0};
     inline int targetPriority = 0;
 
@@ -1881,6 +1894,9 @@ namespace OW { namespace Config {
     void SetHeroTriggerPreset(uint64_t heroId, int slotIndex, const HeroPreset& preset);
     inline bool HeroUsesScopedWeaponActionSplit(uint64_t heroId)
     {
+        // This helper is used by the configuration-only migration and self-test
+        // targets, which must remain linkable without the weapon catalog.  The
+        // action selector still validates the actual catalog at runtime.
         switch (heroId) {
         case OW::GameData::MakeHeroId(0x00A): // Widowmaker
         case OW::GameData::MakeHeroId(0x13B): // Ana

@@ -44,19 +44,21 @@ constexpr FirePolicy Policy(FP type)
     return FirePolicy{ type, 0.0f, 0.0f, 0.0f, 100.0f };
 }
 
-void ApplyInstantHitDefaultRadius(const WeaponSpec* weapon, ProjectileSpec& projectile)
+PredictionProfile EffectivePredictionProfile(PredictionProfile profile, const WeaponSpec& weapon)
 {
-    if (!weapon || projectile.projectileRadius > 0.0f)
-        return;
-    switch (weapon->aimClass) {
-    case AimClass::HitscanSingle:
-    case AimClass::HitscanAuto:
-    case AimClass::HitscanBurst:
-        projectile.projectileRadius = 0.07f;
-        break;
-    default:
-        break;
+    profile.heroId = weapon.heroId;
+    profile.actionId = weapon.action;
+    if (UsesInstantHitRadiusDefault(weapon.aimClass)) {
+        const float storedRadius = profile.projectile.projectileRadius;
+        // Older configs materialized the common radius. Preserve other positive values.
+        const bool inherits = profile.inheritInstantHitRadius.value_or(
+            storedRadius <= 0.0f || std::fabs(storedRadius - kDefaultInstantHitRadius) < 0.00001f);
+        profile.inheritInstantHitRadius = inherits;
+        if (inherits) profile.projectile.projectileRadius = Config::instantHitDefaultRadius;
+    } else {
+        profile.inheritInstantHitRadius.reset();
     }
+    return profile;
 }
 
 constexpr WeaponControlSpec Control(int generatedFireButton = kWeaponControlUseActionButton,
@@ -254,6 +256,24 @@ const WeaponSpec* ResolveDefaultWeaponSpec(uint64_t heroId)
     return ResolveWeaponSpec(heroId, 0);
 }
 
+bool UsesInstantHitRadiusDefault(AimClass aimClass)
+{
+    return aimClass == AimClass::HitscanSingle || aimClass == AimClass::HitscanAuto ||
+        aimClass == AimClass::HitscanBurst;
+}
+
+bool SetInstantHitDefaultRadius(float radius)
+{
+    if (!std::isfinite(radius) || radius < 0.0f || radius > kMaxPredictionProjectileRadius)
+        return false;
+    std::lock_guard lock(Config::predictionProfilesMutex);
+    if (radius != Config::instantHitDefaultRadius) {
+        Config::instantHitDefaultRadius = radius;
+        Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
+    }
+    return true;
+}
+
 PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
 {
     PredictionProfile profile{};
@@ -262,7 +282,6 @@ PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
         profile.heroId = weapon->heroId;
         profile.actionId = weapon->action;
         profile.projectile = weapon->projectile;
-        ApplyInstantHitDefaultRadius(weapon, profile.projectile);
     }
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
     const auto it = Config::predictionProfiles.find(profile.profileId);
@@ -276,11 +295,7 @@ PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
     }
     if (profile.profileId.empty())
         profile.profileId = weapon ? std::string(weapon->weaponId) : "default";
-    if (profile.heroId == 0 && weapon)
-        profile.heroId = weapon->heroId;
-    if (profile.actionId == 0 && weapon)
-        profile.actionId = weapon->action;
-    return profile;
+    return weapon ? EffectivePredictionProfile(std::move(profile), *weapon) : profile;
 }
 
 PredictionProfile ResolvePredictionProfile(std::string_view profileId,
@@ -302,11 +317,13 @@ PredictionProfile ResolvePredictionProfile(std::string_view profileId,
     return profile;
 }
 
-std::vector<PredictionProfile> SnapshotPredictionProfiles()
+std::vector<PredictionProfile> SnapshotPredictionProfiles(float* instantHitRadius)
 {
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    if (instantHitRadius) *instantHitRadius = Config::instantHitDefaultRadius;
     bool changed = false;
     for (const WeaponSpec& weapon : kWeaponSpecs) {
+        if (weapon.weaponId.empty()) continue;
         const std::string profileId(weapon.weaponId);
         if (Config::predictionProfiles.find(profileId) != Config::predictionProfiles.end())
             continue;
@@ -315,7 +332,6 @@ std::vector<PredictionProfile> SnapshotPredictionProfiles()
         profile.heroId = weapon.heroId;
         profile.actionId = weapon.action;
         profile.projectile = weapon.projectile;
-        ApplyInstantHitDefaultRadius(&weapon, profile.projectile);
         Config::predictionProfiles.emplace(profileId, std::move(profile));
         changed = true;
     }
@@ -355,8 +371,13 @@ std::vector<PredictionProfile> SnapshotPredictionProfiles()
         Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
     std::vector<PredictionProfile> profiles;
     profiles.reserve(Config::predictionProfiles.size());
-    for (const auto& item : Config::predictionProfiles)
-        profiles.push_back(item.second);
+    for (const auto& item : Config::predictionProfiles) {
+        const auto weapon = std::find_if(kWeaponSpecs.begin(), kWeaponSpecs.end(), [&](const WeaponSpec& spec) {
+            return spec.weaponId == item.first;
+        });
+        profiles.push_back(weapon == kWeaponSpecs.end() || weapon->weaponId.empty()
+            ? item.second : EffectivePredictionProfile(item.second, *weapon));
+    }
     std::sort(profiles.begin(), profiles.end(), [](const auto& lhs, const auto& rhs) {
         return lhs.profileId < rhs.profileId;
     });
@@ -379,6 +400,8 @@ bool UpdatePredictionProfile(const PredictionProfile& profile)
                                                        normalized.projectile.chargeMaxSpeed);
     normalized.projectile.gravityAcceleration = (std::max)(0.0f, normalized.projectile.gravityAcceleration);
     normalized.projectile.castDelayMs = (std::max)(0.0f, normalized.projectile.castDelayMs);
+    normalized.algorithm = ClampPredictionAlgorithm(normalized.algorithm);
+    normalized.algorithmProfileId = PredictionAlgorithmId(normalized.algorithm);
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
     const auto existing = Config::predictionProfiles.find(normalized.profileId);
     if (existing != Config::predictionProfiles.end() &&

@@ -114,8 +114,11 @@ void UI::TriggerPage() {
                 activePreset.trigger.key = OW::Labels::kAimActivationKeyNoneIndex;
                 ImGui::BeginDisabled();
             }
-            presetChanged |= UISelect("##triggerSlotKey", &activePreset.trigger.key,
-                                      OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+            if (!triggerAlways)
+                presetChanged |= UIKeyBinding("##triggerSlotKey", &activePreset.trigger.key,
+                                              KeyBindingStorage::AimActivationIndex);
+            else
+                ImGui::TextDisabled("%s", L("None"));
             if (triggerAlways)
                 ImGui::EndDisabled();
             ImGui::PopItemWidth();
@@ -156,7 +159,8 @@ void UI::TriggerPage() {
 
             SettingRow(L("Ally key"), kAimbotRightLabelWidth);
             PushControlWidth();
-            presetChanged |= UISelect("##allyKey", &activePreset.allyKey, OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+            presetChanged |= UIKeyBinding("##allyKey", &activePreset.allyKey,
+                                          KeyBindingStorage::AimActivationIndex);
             ImGui::PopItemWidth();
             SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
             PushControlWidth();
@@ -200,6 +204,8 @@ void UI::TriggerPage() {
     if (ImGui::BeginPopup("##TriggerAdvanced",ImGuiWindowFlags_NoSavedSettings)) {
         UITwoColumns([&]() {
             UIGroupBox("Timing & Prediction");
+            presetChanged |= UIPredictionAlgorithmSelect("##triggerPredictionAlgorithm",
+                &activePreset.predictionAlgorithm, kAimbotRightLabelWidth);
             SettingRow("Charge Aware", kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##triggerSlotChargeAware", &activePreset.trigger.chargeAware);
 

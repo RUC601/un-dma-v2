@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -171,6 +173,19 @@ namespace OW {
                                                                SkeletonBoneMask group)
     {
         return ToggleTriggerBoneGroup(current, group);
+    }
+
+    inline SkeletonBoneMask AimMaskForDistance(SkeletonBoneMask rawMask, float distance,
+                                              float maxHeadDistance, bool strictSelection = false)
+    {
+        auto mask = NormalizeSkeletonBoneMask(rawMask);
+        const float limit = std::clamp(maxHeadDistance, 0.0f, 500.0f);
+        if (limit > 0.0f && std::isfinite(distance) && distance > limit && (mask & kSkeletonBoneHead)) {
+            mask &= ~kSkeletonBoneHead;
+            if (mask == 0)
+                return strictSelection ? 0 : kSkeletonBoneNeck;
+        }
+        return mask;
     }
 
 } // namespace OW

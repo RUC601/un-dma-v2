@@ -30,6 +30,7 @@
 #include "Game/snapshots/SnapshotAccess.hpp"
 #include "Game/FovGeometry.hpp"
 #include "Game/HeroGeometrySpec.hpp"
+#include "Game/TargetHitWindow.hpp"
 #include "output/InputOrchestrator.hpp"
 #include "Game/LeadPrediction.hpp"
 #include "Game/Motion.hpp"
@@ -395,6 +396,8 @@ namespace OW {
             uint64_t entityKey = 0;
             uint64_t actorGeneration = 0;
             int entityIndex = -1;
+            int boneId = Plexies20260609::kUnusedRenderSkeletonBone;
+            DWORD boneStartedTick = 0;
             DWORD lockStartedTick = 0;
             DWORD lastSeenTick = 0;
             float lastScore = kNoTargetScore;
@@ -718,12 +721,16 @@ namespace OW {
         // not accidentally reject protected targets when the filter is off.
         inline bool ProtectionFilterPasses(const c_entity& entity,
                                            bool requireTargetable) {
-            if (!requireTargetable)
+            if (!requireTargetable || !entity.Team)
                 return true;
             const DWORD now = GetTickCount();
             const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
                 now - entity.health_sample_tick_ms <= 500;
-            return protectionFresh && !entity.imort && !entity.barrprot;
+            if (!protectionFresh) {
+                Diagnostics::Aim("target.protection rejected reason=stale_health_sample");
+                return false;
+            }
+            return !entity.imort && !entity.barrprot;
         }
 
         inline bool ProtectionFilterPasses(const c_entity& entity) {
@@ -822,6 +829,9 @@ namespace OW {
         }
 
         inline Vector3 CoreBoneHitboxCenter(const c_entity& entity, int boneId) {
+            Vector3 nativeCenter{};
+            if (TryResolveNativeHitboxCenter(entity, boneId, nativeCenter))
+                return nativeCenter;
             const Vector3 point = CoreBoneRawPosition(entity, boneId);
             return IsZeroVector(point) || !entity.rotation_valid ? point : ResolveBoneHitboxCenter(entity, boneId, point);
         }
@@ -842,6 +852,15 @@ namespace OW {
             if (boneId == Plexies20260609::kUnusedRenderSkeletonBone)
                 return false;
 
+            Vector3 hitboxCenter{};
+            if (TryResolveNativeHitboxCenter(entity, boneId, hitboxCenter)) {
+                outBoneId = boneId;
+                outPoint = hitboxCenter;
+                if (outSource)
+                    *outSource = SkeletonSemantics::CoreAnchorSource::ObservedBone;
+                return true;
+            }
+
             Vector3 rawPoint{};
             SkeletonSemantics::CoreAnchorSource source = SkeletonSemantics::CoreAnchorSource::ObservedBone;
             if (renderSlot < 3) {
@@ -854,7 +873,7 @@ namespace OW {
             if (IsZeroVector(rawPoint) || rawPoint == entity.pos || !IsFiniteVector(rawPoint))
                 return false;
 
-            const Vector3 hitboxCenter = entity.rotation_valid
+            hitboxCenter = entity.rotation_valid
                 ? ResolveBoneHitboxCenter(entity, boneId, rawPoint) : rawPoint;
             if (IsZeroVector(hitboxCenter) || !IsFiniteVector(hitboxCenter))
                 return false;
@@ -866,23 +885,6 @@ namespace OW {
             return true;
         }
 
-        inline SkeletonBoneMask EffectiveAimBoneMaskForDistance(SkeletonBoneMask rawMask,
-                                                                 float distance) {
-            SkeletonBoneMask mask = NormalizeSkeletonBoneMask(rawMask);
-            const float headGate = std::clamp(Config::View_aimbotMaxHead(), 0.0f, 500.0f);
-            if (headGate > 0.0f &&
-                std::isfinite(distance) &&
-                distance > headGate &&
-                SkeletonBoneMaskIncludesGroup(mask, kSkeletonBoneHead)) {
-                mask &= ~kSkeletonBoneHead;
-                // Preserve the legacy Head-only behavior: beyond Max Head
-                // Distance it falls back to Neck instead of losing the target.
-                if (mask == 0)
-                    mask = kSkeletonBoneNeck;
-            }
-            return NormalizeSkeletonBoneMask(mask);
-        }
-
         inline bool TrySelectClosestSelectedSkeletonPoint(
             const c_entity& entity,
             SkeletonBoneMask rawMask,
@@ -891,7 +893,10 @@ namespace OW {
             const Vector2& crosshair,
             int& outBoneId,
             Vector3& outPoint,
-            float* outScore = nullptr) {
+            int preferredBoneId = Plexies20260609::kUnusedRenderSkeletonBone,
+            int selectionMode = 2,
+            float* outScore = nullptr,
+            int retainedBoneId = Plexies20260609::kUnusedRenderSkeletonBone) {
             const SkeletonBoneMask mask = NormalizeSkeletonBoneMask(rawMask);
             bool found = false;
             float bestScore = (std::numeric_limits<float>::max)();
@@ -907,12 +912,16 @@ namespace OW {
                 if (!TryResolveSkeletonBonePoint(entity, renderSlot, boneId, point))
                     continue;
 
-                const float score = fovContext.valid
+                float score = fovContext.valid
                     ? TargetingDetail::FovScoreDeg(fovContext, point)
                     : crosshair.Distance(view.WorldToScreen(point));
                 if (!std::isfinite(score))
                     continue;
 
+                if (selectionMode == 1 && boneId == preferredBoneId)
+                    score *= 0.35f;
+                if (boneId == retainedBoneId)
+                    score *= 0.82f;
                 if (!found || score < bestScore) {
                     found = true;
                     bestScore = score;
@@ -1295,7 +1304,16 @@ namespace OW {
                 target_lock_runtime.actorGeneration = candidate.entitySnapshot.actor_generation;
                 target_lock_runtime.entityIndex = candidate.entityIndex;
                 target_lock_runtime.lockStartedTick = now;
+                target_lock_runtime.boneId = candidate.boneId;
+                target_lock_runtime.boneStartedTick = now;
                 target_lock_runtime.active = true;
+            }
+
+            if (target_lock_runtime.entityKey == candidate.entityKey &&
+                candidate.boneId != Plexies20260609::kUnusedRenderSkeletonBone &&
+                candidate.boneId != target_lock_runtime.boneId) {
+                target_lock_runtime.boneId = candidate.boneId;
+                target_lock_runtime.boneStartedTick = now;
             }
 
             target_lock_runtime.lastSeenTick = now;
@@ -1342,276 +1360,7 @@ namespace OW {
             return state;
         }
 
-        inline Vector3 ClampMagnitude(const Vector3& value, float maxLength) {
-            const float length = value.get_length();
-            if (length <= maxLength) return value;
-            return value * (maxLength / length);
-        }
-
-        inline Vector3 AccelerationAwareVelocity(const c_entity& entity, float distance, float projectileSpeed) {
-            const Motion::EntityMotionEstimate motion = Motion::EstimateEntityMotion(entity);
-            const Vector3 baseVelocity = motion.valid ? motion.effectiveVelocity : entity.velocity;
-            const uint64_t key = PresentationTiming::ActorControlKey(entity.address ? entity.address : entity.LinkBase,entity.actor_generation);
-            if (!key) return baseVelocity;
-
-            const uint64_t now = entity.sample_time_us ? entity.sample_time_us : uint64_t(entity.render_sample_tick_ms)*1000;
-            const float safeSpeed = (std::max)(projectileSpeed, 1.0f);
-            const float leadTime = std::clamp(distance / safeSpeed, 0.0f, 1.0f);
-            Vector3 adjusted = baseVelocity;
-
-            std::lock_guard<std::mutex> lock(velocity_history_mutex);
-            if (velocity_history.size() > 256) velocity_history.clear();
-
-            VelocitySample& sample = velocity_history[key];
-            if (sample.initialized && now > sample.tick) {
-                const float dt = static_cast<float>(now - sample.tick) / 1000000.0f;
-                if (dt > 0.001f && dt < 0.5f) {
-                    Vector3 acceleration = (baseVelocity - sample.velocity) / dt;
-                    acceleration = ClampMagnitude(acceleration, 250.0f);
-                    sample.acceleration = acceleration;
-                }
-            }
-
-            if(!sample.initialized || now>sample.tick) {
-                sample.velocity=baseVelocity;sample.tick=now;sample.initialized=true;
-            }
-            return adjusted + sample.acceleration * std::clamp(leadTime*0.5f,0.0f,0.25f);
-        }
-
-        inline ProjectileRuntimeSpec ResolveProjectileRuntimeSpec(const WeaponSpec* weapon,
-                                                                  const c_entity& local,
-                                                                  bool secondary) {
-            const PredictionProfile predictionProfile = ResolvePredictionProfile(weapon);
-            if (Config::hanzoautospeed &&
-                local.HeroID == eHero::HERO_HANJO) {
-                Config::predit_level = readult(local.SkillBase + 0x40, 0xB, 0x2A5) * 85.f + 25.f;
-                if (local.skill2act) Config::predit_level = 110.f;
-            }
-
-            const float fallbackSpeed = Config::predit_level;
-            const bool fallbackGravity = Config::projectile_arc ||
-                local.HeroID == eHero::HERO_HANJO ||
-                Config::Gravitypredit;
-
-            if (!secondary &&
-                Config::hanzoautospeed &&
-                local.HeroID == eHero::HERO_HANJO &&
-                fallbackSpeed > 0.0f) {
-                return ProjectileRuntimeSpec{
-                    fallbackSpeed,
-                    predictionProfile.projectile.gravity,
-                    weapon != nullptr,
-                    predictionProfile.projectile.launchDirectionUpBias,
-                    predictionProfile.projectile.gravityAcceleration,
-                    predictionProfile.projectile.castDelayMs,
-                    predictionProfile.projectile.projectileRadius
-                };
-            }
-
-            if (predictionProfile.projectile.projectileSpeed > 0.0f) {
-                return ProjectileRuntimeSpec{
-                    predictionProfile.projectile.projectileSpeed,
-                    predictionProfile.projectile.gravity,
-                    true,
-                    predictionProfile.projectile.launchDirectionUpBias,
-                    predictionProfile.projectile.gravityAcceleration,
-                    predictionProfile.projectile.castDelayMs,
-                    predictionProfile.projectile.projectileRadius
-                };
-            }
-
-            return ProjectileRuntimeSpec{
-                fallbackSpeed,
-                fallbackGravity,
-                false,
-                0.0f,
-                9.8f,
-                0.0f,
-                predictionProfile.projectile.projectileRadius
-            };
-        }
-
-        inline Vector3 SnapshotLocalAimAngleForLeadEstimate() {
-            const uint64_t playerControllerBase = SDK ? SDK->g_player_controller.load() : 0;
-            if (playerControllerBase) {
-                const Vector3 viewDir = ReadPlayerControllerViewDirection(playerControllerBase);
-                const float dirLen = viewDir.Size();
-                if (std::isfinite(viewDir.X) &&
-                    std::isfinite(viewDir.Y) &&
-                    std::isfinite(viewDir.Z) &&
-                    dirLen > 0.5f &&
-                    dirLen < 1.5f) {
-                    return DirectionToAimEuler(viewDir);
-                }
-            }
-
-            Matrix view{}, viewXor{};
-            SnapshotViewMatrices(view, viewXor);
-            const XMFLOAT3 forward = viewXor.get_rotation();
-            const float forwardLen = sqrtf(
-                forward.x * forward.x +
-                forward.y * forward.y +
-                forward.z * forward.z);
-            if (std::isfinite(forward.x) &&
-                std::isfinite(forward.y) &&
-                std::isfinite(forward.z) &&
-                forwardLen > 0.5f &&
-                forwardLen < 1.5f) {
-                return DirectionToAimEuler(Vector3(forward.x, forward.y, forward.z));
-            }
-
-            return Vector3{};
-        }
-
-        inline Vector3 AimAngleForWorldPoint(const Vector3& worldPoint) {
-            const Vector3 camera = CameraPosition();
-            const Vector3 delta = worldPoint - camera;
-            const float distance = delta.Size();
-            if (!std::isfinite(distance) || distance <= 0.0001f)
-                return Vector3{};
-            return DirectionToAimEuler(delta / distance);
-        }
-
-        inline int ResolveLeadAimMethod(bool secondary) {
-            if (secondary) {
-                return Config::SecondaryAimMethod(Config::Flick2 ? 1 : 0);
-            }
-
-            const int behavior = Config::ClampAimBehaviorIndex(Config::View_aimBehavior());
-            return Config::AimBehaviorMethod(behavior);
-        }
-
-        inline float ResolveLeadSmoothInput(bool secondary) {
-            if (secondary) {
-                if (Config::Flick2)
-                    return Config::AimBehaviorSmoothInput(Config::kAimBehaviorFlick, Config::Flick_smooth2);
-                if (Config::Tracking2)
-                    return Config::AimBehaviorSmoothInput(Config::kAimBehaviorTracking, Config::Tracking_smooth2);
-                return 1.0f;
-            }
-
-            const int behavior = Config::ClampAimBehaviorIndex(Config::View_aimBehavior());
-            const float scalePercent = Config::IsFlickBehavior(behavior)
-                ? Config::View_Flick_smooth()
-                : Config::View_Tracking_smooth();
-            return Config::AimBehaviorSmoothInput(behavior, scalePercent);
-        }
-
-        inline LeadTimingEstimate EstimateLeadTimingForAimPoint(const Vector3& rawAimPoint, bool secondary) {
-            const int method = ResolveLeadAimMethod(secondary);
-            AimSettleEstimateInput input{};
-            input.localAngle = SnapshotLocalAimAngleForLeadEstimate();
-            input.targetAngle = AimAngleForWorldPoint(rawAimPoint);
-            input.method = method;
-            input.slotSpeedScale = ResolveLeadSmoothInput(secondary);
-            input.methodSpeedScale = Config::RuntimeAimMethodAngularSpeedScale(method);
-            input.constantAngularSpeedDeg = Config::RuntimeAimConstantAngularSpeedDeg();
-            input.frameSeconds = kLeadDefaultFrameSeconds;
-
-            return BuildLeadTiming(
-                EstimateAimSettleTimeMs(input),
-                Config::outputInputDelayMs);
-        }
-
-        inline const char* MotionVelocitySourceName(Motion::VelocitySource source) {
-            switch (source) {
-            case Motion::VelocitySource::Reported:
-                return "reported";
-            case Motion::VelocitySource::WorldDeltaFallback:
-                return "world_delta";
-            case Motion::VelocitySource::None:
-            default:
-                return "none";
-            }
-        }
-
-        inline LeadPredictionResult ResolveLeadPrediction(const c_entity& entity,
-                                                          Vector3 rawAimPoint,
-                                                          const ProjectileRuntimeSpec& projectile,
-                                                          bool predictionEnabled,
-                                                          bool secondary,
-                                                          float extraPreFireDelayMs = 0.0f) {
-            LeadPredictionResult result{};
-            result.predictionEnabled = predictionEnabled;
-            result.secondary = secondary;
-            result.rawAimPoint = rawAimPoint;
-            result.preFireAimPoint = rawAimPoint;
-            result.finalAimPoint = rawAimPoint;
-            result.projectile = projectile;
-
-            if (!predictionEnabled || IsZeroVector(rawAimPoint))
-                return result;
-
-            const Vector3 camera = CameraPosition();
-            result.distance = camera.DistTo(rawAimPoint);
-            const Motion::EntityMotionEstimate motion = Motion::EstimateEntityMotion(entity);
-            result.targetVelocity = AccelerationAwareVelocity(entity, result.distance, projectile.projectileSpeed);
-            result.timing = EstimateLeadTimingForAimPoint(rawAimPoint, secondary);
-            const float preFireMaxMs = (extraPreFireDelayMs > 0.0f || projectile.castDelayMs > 0.0f) ? 1000.0f : kLeadMaxPreFireDelayMs;
-            result.timing.preFireDelayMs = ClampLeadDelayMs(
-                result.timing.preFireDelayMs + extraPreFireDelayMs + projectile.castDelayMs,
-                preFireMaxMs);
-            result.preFireAimPoint = ApplyTargetMotionPreFireDelay(
-                rawAimPoint,
-                result.targetVelocity,
-                result.timing.preFireDelayMs,
-                preFireMaxMs);
-            result.finalAimPoint = result.preFireAimPoint;
-
-            if (projectile.projectileSpeed > 0.0f) {
-                const BallisticIntercept intercept = SolveBallisticIntercept(
-                    camera, result.preFireAimPoint, result.targetVelocity, projectile.projectileSpeed,
-                    projectile.gravity ? projectile.gravityAcceleration : 0.0f);
-                if (intercept.solved)
-                    result.finalAimPoint = CompensateProjectileLaunchBias(
-                        camera, intercept.aimPoint, projectile.launchDirectionUpBias);
-            }
-
-            Diagnostics::Aim("lead.solve enabled=%d secondary=%d projectile(source=%s speed=%.3f gravity=%d acceleration=%.3f upBias=%.4f castMs=%.3f) motion(source=%s confidence=%.3f velocity=(%.3f,%.3f,%.3f)) timing(settleMs=%.3f inputMs=%d extraPreFireMs=%.3f preFireMs=%.3f) raw=(%.3f,%.3f,%.3f) preFire=(%.3f,%.3f,%.3f) final=(%.3f,%.3f,%.3f)",
-                predictionEnabled ? 1 : 0,
-                secondary ? 1 : 0,
-                projectile.fromWeaponSpec ? "weapon" : "legacy",
-                projectile.projectileSpeed,
-                projectile.gravity ? 1 : 0,
-                projectile.gravity ? projectile.gravityAcceleration : 0.0f,
-                projectile.launchDirectionUpBias,
-                projectile.castDelayMs,
-                MotionVelocitySourceName(motion.velocitySource),
-                motion.confidence,
-                result.targetVelocity.X,
-                result.targetVelocity.Y,
-                result.targetVelocity.Z,
-                result.timing.estimatedSettleMs,
-                result.timing.inputDelayMs,
-                extraPreFireDelayMs,
-                result.timing.preFireDelayMs,
-                result.rawAimPoint.X,
-                result.rawAimPoint.Y,
-                result.rawAimPoint.Z,
-                result.preFireAimPoint.X,
-                result.preFireAimPoint.Y,
-                result.preFireAimPoint.Z,
-                result.finalAimPoint.X,
-                result.finalAimPoint.Y,
-                result.finalAimPoint.Z);
-
-            return result;
-        }
-
-        inline Vector3 ApplyPrediction(const c_entity& entity, Vector3 position, bool predit, bool secondary) {
-            if (IsZeroVector(position)) return position;
-
-            const c_entity local = SnapshotLocalEntity();
-            const WeaponSpec* weapon = ResolveWeaponSpec(local.HeroID, Config::View_aimbotAttack());
-            const bool resolvedPrediction = ResolvePredictionEnabled(
-                ClampPredictionOverride(Config::View_aimbotPredictionMode()),
-                weapon,
-                predit);
-            if (!resolvedPrediction) return position;
-
-            const ProjectileRuntimeSpec projectile = ResolveProjectileRuntimeSpec(weapon, local, secondary);
-            return ResolveLeadPrediction(entity, position, projectile, true, secondary).finalAimPoint;
-        }
+        #include "Game/TargetPredictionPipeline.inl"
 
         inline float CandidateScore(const Vector3& position, const FovRuntimeContext& fovContext) {
             return TargetingDetail::FovScoreDeg(fovContext, position);
@@ -1888,7 +1637,7 @@ namespace OW {
             for (size_t i = 0; i < entities.size(); i++) {
                 AimCandidateConfig candidateConfig(entities[i].HeroID);
                 const bool contourFallback = contour.enabled && !entities[i].Vis;
-                // Contour/leak recognition supplies a world aim point. The
+                // Contour/leak-shot recognition supplies a world aim point. The
                 // behavior layer still decides movement and firing, so a
                 // projectile hero must not lose the candidate merely because
                 // its normal weapon path enables prediction.
@@ -1917,9 +1666,14 @@ namespace OW {
 
                     const SkeletonBoneMask rawCandidateMask=Config::slotTargetRules.active && !entities[i].Team ?
                         Config::slotTargetRules.allyBoneMask : Config::View_aimbotBoneMask();
-                    const SkeletonBoneMask candidateMask=contourFallback ?
-                        Contour::AimMaskForDistance(rawCandidateMask,initialDistance,Config::View_aimbotMaxHead()) :
-                        TargetingDetail::EffectiveAimBoneMaskForDistance(rawCandidateMask,initialDistance);
+                    const int boneSelectionMode = Config::slotTargetRules.active
+                        ? Config::slotTargetRules.boneSelectionMode : Config::aimBoneSelectionMode;
+                    const int preferredBone = Config::slotTargetRules.active
+                        ? Config::slotTargetRules.preferredBone : Config::aimPreferredBone;
+                    const SkeletonBoneMask candidateMask = AimMaskForDistance(
+                        rawCandidateMask, initialDistance, Config::View_aimbotMaxHead(), boneSelectionMode == 0);
+                    if (candidateMask == 0)
+                        continue;
                     int candidateBoneId = BONE_HEAD;
                     Vector3 rootPosition{};
                     const auto contourObservation=contourFallback ? contour.ResolveMask(i,candidateMask) : Contour::Observation{};
@@ -1933,7 +1687,11 @@ namespace OW {
                             aimViewMatrix,
                             CrossHair,
                             candidateBoneId,
-                            rootPosition)) {
+                            rootPosition,
+                            AimBoneToSkeletonBoneId(preferredBone),
+                            boneSelectionMode == 1 && entities[i].velocity.Size() > 2.0f ? 1 : 2,
+                            nullptr,
+                            currentLockedCandidate ? activeLock.boneId : Plexies20260609::kUnusedRenderSkeletonBone)) {
                         continue;
                     }
 
@@ -2022,6 +1780,9 @@ namespace OW {
                             next.motion = TargetingDetail::EstimateMotionState(entities[i], Vec2);
                             next.lockPolicy = lockPolicy;
                             next.weaponSpec = weaponSpec;
+                            if (!contourFallback && weaponSpec)
+                                next.nativeHitWindow = MakeNativeHitWindowInput(lead, weaponSpec->aimClass,
+                                    Config::View_hitbox());
                             next.effectiveHitWindow = ResolveEffectiveHitWindow(
                                 entities[i],
                                 next.boneId,
@@ -2222,13 +1983,20 @@ namespace OW {
                     const float angularWindowDeg = RAD2DEG(hitWindow / distance);
                     const float angularScoreDeg = TargetingDetail::FovScoreDeg(fovContext, aimPoint);
                     if (!std::isfinite(angularWindowDeg) || angularWindowDeg <= 0.0f ||
-                        !std::isfinite(angularScoreDeg) ||
-                        angularScoreDeg > angularWindowDeg + 0.0001f) {
+                        !std::isfinite(angularScoreDeg)) {
                         continue;
                     }
 
-                    const float normalizedScore = angularScoreDeg /
-                        (std::max)(angularWindowDeg, 0.0001f);
+                    std::optional<float> nativeScore;
+                    if (weaponSpec) {
+                        const auto hitWindowInput = MakeNativeHitWindowInput(lead, weaponSpec->aimClass, hitboxScale);
+                        nativeScore = NativeHitWindowScore(entity, boneId, now, fovContext.camera,
+                            aimPoint - fovContext.camera, hitWindowInput);
+                    }
+                    const float fallbackScore = angularScoreDeg / (std::max)(angularWindowDeg, 0.0001f);
+                    if (nativeScore ? *nativeScore > 1.0f : angularScoreDeg > angularWindowDeg + 0.0001f)
+                        continue;
+                    const float normalizedScore = nativeScore.value_or(fallbackScore);
                     const bool preferred=candidateConfig.Preferred(entity);
                     if (best.valid && !AimPlan::Better(preferred,normalizedScore,entity.address?entity.address:entity.LinkBase,best.planPreferred,bestNormalizedScore,best.entityKey))
                         continue;
@@ -2285,9 +2053,13 @@ namespace OW {
         return best;
     }
 
-    inline Vector3 GetVector3(bool predit = false, bool ignoreInvisible = Config::View_aimbotIgnoreInvisible()) {
+    inline TargetCandidate AcquireCurrentAimTarget(bool predit, bool ignoreInvisible = Config::View_aimbotIgnoreInvisible()) {
         const auto frame=consumerFrame?consumerFrame:SnapshotFrame();
-        const TargetCandidate candidate = AcquireTarget(*frame, predit, ignoreInvisible);
+        return AcquireTarget(*frame, predit, ignoreInvisible);
+    }
+
+    inline Vector3 GetVector3(bool predit = false, bool ignoreInvisible = Config::View_aimbotIgnoreInvisible()) {
+        const TargetCandidate candidate = AcquireCurrentAimTarget(predit, ignoreInvisible);
         return candidate.valid ? candidate.aimPoint : Vector3{};
     }
 

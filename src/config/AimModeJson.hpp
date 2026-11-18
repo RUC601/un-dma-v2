@@ -1,5 +1,6 @@
 #pragma once
 #include "config/AimPlanJson.hpp"
+#include "Game/AimArchitecture.hpp"
 #include "Game/AimBehaviorMode.hpp"
 namespace OW::Config::ModeJson {
 using namespace OW::AimPlan::Json;
@@ -46,11 +47,30 @@ inline Value TuningJson(const AimBehaviorTuning& t,Allocator& a) {
     Put(v,"startRetarget",t.startLimiter.restartOnTargetChange,a);
     return v;
 }
-inline AimBehaviorTuning ReadTuning(const Value& v,AimBehaviorTuning t={}) {
+inline AimBehaviorTuning ReadTuning(const Value& v,
+                                    AimBehaviorTuning t = {},
+                                    int behavior = static_cast<int>(OW::AimBehaviorType::Tracking)) {
     Read(v,"smooth",t.smooth);
+    const bool hasAutoshot = v.IsObject() && v.HasMember("autoshot");
+    const bool hasKeepFiring = v.IsObject() && v.HasMember("keepFiring");
+    const bool hasFirePolicy = v.IsObject() && v.HasMember("firePolicy");
     Read(v,"autoshot",t.autoshot);
     Read(v,"keepFiring",t.keepFiring);
     Read(v,"firePolicy",t.firePolicy);
+    if (!hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
+        t.firePolicy = t.keepFiring
+            ? static_cast<int>(OW::FirePolicyType::KeepFiring)
+            : t.autoshot
+                ? static_cast<int>(OW::FirePolicyType::SingleShot)
+                : static_cast<int>(OW::DefaultFirePolicyForBehavior(
+                    OW::ClampAimBehavior(behavior)));
+    } else if (!hasFirePolicy && !hasKeepFiring && !hasAutoshot &&
+               t.firePolicy == static_cast<int>(OW::FirePolicyType::ManualOnly)) {
+        // Old mode caches often omitted all fire fields. Their behavior still
+        // supplies the documented default until the cache is saved again.
+        t.firePolicy = static_cast<int>(OW::DefaultFirePolicyForBehavior(
+            OW::ClampAimBehavior(behavior)));
+    }
     Read(v,"pitchScale",t.pitchScale);
     Read(v,"maxAimTime",t.maxAimTime);
     Read(v,"minCharge",t.minCharge);
@@ -116,7 +136,7 @@ inline std::vector<SlotBehaviorConfig> ReadConfigs(const Value& value) {
             int type=-1; Read(b,"behavior",type);
             if(type<0||type>4||c.behaviors.size()>=5||!b.IsObject()||!b.HasMember("tuning")||
                std::any_of(c.behaviors.begin(),c.behaviors.end(),[&](const auto& old){return old.behavior==type;})) continue;
-            c.behaviors.push_back({type,ReadTuning(b["tuning"])});
+            c.behaviors.push_back({type,ReadTuning(b["tuning"], {}, type)});
         }
         if(v.IsObject()&&v.HasMember("motions")&&v["motions"].IsArray()) for(const auto& m:v["motions"].GetArray()) {
             const auto motion=ReadMotion(m);

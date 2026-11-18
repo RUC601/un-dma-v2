@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "Utils/Types.hpp"
+#include "Game/AimArchitecture.hpp"
 #include "Game/BallisticSolver.hpp"
 
 namespace OW {
@@ -16,6 +17,8 @@ struct ProjectileRuntimeSpec {
     float gravityAcceleration = 9.8f;
     float castDelayMs = 0.0f;
     float projectileRadius = 0.0f;
+    int algorithm = static_cast<int>(PredictionAlgorithm::BallisticIntercept);
+    bool directHitOnly = true;
 };
 
 struct LeadTimingEstimate {
@@ -41,10 +44,42 @@ struct LeadPredictionResult {
     Vector3 preFireAimPoint{};
     Vector3 finalAimPoint{};
     Vector3 targetVelocity{};
+    Vector3 localVelocity{};
+    bool relativeMotion = false;
     ProjectileRuntimeSpec projectile{};
     LeadTimingEstimate timing{};
     float distance = 0.0f;
 };
+
+inline NativeHitWindowInput MakeNativeHitWindowInput(const LeadPredictionResult& lead, AimClass aimClass,
+                                                     float hitboxScalePercent)
+{
+    const auto& projectile = lead.projectile;
+    const bool instantHit = projectile.projectileSpeed <= 0.0f &&
+        (aimClass == AimClass::HitscanSingle || aimClass == AimClass::HitscanAuto || aimClass == AimClass::HitscanBurst);
+    const bool straightProjectile = lead.predictionEnabled && projectile.directHitOnly &&
+        projectile.projectileSpeed > 0.0f &&
+        (aimClass == AimClass::ProjectileSingle || aimClass == AimClass::ProjectileAuto || aimClass == AimClass::ProjectileExplosive);
+    if (!instantHit && !straightProjectile)
+        return {};
+
+    NativeHitWindowInput input{};
+    input.projectileRadius = projectile.projectileRadius;
+    input.hitboxScalePercent = hitboxScalePercent;
+    input.projectileSpeed = projectile.projectileSpeed;
+    input.gravity = projectile.gravity;
+    input.gravityAcceleration = projectile.gravityAcceleration;
+    if (straightProjectile) {
+        // A moving target reduces to a stationary capsule in the projectile's
+        // relative frame after advancing the target through the pre-fire delay.
+        input.displacement = lead.targetVelocity * (lead.timing.preFireDelayMs / 1000.0f);
+        input.targetVelocity = lead.targetVelocity;
+        input.launchUpBias = projectile.launchDirectionUpBias;
+    } else {
+        input.displacement = lead.finalAimPoint - lead.rawAimPoint;
+    }
+    return input;
+}
 
 inline constexpr float kLeadDefaultFrameSeconds = 1.0f / 144.0f;
 inline constexpr float kLeadMinFrameSeconds = 1.0f / 1000.0f;
@@ -59,6 +94,20 @@ inline bool IsFiniteLeadVector(const Vector3& value)
 {
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
 }
+
+inline Vector3 ApplyPredictionMotionModel(const Vector3& targetVelocity,
+                                           const Vector3& localVelocity,
+                                           int algorithm)
+{
+    const Vector3 effective = IsRelativeMotionPredictionAlgorithm(algorithm)
+        ? targetVelocity - localVelocity : targetVelocity;
+    const float length = effective.Size();
+    if (!std::isfinite(length) || length <= kLeadMaxTargetSpeed)
+        return IsFiniteLeadVector(effective) ? effective : Vector3{};
+    return effective * (kLeadMaxTargetSpeed / length);
+}
+
+
 
 inline Vector3 CompensateProjectileLaunchBias(const Vector3& camera,
                                              const Vector3& ballisticAimPoint,
@@ -173,6 +222,21 @@ inline Vector3 ApplyTargetMotionPreFireDelay(const Vector3& rawAimPoint,
 
     const Vector3 safeVelocity = ClampVectorMagnitude(targetVelocity, kLeadMaxTargetSpeed);
     return rawAimPoint + safeVelocity * delaySeconds;
+}
+
+inline Vector3 ApplyLegacyLinearPrediction(const Vector3& rawAimPoint,
+                                           const Vector3& targetVelocity,
+                                           const ProjectileRuntimeSpec& projectile,
+                                           float preFireDelayMs)
+{
+    // Keep the low-dimensional path deliberately small and deterministic. It
+    // uses the observed velocity and total shot delay only. It does not infer
+    // acceleration or solve a ballistic intercept.
+    const float delay = ClampLeadDelayMs(preFireDelayMs, kLeadMaxPreFireDelayMs);
+    if (delay <= 0.0f || !IsFiniteLeadVector(rawAimPoint))
+        return rawAimPoint;
+    const Vector3 velocity = ClampVectorMagnitude(targetVelocity, kLeadMaxTargetSpeed);
+    return ApplyTargetMotionPreFireDelay(rawAimPoint, velocity, delay);
 }
 
 } // namespace OW

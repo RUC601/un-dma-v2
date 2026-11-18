@@ -21,12 +21,11 @@
 #include "vision/ContourService.hpp"
 
 namespace {
-// Native shape acquisition is shared by the three independent ESP layers.
-// Keep this separate from draw_hitbox: contour/fill must still receive a
-// fresh native snapshot when the wireframe layer is disabled.
-bool NativeHitboxDisplayEnabled() {
-    const auto settings=V2::HeroSettings::Snapshot();
-    return OW::Config::draw_hitbox || settings->display.hitboxContour || settings->display.hitboxFill;
+// Native shapes are a runtime geometry source for Aim, Trigger and Hero
+// Skills.  Display toggles only control rendering and must not decide whether
+// the target-selection pipeline receives the native sample.
+bool NativeHitboxRuntimeEnabled() {
+    return true;
 }
 }
 
@@ -1091,7 +1090,7 @@ void entity_thread() {
                     cached.skeletonCache.valid=false;
                 }
                 const auto& skeleton=cached.skeletonCache;
-                const bool nativeGeometry=NativeHitboxDisplayEnabled() && offset::IsCnProfile() && item.skeletonPrepared;
+                const bool nativeGeometry=NativeHitboxRuntimeEnabled() && offset::IsCnProfile() && item.skeletonPrepared;
                 if(nativeGeometry && !cached.nativeHitboxLayout.Matches(cached.velocity,skeleton.revision)) {
                     ++pipelineStats.hotGeometryLayoutLoads;
                     OW::NativeHitboxes::LoadLayout(cached.nativeHitboxLayout,cached.velocity,skeleton.revision,skeleton.boneCount,
@@ -1275,7 +1274,7 @@ void entity_thread() {
             item.readCompletedTick = skeletonCompleted;
             std::fill(next.model_shapes.valid.begin(),next.model_shapes.valid.end(),false);
             if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
-                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxDisplayEnabled()) {
+                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxRuntimeEnabled()) {
                     const auto* nativeModel = cached.skeletonCache.shapeModelIndex >= 0
                         ? &OW::ModelShapes::kModels[cached.skeletonCache.shapeModelIndex] : nullptr;
                     next.native_hitboxes=item.nativeHitboxes.Commit(
@@ -2850,6 +2849,15 @@ void entity_thread() {
                         } else if (entity.HeroID == OW::eHero::HERO_DVA) {
                             sample.dvaMechKnown=OW::HeroSkillSignals::ReadDvaMech(entity.LinkBase,sample.dvaInMech,read);
                             if (sample.dvaMechKnown) sample.dvaMechTick=slowNow;
+                        } else if (entity.HeroID == OW::eHero::HERO_SOJOURN) {
+                            float fraction = -1.0f;
+                            sample.sojournRailChargeKnown = OW::HeroSkillSignals::ReadSojournRailCharge(
+                                entity.SkillBase, fraction, read, &slowCache.heroSkillScalarCache);
+                            if (sample.sojournRailChargeKnown) {
+                                sample.sojournRailCharge = fraction;
+                                sample.sojournRailChargeTick = slowNow;
+                                sample.sampledTick = slowNow;
+                            }
                         }
                         // Failed reads are unknown. Publication never renews an old sample's time.
                         slowCache.heroSkillSignals = sample;

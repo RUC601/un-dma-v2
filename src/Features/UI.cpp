@@ -21,6 +21,7 @@ using namespace UI::ValueFormat;
 #include "output/AutomaticDeviceSelection.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -807,14 +808,6 @@ static float VisualTransition(ImGuiID id, bool enabled, float speed = 16.0f) {
     return current;
 }
 
-int FindMenuToggleKeyIndex(int vk) {
-    for (int i = 0; i < IM_ARRAYSIZE(kMenuToggleVk); ++i) {
-        if (kMenuToggleVk[i] == vk)
-            return i;
-    }
-    return 0;
-}
-
 int ClampHeroSelectionIndex(int index) {
     return ImClamp(index, 0, IM_ARRAYSIZE(kHeroOptions) - 1);
 }
@@ -1176,16 +1169,17 @@ bool UIAlertHeroSelect(const char* id, uint64_t& heroId, const std::function<boo
     return changed;
 }
 
-static bool TypePickerPanel() {
+static bool TypePickerPanel(int selectedIndex, bool includeCurrent,
+                            const std::function<void(int)>& selectHero) {
     HeroBrowserSize();
     if (!ImGui::BeginPopup("TypePickerPopup")) return false;
     static char search[128]{};
     ImGui::TextUnformatted(L("Browse all heroes"));
     HeroBrowserSearch(search);
-    const bool changed = HeroBrowserGrid(search, true, ControlHeight() + 8,
-        [](const HeroOption& hero) { return CurrentHeroOption().heroId == hero.heroId; },
+    const bool changed = HeroBrowserGrid(search, includeCurrent, ControlHeight() + 8,
+        [&](const HeroOption& hero) { return kHeroOptions[selectedIndex].heroId == hero.heroId; },
         [](const HeroOption&) -> const char* { return nullptr; },
-        [](int i) { UI::state.followDetectedHero = false; SelectTypeIndex(i); ImGui::CloseCurrentPopup(); });
+        [&](int i) { selectHero(i); ImGui::CloseCurrentPopup(); });
     if (ImGui::Button(L("Done"))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
     return changed;
@@ -1774,6 +1768,108 @@ bool UISelect(const char* label, int* current, const char* const items[], int it
     return changed;
 }
 
+namespace {
+
+ImGuiID g_keyBindingCaptureId = 0;
+bool g_keyBindingCaptureArmed = false;
+
+std::string VirtualKeyLabel(int vk) {
+    if (vk == 0)
+        return L("None");
+    if (vk == VK_LBUTTON) return L("Left Mouse");
+    if (vk == VK_RBUTTON) return L("Right Mouse");
+    if (vk == VK_MBUTTON) return L("Middle Mouse");
+    if (vk == VK_XBUTTON1) return L("Mouse 4");
+    if (vk == VK_XBUTTON2) return L("Mouse 5");
+
+    wchar_t name[64]{};
+    const UINT scan = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
+    if (scan && GetKeyNameTextW(static_cast<LONG>(scan) << 16, name, 64)) {
+        char utf8[128]{};
+        if (WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8,
+                                static_cast<int>(sizeof(utf8)), nullptr, nullptr))
+            return utf8;
+    }
+
+    char fallback[32]{};
+    std::snprintf(fallback, sizeof(fallback), "VK 0x%02X", vk);
+    return fallback;
+}
+
+std::string KeyBindingLabel(int value, UI::KeyBindingStorage storage) {
+    if (storage == UI::KeyBindingStorage::AimActivationIndex) {
+        if (!OW::Labels::IsCustomAimActivationKey(value))
+            return L(OW::Labels::AimActivationKeyName(value));
+        return VirtualKeyLabel(OW::Labels::AimActivationKeyVk(value));
+    }
+    return VirtualKeyLabel(value);
+}
+
+bool MouseButtonDown() {
+    return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
+}
+
+} // namespace
+
+bool UI::UIKeyBinding(const char* id,
+                      int* value,
+                      KeyBindingStorage storage,
+                      bool allowSideButtons) {
+    if (!value)
+        return false;
+
+    const bool disabled = (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
+    const ImGuiID bindingId = ImGui::GetID(id);
+    const bool capturing = g_keyBindingCaptureId == bindingId;
+    const std::string bindingLabel = capturing
+        ? std::string(L("Press a key... Esc cancels"))
+        : KeyBindingLabel(*value, storage);
+    bool changed = false;
+
+    ImGui::PushID(bindingId);
+    if (ImGui::Button(bindingLabel.c_str(), ImVec2(220.0f, ControlHeight()))) {
+        g_keyBindingCaptureId = bindingId;
+        g_keyBindingCaptureArmed = false;
+    }
+    ImGui::PopID();
+
+    if (!disabled && g_keyBindingCaptureId == bindingId) {
+        if (!g_keyBindingCaptureArmed) {
+            if (!MouseButtonDown())
+                g_keyBindingCaptureArmed = true;
+        } else if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+            UIKeyBindingCancelCapture();
+        } else {
+            for (int vk = 1; vk < 256; ++vk) {
+                if (!allowSideButtons && (vk == VK_XBUTTON1 || vk == VK_XBUTTON2))
+                    continue;
+                if (!V2::HeroSettings::SupportedKey(vk) ||
+                    !(GetAsyncKeyState(vk) & 0x8000))
+                    continue;
+
+                const int captured = storage == KeyBindingStorage::AimActivationIndex
+                    ? OW::Labels::AimActivationKeyIndexFromVk(vk) : vk;
+                if (*value != captured) {
+                    *value = captured;
+                    changed = true;
+                }
+                UIKeyBindingCancelCapture();
+                break;
+            }
+        }
+    }
+    return changed;
+}
+
+void UI::UIKeyBindingCancelCapture() {
+    g_keyBindingCaptureId = 0;
+    g_keyBindingCaptureArmed = false;
+}
+
 static std::string SkeletonBoneMaskPreview(OW::SkeletonBoneMask rawMask) {
     const OW::SkeletonBoneMask mask = OW::NormalizeSkeletonBoneMask(rawMask);
     if (OW::IsAllSkeletonBonesSelected(mask))
@@ -2197,8 +2293,13 @@ static std::vector<int> AttackActionsForHero(uint64_t heroId) {
     return actions;
 }
 
-bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId) {
+bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int scopeFilter) {
     std::vector<int> actionValues = AttackActionsForHero(heroId);
+    if (scopeFilter >= 0) {
+        std::erase_if(actionValues, [&](int value) {
+            return static_cast<int>(OW::Config::DefaultAimScopeRequirementForHeroAction(heroId, value)) != scopeFilter;
+        });
+    }
     if (actionValues.empty())
         return false;
 
@@ -2212,6 +2313,11 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId) {
         changed = true;
     }
 
+    if (scopeFilter >= 0 && actionValues.size() == 1) {
+        ImGui::TextDisabled("%s", L(OW::AttackActionNameForHero(heroId, *action)));
+        return changed;
+    }
+
     std::vector<const char*> actionLabels;
     actionLabels.reserve(actionValues.size());
     for (int value : actionValues)
@@ -2222,6 +2328,33 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId) {
         changed = true;
     }
 
+    return changed;
+}
+
+bool UIPredictionAlgorithmSelect(const char* label, int* algorithm, float labelWidth) {
+    const char* const labels[] = {
+        L("Legacy Linear"),
+        L("Legacy Linear Relative Motion"),
+        L("Ballistic Intercept"),
+        L("Ballistic Intercept Relative Motion")
+    };
+    *algorithm = OW::ClampPredictionAlgorithm(*algorithm);
+    const int storedAlgorithm = *algorithm;
+    const int algorithmValues[] = {
+        static_cast<int>(OW::PredictionAlgorithm::LegacyLinear),
+        static_cast<int>(OW::PredictionAlgorithm::LegacyLinearRelativeMotion),
+        static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept),
+        static_cast<int>(OW::PredictionAlgorithm::BallisticInterceptRelativeMotion)
+    };
+    int selection = 0;
+    for (int index = 0; index < IM_ARRAYSIZE(algorithmValues); ++index)
+        if (algorithmValues[index] == storedAlgorithm) selection = index;
+    SettingRow(L("Prediction algorithm"), labelWidth);
+    PushControlWidth();
+    const bool changed = UISelect(label, &selection, labels, IM_ARRAYSIZE(labels));
+    if (changed) *algorithm = algorithmValues[selection];
+    ImGui::SetItemTooltip("%s", L("Both algorithms use the same weapon and projectile data."));
+    ImGui::PopItemWidth();
     return changed;
 }
 
@@ -2604,12 +2737,15 @@ void DrawRuntimeReadinessDetails() {
     CloseGroupBox();
 }
 
-static void DrawHeroStrip() {
-    static int lastSelection = -1;
+static void DrawHeroStrip(int selectedIndex, bool includeCurrent,
+                          const std::function<void(int)>& selectHero) {
     const float browseSize = ControlHeight() + 6;
     const float stripWidth = (std::max)(1.0f, ImGui::GetContentRegionAvail().x - browseSize - 8);
     ImGui::BeginChild("HeroStrip", ImVec2(stripWidth, 82), false,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    auto* stripState = ImGui::GetStateStorage();
+    const ImGuiID lastSelectionId = ImGui::GetID("##lastHero");
+    const int lastSelection = stripState->GetInt(lastSelectionId, -1);
     const ImGuiID wheelOwner = ImGui::GetID("##heroWheel");
     if (ImGui::IsWindowHovered()) {
         // Reserve both wheel axes for this strip so the settings page stays still.
@@ -2619,14 +2755,15 @@ static void DrawHeroStrip() {
         if (!io.KeyCtrl && (io.MouseWheel != 0 || io.MouseWheelH != 0))
             ImGui::SetScrollX(ImGui::GetScrollX() - (io.MouseWheel + io.MouseWheelH) * 120.0f);
     }
-    for (int i = 0; i < IM_ARRAYSIZE(kHeroOptions); ++i) {
-        if (i) ImGui::SameLine(0, 8);
+    const int firstHero = includeCurrent ? 0 : 1;
+    for (int i = firstHero; i < IM_ARRAYSIZE(kHeroOptions); ++i) {
+        if (i != firstHero) ImGui::SameLine(0, 8);
         const auto& hero = kHeroOptions[i];
         ImGui::PushID(i);
-        const bool selected = UI::state.selectedTypeIndex == i;
+        const bool selected = selectedIndex == i;
         const auto pos = ImGui::GetCursorScreenPos();
         if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kColAccentDark));
-        if (ImGui::Button("##hero", ImVec2(52,58))) { UI::state.followDetectedHero = false; SelectTypeIndex(i); }
+        if (ImGui::Button("##hero", ImVec2(52,58))) selectHero(i);
         if (selected) ImGui::PopStyleColor();
         auto* draw = ImGui::GetWindowDrawList();
         if (auto* avatar = HeroAvatarForOption(hero))
@@ -2637,7 +2774,7 @@ static void DrawHeroStrip() {
         ImGui::SetItemTooltip("%s\n%s", HeroScopeName(hero), L("Scroll the mouse wheel to browse heroes."));
         ImGui::PopID();
     }
-    lastSelection = UI::state.selectedTypeIndex;
+    stripState->SetInt(lastSelectionId, selectedIndex);
     ImGui::EndChild();
     ImGui::SameLine(0, 8);
     const auto pos = ImGui::GetCursorScreenPos();
@@ -2651,6 +2788,17 @@ static void DrawHeroStrip() {
     ImGuiContext& g = *ImGui::GetCurrentContext();
     IMGUI_TEST_ENGINE_ITEM_INFO(ImGui::GetItemID(),"Browse all heroes",g.LastItemData.StatusFlags);
     ImGui::SetItemTooltip("%s",L("Browse all heroes"));
+    TypePickerPanel(selectedIndex, includeCurrent, selectHero);
+}
+
+const HeroOption& DrawPredictionHeroPicker() {
+    static int selectedIndex = 0;
+    if (selectedIndex == 0)
+        selectedIndex = (std::max)(1, ClampHeroSelectionIndex(UI::state.selectedTypeIndex));
+    ImGui::PushID("PredictionHeroPicker");
+    DrawHeroStrip(selectedIndex, false, [](int index) { selectedIndex = index; });
+    ImGui::PopID();
+    return kHeroOptions[selectedIndex];
 }
 
 struct HeroContextToolbarLayout {
@@ -2716,6 +2864,8 @@ static void DrawHeroContextToolbar(float height, bool stacked) {
 }
 
 static void DrawEditingContext() {
+    if (UI::state.activeTab == UI::TAB_PREDICTION)
+        return;
     const bool heroPage = UI::state.activeTab == UI::TAB_AIMING || UI::state.activeTab == UI::TAB_ALERT || UI::state.activeTab == UI::TAB_KEYS ||
         (UI::state.activeTab == UI::TAB_THEME && UI::state.themeSubTab == 1);
     if (!heroPage) {
@@ -2723,8 +2873,11 @@ static void DrawEditingContext() {
         ImGui::Spacing();
         return;
     }
-    DrawHeroStrip();
-    TypePickerPanel();
+    CurrentHeroOption();
+    DrawHeroStrip(UI::state.selectedTypeIndex, true, [](int index) {
+        UI::state.followDetectedHero = false;
+        SelectTypeIndex(index);
+    });
     const HeroOption& hero = CurrentHeroOption();
     const bool ringPage = UI::state.activeTab == UI::TAB_THEME;
     const bool slotPage = UI::state.activeTab == UI::TAB_AIMING && UI::state.aimingSubTab < 2;

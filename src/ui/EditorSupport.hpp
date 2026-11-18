@@ -12,6 +12,9 @@
 using UI::Text::UiText;
 using UI::Text::kUiLanguageOptions;
 using namespace UI::ValueFormat;
+using UI::KeyBindingStorage;
+using UI::UIKeyBinding;
+using UI::UIKeyBindingCancelCapture;
 // UI 线程专用：state 是编辑上下文；这些接口不向采集线程暴露 ImGui。
 struct HeroOption {
     const char* label;
@@ -97,18 +100,6 @@ inline const char* kPriority[]     = { "Lowest FOV", "Lowest HP", "Distance", "S
 inline const char* kTeam[]         = { "Enemies", "Allies", "All" };
 inline const char* kTrace[]        = { "Strict", "Relaxed", "Off" };
 inline const char* kUnlock[]       = { "Anytime", "On Release", "Never" };
-inline const char* kMenuToggleKeys[] = {
-    "Home", "Insert", "End", "Delete",
-    "F1", "F2", "F3", "F4", "F5", "F6",
-    "F7", "F8", "F9", "F10", "F11", "F12"
-};
-inline constexpr int kMenuToggleVk[] = {
-    VK_HOME, VK_INSERT, VK_END, VK_DELETE,
-    VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
-    VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12
-};
-
-
 enum class ActionSlotKind {
     Aim,
     Trigger
@@ -188,9 +179,9 @@ void ApplyHeroActionPresetToGlobals(ActionSlotKind kind, const OW::Config::HeroP
 void PushHeroActionSlotControlId(ActionSlotKind kind, uint64_t heroId, int slotIndex);
 void SetPersistenceStatus(bool saved, const char* successText);
 float MaxFloat(float a, float b);
-int FindMenuToggleKeyIndex(int vk);
 int ClampHeroSelectionIndex(int index);
 const HeroOption& CurrentHeroOption();
+const HeroOption& DrawPredictionHeroPicker();
 ID3D11ShaderResourceView* HeroSkillIconForDefinition(const OW::HeroSkillDefinition& definition);
 void ApplySelectedTypePreset();
 bool UIGroupBox(const char* title, float minHeightPx = 0.0f, float bottomGapPx = kGroupDefaultBottomGap);
@@ -255,7 +246,8 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
 bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone);
 void ApplyAimBehaviorToHeroPreset(OW::Config::HeroPreset& preset, int behavior);
 void UIDisabledSelect(const char* label, const char* previewText = nullptr);
-bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId);
+bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int scopeFilter = -1);
+bool UIPredictionAlgorithmSelect(const char* label, int* algorithm, float labelWidth);
 bool UIActionSlotSelector(ActionSlotKind kind, uint64_t heroId);
 void UITwoColumns(std::function<void()> left, std::function<void()> right);
 void SettingRow(const char* label, float labelWidthPx = kDefaultLabelWidth);

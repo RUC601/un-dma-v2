@@ -187,13 +187,11 @@ using namespace Detail;
         EnsureHeroPresetSlotRange(slots, clampedSlotIndex);
 
         HeroSlotPreset& slot = slots[static_cast<size_t>(clampedSlotIndex)];
-        requirement = NormalizeAimScopeRequirement(static_cast<int>(requirement));
-        if (HeroUsesScopedWeaponActionSplit(heroId)) {
-            slot.preset.trigger.action = requirement == AimScopeRequirement::ScopedOnly
-                ? 2
-                : 0;
-        }
-        slot.scopeRequirement = requirement;
+        // Kept for callers that still use the old scope setter.  Action
+        // Profile is now the only runtime source, so the requested scope is
+        // not allowed to mutate the selected action or persist as a second
+        // independent decision.
+        (void)requirement;
         NormalizeHeroPresetSlots(slots, heroId, HeroPresetSlotKind::Aim);
     }
 
@@ -264,7 +262,16 @@ using namespace Detail;
             auto item = store.find(heroId);
             if (item == store.end()) return false;
             outSlot = item->second[static_cast<size_t>(ClampHeroPresetSlotIndex(slotIndex))];
-            return outSlot.present;
+            if (!outSlot.present)
+                return false;
+            outSlot.name = NormalizeHeroSlotName(outSlot.name, ClampHeroPresetSlotIndex(slotIndex));
+            outSlot.preset = ValidateHeroPresetValueForHero(heroId, outSlot.preset);
+            // Action Profile is the runtime source of stance.  Keep the
+            // persisted scope field as a compatibility projection only.
+            outSlot.scopeRequirement = DefaultAimScopeRequirementForHeroAction(
+                heroId,
+                outSlot.preset.trigger.action);
+            return true;
         }
 
         std::lock_guard<std::mutex> lock(mutex);
@@ -279,7 +286,12 @@ using namespace Detail;
             auto item = store.find(heroId);
             if (item == store.end()) return false;
             outSlot = item->second[static_cast<size_t>(ClampHeroPresetSlotIndex(slotIndex))];
-            return outSlot.present;
+            if (!outSlot.present)
+                return false;
+            outSlot.name = NormalizeHeroSlotName(outSlot.name, ClampHeroPresetSlotIndex(slotIndex));
+            outSlot.preset = ValidateHeroPresetValueForHero(heroId, outSlot.preset);
+            outSlot.scopeRequirement = AimScopeRequirement::All;
+            return true;
         }
 
         std::lock_guard<std::mutex> lock(mutex);

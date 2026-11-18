@@ -16,7 +16,9 @@ PredictionProfile ResolvePredictionProfile(std::string_view profileId,
                                            uint64_t heroId,
                                            int actionId,
                                            const ProjectileSpec& fallback);
-std::vector<PredictionProfile> SnapshotPredictionProfiles();
+bool UsesInstantHitRadiusDefault(AimClass aimClass);
+bool SetInstantHitDefaultRadius(float radius);
+std::vector<PredictionProfile> SnapshotPredictionProfiles(float* instantHitRadius = nullptr);
 bool UpdatePredictionProfile(const PredictionProfile& profile);
 const WeaponSpec* WeaponSpecsBegin();
 const WeaponSpec* WeaponSpecsEnd();

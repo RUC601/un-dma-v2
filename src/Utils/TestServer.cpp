@@ -3122,6 +3122,17 @@ std::string BuildLocalJson()
     AppendHexOrNull(out, local.LinkBase);
     out << ",\"skill_base\":";
     AppendHexOrNull(out, local.SkillBase);
+    const bool sojournChargeFresh = local.hero_skill_signals.sojournRailChargeKnown &&
+        local.hero_skill_signals.sojournRailChargeTick != 0 &&
+        DWORD(GetTickCount() - local.hero_skill_signals.sojournRailChargeTick) <= 250;
+    out << ",\"sojourn_rail_charge\":";
+    if (local.HeroID == OW::eHero::HERO_SOJOURN && sojournChargeFresh &&
+        std::isfinite(local.hero_skill_signals.sojournRailCharge))
+        AppendNumberOrNull(out, local.hero_skill_signals.sojournRailCharge * 100.0f);
+    else
+        out << "null";
+    out << ",\"sojourn_rail_charge_known\":"
+        << ((local.HeroID == OW::eHero::HERO_SOJOURN && sojournChargeFresh) ? "true" : "false");
     out << ",\"player_controller\":";
     AppendHexOrNull(out, OW::SDK ? OW::SDK->g_player_controller.load() : 0);
     out << ",\"ultimate_perk\":";

@@ -1021,33 +1021,14 @@ void DrawHeroKeyPage() {
     bool changed=false;
     UIGroupBox(zh?"英雄游戏按键":"Hero action keys");
     ImGui::BeginDisabled(hero.heroId==0);
-    static uint64_t captureHero=0;
-    static int capture=-1;
-    static bool armed=false;
-    if(captureHero!=hero.heroId){capture=-1;captureHero=hero.heroId;}
     for(int i=0;i<int(Action::Count);++i) {
         ImGui::PushID(i);SettingRow(kActionNames[i]);
-        char label[48];const int vk=settings.keys[i];
-        if(capture==i)std::snprintf(label,sizeof(label),"%s",zh?"按键… Esc 取消":"Press a key... Esc cancels");
-        else if(vk==1||vk==2||vk==4||vk==5||vk==6)std::snprintf(label,sizeof(label),"M%d",vk==1?1:vk==2?2:vk==4?3:vk==5?4:5);
-        else {
-            wchar_t name[64]{};const UINT scan=MapVirtualKeyW(vk,MAPVK_VK_TO_VSC);
-            GetKeyNameTextW(scan<<16,name,64);
-            if(!WideCharToMultiByte(CP_UTF8,0,name,-1,label,sizeof(label),nullptr,nullptr)||!label[0])std::snprintf(label,sizeof(label),"VK %d",vk);
-        }
-        if(ImGui::Button(label,ImVec2(220,ControlHeight()))){capture=i;captureHero=hero.heroId;armed=false;}
+        changed |= UIKeyBinding("##heroActionKey", &settings.keys[i],
+                                KeyBindingStorage::VirtualKey, false);
         ImGui::PopID();
     }
     ImGui::TextDisabled("%s",zh?"鼠标侧键输出、键盘物理按住释放尚不支持；蓄力释放请用鼠标动作键。":"Side-button output and physical keyboard release are unavailable; use mouse action keys for charged releases.");
-    if(capture>=0) {
-        if(!armed){if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000))armed=true;}
-        else if(GetAsyncKeyState(VK_ESCAPE)&0x8000)capture=-1;
-        else for(int vk=1;vk<256;++vk)if(SupportedKey(vk)&&(GetAsyncKeyState(vk)&0x8000)) {
-            if(vk==VK_XBUTTON1||vk==VK_XBUTTON2)continue; // Current output backends emit three mouse buttons.
-            settings.keys[capture]=vk;changed=true;capture=-1;break;
-        }
-    }
-    if(ImGui::Button(zh?"恢复当前英雄默认键":"Reset this hero to default keys")){settings.keys=kDefaultKeys;changed=true;capture=-1;}
+    if(ImGui::Button(zh?"恢复当前英雄默认键":"Reset this hero to default keys")){settings.keys=kDefaultKeys;changed=true;UIKeyBindingCancelCapture();}
     ImGui::EndDisabled();
     if(hero.heroId==0)ImGui::TextDisabled("%s",zh?"选择英雄以编辑按键":"Select a hero to edit action keys");
     CloseGroupBox();
@@ -1063,54 +1044,183 @@ void DrawHeroKeyPage() {
     }
     UIGroupBox(zh?"全局快捷键":"Global shortcuts");
     SettingRow(T(UiText::ToggleKey));PushControlWidth();
-    int toggle=FindMenuToggleKeyIndex(OW::Config::MenuToggleKey);
-    if(UISelect("##globalMenuKey",&toggle,kMenuToggleKeys,IM_ARRAYSIZE(kMenuToggleKeys)))OW::Config::MenuToggleKey=kMenuToggleVk[toggle];
+    UIKeyBinding("##globalMenuKey", &OW::Config::MenuToggleKey,
+                 KeyBindingStorage::VirtualKey);
     ImGui::PopItemWidth();
     SettingRow(L("Cache refresh key"));PushControlWidth();
-    int refresh=OW::Config::CacheRefreshKey?FindMenuToggleKeyIndex(OW::Config::CacheRefreshKey)+1:0;
-    const char* items[IM_ARRAYSIZE(kMenuToggleKeys)+1]{};items[0]=L("None");std::copy(std::begin(kMenuToggleKeys),std::end(kMenuToggleKeys),items+1);
-    if(UISelect("##globalRefreshKey",&refresh,items,IM_ARRAYSIZE(items)))OW::Config::CacheRefreshKey=refresh?kMenuToggleVk[refresh-1]:0;
-    if(OW::Config::CacheRefreshKey==OW::Config::MenuToggleKey)OW::Config::CacheRefreshKey=0;
+    UIKeyBinding("##globalRefreshKey", &OW::Config::CacheRefreshKey,
+                 KeyBindingStorage::VirtualKey);
+    if(OW::Config::CacheRefreshKey==OW::Config::MenuToggleKey)
+        OW::Config::CacheRefreshKey=0;
     ImGui::PopItemWidth();CloseGroupBox();
 }
 
+namespace {
+
+struct PredictionActionCard {
+    const PredictionProfile* profile;
+    const OW::WeaponSpec* weapon = nullptr;
+    const OW::HeroSkillDefinition* skill = nullptr;
+};
+
+ID3D11ShaderResourceView* PredictionWeaponIcon(const HeroOption& hero, const OW::WeaponSpec& weapon) {
+    auto* icons = Render::GetIconManager();
+    if (!icons) return nullptr;
+
+    std::string iconSlug;
+    for (unsigned char ch : weapon.weaponName) {
+        if (std::isalnum(ch)) {
+            iconSlug += static_cast<char>(std::tolower(ch));
+        } else if (ch != '\'' && !iconSlug.empty() && iconSlug.back() != '-') {
+            iconSlug += '-';
+        }
+    }
+    if (!iconSlug.empty() && iconSlug.back() == '-') iconSlug.pop_back();
+    if (weapon.weaponId == "cassidy_ads_perk") iconSlug = "peacekeeper";
+    const std::string heroSlug = OW::HeroDisplayNameToSlug(hero.label);
+    const std::string key = heroSlug + "/" + iconSlug;
+    if (auto* icon = icons->GetIcon(key)) return icon;
+    icons->LoadAbilityIcons(heroSlug, {iconSlug});
+    return icons->GetIcon(key);
+}
+
+std::vector<PredictionActionCard> PredictionActionCards(
+    const HeroOption& hero, const std::vector<PredictionProfile>& profiles) {
+    const auto findProfile = [&](std::string_view id) -> const PredictionProfile* {
+        const auto found = std::lower_bound(profiles.begin(), profiles.end(), id,
+            [](const PredictionProfile& profile, std::string_view id) { return profile.profileId < id; });
+        return found != profiles.end() && found->profileId == id ? &*found : nullptr;
+    };
+    std::vector<PredictionActionCard> cards;
+    for (auto weapon = OW::WeaponSpecsBegin(); weapon != OW::WeaponSpecsEnd(); ++weapon) {
+        if (weapon->heroId != hero.heroId || weapon->weaponId.empty()) continue;
+        if (const auto* profile = findProfile(weapon->weaponId)) cards.push_back({profile, weapon});
+    }
+    std::stable_sort(cards.begin(), cards.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.weapon->order < rhs.weapon->order;
+    });
+    const auto listed = [&](const PredictionProfile* profile) {
+        return std::any_of(cards.begin(), cards.end(),
+            [&](const auto& card) { return card.profile == profile; });
+    };
+    const auto skillStart = cards.size();
+    for (const auto& skill : OW::AllHeroSkillDefinitions()) {
+        if (skill.heroId != hero.heroId || !skill.skillId || !*skill.skillId) continue;
+        if (const auto* profile = findProfile(std::string("skill:") + skill.skillId);
+            profile && (!profile->heroId || profile->heroId == hero.heroId) && !listed(profile)) {
+            cards.push_back({profile, nullptr, &skill});
+        }
+    }
+    std::stable_sort(cards.begin() + skillStart, cards.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.skill->inputAction < rhs.skill->inputAction;
+    });
+    for (const auto& profile : profiles) {
+        if (profile.heroId == hero.heroId && !listed(&profile)) cards.push_back({&profile});
+    }
+    return cards;
+}
+
+const char* PredictionActionTitle(const PredictionActionCard& card) {
+    if (card.weapon) return L(card.weapon->weaponName.data());
+    if (card.skill && card.skill->displayName) return L(card.skill->displayName);
+    return card.profile->profileId.c_str();
+}
+
+} // namespace
+
 void UI::DrawPredictionDataPage() {
     const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
-    auto profiles = OW::SnapshotPredictionProfiles();
+    const auto& hero = DrawPredictionHeroPicker();
+    float defaultRadius = OW::kDefaultInstantHitRadius;
+    const auto profiles = OW::SnapshotPredictionProfiles(&defaultRadius);
+    const auto cards = PredictionActionCards(hero, profiles);
     UIGroupBox(zh ? "预测数据" : "Prediction Data");
-    ImGui::TextWrapped("%s", zh
-        ? "Aim、Trigger 和技能共用这里的运行时预测 Profile。旧配置没有 Profile 时，会从现有武器数据迁移生成。"
-        : "Aim, Trigger and Hero Skills share the runtime prediction profiles here. Older configs migrate from the existing weapon data when a profile is absent.");
-    if (profiles.empty()) {
-        ImGui::TextDisabled("%s", zh ? "暂无可编辑的预测 Profile" : "No prediction profiles are available.");
+    SettingRow(zh ? "即时命中公共半径" : "Default instant-hit radius");
+    PushControlWidth();
+    if (UISlider("##instantHitDefaultRadius", &defaultRadius, 0.0f,
+                 OW::kMaxPredictionProjectileRadius, Number(3, " m")))
+        OW::SetInstantHitDefaultRadius(defaultRadius);
+    ImGui::PopItemWidth();
+    ImGui::Spacing();
+    if (cards.empty()) {
+        ImGui::TextDisabled("%s", zh ? "当前英雄还没有预测数据" : "No prediction data for this hero.");
         CloseGroupBox();
         return;
     }
 
-    static int selected = 0;
-    selected = std::clamp(selected, 0, static_cast<int>(profiles.size()) - 1);
-    std::vector<const char*> labels;
-    labels.reserve(profiles.size());
-    for (const auto& profile : profiles)
-        labels.push_back(profile.profileId.c_str());
-    SettingRow(zh ? "Profile" : "Profile");
-    PushControlWidth();
-    UISelect("##predictionProfile", &selected, labels.data(), static_cast<int>(labels.size()));
-    ImGui::PopItemWidth();
+    static std::string selectedProfileId;
+    auto selected = std::find_if(cards.begin(), cards.end(),
+        [](const auto& card) { return card.profile->profileId == selectedProfileId; });
+    if (selected == cards.end()) {
+        selected = cards.begin();
+        selectedProfileId = selected->profile->profileId;
+    }
 
-    PredictionProfile profile = profiles[static_cast<size_t>(selected)];
-    ImGui::TextDisabled("%s: %d", zh ? "配置版本" : "Config version", profile.configVersion);
-    ImGui::TextDisabled("%s: %s", zh ? "算法方案" : "Algorithm profile", profile.algorithmProfileId.c_str());
+    const float iconSide = ImGui::GetFontSize() * 2.0f;
+    const float rowHeight = iconSide + 2.0f * ImGui::GetStyle().FramePadding.y +
+        ImGui::GetStyle().ScrollbarSize + 10.0f;
+    ImGui::PushID(static_cast<int>(&hero - kHeroOptions));
+    if (ImGui::BeginChild("##predictionActions", ImVec2(0.0f, rowHeight), false,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+        for (auto card = cards.begin(); card != cards.end(); ++card) {
+            if (card != cards.begin()) ImGui::SameLine();
+            ImGui::PushID(card->profile->profileId.c_str());
+            const bool active = card == selected;
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button,
+                ImGui::ColorConvertU32ToFloat4(kColAccentDark));
+            const char* title = PredictionActionTitle(*card);
+            auto* icon = card->weapon ? PredictionWeaponIcon(hero, *card->weapon)
+                : card->skill ? HeroSkillIconForDefinition(*card->skill) : nullptr;
+            const bool pressed = icon
+                ? ImGui::ImageButton(title, reinterpret_cast<ImTextureID>(icon), ImVec2(iconSide, iconSide))
+                : ImGui::Button(title, ImVec2(0.0f, iconSide + 2.0f * ImGui::GetStyle().FramePadding.y));
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+            ImGuiContext& g = *ImGui::GetCurrentContext();
+            IMGUI_TEST_ENGINE_ITEM_INFO(ImGui::GetItemID(), title, g.LastItemData.StatusFlags);
+#endif
+            if (active) ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("%s", title);
+            if (pressed) {
+                selected = card;
+                selectedProfileId = card->profile->profileId;
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopID();
 
+    PredictionProfile profile = *selected->profile;
+    ImGui::PushID(profile.profileId.c_str());
+    ImGui::TextWrapped("%s", PredictionActionTitle(*selected));
+    ImGui::TextDisabled("%s %d", zh ? "配置版本" : "Config version", profile.configVersion);
     bool changed = false;
+
     SettingRow(zh ? "投射速度" : "Projectile speed");
     PushControlWidth();
     changed |= UISlider("##predictionSpeed", &profile.projectile.projectileSpeed, 0.0f, 500.0f, Number(2, " m/s"));
     ImGui::PopItemWidth();
-    SettingRow(zh ? "弹丸半径" : "Projectile radius");
-    PushControlWidth();
-    changed |= UISlider("##predictionRadius", &profile.projectile.projectileRadius, 0.0f, 1.0f, Number(3, " m"));
-    ImGui::PopItemWidth();
+    if (profile.inheritInstantHitRadius.has_value()) {
+        SettingRow(zh ? "半径来源" : "Radius source");
+        const char* radiusSources[] = { zh ? "继承公共半径" : "Inherit default", zh ? "动作单独覆盖" : "Override for this action" };
+        int source = *profile.inheritInstantHitRadius ? 0 : 1;
+        PushControlWidth();
+        if (UISelect("##predictionRadiusSource", &source, radiusSources, IM_ARRAYSIZE(radiusSources))) {
+            profile.inheritInstantHitRadius = source == 0;
+            profile.projectile.projectileRadius = defaultRadius;
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+    }
+    SettingRow(zh ? "投射物半径" : "Projectile radius");
+    if (profile.inheritInstantHitRadius.value_or(false)) {
+        ImGui::Text("%.3f m", defaultRadius);
+    } else {
+        PushControlWidth();
+        changed |= UISlider("##predictionRadius", &profile.projectile.projectileRadius, 0.0f,
+                            OW::kMaxPredictionProjectileRadius, Number(3, " m"));
+        ImGui::PopItemWidth();
+    }
     SettingRow(zh ? "重力" : "Gravity");
     changed |= UICheckbox("##predictionGravity", &profile.projectile.gravity);
     if (profile.projectile.gravity) {
@@ -1127,20 +1237,22 @@ void UI::DrawPredictionDataPage() {
     PushControlWidth();
     changed |= UISlider("##predictionUpBias", &profile.projectile.launchDirectionUpBias, -1.0f, 1.0f, Number(3));
     ImGui::PopItemWidth();
-    SettingRow(zh ? "最低蓄力速度" : "Minimum charge speed");
-    PushControlWidth();
-    changed |= UISlider("##predictionChargeMin", &profile.projectile.chargeMinSpeed, 0.0f, 500.0f, Number(2, " m/s"));
-    ImGui::PopItemWidth();
-    SettingRow(zh ? "最高蓄力速度" : "Maximum charge speed");
-    PushControlWidth();
-    changed |= UISlider("##predictionChargeMax", &profile.projectile.chargeMaxSpeed, 0.0f, 500.0f, Number(2, " m/s"));
-    ImGui::PopItemWidth();
-    if (profile.projectile.chargeMaxSpeed < profile.projectile.chargeMinSpeed)
-        profile.projectile.chargeMaxSpeed = profile.projectile.chargeMinSpeed;
+    const bool hasChargeSpeed = profile.projectile.chargeMinSpeed > 0.0f || profile.projectile.chargeMaxSpeed > 0.0f ||
+        (selected->weapon && selected->weapon->projectile.chargeMaxSpeed > 0.0f);
+    if (hasChargeSpeed) {
+        SettingRow(zh ? "最低蓄力速度" : "Minimum charge speed");
+        PushControlWidth();
+        changed |= UISlider("##predictionChargeMin", &profile.projectile.chargeMinSpeed, 0.0f, 500.0f, Number(2, " m/s"));
+        ImGui::PopItemWidth();
+        SettingRow(zh ? "最高蓄力速度" : "Maximum charge speed");
+        PushControlWidth();
+        changed |= UISlider("##predictionChargeMax", &profile.projectile.chargeMaxSpeed, 0.0f, 500.0f, Number(2, " m/s"));
+        ImGui::PopItemWidth();
+        if (profile.projectile.chargeMaxSpeed < profile.projectile.chargeMinSpeed)
+            profile.projectile.chargeMaxSpeed = profile.projectile.chargeMinSpeed;
+    }
     if (changed)
         OW::UpdatePredictionProfile(profile);
-    ImGui::TextWrapped("%s", zh
-        ? "这些值会在保存配置后重载为同一份运行时数据。算法插拔和命中瞄点策略仍按设计保持待定。"
-        : "These values reload as one shared runtime source after saving. Algorithm plug-ins and final hit-point selection remain design-pending.");
+    ImGui::PopID();
     CloseGroupBox();
 }

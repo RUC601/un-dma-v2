@@ -16,6 +16,9 @@ struct Sample {
     uint32_t mercyTargetId = 0;
     bool mercyBeamConnected = false;
     bool mercyBeamKnown = false;
+    float sojournRailCharge = -1.0f; // normalized rail charge, -1 unknown
+    bool sojournRailChargeKnown = false;
+    uint32_t sojournRailChargeTick = 0;
     uint32_t sampledTick = 0;
     bool dvaMechKnown = false;
     bool dvaInMech = false;
@@ -174,6 +177,24 @@ int ReadLucioSong(uint64_t skillBase, Reader&& read, ScalarCache* cache = nullpt
     if (values[0] == 1.0f) return 1;
     if (cache) cache->Reset();
     return -1;
+}
+
+// Forum capture 516727/388 identifies Sojourn's continuously changing rail
+// resource as scalar script 0xC9 in component 0x36. The current reader uses
+// the retained flat scalar-list candidate at +0x1928 and publishes only a
+// finite normalized value in [0, 1]. This is a candidate until live CN
+// sampling confirms the current client layout.
+template<class Reader>
+bool ReadSojournRailCharge(uint64_t skillBase, float& fraction, Reader&& read,
+                           ScalarCache* cache = nullptr) {
+    fraction = -1.0f;
+    std::array<float, 1> values{};
+    if (!ReadScalars(skillBase, std::array<uint16_t, 1>{0xC9}, values, read, cache))
+        return false;
+    if (!std::isfinite(values[0]) || values[0] < 0.0f || values[0] > 1.0f)
+        return false;
+    fraction = values[0];
+    return true;
 }
 
 // Existing V2 GetHeroEngNames reads these same two LinkBase halfwords. They

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -36,6 +37,62 @@ enum class PredictionOverrideMode : int {
     ForceOn = 1,
     ForceOff = 2,
 };
+
+// All prediction paths share projectile data. Relative-motion variants use
+// target velocity minus local-actor velocity for the target model. Local
+// velocity never becomes part of projectile muzzle velocity.
+enum class PredictionAlgorithm : int {
+    LegacyLinear = 0,
+    BallisticIntercept = 1,
+    LegacyLinearRelativeMotion = 2,
+    BallisticInterceptRelativeMotion = 3,
+};
+
+inline constexpr int ClampPredictionAlgorithm(int value) {
+    return value >= static_cast<int>(PredictionAlgorithm::LegacyLinear) &&
+        value <= static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion)
+        ? value : static_cast<int>(PredictionAlgorithm::LegacyLinear);
+}
+
+inline constexpr bool IsBallisticPredictionAlgorithm(int value) {
+    const int normalized = ClampPredictionAlgorithm(value);
+    return normalized == static_cast<int>(PredictionAlgorithm::BallisticIntercept) ||
+        normalized == static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion);
+}
+
+inline constexpr bool IsRelativeMotionPredictionAlgorithm(int value) {
+    const int normalized = ClampPredictionAlgorithm(value);
+    return normalized == static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion) ||
+        normalized == static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion);
+}
+
+inline const char* PredictionAlgorithmId(int value) {
+    switch (ClampPredictionAlgorithm(value)) {
+    case static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion):
+        return "legacy_linear_relative_motion";
+    case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
+        return "ballistic_intercept";
+    case static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion):
+        return "ballistic_intercept_relative_motion";
+    case static_cast<int>(PredictionAlgorithm::LegacyLinear):
+    default:
+        return "legacy_linear";
+    }
+}
+
+inline const char* PredictionAlgorithmName(int value) {
+    switch (ClampPredictionAlgorithm(value)) {
+    case static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion):
+        return "Legacy Linear Relative Motion";
+    case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
+        return "Ballistic Intercept";
+    case static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion):
+        return "Ballistic Intercept Relative Motion";
+    case static_cast<int>(PredictionAlgorithm::LegacyLinear):
+    default:
+        return "Legacy Linear";
+    }
+}
 
 enum class AimBehaviorType : int {
     Tracking = 0,
@@ -101,6 +158,9 @@ enum class ExecutionSource : int {
     SequenceInternal = 3,
 };
 
+inline constexpr float kDefaultInstantHitRadius = 0.07f;
+inline constexpr float kMaxPredictionProjectileRadius = 2.0f;
+
 struct ProjectileSpec {
     bool enabledByDefault = false;
     float projectileSpeed = 0.0f;
@@ -118,12 +178,14 @@ struct PredictionProfile {
     std::string profileId = "default";
     int configVersion = 1;
     ProjectileSpec projectile{};
+    std::optional<bool> inheritInstantHitRadius;
     // These fields identify the action the profile came from when it is
     // persisted in the shared prediction store.  The weapon table remains
     // the migration source for profiles that are absent from old configs.
     uint64_t heroId = 0;
     int actionId = 0;
-    std::string algorithmProfileId = "default";
+    std::string algorithmProfileId = "ballistic_intercept";
+    int algorithm = static_cast<int>(PredictionAlgorithm::BallisticIntercept);
 };
 
 struct FirePolicy {
@@ -224,6 +286,18 @@ struct EntityMotionState {
     float confidence = 0.0f;
 };
 
+struct NativeHitWindowInput {
+    Vector3 displacement{};
+    Vector3 targetVelocity{};
+    float launchUpBias = 0.0f;
+    float projectileRadius = -1.0f;
+    float hitboxScalePercent = 100.0f;
+    float projectileSpeed = 0.0f;
+    float gravityAcceleration = 0.0f;
+    float maxFlightSeconds = 0.0f;
+    bool gravity = false;
+};
+
 struct TargetCandidate {
     Contour::Observation contour{};
     AimPlan::Effective plan{};
@@ -247,6 +321,7 @@ struct TargetCandidate {
     float currentFovScore = (std::numeric_limits<float>::max)();
     float projectedFovScore = (std::numeric_limits<float>::max)();
     float effectiveHitWindow = 0.0f;
+    NativeHitWindowInput nativeHitWindow{};
     EntityMotionState motion{};
     TargetLockPolicy lockPolicy{};
     const WeaponSpec* weaponSpec = nullptr;
@@ -314,6 +389,21 @@ inline bool AllowsGeneratedAimFire(FirePolicyType policy)
     return policy != FirePolicyType::ManualOnly;
 }
 
+inline constexpr bool IsKeepFiringPolicy(FirePolicyType policy) noexcept
+{
+    return policy == FirePolicyType::KeepFiring;
+}
+
+inline constexpr bool IsSingleShotPolicy(FirePolicyType policy) noexcept
+{
+    return policy == FirePolicyType::SingleShot;
+}
+
+inline constexpr bool IsTrackingWithHoldPolicy(FirePolicyType policy) noexcept
+{
+    return policy == FirePolicyType::TrackingWithHold;
+}
+
 inline bool AimActivationAllowed(bool activationHotkeyDown,
                                  bool requireActionHeld,
                                  bool actionButtonDown)
@@ -325,9 +415,12 @@ inline constexpr bool AllowsGeneratedTrackingHold(FirePolicyType policy,
                                                    bool activationIsPrimaryMouseAction,
                                                    bool activationMatchesOutputButton)
 {
-    if (policy != FirePolicyType::HoldWhileTracking)
-        return false;
-    return !activationIsPrimaryMouseAction || activationMatchesOutputButton;
+    // Tracking With Hold owns the selected Action Profile's output button
+    // during the tracking session.  The activation key starts that session
+    // and is not required to be the same physical mouse button.
+    (void)activationIsPrimaryMouseAction;
+    (void)activationMatchesOutputButton;
+    return policy == FirePolicyType::TrackingWithHold;
 }
 
 inline constexpr bool ShouldApplyDisabledHeroTriggerFallback(
@@ -337,7 +430,7 @@ inline constexpr bool ShouldApplyDisabledHeroTriggerFallback(
     return hasPresentHeroTriggerSlot && !hasEnabledHeroTriggerFallback;
 }
 
-static_assert(!AllowsGeneratedTrackingHold(
+static_assert(AllowsGeneratedTrackingHold(
     FirePolicyType::HoldWhileTracking, true, false));
 static_assert(AllowsGeneratedTrackingHold(
     FirePolicyType::HoldWhileTracking, true, true));

@@ -123,7 +123,7 @@ inline bool Policy(OW::Config::HeroPreset& preset,
 inline bool Editor(OW::Config::HeroPreset& preset) {
     bool changed=false; auto& p=preset.aimPlan;
     UIGroupBox("Default motion and target hero exceptions");
-    ImGui::TextWrapped("%s",L("Slot behavior stays fixed. Hero exceptions change settings, not which heroes are allowed."));
+    ImGui::SetItemTooltip("%s", L("Hero exceptions change settings for the selected heroes."));
     if(ImGui::TreeNodeEx(L("Default for all target heroes"),ImGuiTreeNodeFlags_DefaultOpen)) {
         p.overrideMotion=true;
         const auto previous=p.motion;
@@ -155,41 +155,50 @@ inline bool Editor(OW::Config::HeroPreset& preset) {
             char name[128]; std::snprintf(name,sizeof(name),"%s",g.name.c_str());
             ImGui::SetNextItemWidth(-1); if(ImGui::InputText("##name",name,sizeof(name))) {g.name=name;changed=true;}
             changed|=Heroes("##exceptionHeroes",g.heroes,&p,g.id);
-            ImGui::TextWrapped("%s",L("Unchecked sections inherit the current default. A hero can belong to one exception."));
-            const bool wasLimits=g.overrideLimits;
-            changed|=UICheckbox(L("Override range and health"),&g.overrideLimits);
-            if(!wasLimits && g.overrideLimits) g.limits={preset.minDistance,preset.maxDistance,preset.fov,p.selection.minHealth,p.selection.maxHealth};
-            if(g.overrideLimits) {
-                changed|=Float("FOV (deg)","##fov",g.limits.fov,0,180," deg");
-                changed|=Float("Min Distance","##minDist",g.limits.minDistance,0,500," m");
-                changed|=Float("Max Distance (0 = any)","##maxDist",g.limits.maxDistance,0,500," m");
-                changed|=Float("Minimum HP","##minHP",g.limits.minHealth,0,2000," HP");
-                changed|=Float("Maximum HP (0 = any)","##maxHP",g.limits.maxHealth,0,2000," HP");
-            }
-            const bool wasPoint=g.overrideAimPoint;
-            changed|=UICheckbox(L("Override aim point"),&g.overrideAimPoint);
-            if(!wasPoint && g.overrideAimPoint)
-                g.point={uint16_t(preset.aimBoneMask),static_cast<int>(OW::PredictionOverrideMode::Auto)};
-            if(g.overrideAimPoint) {
-                int bone=g.point.boneMask==1?1:g.point.boneMask==2?2:g.point.boneMask==4?0:3;
-                static const char* bones[]={"Chest","Head","Neck","Closest"};
-                SettingRow("Aim Bone"); PushControlWidth();
-                if(UISelect("##bone",&bone,bones,4)) {g.point.boneMask=bone==0?4:bone==1?1:bone==2?2:7;changed=true;} ImGui::PopItemWidth();
-                g.point.predictionMode = static_cast<int>(OW::PredictionOverrideMode::Auto);
-                SettingRow("Prediction");
-                ImGui::TextDisabled("Automatic");
-                ImGui::SetItemTooltip("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data.");
-            }
-            const bool wasMotion=g.overrideMotion;
-            changed|=UICheckbox(L("Override motion"),&g.overrideMotion);
-            if(!wasMotion && g.overrideMotion) {
-                g.motion=p.motion;
-                if(!p.overrideMotion) {
-                    if(const auto* shared=Config::AimMethodPresetForBehavior(preset.aimBehavior)) g.motion=*shared;
-                    else g.motion=CaptureMethodPresetFromCurrent(Config::AimBehaviorMethod(preset.aimBehavior), "Hero motion");
+            ImGui::SetItemTooltip("%s", L("Unchecked sections inherit the current default. A hero can belong to one exception."));
+            if (ImGui::BeginTabBar("##heroOverrideSections")) {
+                if (ImGui::BeginTabItem(L("Target Rule Overrides"))) {
+                    const bool wasLimits=g.overrideLimits;
+                    changed|=UICheckbox(L("Override range and health"),&g.overrideLimits);
+                    if(!wasLimits && g.overrideLimits) g.limits={preset.minDistance,preset.maxDistance,preset.fov,p.selection.minHealth,p.selection.maxHealth};
+                    if(g.overrideLimits) {
+                        changed|=Float("FOV (deg)","##fov",g.limits.fov,0,180," deg");
+                        changed|=Float("Min Distance","##minDist",g.limits.minDistance,0,500," m");
+                        changed|=Float("Max Distance (0 = any)","##maxDist",g.limits.maxDistance,0,500," m");
+                        changed|=Float("Minimum HP","##minHP",g.limits.minHealth,0,2000," HP");
+                        changed|=Float("Maximum HP (0 = any)","##maxHP",g.limits.maxHealth,0,2000," HP");
+                    }
+                    const bool wasPoint=g.overrideAimPoint;
+                    changed|=UICheckbox(L("Override aim point"),&g.overrideAimPoint);
+                    if(!wasPoint && g.overrideAimPoint)
+                        g.point={uint16_t(preset.aimBoneMask),static_cast<int>(OW::PredictionOverrideMode::Auto)};
+                    if(g.overrideAimPoint) {
+                        int bone=g.point.boneMask==1?1:g.point.boneMask==2?2:g.point.boneMask==4?0:3;
+                        static const char* bones[]={"Chest","Head","Neck","Closest"};
+                        SettingRow("Aim Bone"); PushControlWidth();
+                        if(UISelect("##bone",&bone,bones,4)) {g.point.boneMask=bone==0?4:bone==1?1:bone==2?2:7;changed=true;} ImGui::PopItemWidth();
+                        g.point.predictionMode = static_cast<int>(OW::PredictionOverrideMode::Auto);
+                        SettingRow("Prediction");
+                        ImGui::TextDisabled("Automatic");
+                        ImGui::SetItemTooltip("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data.");
+                    }
+                    ImGui::EndTabItem();
                 }
+                if (ImGui::BeginTabItem(L("Behavior Overrides"))) {
+                    const bool wasMotion=g.overrideMotion;
+                    changed|=UICheckbox(L("Override motion"),&g.overrideMotion);
+                    if(!wasMotion && g.overrideMotion) {
+                        g.motion=p.motion;
+                        if(!p.overrideMotion) {
+                            if(const auto* shared=Config::AimMethodPresetForBehavior(preset.aimBehavior)) g.motion=*shared;
+                            else g.motion=CaptureMethodPresetFromCurrent(Config::AimBehaviorMethod(preset.aimBehavior), "Hero motion");
+                        }
+                    }
+                    if(g.overrideMotion) changed|=Motion(g.motion);
+                    ImGui::EndTabItem();
+                }
+                ImGui::EndTabBar();
             }
-            if(g.overrideMotion) changed|=Motion(g.motion);
             if(ImGui::SmallButton(L("Remove hero exception"))) remove=int(i);
             ImGui::TreePop();
         }

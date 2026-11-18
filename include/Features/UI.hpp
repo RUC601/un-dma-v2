@@ -4,6 +4,11 @@
 
 namespace UI {
 
+    enum class KeyBindingStorage {
+        AimActivationIndex,
+        VirtualKey,
+    };
+
     enum Tab { TAB_AIMING = 0, TAB_VISUALS = 1, TAB_THEME = 2, TAB_MISC = 3, TAB_ALERT = 4, TAB_KEYS = 5, TAB_PREDICTION = 6 };
 
     struct State {
@@ -31,6 +36,11 @@ namespace UI {
     void InitializeResources(ID3D11Device* device);
     void ShutdownResources();
     void AutoSave(bool flush = false);
+    bool UIKeyBinding(const char* id,
+                      int* value,
+                      KeyBindingStorage storage,
+                      bool allowSideButtons = true);
+    void UIKeyBindingCancelCapture();
     MenuClientSize DesiredMenuClientSize();
     void Render();
 

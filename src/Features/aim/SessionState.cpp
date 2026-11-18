@@ -59,7 +59,8 @@ namespace AimbotDetail {
     FlickRepeat::Phase OrdinaryFlickPhase(const RuntimeState& state,
                                                 DWORD now) {
         return FlickRepeat::Resolve(state.ordinaryFlick.timeline, now,
-            OW::Config::View_aimbotKeepFiring(), OW::Config::flickRepeatWindowMs,
+            OW::IsKeepFiringPolicy(OW::ClampFirePolicy(
+                OW::Config::View_aimbotFirePolicy())), OW::Config::flickRepeatWindowMs,
             OW::Config::ClampFlickPostFireDelayMs(OW::Config::View_aimbotFlickPostFireDelayMs()),
             state.ordinaryFlick.shotLatched);
     }

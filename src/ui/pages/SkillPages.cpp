@@ -326,9 +326,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     if (hasControl(OW::HeroSkillControls::Key)) {
         SettingRow("Activation Key", kAimbotRightLabelWidth);
         PushControlWidth();
-        changed |= UISelect("##skillKey", &settings.key,
-                            OW::Labels::kAimActivationKeys,
-                            OW::Labels::AimActivationKeyCount());
+        changed |= UIKeyBinding("##skillKey", &settings.key,
+                                KeyBindingStorage::AimActivationIndex);
         ImGui::PopItemWidth();
     }
 
@@ -339,9 +338,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         !hasControl(OW::HeroSkillControls::Key)) {
         SettingRow("Activation Key", kAimbotRightLabelWidth);
         PushControlWidth();
-        changed |= UISelect("##skillActivationKey", &settings.key,
-                            OW::Labels::kAimActivationKeys,
-                            OW::Labels::AimActivationKeyCount());
+        changed |= UIKeyBinding("##skillActivationKey", &settings.key,
+                                KeyBindingStorage::AimActivationIndex);
         ImGui::PopItemWidth();
     }
 
@@ -420,9 +418,8 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     }
 
     if (hasControl(OW::HeroSkillControls::Prediction)) {
-        SettingRow("Prediction", kAimbotRightLabelWidth);
-        ImGui::TextDisabled("Automatic");
-        ImGui::SetItemTooltip("%s", L("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data."));
+        changed |= UIPredictionAlgorithmSelect("##skillPredictionAlgorithm", &settings.predictionAlgorithm,
+                                               kAimbotRightLabelWidth);
         settings.prediction = true;
     }
 
@@ -682,8 +679,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         if (hasSkillAimDetails && hasControl(OW::HeroSkillControls::Prediction)) {
             SettingRow("Prediction Profile", kAimbotRightLabelWidth);
             ImGui::TextDisabled("skill:%s", definition.skillId ? definition.skillId : "unknown");
-            ImGui::SetItemTooltip("Shared by Aim, Trigger and Hero Skills. Edit it under Prediction Data.");
-            ImGui::TextWrapped("Projectile speed, radius, gravity and cast delay are resolved from this shared profile. Legacy skill fields remain readable for migration.");
+            ImGui::SetItemTooltip("%s", L("Edit projectile speed, radius, gravity and cast delay under Prediction Data."));
         }
         if (hasSkillAimDetails && (hasControl(OW::HeroSkillControls::Prediction) || hasControl(OW::HeroSkillControls::TrajectoryAction))) {
             SettingRow("Max Aim Time", kAimbotRightLabelWidth);
