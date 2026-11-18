@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "Game/AimStartLimiter.hpp"
+#include "Game/AimArchitecture.hpp"
 #include "Game/AimPlan.hpp"
 #include "Game/AimBehaviorMode.hpp"
 #include "Game/GameData.hpp"
@@ -231,7 +232,7 @@ namespace OW { namespace Config {
 
     // ---- Prediction ----
     inline bool projectile_arc  = false; // Ballistic arc correction for projectiles
-    inline bool Prediction      = false;
+    inline bool Prediction      = true;
     inline decltype(Prediction)& View_Prediction();
     inline bool Gravitypredit   = false;
     inline float predit_level   = 110.f;
@@ -320,7 +321,7 @@ namespace OW { namespace Config {
     inline bool  aimbotRequireActionHeld = false;
     inline decltype(aimbotRequireActionHeld)& View_aimbotRequireActionHeld();
     inline int   aimbotPredictionMode = 0;
-    inline decltype(aimbotPredictionMode)& View_aimbotPredictionMode(); // 0=Auto, 1=Force On, 2=Force Off
+    inline decltype(aimbotPredictionMode)& View_aimbotPredictionMode(); // legacy compatibility, normalized to Auto
     inline bool  aimbotPredictFovEntry = false;
     inline decltype(aimbotPredictFovEntry)& View_aimbotPredictFovEntry();
     inline float aimbotFovEntryPredictionMs = 60.0f;
@@ -1516,9 +1517,9 @@ namespace OW { namespace Config {
         float bezierCurvature = 0.5f;
         float bezierSpeed = 50.0f;
         int key = 1;             // aim activation key index (reuses activation key VK list)
-        bool requireActionHeld = false; // require the physical weapon/skill action before aim activation
-        bool prediction = false; // movement prediction
-        int predictionMode = 0;   // 0=Auto, 1=Force On, 2=Force Off
+        bool requireActionHeld = false; // legacy compatibility projection; no longer an activation gate
+        bool prediction = true; // legacy compatibility projection; prediction is always enabled in V2
+        int predictionMode = 0;   // legacy compatibility, normalized to Auto
         bool predictFovEntry = false;
         float fovEntryPredictionMs = 60.0f;
         float fovEntryMaxOutsideDeg = 1.5f;
@@ -1832,6 +1833,11 @@ namespace OW { namespace Config {
     inline decltype(heroTriggerPresets)& View_heroTriggerPresets();
     inline const decltype(heroTriggerPresets)& Read_heroTriggerPresets();
     inline HeroSkillPresetStore heroSkillPresets;
+    using PredictionProfileStore = std::unordered_map<std::string, PredictionProfile>;
+    // Shared by Aim, Trigger and Hero Skill prediction consumers.  Access is
+    // serialized in WeaponSpec.cpp so runtime reads receive a complete copy.
+    inline PredictionProfileStore predictionProfiles;
+    inline std::mutex predictionProfilesMutex;
     inline int targetPriority = 0;
 
     // UI-only placeholders for heroes not present in the current local eHero enum.

@@ -8,6 +8,7 @@
 #include "Game/ProjectilePhysics.hpp"
 #include "Game/Structs.hpp"
 #include "Utils/InputLabels.hpp"
+#include "Utils/Config.hpp"
 
 namespace OW {
 namespace {
@@ -242,9 +243,84 @@ PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
     PredictionProfile profile{};
     if (weapon) {
         profile.profileId = weapon->weaponId.data();
+        profile.heroId = weapon->heroId;
+        profile.actionId = weapon->action;
         profile.projectile = weapon->projectile;
     }
+    std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    const auto it = Config::predictionProfiles.find(profile.profileId);
+    if (it != Config::predictionProfiles.end())
+        profile = it->second;
+    if (profile.profileId.empty())
+        profile.profileId = weapon ? std::string(weapon->weaponId) : "default";
+    if (profile.heroId == 0 && weapon)
+        profile.heroId = weapon->heroId;
+    if (profile.actionId == 0 && weapon)
+        profile.actionId = weapon->action;
     return profile;
+}
+
+PredictionProfile ResolvePredictionProfile(std::string_view profileId,
+                                           uint64_t heroId,
+                                           int actionId,
+                                           const ProjectileSpec& fallback)
+{
+    PredictionProfile profile{};
+    profile.profileId = std::string(profileId);
+    profile.heroId = heroId;
+    profile.actionId = actionId;
+    profile.projectile = fallback;
+    std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    const auto it = Config::predictionProfiles.find(profile.profileId);
+    if (it != Config::predictionProfiles.end())
+        return it->second;
+    Config::predictionProfiles.emplace(profile.profileId, profile);
+    return profile;
+}
+
+std::vector<PredictionProfile> SnapshotPredictionProfiles()
+{
+    std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    for (const WeaponSpec& weapon : kWeaponSpecs) {
+        const std::string profileId(weapon.weaponId);
+        if (Config::predictionProfiles.find(profileId) != Config::predictionProfiles.end())
+            continue;
+        PredictionProfile profile{};
+        profile.profileId = profileId;
+        profile.heroId = weapon.heroId;
+        profile.actionId = weapon.action;
+        profile.projectile = weapon.projectile;
+        Config::predictionProfiles.emplace(profileId, std::move(profile));
+    }
+    std::vector<PredictionProfile> profiles;
+    profiles.reserve(Config::predictionProfiles.size());
+    for (const auto& item : Config::predictionProfiles)
+        profiles.push_back(item.second);
+    std::sort(profiles.begin(), profiles.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.profileId < rhs.profileId;
+    });
+    return profiles;
+}
+
+bool UpdatePredictionProfile(const PredictionProfile& profile)
+{
+    if (profile.profileId.empty() || !std::isfinite(profile.projectile.projectileSpeed) ||
+        !std::isfinite(profile.projectile.projectileRadius) ||
+        !std::isfinite(profile.projectile.gravityAcceleration) ||
+        !std::isfinite(profile.projectile.castDelayMs))
+        return false;
+    PredictionProfile normalized = profile;
+    normalized.configVersion = (std::max)(1, normalized.configVersion);
+    normalized.projectile.projectileSpeed = (std::max)(0.0f, normalized.projectile.projectileSpeed);
+    normalized.projectile.projectileRadius = (std::max)(0.0f, normalized.projectile.projectileRadius);
+    normalized.projectile.chargeMinSpeed = (std::max)(0.0f, normalized.projectile.chargeMinSpeed);
+    normalized.projectile.chargeMaxSpeed = (std::max)(normalized.projectile.chargeMinSpeed,
+                                                       normalized.projectile.chargeMaxSpeed);
+    normalized.projectile.gravityAcceleration = (std::max)(0.0f, normalized.projectile.gravityAcceleration);
+    normalized.projectile.castDelayMs = (std::max)(0.0f, normalized.projectile.castDelayMs);
+    std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    Config::predictionProfiles[normalized.profileId] = std::move(normalized);
+    return true;
 }
 
 const WeaponSpec* WeaponSpecsBegin()
@@ -407,6 +483,7 @@ const char* FirePolicyName(FirePolicyType value)
     case FirePolicyType::ReleaseAfterDelay: return "ReleaseAfterDelay";
     case FirePolicyType::TimedBurst: return "TimedBurst";
     case FirePolicyType::ChargeRelease: return "ChargeRelease";
+    case FirePolicyType::KeepFiring: return "KeepFiring";
     default: return "ManualOnly";
     }
 }

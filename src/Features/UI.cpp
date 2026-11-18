@@ -2763,6 +2763,7 @@ void UI::Render() {
     else if(state.activeTab==TAB_ALERT) page=4;
     else if(state.activeTab==TAB_KEYS) page=15;
     else if(state.activeTab==TAB_VISUALS) page=5;
+    else if(state.activeTab==TAB_PREDICTION) page=16;
     else if(state.activeTab==TAB_THEME) page=6+ImClamp(state.themeSubTab,0,1);
     else { const int mapping[]={13,14,8,9,10,11,12}; page=mapping[ImClamp(state.miscSubTab,0,6)]; }
     // Keep historical page keys while routing retired duplicate pages to their owner.
@@ -2785,7 +2786,8 @@ void UI::Render() {
         {chinese?"Overlay 与字体":"Overlay and fonts", chinese?"系统":"System"},
         {chinese?"配置与界面":"Configuration", chinese?"系统":"System"},
         {chinese?"诊断":"Diagnostics", chinese?"系统":"System"},
-        {chinese?"按键映射":"Action keys", chinese?"系统":"System"}
+        {chinese?"按键映射":"Action keys", chinese?"系统":"System"},
+        {chinese?"预测数据":"Prediction Data", chinese?"共享运行数据":"Shared runtime data"}
     };
     if (!s_configSaveFailed && ImGui::GetTime() >= s_configSaveStatusUntil) s_configSaveStatus.clear();
     Workspace::Model model{pages,page,T(UiText::SaveAllChanges),s_configSaveStatus.c_str(),s_configSaveFailed};
@@ -2806,6 +2808,7 @@ void UI::Render() {
         else if (page==4) state.activeTab=TAB_ALERT;
         else if (page==5) state.activeTab=TAB_VISUALS;
         else if (page==15) state.activeTab=TAB_KEYS;
+        else if (page==16) state.activeTab=TAB_PREDICTION;
         else if (page<8) { state.activeTab=TAB_THEME; state.themeSubTab=page-6; }
         else { state.activeTab=TAB_MISC; const int mapping[]={2,3,4,5,6,0,1}; state.miscSubTab=mapping[page-8]; }
         DrawEditingContext();
@@ -2818,6 +2821,7 @@ void UI::Render() {
         case 9: DrawMiscBehaviorPage(); break; case 10: DrawMiscDynamicFovPage(); break;
         case 11: DrawMiscOutputPage(); break; case 12: DrawMiscScreenPage(); break;
         case 13: DrawMiscGeneralPage(); break; case 14: DrawMiscDiagnosticsPage(); break; case 15: DrawHeroKeyPage(); break;
+        case 16: DrawPredictionDataPage(); break;
         }
         CloseGroupBox();
     }, DrawHeroContextToolbar);

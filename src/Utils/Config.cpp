@@ -1472,7 +1472,15 @@ namespace OW { namespace Config {
 
         int MaxActivationKeyIndex()
         {
+            // Trigger, ally and skill editors still use the fixed legacy
+            // catalogue.  Only Aim Slot activation keys may carry a captured
+            // VK encoded above that catalogue.
             return OW::Labels::kAimActivationKeyNoneIndex;
+        }
+
+        int MaxAimActivationKeyIndex()
+        {
+            return OW::Labels::kAimActivationKeyCustomMax;
         }
 
         std::vector<int> HeroWeaponActions(uint64_t heroId)
@@ -1865,9 +1873,11 @@ namespace OW { namespace Config {
                                              bool& autoshot)
         {
             const OW::FirePolicyType policy = OW::ClampFirePolicy(firePolicy);
-            keepFiring = policy == OW::FirePolicyType::HoldWhileTracking;
+            keepFiring = policy == OW::FirePolicyType::TrackingWithHold ||
+                policy == OW::FirePolicyType::KeepFiring;
             autoshot = policy != OW::FirePolicyType::ManualOnly &&
-                policy != OW::FirePolicyType::HoldWhileTracking;
+                policy != OW::FirePolicyType::TrackingWithHold &&
+                policy != OW::FirePolicyType::KeepFiring;
         }
 
         HeroPreset MakeDocumentedAimPreset(uint64_t heroId,
@@ -1876,7 +1886,7 @@ namespace OW { namespace Config {
         {
             HeroPreset preset = basePreset;
             preset.trigger.action = NormalizeHeroWeaponAction(heroId, spec.action);
-            preset.key = std::clamp(spec.key, 0, MaxActivationKeyIndex());
+            preset.key = std::clamp(spec.key, 0, MaxAimActivationKeyIndex());
             preset.aimBehavior = ClampAimBehaviorIndex(spec.aimBehavior);
             preset.aimMode = IsTrackingBehavior(preset.aimBehavior) ? 0 : 1;
             preset.firePolicy = spec.firePolicy >= 0
@@ -1924,7 +1934,7 @@ namespace OW { namespace Config {
 
             preset.action = std::clamp(preset.action, 0, 7);
             preset.mode = std::clamp(preset.mode, 0, 2);
-            preset.key = std::clamp(preset.key, 0, MaxActivationKeyIndex());
+            preset.key = std::clamp(preset.key, 0, MaxAimActivationKeyIndex());
             if (preset.mode == 2)
                 preset.key = OW::Labels::kAimActivationKeyNoneIndex;
             preset.shotInterval = std::clamp(preset.shotInterval, 0.0f, 100.0f);
@@ -1999,11 +2009,12 @@ namespace OW { namespace Config {
             preset.bezierControlPoints = std::clamp(preset.bezierControlPoints, 2, 6);
             preset.bezierCurvature = std::clamp(preset.bezierCurvature, 0.0f, 1.0f);
             preset.bezierSpeed = std::clamp(preset.bezierSpeed, 1.0f, 200.0f);
-            preset.key = std::clamp(preset.key, 0, MaxActivationKeyIndex());
-            preset.predictionMode = std::clamp(preset.predictionMode, 0, 2);
+            preset.key = std::clamp(preset.key, 0, MaxAimActivationKeyIndex());
+            preset.predictionMode = 0;
+            preset.prediction = true;
             preset.fovEntryPredictionMs = ClampFovEntryPredictionMs(preset.fovEntryPredictionMs);
             preset.fovEntryMaxOutsideDeg = ClampFovEntryMaxOutsideDeg(preset.fovEntryMaxOutsideDeg);
-            preset.firePolicy = std::clamp(preset.firePolicy, 0, 5);
+            preset.firePolicy = std::clamp(preset.firePolicy, 0, 6);
             DeriveLegacyFireFlagsFromPolicy(
                 preset.firePolicy,
                 preset.keepFiring,
@@ -2070,8 +2081,10 @@ namespace OW { namespace Config {
                 }
             }
             if (OW::MouseButtonForAttackAction(preset.trigger.action) < 0)
-                preset.requireActionHeld = false;
-            preset.key = std::clamp(preset.key, 0, MaxActivationKeyIndex());
+            // The legacy field remains readable for compatibility, but it no
+            // longer gates the Aim Slot activation cycle.
+            preset.requireActionHeld = false;
+            preset.key = std::clamp(preset.key, 0, MaxAimActivationKeyIndex());
             preset.trigger.key = std::clamp(preset.trigger.key, 0, MaxActivationKeyIndex());
             return preset;
         }
@@ -2867,7 +2880,7 @@ namespace OW { namespace Config {
             Flick2 = false;               // default: false
 
             projectile_arc = false;       // default: false
-            Prediction = false;           // default: false
+            Prediction = true;            // V2 prediction is always enabled
             Gravitypredit = false;        // default: false
             predit_level = 110.0f;        // default: 110
             hanzoautospeed = false;       // default: false
@@ -3231,8 +3244,8 @@ namespace OW { namespace Config {
             preset.autoshot = aimbotAutoshot;
             preset.keepFiring = aimbotKeepFiring;
             preset.requireActionHeld = aimbotRequireActionHeld;
-            preset.prediction = Prediction;
-            preset.predictionMode = aimbotPredictionMode;
+            preset.prediction = true;
+            preset.predictionMode = 0;
             preset.predictFovEntry = aimbotPredictFovEntry;
             preset.fovEntryPredictionMs = aimbotFovEntryPredictionMs;
             preset.fovEntryMaxOutsideDeg = aimbotFovEntryMaxOutsideDeg;
@@ -3314,8 +3327,8 @@ namespace OW { namespace Config {
             autobone = preset.autoBone;
             aimbotBoneMask = preset.aimBoneMask;
             hitbox = preset.hitbox;
-            Prediction = preset.prediction;
-            aimbotPredictionMode = preset.predictionMode;
+            Prediction = true;
+            aimbotPredictionMode = 0;
             aimbotPredictFovEntry = preset.predictFovEntry;
             aimbotFovEntryPredictionMs = preset.fovEntryPredictionMs;
             aimbotFovEntryMaxOutsideDeg = preset.fovEntryMaxOutsideDeg;
@@ -3389,7 +3402,7 @@ namespace OW { namespace Config {
             triggerbot2 = false;
             triggerbotToggleActive2 = false;
             hitbox = preset.hitbox;
-            Prediction = preset.prediction;
+            Prediction = true;
             aimbotTeam = preset.targetTeam;
         }
 
@@ -3761,6 +3774,43 @@ namespace OW { namespace Config {
             rapidjson::Value jsonKey;
             jsonKey.SetString(key, allocator);
             object.AddMember(jsonKey, value, allocator);
+        }
+
+        template <typename Allocator>
+        rapidjson::Value PredictionProfileToJson(const PredictionProfile& profile,
+                                                 Allocator& allocator)
+        {
+            rapidjson::Value value(rapidjson::kObjectType);
+            AddJsonString(value, "profileId", profile.profileId, allocator);
+            AddJsonInt(value, "configVersion", profile.configVersion, allocator);
+            AddJsonString(value, "heroId", std::to_string(profile.heroId), allocator);
+            AddJsonInt(value, "actionId", profile.actionId, allocator);
+            AddJsonString(value, "algorithmProfileId", profile.algorithmProfileId, allocator);
+            AddJsonBool(value, "enabledByDefault", profile.projectile.enabledByDefault, allocator);
+            AddJsonFloat(value, "projectileSpeed", profile.projectile.projectileSpeed, allocator);
+            AddJsonBool(value, "gravity", profile.projectile.gravity, allocator);
+            AddJsonFloat(value, "gravityAcceleration", profile.projectile.gravityAcceleration, allocator);
+            AddJsonFloat(value, "projectileRadius", profile.projectile.projectileRadius, allocator);
+            AddJsonFloat(value, "chargeMinSpeed", profile.projectile.chargeMinSpeed, allocator);
+            AddJsonFloat(value, "chargeMaxSpeed", profile.projectile.chargeMaxSpeed, allocator);
+            AddJsonBool(value, "directHitOnly", profile.projectile.directHitOnly, allocator);
+            AddJsonFloat(value, "launchDirectionUpBias", profile.projectile.launchDirectionUpBias, allocator);
+            AddJsonFloat(value, "castDelayMs", profile.projectile.castDelayMs, allocator);
+            return value;
+        }
+
+        template <typename Allocator>
+        rapidjson::Value PredictionProfilesToJson(Allocator& allocator)
+        {
+            rapidjson::Value value(rapidjson::kObjectType);
+            for (const PredictionProfile& profile : SnapshotPredictionProfiles()) {
+                rapidjson::Value key;
+                key.SetString(profile.profileId.c_str(),
+                              static_cast<rapidjson::SizeType>(profile.profileId.size()),
+                              allocator);
+                value.AddMember(key, PredictionProfileToJson(profile, allocator), allocator);
+            }
+            return value;
         }
 
         template <typename Allocator>
@@ -4200,9 +4250,12 @@ namespace OW { namespace Config {
             triggerKey.SetString("heroTriggerPresets", allocator);
             rapidjson::Value skillKey;
             skillKey.SetString("heroSkillPresets", allocator);
+            rapidjson::Value predictionKey;
+            predictionKey.SetString("predictionProfiles", allocator);
             document.AddMember(aimKey, aimStore, allocator);
             document.AddMember(triggerKey, triggerStore, allocator);
             document.AddMember(skillKey, skillStore, allocator);
+            document.AddMember(predictionKey, PredictionProfilesToJson(allocator), allocator);
             rapidjson::Document runtimeSettings;
             runtimeSettings.Parse(V2::HeroSettings::Encode().c_str());
             rapidjson::Value runtimeCopy;runtimeCopy.CopyFrom(runtimeSettings,allocator);
@@ -4431,6 +4484,55 @@ namespace OW { namespace Config {
             return item != object.MemberEnd() && item->value.IsString()
                 ? std::string(item->value.GetString(), item->value.GetStringLength())
                 : def;
+        }
+
+        PredictionProfile ReadPredictionProfileJson(const rapidjson::Value& value,
+                                                     const std::string& fallbackId)
+        {
+            PredictionProfile profile{};
+            if (!value.IsObject()) {
+                profile.profileId = fallbackId;
+                return profile;
+            }
+            profile.profileId = ReadJsonString(value, "profileId", fallbackId);
+            profile.configVersion = ReadJsonInt(value, "configVersion", 1);
+            const std::string heroId = ReadJsonString(value, "heroId", "0");
+            try {
+                profile.heroId = static_cast<uint64_t>(std::stoull(heroId));
+            } catch (...) {
+                profile.heroId = 0;
+            }
+            profile.actionId = ReadJsonInt(value, "actionId", 0);
+            profile.algorithmProfileId = ReadJsonString(value, "algorithmProfileId", "default");
+            profile.projectile.enabledByDefault = ReadJsonBool(value, "enabledByDefault", false);
+            profile.projectile.projectileSpeed = ReadJsonFloat(value, "projectileSpeed", 0.0f);
+            profile.projectile.gravity = ReadJsonBool(value, "gravity", false);
+            profile.projectile.gravityAcceleration = ReadJsonFloat(value, "gravityAcceleration", 9.8f);
+            profile.projectile.projectileRadius = ReadJsonFloat(value, "projectileRadius", 0.0f);
+            profile.projectile.chargeMinSpeed = ReadJsonFloat(value, "chargeMinSpeed", 0.0f);
+            profile.projectile.chargeMaxSpeed = ReadJsonFloat(value, "chargeMaxSpeed", 0.0f);
+            profile.projectile.directHitOnly = ReadJsonBool(value, "directHitOnly", true);
+            profile.projectile.launchDirectionUpBias = ReadJsonFloat(value, "launchDirectionUpBias", 0.0f);
+            profile.projectile.castDelayMs = ReadJsonFloat(value, "castDelayMs", 0.0f);
+            if (profile.profileId.empty())
+                profile.profileId = fallbackId;
+            return profile;
+        }
+
+        void LoadPredictionProfilesJson(const rapidjson::Value& storeObject)
+        {
+            std::lock_guard<std::mutex> lock(predictionProfilesMutex);
+            predictionProfiles.clear();
+            if (!storeObject.IsObject())
+                return;
+            for (auto item = storeObject.MemberBegin(); item != storeObject.MemberEnd(); ++item) {
+                if (!item->name.IsString())
+                    continue;
+                const std::string key(item->name.GetString(), item->name.GetStringLength());
+                PredictionProfile profile = ReadPredictionProfileJson(item->value, key);
+                if (!profile.profileId.empty())
+                    predictionProfiles[profile.profileId] = std::move(profile);
+            }
         }
 
         HeroSkillSequenceStep ReadHeroSkillSequenceStepJson(const rapidjson::Value& value,
@@ -5038,10 +5140,7 @@ namespace OW { namespace Config {
                             return PersistenceFailure(source,"Back up before hero settings migration");
                     }
                 }
-                V2::HeroSettings::AutomaticActions automatic;
-                automatic.altFireHealth=AutoRMBhealth;automatic.altFireDistance=AutoRMBdistance;
-                automatic.defensiveHealth=SkillHealth;automatic.repeatIntervalMs=Shoottime;
-                V2::HeroSettings::Migrate(automatic,V2::Alerts::GetSettings());
+                V2::HeroSettings::Migrate(V2::Alerts::GetSettings());
                 auto display=V2::HeroSettings::Snapshot()->display;
                 for(auto& style:display.elements){style.visible=enargb;style.hidden=invisnenargb;style.target=targetargb;style.ally=allyargb;}
                 display.radar.radius=std::clamp(126.f*radarScale,40.f,600.f);display.radar.rangeM=70;
@@ -5064,6 +5163,14 @@ namespace OW { namespace Config {
             heroAimPresets.clear();
             heroTriggerPresets.clear();
             heroSkillPresets.clear();
+            const auto predictionStore = document.FindMember("predictionProfiles");
+            if (predictionStore != document.MemberEnd())
+                LoadPredictionProfilesJson(predictionStore->value);
+            else {
+                std::lock_guard<std::mutex> lock(predictionProfilesMutex);
+                predictionProfiles.clear();
+                gLastHeroConfigNeedsSave = true;
+            }
 
             const auto aimStore = document.FindMember("heroAimPresets");
             if (aimStore != document.MemberEnd())
@@ -6566,8 +6673,8 @@ namespace OW { namespace Config {
             config_version = kCurrentConfigVersion;
 
             ClampSetting("AimKey", AimKey, 1, 255, 0x01);
-            ClampSetting("aim_key", aim_key, 0, MaxActivationKeyIndex(), 1);
-            ClampSetting("aim_key2", aim_key2, 0, MaxActivationKeyIndex(), 1);
+            ClampSetting("aim_key", aim_key, 0, MaxAimActivationKeyIndex(), 1);
+            ClampSetting("aim_key2", aim_key2, 0, MaxAimActivationKeyIndex(), 1);
             ClampSetting("togglekey", togglekey, 0, 54, 0);
             ClampSetting("MenuToggleKey", MenuToggleKey, 1, 255, VK_HOME);
             ClampSetting("CacheRefreshKey", CacheRefreshKey, 0, 255, VK_F8);
@@ -6736,13 +6843,18 @@ namespace OW { namespace Config {
             ValidateAimCustomPresetsUnlocked();
             ClampSetting("aimbotSmoothType", aimbotSmoothType, 0, 2, 0);
             ClampSetting("aimbotPredictionMode", aimbotPredictionMode, 0, 2, 0);
+            // Force On/Force Off belonged to the pre-V2 override model. Keep
+            // accepting the persisted field, then publish one normalized
+            // runtime value for all consumers.
+            aimbotPredictionMode = 0;
+            Prediction = true;
             aimbotFovEntryPredictionMs = ClampFovEntryPredictionMs(aimbotFovEntryPredictionMs);
             aimbotFovEntryMaxOutsideDeg = ClampFovEntryMaxOutsideDeg(aimbotFovEntryMaxOutsideDeg);
             aimBehavior = ClampAimBehaviorIndex(aimBehavior);
             aimBehaviorPresetId = ClampAimBehaviorPresetId(aimBehaviorPresetId);
             if (const AimBehaviorPreset* behaviorPreset = FindAimBehaviorPreset(aimBehaviorPresetId))
                 aimBehavior = ClampAimBehaviorIndex(behaviorPreset->behavior);
-            ClampSetting("aimbotFirePolicy", aimbotFirePolicy, 0, 5, 0);
+            ClampSetting("aimbotFirePolicy", aimbotFirePolicy, 0, 6, 0);
             DeriveLegacyFireFlagsFromPolicy(
                 aimbotFirePolicy,
                 aimbotKeepFiring,
@@ -7096,7 +7208,7 @@ namespace OW { namespace Config {
         gSystemHeroFallback.trigger = preset.trigger;
         gSystemHeroFallback.aimPlan = preset.aimPlan;
         gSystemHeroFallback.hitbox = preset.hitbox;
-        gSystemHeroFallback.prediction = preset.prediction;
+        gSystemHeroFallback.prediction = true;
         gSystemHeroFallback.targetTeam = preset.targetTeam;
         ApplyHeroTriggerPresetUnlocked(preset);
         gSystemHeroFallbackReady = true;
@@ -7343,10 +7455,7 @@ namespace OW { namespace Config {
             if (!KeyExists(ini, kAimbotSection, "aimbotBoneMask2"))
                 aimbotBoneMask2 = AimBoneMaskFromLegacy(Bone2, autobone2);
             LoadOutputSettingsUnlocked(ini);
-            V2::HeroSettings::AutomaticActions automatic;
-            automatic.altFireHealth=AutoRMBhealth;automatic.altFireDistance=AutoRMBdistance;
-            automatic.defensiveHealth=SkillHealth;automatic.repeatIntervalMs=Shoottime;
-            V2::HeroSettings::Migrate(automatic,V2::Alerts::GetSettings());
+            V2::HeroSettings::Migrate(V2::Alerts::GetSettings());
             rapidjson::Document defaults;
             defaults.Parse(ReadString(ini, kAimbotSection, "globalDefaultsJson", "{}").c_str());
             if (!defaults.HasParseError() && defaults.IsObject() && !defaults.ObjectEmpty())
@@ -7888,8 +7997,8 @@ namespace OW { namespace Config {
             View_autobone() = preset.autoBone;
             View_aimbotBoneMask() = preset.aimBoneMask;
             View_hitbox() = preset.hitbox;
-            View_Prediction() = preset.prediction;
-            View_aimbotPredictionMode() = preset.predictionMode;
+            View_Prediction() = true;
+            View_aimbotPredictionMode() = 0;
             View_aimbotPredictFovEntry() = preset.predictFovEntry;
             View_aimbotFovEntryPredictionMs() = preset.fovEntryPredictionMs;
             View_aimbotFovEntryMaxOutsideDeg() = preset.fovEntryMaxOutsideDeg;
@@ -7964,7 +8073,7 @@ namespace OW { namespace Config {
             View_triggerbot2() = false;
 
             View_hitbox() = preset.hitbox;
-            View_Prediction() = preset.prediction;
+            View_Prediction() = true;
             View_aimbotTeam() = preset.targetTeam;
         }
 

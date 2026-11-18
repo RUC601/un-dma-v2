@@ -1280,7 +1280,7 @@ void entity_thread() {
                         ? &OW::ModelShapes::kModels[cached.skeletonCache.shapeModelIndex] : nullptr;
                     next.native_hitboxes=item.nativeHitboxes.Commit(
                         cached.skeletonCache.revision,item.readStartedTick,next.model_world,
-                        item.geometryPoses,nativeModel);
+                        item.geometryPoses,nativeModel,cached.skeletonCache.shapeMapped);
                 }
                 if(item.nativeHitboxes.Complete()) {
                     if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount))cached.nativeHitboxLayout={};

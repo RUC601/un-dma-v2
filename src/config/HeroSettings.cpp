@@ -6,7 +6,6 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 
 namespace V2::HeroSettings {
@@ -15,20 +14,12 @@ std::atomic<std::shared_ptr<const Store>> current{std::make_shared<Store>()};
 std::mutex edits;
 Hero Normalize(Hero hero) {
     for(size_t i=0;i<hero.keys.size();++i)if(!SupportedKey(hero.keys[i]))hero.keys[i]=kDefaultKeys[i];
-    auto finite=[](float value,float fallback,float high){return std::isfinite(value)?std::clamp(value,0.f,high):fallback;};
-    auto& a=hero.automatic;
-    a.altFireHealth=finite(a.altFireHealth,100,500);a.altFireDistance=finite(a.altFireDistance,30,60);
-    a.defensiveHealth=finite(a.defensiveHealth,100,500);a.repeatIntervalMs=std::clamp(a.repeatIntervalMs,100,2000);
     hero.alerts=Alerts::Normalize(std::move(hero.alerts));return hero;
 }
 template<typename Allocator> rapidjson::Value Json(const Hero& h,Allocator& allocator) {
     rapidjson::Value value(rapidjson::kObjectType),keys(rapidjson::kArrayType);
     for(int key:h.keys)keys.PushBack(key,allocator);
     value.AddMember("keys",keys,allocator);
-    value.AddMember("altFire",h.automatic.altFire,allocator);value.AddMember("defensive",h.automatic.defensive,allocator);
-    value.AddMember("repeatFire",h.automatic.repeatFire,allocator);
-    value.AddMember("altFireHealth",h.automatic.altFireHealth,allocator);value.AddMember("altFireDistance",h.automatic.altFireDistance,allocator);
-    value.AddMember("defensiveHealth",h.automatic.defensiveHealth,allocator);value.AddMember("repeatIntervalMs",h.automatic.repeatIntervalMs,allocator);
     value.AddMember("alertsEnabled",h.alertsEnabled,allocator);
     rapidjson::Document alerts;alerts.Parse(Alerts::EncodeSettings(h.alerts).c_str());
     rapidjson::Value copy;copy.CopyFrom(alerts,allocator);value.AddMember("alerts",copy,allocator);
@@ -37,12 +28,8 @@ template<typename Allocator> rapidjson::Value Json(const Hero& h,Allocator& allo
 Hero Read(const rapidjson::Value& value,Hero result) {
     if(!value.IsObject())return result;
     auto boolean=[&](const char* name,bool& target){if(value.HasMember(name)&&value[name].IsBool())target=value[name].GetBool();};
-    auto number=[&](const char* name,float& target){if(value.HasMember(name)&&value[name].IsNumber())target=value[name].GetFloat();};
     if(value.HasMember("keys")&&value["keys"].IsArray()&&value["keys"].Size()==result.keys.size())
         for(unsigned i=0;i<result.keys.size();++i)if(value["keys"][i].IsInt())result.keys[i]=value["keys"][i].GetInt();
-    boolean("altFire",result.automatic.altFire);boolean("defensive",result.automatic.defensive);boolean("repeatFire",result.automatic.repeatFire);
-    number("altFireHealth",result.automatic.altFireHealth);number("altFireDistance",result.automatic.altFireDistance);number("defensiveHealth",result.automatic.defensiveHealth);
-    if(value.HasMember("repeatIntervalMs")&&value["repeatIntervalMs"].IsInt())result.automatic.repeatIntervalMs=value["repeatIntervalMs"].GetInt();
     boolean("alertsEnabled",result.alertsEnabled);
     if(value.HasMember("alerts")&&value["alerts"].IsObject()) {
         rapidjson::StringBuffer buffer;rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);value["alerts"].Accept(writer);
@@ -53,7 +40,6 @@ Hero Read(const rapidjson::Value& value,Hero result) {
 }
 std::shared_ptr<const Store> Snapshot(){return current.load();}
 Hero Get(uint64_t hero){const auto state=Snapshot();const auto i=state->heroes.find(hero);return i==state->heroes.end()?state->defaults:i->second;}
-AutomaticActions Automatic(uint64_t hero){const auto state=Snapshot();const auto i=state->heroes.find(hero);return (i==state->heroes.end()?state->defaults:i->second).automatic;}
 void Set(uint64_t hero,Hero value){if(!hero)return;std::lock_guard lock(edits);auto next=std::make_shared<Store>(*Snapshot());next->heroes[hero]=Normalize(std::move(value));current.store(std::move(next));}
 void SetDisplay(VisualSettings::Settings value){std::lock_guard lock(edits);auto next=std::make_shared<Store>(*Snapshot());next->display=std::move(value);current.store(std::move(next));}
 int Key(uint64_t hero,Action action){const auto state=Snapshot();const auto i=state->heroes.find(hero);const auto& h=i==state->heroes.end()?state->defaults:i->second;return h.keys.at(int(action));}
@@ -72,10 +58,9 @@ unsigned char HidUsage(int vk) {
     }
 }
 bool SupportedKey(int vk){return vk==1||vk==2||vk==4||vk==5||vk==6||HidUsage(vk)!=0;}
-void Migrate(AutomaticActions legacy,Alerts::Settings alerts) {
+void Migrate(Alerts::Settings alerts) {
     std::lock_guard lock(edits);auto next=std::make_shared<Store>();
-    legacy.altFire=legacy.defensive=legacy.repeatFire=false;
-    next->defaults.automatic=legacy;next->defaults.alerts=std::move(alerts);next->defaults.alertsEnabled=false;
+    next->defaults.alerts=std::move(alerts);next->defaults.alertsEnabled=false;
     current.store(std::move(next));
 }
 bool Decode(const std::string& json,bool commit) {
@@ -86,7 +71,6 @@ bool Decode(const std::string& json,bool commit) {
     if(document.HasMember("defaults"))next->defaults=Read(document["defaults"],{});
     // Unconfigured heroes always start disabled, even if a malformed default section enables them.
     next->defaults.alertsEnabled=false;
-    next->defaults.automatic.altFire=next->defaults.automatic.defensive=next->defaults.automatic.repeatFire=false;
     if(document.HasMember("heroes")&&document["heroes"].IsObject())for(auto i=document["heroes"].MemberBegin();i!=document["heroes"].MemberEnd();++i) {
         char* end=nullptr;const auto hero=std::strtoull(i->name.GetString(),&end,10);
         if(hero&&end&&!*end&&next->heroes.size()<128)next->heroes.emplace(hero,Read(i->value,next->defaults));

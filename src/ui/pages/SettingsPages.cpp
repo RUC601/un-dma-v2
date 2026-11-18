@@ -1065,3 +1065,74 @@ void DrawHeroKeyPage() {
     if(OW::Config::CacheRefreshKey==OW::Config::MenuToggleKey)OW::Config::CacheRefreshKey=0;
     ImGui::PopItemWidth();CloseGroupBox();
 }
+
+void DrawPredictionDataPage() {
+    const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
+    auto profiles = OW::SnapshotPredictionProfiles();
+    UIGroupBox(zh ? "预测数据" : "Prediction Data");
+    ImGui::TextWrapped("%s", zh
+        ? "Aim、Trigger 和技能共用这里的运行时预测 Profile。旧配置没有 Profile 时，会从现有武器数据迁移生成。"
+        : "Aim, Trigger and Hero Skills share the runtime prediction profiles here. Older configs migrate from the existing weapon data when a profile is absent.");
+    if (profiles.empty()) {
+        ImGui::TextDisabled("%s", zh ? "暂无可编辑的预测 Profile" : "No prediction profiles are available.");
+        CloseGroupBox();
+        return;
+    }
+
+    static int selected = 0;
+    selected = std::clamp(selected, 0, static_cast<int>(profiles.size()) - 1);
+    std::vector<const char*> labels;
+    labels.reserve(profiles.size());
+    for (const auto& profile : profiles)
+        labels.push_back(profile.profileId.c_str());
+    SettingRow(zh ? "Profile" : "Profile");
+    PushControlWidth();
+    UISelect("##predictionProfile", &selected, labels.data(), static_cast<int>(labels.size()));
+    ImGui::PopItemWidth();
+
+    PredictionProfile profile = profiles[static_cast<size_t>(selected)];
+    ImGui::TextDisabled("%s: %d", zh ? "配置版本" : "Config version", profile.configVersion);
+    ImGui::TextDisabled("%s: %s", zh ? "算法方案" : "Algorithm profile", profile.algorithmProfileId.c_str());
+
+    bool changed = false;
+    SettingRow(zh ? "投射速度" : "Projectile speed");
+    PushControlWidth();
+    changed |= UISlider("##predictionSpeed", &profile.projectile.projectileSpeed, 0.0f, 500.0f, Number(2, " m/s"));
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "弹丸半径" : "Projectile radius");
+    PushControlWidth();
+    changed |= UISlider("##predictionRadius", &profile.projectile.projectileRadius, 0.0f, 1.0f, Number(3, " m"));
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "重力" : "Gravity");
+    changed |= UICheckbox("##predictionGravity", &profile.projectile.gravity);
+    if (profile.projectile.gravity) {
+        SettingRow(zh ? "重力加速度" : "Gravity acceleration");
+        PushControlWidth();
+        changed |= UISlider("##predictionGravityAcceleration", &profile.projectile.gravityAcceleration, 0.0f, 30.0f, Number(2, " m/s²"));
+        ImGui::PopItemWidth();
+    }
+    SettingRow(zh ? "施法延迟" : "Cast delay");
+    PushControlWidth();
+    changed |= UISlider("##predictionCastDelay", &profile.projectile.castDelayMs, 0.0f, 1000.0f, Number(0, " ms"));
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "发射方向修正" : "Launch direction bias");
+    PushControlWidth();
+    changed |= UISlider("##predictionUpBias", &profile.projectile.launchDirectionUpBias, -1.0f, 1.0f, Number(3));
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "最低蓄力速度" : "Minimum charge speed");
+    PushControlWidth();
+    changed |= UISlider("##predictionChargeMin", &profile.projectile.chargeMinSpeed, 0.0f, 500.0f, Number(2, " m/s"));
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "最高蓄力速度" : "Maximum charge speed");
+    PushControlWidth();
+    changed |= UISlider("##predictionChargeMax", &profile.projectile.chargeMaxSpeed, 0.0f, 500.0f, Number(2, " m/s"));
+    ImGui::PopItemWidth();
+    if (profile.projectile.chargeMaxSpeed < profile.projectile.chargeMinSpeed)
+        profile.projectile.chargeMaxSpeed = profile.projectile.chargeMinSpeed;
+    if (changed)
+        OW::UpdatePredictionProfile(profile);
+    ImGui::TextWrapped("%s", zh
+        ? "这些值会在保存配置后重载为同一份运行时数据。算法插拔和命中瞄点策略仍按设计保持待定。"
+        : "These values reload as one shared runtime source after saving. Algorithm plug-ins and final hit-point selection remain design-pending.");
+    CloseGroupBox();
+}

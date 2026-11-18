@@ -1854,20 +1854,32 @@ namespace {
     }
 
     SkillProjectileRuntime ResolveSkillProjectileRuntime(const Config::HeroSkillSettings& settings,
-                                                         const TrajectoryParams& params)
+                                                         const TrajectoryParams& params,
+                                                         std::string_view profileId = {})
     {
+        ProjectileSpec fallback{};
+        fallback.enabledByDefault = params.speed > 0.0f;
+        fallback.projectileSpeed = params.speed;
+        fallback.gravity = params.gravity > 0.0f;
+        fallback.projectileRadius = params.projectileRadius;
+        fallback.gravityAcceleration = params.gravity > 0.0f ? params.gravity : 9.8f;
+        fallback.castDelayMs = params.preFireDelayMs;
+        const PredictionProfile profile = profileId.empty()
+            ? PredictionProfile{}
+            : ResolvePredictionProfile(profileId, 0, 0, fallback);
+        const ProjectileSpec& shared = profileId.empty() ? fallback : profile.projectile;
         SkillProjectileRuntime runtime{};
-        runtime.speed = settings.projectileSpeed > 0.0f ? settings.projectileSpeed : params.speed;
+        runtime.speed = settings.projectileSpeed > 0.0f ? settings.projectileSpeed : shared.projectileSpeed;
         runtime.maxRange = params.maxRange;
-        runtime.gravity = settings.projectileGravity || params.gravity > 0.0f;
-        runtime.gravityAcceleration = params.gravity > 0.0f ? params.gravity : (runtime.gravity ? 9.8f : 0.0f);
-        runtime.launchDirectionUpBias = params.launchDirectionUpBias;
+        runtime.gravity = settings.projectileGravity || shared.gravity;
+        runtime.gravityAcceleration = shared.gravityAcceleration > 0.0f
+            ? shared.gravityAcceleration : (runtime.gravity ? 9.8f : 0.0f);
+        runtime.launchDirectionUpBias = shared.launchDirectionUpBias;
         runtime.projectileRadius = settings.projectileRadius > 0.0f
-            ? settings.projectileRadius
-            : params.projectileRadius;
+            ? settings.projectileRadius : shared.projectileRadius;
         runtime.preFireDelayMs = settings.preFireDelayMs > 0.0f
             ? settings.preFireDelayMs
-            : params.preFireDelayMs;
+            : shared.castDelayMs;
         return runtime;
     }
 
@@ -1918,10 +1930,18 @@ namespace {
                                 const SkillProjectileRuntime& projectile,
                                 float hitboxScalePercent)
     {
-        const float boneRadius = ResolveBoneHitboxRadius(
+        float boneRadius = ResolveBoneHitboxRadius(
             entity.HeroID,
             boneId,
             Config::kLegacyDefaultHitboxRadius);
+        if (entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision)) {
+            float nativeRadius = 0.0f;
+            for (const auto& shape : entity.native_hitboxes.shapes)
+                if (shape.boneId == boneId)
+                    nativeRadius = (std::max)(nativeRadius, shape.radius);
+            if (nativeRadius > 0.0f && std::isfinite(nativeRadius))
+                boneRadius = nativeRadius;
+        }
         const float resolvedWindow = (std::max)(0.0f, boneRadius + projectile.projectileRadius);
         return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
     }
@@ -3086,7 +3106,8 @@ namespace {
         const bool held = IsActivationKeyHeld(settings.key);
         const SkillProjectileRuntime projectile = ResolveSkillProjectileRuntime(
             settings,
-            { 75.0f, 40.0f, 0.0f, 0.125f, 0.0f });
+            { 75.0f, 40.0f, 0.0f, 0.125f, 0.0f },
+            "skill:genji:dash-combo");
 
         if (runtime.active) {
             runtime.prevKeyDown = held;
@@ -3846,7 +3867,10 @@ namespace {
             TimedOutputScheduler().CancelSource(OutputOwnerSource::GlobalAim);
             TimedOutputScheduler().CancelSource(OutputOwnerSource::Trigger);
         }
-        const auto projectile = ResolveSkillProjectileRuntime(settings, params);
+        const auto projectile = ResolveSkillProjectileRuntime(
+            settings,
+            params,
+            std::string("skill:") + definition.skillId);
         ScopedTrackingConfig trackingOverride(settings.tracking);
         const auto select=[&](bool pinned) {
             return FindBestSkillAimCandidate(settings,projectile,0,

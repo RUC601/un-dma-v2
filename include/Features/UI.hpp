@@ -4,7 +4,7 @@
 
 namespace UI {
 
-    enum Tab { TAB_AIMING = 0, TAB_VISUALS = 1, TAB_THEME = 2, TAB_MISC = 3, TAB_ALERT = 4, TAB_KEYS = 5 };
+    enum Tab { TAB_AIMING = 0, TAB_VISUALS = 1, TAB_THEME = 2, TAB_MISC = 3, TAB_ALERT = 4, TAB_KEYS = 5, TAB_PREDICTION = 6 };
 
     struct State {
         Tab   activeTab      = TAB_AIMING;
@@ -43,5 +43,6 @@ namespace UI {
     void VisualsPage();
     void ThemePage();
     void MiscPage();
+    void DrawPredictionDataPage();
 
 } // namespace UI

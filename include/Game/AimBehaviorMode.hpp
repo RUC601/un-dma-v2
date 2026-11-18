@@ -62,7 +62,7 @@ struct AimModeRuntime {
 inline void NormalizeBehaviorTuning(AimBehaviorTuning& t) {
     using AimPlan::Finite;
     t.smooth=Finite(t.smooth,20,0,100); t.baseSpeed=Finite(t.baseSpeed,100,0,100);
-    t.firePolicy=(std::clamp)(t.firePolicy,0,5);
+    t.firePolicy=(std::clamp)(t.firePolicy,0,6);
     t.pitchScale=Finite(t.pitchScale,1,.1f,3); t.maxAimTime=Finite(t.maxAimTime,100,0,100);
     t.minCharge=Finite(t.minCharge,5,0,100); t.maxCharge=Finite(t.maxCharge,100,t.minCharge,100);
     t.chargeFallbackMs=Finite(t.chargeFallbackMs,720,0,10000);

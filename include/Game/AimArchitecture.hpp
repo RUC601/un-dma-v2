@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <string_view>
 
 #include <Windows.h>
@@ -54,6 +55,10 @@ enum class FirePolicyType : int {
     ReleaseAfterDelay = 3,
     TimedBurst = 4,
     ChargeRelease = 5,
+    // User-facing "Keep Firing".  The older six internal policies retain
+    // their persisted values, while this explicit value keeps unconditional
+    // attack-button ownership separate from tracking-session ownership.
+    KeepFiring = 6,
     // Compatibility names preserve the persisted values used by older V2 configs.
     HoldWhileTracking = TrackingWithHold,
     TapOnHitWindow = SingleShot,
@@ -110,9 +115,15 @@ struct ProjectileSpec {
 };
 
 struct PredictionProfile {
-    const char* profileId = "default";
+    std::string profileId = "default";
     int configVersion = 1;
     ProjectileSpec projectile{};
+    // These fields identify the action the profile came from when it is
+    // persisted in the shared prediction store.  The weapon table remains
+    // the migration source for profiles that are absent from old configs.
+    uint64_t heroId = 0;
+    int actionId = 0;
+    std::string algorithmProfileId = "default";
 };
 
 struct FirePolicy {
@@ -253,7 +264,7 @@ inline AimBehaviorType ClampAimBehavior(int value)
 
 inline FirePolicyType ClampFirePolicy(int value)
 {
-    return static_cast<FirePolicyType>(std::clamp(value, 0, 5));
+    return static_cast<FirePolicyType>(std::clamp(value, 0, 6));
 }
 
 inline TraceMode ClampTraceMode(int value)
@@ -275,15 +286,15 @@ inline bool ResolvePredictionEnabled(PredictionOverrideMode mode,
                                      const WeaponSpec* weapon,
                                      bool legacyFallback)
 {
-    switch (mode) {
-    case PredictionOverrideMode::ForceOn:
-        return true;
-    case PredictionOverrideMode::ForceOff:
-        return false;
-    case PredictionOverrideMode::Auto:
-    default:
-        return weapon ? weapon->projectile.enabledByDefault : legacyFallback;
-    }
+    // V2 prediction is always part of the target-point pipeline.  Keep the
+    // old arguments so archived configs and call sites remain source
+    // compatible, but do not let Auto/Force Off become a second runtime
+    // truth.  A zero-speed profile still produces the valid pre-fire motion
+    // estimate and cast-delay path without inventing projectile flight.
+    (void)mode;
+    (void)weapon;
+    (void)legacyFallback;
+    return true;
 }
 
 inline int LegacyAimModeFromBehavior(AimBehaviorType behavior)

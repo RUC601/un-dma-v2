@@ -1833,8 +1833,10 @@ namespace OW {
             for (size_t i = 0; i < entities.size(); i++) {
                 AimCandidateConfig candidateConfig(entities[i].HeroID);
                 const bool contourFallback = contour.enabled && !entities[i].Vis;
-                if(contourFallback && ResolvePredictionEnabled(ClampPredictionOverride(Config::View_aimbotPredictionMode()),
-                    weaponSpec,predit)) continue;
+                // Contour/leak recognition supplies a world aim point. The
+                // behavior layer still decides movement and firing, so a
+                // projectile hero must not lose the candidate merely because
+                // its normal weapon path enables prediction.
                 if(!candidateConfig.Passes(entities[i])) continue;
                 const bool preferred=candidateConfig.Preferred(entities[i]);
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
@@ -2144,7 +2146,7 @@ namespace OW {
                         continue;
 
                     const float hitWindow = ResolveEffectiveHitWindow(
-                        entity.HeroID,
+                        entity,
                         boneId,
                         weaponSpec,
                         hitboxScale,
@@ -2494,7 +2496,7 @@ namespace OW {
                 Config::health = entities[TarGetIndex].PlayerHealth;
                 Config::Targetenemyi = TarGetIndex;
                 Config::aimbotEffectiveHitWindow2 = ResolveEffectiveHitWindow(
-                    entities[TarGetIndex].HeroID,
+                    entities[TarGetIndex],
                     selectedBoneId,
                     weaponSpec,
                     Config::hitbox2,

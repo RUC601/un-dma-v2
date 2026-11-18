@@ -18,6 +18,7 @@ using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
+#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -51,6 +52,75 @@ using namespace UI::ValueFormat;
 #include "ui/AimPlanEditor.hpp"
 #include "ui/BehaviorTuningEditor.hpp"
 using namespace UI::Theme;
+
+namespace {
+
+enum class AimFireMode : int {
+    KeepFiring = 0,
+    SingleShot = 1,
+    TrackingWithHold = 2,
+};
+
+constexpr const char* kAimFireModes[] = {
+    "Keep Firing",
+    "Single Shot",
+    "Tracking With Hold",
+};
+
+AimFireMode AimFireModeFromPolicy(int policy)
+{
+    switch (OW::ClampFirePolicy(policy)) {
+    case OW::FirePolicyType::KeepFiring:
+        return AimFireMode::KeepFiring;
+    case OW::FirePolicyType::SingleShot:
+        return AimFireMode::SingleShot;
+    case OW::FirePolicyType::TrackingWithHold:
+    default:
+        return AimFireMode::TrackingWithHold;
+    }
+}
+
+int AimFirePolicyFromMode(AimFireMode mode)
+{
+    switch (mode) {
+    case AimFireMode::KeepFiring:
+        return static_cast<int>(OW::FirePolicyType::KeepFiring);
+    case AimFireMode::SingleShot:
+        return static_cast<int>(OW::FirePolicyType::SingleShot);
+    case AimFireMode::TrackingWithHold:
+    default:
+        return static_cast<int>(OW::FirePolicyType::TrackingWithHold);
+    }
+}
+
+std::string AimActivationKeyLabel(int keySetting)
+{
+    if (!OW::Labels::IsCustomAimActivationKey(keySetting))
+        return OW::Labels::AimActivationKeyName(keySetting);
+
+    const int vk = OW::Labels::AimActivationKeyVk(keySetting);
+    if (vk == VK_LBUTTON) return "Left Mouse";
+    if (vk == VK_RBUTTON) return "Right Mouse";
+    if (vk == VK_MBUTTON) return "Middle Mouse";
+    if (vk == VK_XBUTTON1) return "Mouse 4";
+    if (vk == VK_XBUTTON2) return "Mouse 5";
+
+    wchar_t name[64]{};
+    const UINT scan = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
+    if (scan && GetKeyNameTextW(static_cast<LONG>(scan) << 16, name, 64)) {
+        char utf8[128]{};
+        if (WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8,
+                                static_cast<int>(sizeof(utf8)), nullptr, nullptr)) {
+            return utf8;
+        }
+    }
+
+    char fallback[32]{};
+    std::snprintf(fallback, sizeof(fallback), "VK 0x%02X", vk);
+    return fallback;
+}
+
+}
 
 void UI::AimbotPage() {
     state.selectedTypeIndex = ClampHeroSelectionIndex(state.selectedTypeIndex);
@@ -91,62 +161,22 @@ void UI::AimbotPage() {
     };
     refreshActivePreset();
     OW::Config::ResolveHeroBehaviorMode(activePreset);
+    // Prediction is now an automatic runtime capability.  Keep the legacy
+    // fields readable for migration, but normalize the active Slot to the
+    // single new semantic before it is saved again.
+    if (activePreset.predictionMode != static_cast<int>(OW::PredictionOverrideMode::Auto) ||
+        !activePreset.prediction) {
+        activePreset.predictionMode = static_cast<int>(OW::PredictionOverrideMode::Auto);
+        activePreset.prediction = true;
+        presetChanged = true;
+    }
 
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.aimHeroSegActive);
 
     slotEnabledChanged |= UIActionSlotEnabledCheckbox(slotKind, *selectedHero, "##aimSlotEnabled", kAimbotHeroLabelWidth);
     ImGui::Spacing();
     UITwoColumns([&]() {
-        UIGroupBox("Range & Target");
-            // FOV
-            static const char* kFovModeLabels[] = { "Fixed", "Dynamic Preset" };
-            activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
-            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset &&
-                !OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
-                activePreset.fovMode = OW::Config::kFovModeFixed;
-                activePreset.dynamicFovPresetId = -1;
-            }
-
-            SettingRow("FOV Mode", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelect("##aimFovMode", &activePreset.fovMode, kFovModeLabels, IM_ARRAYSIZE(kFovModeLabels))) {
-                activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
-                if (activePreset.fovMode == OW::Config::kFovModeFixed) {
-                    activePreset.dynamicFovPresetId = -1;
-                } else if (!OW::Config::Read_dynamicFovPresets().empty()) {
-                    activePreset.dynamicFovPresetId = OW::Config::Read_dynamicFovPresets().front().id;
-                }
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
-
-            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset) {
-                SettingRow("FOV Preset", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                presetChanged |= UISelectDynamicFovPreset("##aimDynamicFovPreset",
-                                                          &activePreset.dynamicFovPresetId,
-                                                          false);
-                ImGui::PopItemWidth();
-                if (!OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.64f, 0.25f, 1.0f),
-                                       "Create a Dynamic FOV preset in Misc first.");
-                }
-
-                SettingRow("Fallback FOV", kAimbotLeftLabelWidth);
-            } else {
-                SettingRow("FOV (deg)", kAimbotLeftLabelWidth);
-            }
-            PushControlWidth();
-            presetChanged |= UISlider("##aimFov", &activePreset.fov,
-                                      OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
-            ImGui::PopItemWidth();
-
-            // Target Priority
-            SettingRow("Target Priority", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
-            ImGui::PopItemWidth();
-
+        UIGroupBox("Basic Options · Target Eligibility");
             // Target Team
             SettingRow("Target Team", kAimbotLeftLabelWidth);
             PushControlWidth();
@@ -164,11 +194,9 @@ void UI::AimbotPage() {
             PushControlWidth();
             presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
             ImGui::PopItemWidth();
-            SettingRow(L("Ignore Sombra stealth"), kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox("##stealthFilter",&activePreset.ignoreSombraStealth);
             SettingRow(L("Protection filter"), kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
-            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Skips targets with a fresh, explicitly known protection signal."));
             // Hitbox Scale
             SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
             PushControlWidth();
@@ -224,8 +252,8 @@ void UI::AimbotPage() {
                     ImGui::TextWrapped("%s", captureMessage);
                     ImGui::PopStyleColor();
                 } else {
-                    ImGui::TextWrapped("%s", zh ? "已收到新鲜采集画面；目标部位仍须通过漏打关联与触边确认。"
-                                                : "Fresh capture frames are available. The target part still requires leak association and contact confirmation.");
+                    ImGui::TextWrapped("%s", zh ? "已收到新鲜采集画面；漏打结果提供目标部位和瞄准方向，开火继续使用当前 Behavior。"
+                                                : "Fresh capture frames are available. Leak recognition supplies the aim direction, while firing follows the current Behavior.");
                 }
                 if (ImGui::SmallButton(zh ? "打开采集设置" : "Open capture settings")) {
                     state.activeTab = TAB_MISC;
@@ -264,38 +292,66 @@ void UI::AimbotPage() {
             ImGui::PopItemWidth();
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
 
-            // Aim activation key is stored per aim slot.
+            // Aim activation key is stored per Aim Slot.  The legacy catalog
+            // remains available through the capture button, while captured
+            // keys use a stable encoded VK value in the same integer field.
             SettingRow("Aim Activation Key", kAimbotLeftLabelWidth);
             PushControlWidth();
-            presetChanged |= UISelect("##aimActivationKey", &activePreset.key,
-                                      OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+            static uint64_t captureHero = 0;
+            static int captureSlot = -1;
+            static bool captureArmed = false;
+            const bool capturing = captureHero == selectedHero->heroId &&
+                captureSlot == state.aimHeroSegActive;
+            const std::string keyLabel = capturing
+                ? std::string(L("Press a key... Esc cancels"))
+                : AimActivationKeyLabel(activePreset.key);
+            if (ImGui::Button(keyLabel.c_str(), ImVec2(220.0f, ControlHeight()))) {
+                captureHero = selectedHero->heroId;
+                captureSlot = state.aimHeroSegActive;
+                captureArmed = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(L("Clear"))) {
+                activePreset.key = OW::Labels::kAimActivationKeyNoneIndex;
+                presetChanged = true;
+                captureHero = 0;
+                captureSlot = -1;
+            }
+            if (capturing) {
+                if (!captureArmed) {
+                    const bool mouseDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
+                        (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 ||
+                        (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0 ||
+                        (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0 ||
+                        (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
+                    if (!mouseDown) captureArmed = true;
+                } else if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+                    captureHero = 0;
+                    captureSlot = -1;
+                    captureArmed = false;
+                } else {
+                    for (int vk = 1; vk < 256; ++vk) {
+                        if (!V2::HeroSettings::SupportedKey(vk) ||
+                            !(GetAsyncKeyState(vk) & 0x8000))
+                            continue;
+                        activePreset.key = OW::Labels::AimActivationKeyIndexFromVk(vk);
+                        presetChanged = true;
+                        captureHero = 0;
+                        captureSlot = -1;
+                        captureArmed = false;
+                        break;
+                    }
+                }
+            }
             ImGui::PopItemWidth();
 
             if (OW::Config::HeroUsesScopedWeaponActionSplit(selectedHero->heroId)) {
             // Scope Requirement
             SettingRow("Scope Requirement", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            static const char* const kAimScopeRequirements[] = { "All", "Scoped Only" };
-            int scopeRequirement = static_cast<int>(activeScopeRequirement);
-            const bool scopeCanChange =
-                OW::Config::HeroUsesScopedWeaponActionSplit(selectedHero->heroId);
-            if (!scopeCanChange)
-                ImGui::BeginDisabled();
-            if (UISelect("##aimScopeRequirement",
-                         &scopeRequirement,
-                         kAimScopeRequirements,
-                         IM_ARRAYSIZE(kAimScopeRequirements))) {
-                activeScopeRequirement = OW::Config::NormalizeAimScopeRequirement(scopeRequirement);
-                activePreset.trigger.action =
-                    activeScopeRequirement == OW::Config::AimScopeRequirement::ScopedOnly
-                    ? 2
-                    : 0;
-                scopeRequirementChanged = true;
-                presetChanged = true;
-            }
-            if (!scopeCanChange)
-                ImGui::EndDisabled();
-            ImGui::PopItemWidth();
+            ImGui::TextDisabled("%s", activeScopeRequirement == OW::Config::AimScopeRequirement::ScopedOnly
+                ? L("Scoped Only (from Action)")
+                : L("All (from Action)"));
+            ImGui::SetItemTooltip("%s", L("The selected attack action determines the required stance."));
 
             }
 
@@ -307,49 +363,31 @@ void UI::AimbotPage() {
                     OW::Config::DefaultAimScopeRequirementForHeroAction(
                         selectedHero->heroId,
                         activePreset.trigger.action);
+                scopeRequirementChanged = true;
                 presetChanged = true;
             }
             ImGui::PopItemWidth();
 
-            if (activePreset.aimBehavior == OW::Config::kAimBehaviorFlick ||
-                activePreset.aimBehavior == OW::Config::kAimBehaviorMagneticTrigger) {
-                SettingRow(OW::Config::uiLanguage == 1 ? "开火模式" : "Firing mode", kAimbotLeftLabelWidth);
-                PushControlWidth();
-                const char* const firingModes[] = {
-                    OW::Config::uiLanguage == 1 ? "持续开火" : "Continuous fire",
-                    OW::Config::uiLanguage == 1 ? "单发" : "Single shot"
-                };
-                int firingMode = activePreset.keepFiring ? 0 : 1;
-                if (UISelect("##aimFiringMode", &firingMode, firingModes, IM_ARRAYSIZE(firingModes))) {
-                    activePreset.firePolicy = static_cast<int>(
-                        firingMode == 0 ? OW::FirePolicyType::HoldWhileTracking
-                                        : OW::FirePolicyType::TapOnHitWindow);
-                    activePreset.keepFiring = firingMode == 0;
-                    activePreset.autoshot = firingMode != 0;
-                    presetChanged = true;
-                }
-                ImGui::PopItemWidth();
-                ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
-                    ? "连续开火会在当前激活期间按节奏重复开火；单发命中后结束本次开火。"
-                    : "Continuous fire repeats during the active slot; single shot stops after one hit-window shot.");
-            }
-
-            SettingRow("Require Action Held", kAimbotLeftLabelWidth);
-            const bool actionHasPhysicalMouseButton =
-                OW::MouseButtonForAttackAction(activePreset.trigger.action) >= 0;
-            if (!actionHasPhysicalMouseButton) {
+            SettingRow(OW::Config::uiLanguage == 1 ? "开火模式" : "Fire behavior", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            AimFireMode fireMode = AimFireModeFromPolicy(activePreset.firePolicy);
+            int fireModeIndex = static_cast<int>(fireMode);
+            if (UISelect("##aimFireMode", &fireModeIndex,
+                         kAimFireModes, IM_ARRAYSIZE(kAimFireModes))) {
+                fireMode = static_cast<AimFireMode>(std::clamp(fireModeIndex, 0, 2));
+                activePreset.firePolicy = AimFirePolicyFromMode(fireMode);
+                activePreset.keepFiring = fireMode != AimFireMode::SingleShot;
+                activePreset.autoshot = fireMode != AimFireMode::KeepFiring;
+                // The old field represented a physical-action gate. The new
+                // fire modes own their activation cycle and no longer expose
+                // that gate as a second user-facing control.
                 activePreset.requireActionHeld = false;
-                ImGui::BeginDisabled();
+                presetChanged = true;
             }
-            presetChanged |= UICheckbox(
-                "##aimRequireActionHeld",
-                &activePreset.requireActionHeld);
-            if (!actionHasPhysicalMouseButton)
-                ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(actionHasPhysicalMouseButton
-                    ? "Aim only while the selected weapon or skill action is physically held."
-                    : "This action has no physical mouse-button mapping.");
+            ImGui::PopItemWidth();
+            ImGui::TextWrapped("%s", OW::Config::uiLanguage == 1
+                ? "持续按住会在激活键按下期间持有攻击键；单发在本轮只提交一次并等待松开重按；跟踪并持续按住只在跟踪会话中持有攻击键。"
+                : "Keep Firing owns the attack button while the activation key is down; Single Shot submits once per press cycle; Tracking With Hold owns it only during a tracking session.");
 
             SettingRow("Skeleton", kAimbotLeftLabelWidth);
             PushControlWidth();
@@ -361,8 +399,8 @@ void UI::AimbotPage() {
         CloseGroupBox();
     });
 
-    UIGroupBox("Current Slot parameters");
-    SettingRow("Base speed");PushControlWidth();
+    UIGroupBox("Advanced Options · Behavior Tuning");
+    SettingRow("Global response scale");PushControlWidth();
     presetChanged|=UISlider("##slotBaseSpeed",&activePreset.baseSpeed,0,100,Number(1," %"));ImGui::PopItemWidth();
     if(ImGui::Button(L("Edit motion...")))ImGui::OpenPopup("##MotionEditor");
     ImGui::SameLine();
@@ -392,16 +430,56 @@ void UI::AimbotPage() {
     state.aimAdvanced = ImGui::CollapsingHeader(L("Advanced parameters"));
     if (state.aimAdvanced) {
         UITwoColumns([&]() {
-        UIGroupBox("Timing & Prediction");
-            // Prediction
-            SettingRow("Prediction", kAimbotLeftLabelWidth);
+        UIGroupBox("Advanced Options · FOV & Prediction Entry");
+            static const char* kFovModeLabels[] = { "Fixed", "Dynamic Preset" };
+            activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
+            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset &&
+                !OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
+                activePreset.fovMode = OW::Config::kFovModeFixed;
+                activePreset.dynamicFovPresetId = -1;
+            }
+
+            SettingRow("FOV Mode", kAimbotLeftLabelWidth);
             PushControlWidth();
-            if (UISelect("##aimPredictionMode", &activePreset.predictionMode,
-                         kPredictionMode, IM_ARRAYSIZE(kPredictionMode))) {
-                activePreset.prediction = activePreset.predictionMode == 1;
+            if (UISelect("##aimFovMode", &activePreset.fovMode, kFovModeLabels, IM_ARRAYSIZE(kFovModeLabels))) {
+                activePreset.fovMode = OW::Config::ClampFovMode(activePreset.fovMode);
+                if (activePreset.fovMode == OW::Config::kFovModeFixed) {
+                    activePreset.dynamicFovPresetId = -1;
+                } else if (!OW::Config::Read_dynamicFovPresets().empty()) {
+                    activePreset.dynamicFovPresetId = OW::Config::Read_dynamicFovPresets().front().id;
+                }
                 presetChanged = true;
             }
             ImGui::PopItemWidth();
+
+            if (activePreset.fovMode == OW::Config::kFovModeDynamicPreset) {
+                SettingRow("FOV Preset", kAimbotLeftLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISelectDynamicFovPreset("##aimDynamicFovPreset",
+                                                          &activePreset.dynamicFovPresetId,
+                                                          false);
+                ImGui::PopItemWidth();
+                if (!OW::Config::FindDynamicFovPreset(activePreset.dynamicFovPresetId)) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.64f, 0.25f, 1.0f),
+                                       "Create a Dynamic FOV preset in Misc first.");
+                }
+                SettingRow("Fallback FOV", kAimbotLeftLabelWidth);
+            } else {
+                SettingRow("FOV (deg)", kAimbotLeftLabelWidth);
+            }
+            PushControlWidth();
+            presetChanged |= UISlider("##aimFov", &activePreset.fov,
+                                      OW::Config::kMinFovDeg, OW::Config::kMaxFovDeg, Number(0, " deg"));
+            ImGui::PopItemWidth();
+
+            SettingRow("Target Priority", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
+            ImGui::PopItemWidth();
+
+            SettingRow("Prediction", kAimbotLeftLabelWidth);
+            ImGui::TextDisabled("Automatic");
+            ImGui::SetItemTooltip("%s", L("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data."));
 
             SettingRow("Predict FOV Entry", kAimbotLeftLabelWidth);
             presetChanged |= UICheckbox("##aimPredictFovEntry", &activePreset.predictFovEntry);

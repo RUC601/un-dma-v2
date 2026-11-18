@@ -23,6 +23,12 @@ namespace OW::Labels {
                   "Activation key labels and VK bindings must stay aligned.");
     inline constexpr int kAimActivationKeyNoneIndex =
         static_cast<int>(std::size(kAimActivationKeys)) - 1;
+    // Values above the legacy catalog encode a directly captured virtual key.
+    // The old indices remain stable so existing INI/JSON files continue to
+    // load unchanged.
+    inline constexpr int kAimActivationKeyCustomBase = kAimActivationKeyNoneIndex + 1;
+    inline constexpr int kAimActivationKeyCustomMax = kAimActivationKeyCustomBase + 255;
+    inline constexpr int kAimActivationKeyStateCount = kAimActivationKeyCustomMax + 1;
     static_assert(kAimActivationKeyVks[kAimActivationKeyNoneIndex] == 0,
                   "The final activation-key entry must remain None.");
 
@@ -100,13 +106,32 @@ namespace OW::Labels {
     }
 
     inline const char* AimActivationKeyName(int keyIndex) {
+        if (keyIndex >= kAimActivationKeyCustomBase && keyIndex <= kAimActivationKeyCustomMax)
+            return "Captured key";
         return LabelAt(kAimActivationKeys, keyIndex);
     }
 
     inline int AimActivationKeyVk(int keyIndex) {
+        if (keyIndex >= kAimActivationKeyCustomBase && keyIndex <= kAimActivationKeyCustomMax)
+            return keyIndex - kAimActivationKeyCustomBase;
         if (keyIndex < 0 || keyIndex >= static_cast<int>(std::size(kAimActivationKeyVks)))
             return 0;
         return kAimActivationKeyVks[static_cast<std::size_t>(keyIndex)];
+    }
+
+    inline bool IsCustomAimActivationKey(int keyIndex) {
+        return keyIndex >= kAimActivationKeyCustomBase &&
+            keyIndex <= kAimActivationKeyCustomMax;
+    }
+
+    inline int AimActivationKeyIndexFromVk(int vk) {
+        for (int index = 0; index < static_cast<int>(std::size(kAimActivationKeyVks)); ++index) {
+            if (kAimActivationKeyVks[static_cast<std::size_t>(index)] == vk)
+                return index;
+        }
+        return vk > 0 && vk <= 255
+            ? kAimActivationKeyCustomBase + vk
+            : kAimActivationKeyNoneIndex;
     }
 
     template <typename IsVkDown>

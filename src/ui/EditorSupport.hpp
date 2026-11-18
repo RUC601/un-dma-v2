@@ -91,7 +91,7 @@ static_assert(std::size(kAimMethod) == OW::Config::kAimMethodCount);
 inline const char* kAimSmoothType[] = { "Constant Speed", "Linear", "Bezier" };
 inline const char* kPredictionMode[] = { "Auto", "Force On", "Force Off" };
 inline const char* kFirePolicy[] = {
-    "Manual", "Tracking With Hold", "Single Shot", "Release After Delay", "Timed Burst", "Charge Release"
+    "Manual", "Tracking With Hold", "Single Shot", "Release After Delay", "Timed Burst", "Charge Release", "Keep Firing"
 };
 inline const char* kPriority[]     = { "Lowest FOV", "Lowest HP", "Distance", "Smart" };
 inline const char* kTeam[]         = { "Enemies", "Allies", "All" };

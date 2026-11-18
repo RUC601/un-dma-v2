@@ -18,7 +18,6 @@ using namespace UI::ValueFormat;
 #include "output/OutputRuntime.hpp"
 #include "Utils/Config.hpp"
 #include "Game/HeroSkills.hpp"
-#include "Game/HeroSettings.hpp"
 #include "Game/Offsets.hpp"
 #include "Game/Overwatch.hpp"
 #include "Game/Target.hpp"
@@ -796,62 +795,6 @@ void UI::SkillsPage() {
     ImGui::PushID("SkillsPage");
 
     const HeroOption& selectedHero = CurrentHeroOption();
-    auto heroSettings=V2::HeroSettings::Get(selectedHero.heroId);
-    auto& automatic=heroSettings.automatic;
-    const auto previous=automatic;
-    ImGui::BeginDisabled(selectedHero.heroId==0);
-    UIGroupBox("Auto Alt-Fire");
-    {
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Tap RMB when the selected enemy is below the health and distance limits."));
-        SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoRmbEnable", &automatic.altFire);
-
-        SettingRow("Health Threshold", kDefaultLabelWidth);
-        PushControlWidth();
-        UISlider("##autoRmbHealth", &automatic.altFireHealth, 0.0f, 500.0f, Number(0, " HP"));
-        ImGui::PopItemWidth();
-
-        SettingRow("Distance", kDefaultLabelWidth);
-        PushControlWidth();
-        UISlider("##autoRmbDistance", &automatic.altFireDistance, 0.0f, 60.0f, Number(1, " m"));
-        ImGui::PopItemWidth();
-    }
-    CloseGroupBox();
-
-    UIGroupBox("Auto Skill");
-    {
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Use a supported hero's defensive ability at low self health."));
-        SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoSkillEnable", &automatic.defensive);
-
-        SettingRow("Health Threshold", kDefaultLabelWidth);
-        PushControlWidth();
-        UISlider("##skillHealth", &automatic.defensiveHealth, 0.0f, 500.0f, Number(0, " HP"));
-        ImGui::PopItemWidth();
-    }
-    CloseGroupBox();
-
-    UIGroupBox("Auto Shoot");
-    {
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", L("Legacy repeat-fire timer; this does not enable an individual hero skill."));
-        SettingRow("Enabled", kDefaultLabelWidth);
-        UICheckbox("##autoShootEnable", &automatic.repeatFire);
-
-        SettingRow("Cooldown", kDefaultLabelWidth);
-        PushControlWidth();
-        UISlider("##shootCooldown", &automatic.repeatIntervalMs, 100, 2000, Number(0, " ms"));
-        ImGui::PopItemWidth();
-    }
-    CloseGroupBox();
-
-    ImGui::EndDisabled();
-    if(automatic.altFire!=previous.altFire||automatic.defensive!=previous.defensive||automatic.repeatFire!=previous.repeatFire||
-        automatic.altFireHealth!=previous.altFireHealth||automatic.altFireDistance!=previous.altFireDistance||
-        automatic.defensiveHealth!=previous.defensiveHealth||automatic.repeatIntervalMs!=previous.repeatIntervalMs)
-        V2::HeroSettings::Set(selectedHero.heroId,heroSettings);
     int renderedSkillCount = 0;
     if (selectedHero.heroId != 0) {
         for (const OW::HeroSkillDefinition& definition : OW::AllHeroSkillDefinitions()) {
