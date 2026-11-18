@@ -1,0 +1,102 @@
+src\Game\HeroSkills.cpp:3656:            const uint64_t skillContainer = SDK->RPM<uint64_t>(skillBase + 0x1848);
+src\Game\HeroSkills.cpp:3660:            const uint64_t rawList = SDK->RPM<uint64_t>(skillContainer + 0x10);
+src\Game\HeroSkills.cpp:3661:            const uint32_t rawSize = SDK->RPM<uint32_t>(skillContainer + 0x18);
+src\Game\HeroSkills.cpp:3669:                if (SDK->RPM<uint16_t>(entry) != wantedId)
+src\Game\HeroSkills.cpp:3673:                    const int floatValue = RoundedAmmoValue(SDK->RPM<float>(entry + offset));
+src\Game\HeroSkills.cpp:3680:                    const int intValue = SDK->RPM<int>(entry + offset);
+src\Utils\TestServer.cpp:302:        viewDirection = OW::SDK->RPM<OW::Vector3>(
+include\Game\Decrypt.hpp:92:                    SDK->RPM<uint64_t>(Key + 0x38) > 0x1000000000000000 &&
+include\Game\Decrypt.hpp:93:                    SDK->RPM<uint64_t>(Key + 0xB8) > 0x1000000000000000) {
+include\Game\Decrypt.hpp:94:                    SDK->GlobalKey1 = SDK->RPM<uint64_t>(Key + 0x38);
+include\Game\Decrypt.hpp:95:                    SDK->GlobalKey2 = SDK->RPM<uint64_t>(Key + 0xB8);
+include\Game\Decrypt.hpp:144:                        uint64_t k1 = SDK->RPM<uint64_t>(decoded + 0x38);
+include\Game\Decrypt.hpp:145:                        uint64_t k2 = SDK->RPM<uint64_t>(decoded + 0xB8);
+include\Game\Decrypt.hpp:157:                            uint64_t v = SDK->RPM<uint64_t>(decoded + off);
+include\Game\Decrypt.hpp:175:                            uint64_t global_val = SDK->RPM<uint64_t>(SDK->dwGameBase + global_rva);
+include\Game\Decrypt.hpp:183:                                    uint64_t v = SDK->RPM<uint64_t>(SDK->dwGameBase + global_rva + d);
+include\Game\Decrypt.hpp:293:            value = SDK->RPM<std::remove_reference_t<decltype(value)>>(parent + offset);
+include\Game\Decrypt.hpp:331:            component = SDK->RPM<uint64_t>(component_table + 8ull * component_index);
+include\Game\Decrypt.hpp:577:        const uint32_t id = SDK->RPM<uint32_t>(parent + 0x2F0);
+include\Game\Decrypt.hpp:581:        const uint64_t bucketArray = SDK->RPM<uint64_t>(parent + 0x18);
+include\Game\Decrypt.hpp:586:        const uint64_t entries = SDK->RPM<uint64_t>(bucketArray + 16ull * bucket);
+include\Game\Decrypt.hpp:587:        const uint32_t count = SDK->RPM<uint32_t>(bucketArray + 16ull * bucket + 8);
+include\Game\Decrypt.hpp:758:        const uint64_t plus8 = SDK->RPM<uint64_t>(parent + 0x8);
+include\Game\Decrypt.hpp:817:        const uint64_t clientGame = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:822:        const uint64_t raw = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:868:            const uint64_t raw = SDK->RPM<uint64_t>(gameAdmin + listOffset);
+include\Game\Decrypt.hpp:878:                const uint64_t candidate = SDK->RPM<uint64_t>(list + 8ull * index);
+include\Game\Decrypt.hpp:901:        const uint64_t admin = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:906:        const uint64_t listRaw = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:912:        object = SDK->RPM<uint64_t>(list + 8ull * index);
+include\Game\Decrypt.hpp:920:        const float sensitivity = SDK->RPM<float>(object + offset::Sensitivity);
+include\Game\Decrypt.hpp:924:        const float sensX = SDK->RPM<float>(object + offset::SensX_Scale);
+include\Game\Decrypt.hpp:925:        const float sensY = SDK->RPM<float>(object + offset::SensY_Scale);
+include\Game\Decrypt.hpp:946:        const float sensX = SDK->RPM<float>(xAddress);
+include\Game\Decrypt.hpp:947:        const float sensY = SDK->RPM<float>(yAddress);
+include\Game\Decrypt.hpp:969:        const float normalized = SDK->RPM<float>(object + offset::Sensitivity);
+include\Game\Decrypt.hpp:991:        const uint64_t admin = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:996:        const uint64_t raw = SDK->RPM<uint64_t>(admin + offset::Singleton_InputOffset);
+include\Game\Decrypt.hpp:1010:            const uint64_t object = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:1086:        if (IsPlausibleSensitivity(SDK->RPM<float>(mouse_scale_x))) {
+include\Game\Decrypt.hpp:1581:        const uint64_t entity_list = guard.dynamic?guard.snapshot.root:SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:2268:            entity_list = SDK->RPM<uint64_t>(
+include\Game\Decrypt.hpp:2651:                        cnUniqueId = SDK->RPM<uint32_t>(
+include\Game\Decrypt.hpp:2666:                    cnUniqueId = SDK->RPM<uint32_t>(
+include\Game\Decrypt.hpp:2694:                record.unique_id = SDK->RPM<uint32_t>(possible_common + offset::Entity_MatchId);
+include\Game\Decrypt.hpp:2704:                ptr_value = SDK->RPM<uint64_t>(possible_common + offset::Entity_PoolPtr);
+include\Game\Decrypt.hpp:2714:                    SDK->RPM<uint64_t>(record.ptr + offset::Pool_PoolId);
+include\Game\Decrypt.hpp:3299:                    SDK->RPM<uint32_t>(team + 0x58) & 0x0F800000u;
+include\Game\Decrypt.hpp:3669:                uint32_t unique_id = SDK->RPM<uint32_t>(common_linker + offset::Link_UniqueId);
+include\Game\Decrypt.hpp:3702:                    SDK->RPM<uint32_t>(linkBase + offset::Link_UniqueId);
+include\Game\Decrypt.hpp:3850:            return SDK->RPM<uint16_t>(LinkBase + 0xD4) != SDK->RPM<uint16_t>(LinkBase + 0xD8)
+include\Game\Decrypt.hpp:3884:            uint32_t count = SDK->RPM<uint32_t>(base + 0x378);
+include\Game\Decrypt.hpp:3886:            uint64_t entry = SDK->RPM<uint64_t>(base + 0x370);
+include\Game\Decrypt.hpp:3889:                if (SDK->RPM<uint16_t>(entry + 0x8) == index) {
+include\Game\Decrypt.hpp:3890:                    uint64_t listStruct = SDK->RPM<uint64_t>(entry);
+include\Game\Decrypt.hpp:3892:                    skillList = SDK->RPM<uint64_t>(listStruct + 0xA8);
+include\Game\Decrypt.hpp:3909:        const uint32_t count = SDK->RPM<uint32_t>(a1 + 0x2A8);
+include\Game\Decrypt.hpp:3912:        uint64_t entry = SDK->RPM<uint64_t>(a1 + 0x2A0);
+include\Game\Decrypt.hpp:3916:            if (SDK->RPM<uint16_t>(entry + 8) == a2)
+include\Game\Decrypt.hpp:3917:                return SDK->RPM<uint64_t>(entry);
+include\Game\Decrypt.hpp:3935:            v6 = SDK->RPM<uint64_t>(v7 + 0xB8);
+include\Game\Decrypt.hpp:3959:        return SDK->RPM<float>(skill + offset);
+include\Game\Decrypt.hpp:4005:        int ammo = chooseAmmo(roundedAmmo(SDK->RPM<float>(skill + 0x60)));
+include\Game\Decrypt.hpp:4009:        ammo = chooseAmmo(roundedAmmo(SDK->RPM<float>(skill + 0x50)));
+include\Game\Decrypt.hpp:4013:        const int rawAmmo50 = SDK->RPM<int>(skill + 0x50);
+include\Game\Decrypt.hpp:4020:        const int rawAmmo60 = SDK->RPM<int>(skill + 0x60);
+include\Game\Entity.hpp:406:                uint64_t bonePtr = SDK->RPM<uint64_t>(bonedata);
+include\Game\Entity.hpp:412:                uint64_t boneIdTable = SDK->RPM<uint64_t>(bonePtr + 0x38);
+include\Game\Entity.hpp:418:                uint16_t count = SDK->RPM<uint16_t>(bonePtr + Skeleton::BoneCountOffset());
+include\Game\Entity.hpp:453:            info.bonesBase = SDK->RPM<uint64_t>(pBoneData + 0x20);
+include\Game\Entity.hpp:457:            info.bonePtr = SDK->RPM<uint64_t>(pBoneData);
+include\Game\Entity.hpp:461:            info.boneIdTable = SDK->RPM<uint64_t>(info.bonePtr + 0x38);
+include\Game\Entity.hpp:465:            info.boneCount = SDK->RPM<uint16_t>(info.bonePtr + Skeleton::BoneCountOffset());
+include\Game\Entity.hpp:481:                    : SDK->RPM<uint64_t>(this->VelocityBase + 0x8B0);
+include\Game\Entity.hpp:491:                const uint64_t pBoneData = SDK->RPM<uint64_t>(this->BoneBase + entryOffset);
+include\Game\Entity.hpp:528:                probe.bonePtr = SDK->RPM<uint64_t>(probe.boneData);
+include\Game\Entity.hpp:532:                probe.boneIdTable = SDK->RPM<uint64_t>(probe.bonePtr + 0x38);
+include\Game\Entity.hpp:536:                probe.boneCount = SDK->RPM<uint16_t>(probe.bonePtr + Skeleton::BoneCountOffset());
+include\Game\Entity.hpp:557:                probe.local = SDK->RPM<XMFLOAT3>(probe.localAddress);
+include\Game\Entity.hpp:978:                            XMFLOAT3 currentBone = SDK->RPM<XMFLOAT3>(
+include\Game\Entity.hpp:1016:                            XMFLOAT3 b = SDK->RPM<XMFLOAT3>(
+src\Features\aim\BehaviorController.cpp:892:        const float current_sens = SDK->RPM<float>(sensitive_ptr);
+src\Game\entities\EntityReader.cpp:923:                ? SDK->RPM<uint32_t>(linkParent + offset::Entity_MatchId)
+src\Game\entities\EntityReader.cpp:2081:                        : SDK->RPM<XMFLOAT3>(entity.VelocityBase + 0x380 + 0x50);
+src\Game\entities\EntityReader.cpp:2090:                        : SDK->RPM<XMFLOAT3>(entity.VelocityBase + 0x380 + 0x50);
+src\Game\entities\EntityReader.cpp:2102:                        : SDK->RPM<XMFLOAT3>(entity.VelocityBase + 0x380 + 0x50);
+src\Game\entities\EntityReader.cpp:2110:                        : SDK->RPM<XMFLOAT3>(entity.VelocityBase + 0x380 + 0x50);
+src\Game\entities\EntityReader.cpp:2190:                    velocityBoneData = SDK->RPM<uint64_t>(entity.VelocityBase + 0x8B0);
+src\Game\camera\CameraWorker.cpp:31:        const uint64_t root=OW::SDK->RPM<uint64_t>(OW::SDK->dwGameBase+offsets.Address_viewmatrix_base);
+src\Game\camera\CameraWorker.cpp:33:        const uint64_t p1=root ? OW::SDK->RPM<uint64_t>(decoded+offsets.VM_P1) : 0;
+src\Game\camera\CameraWorker.cpp:34:        const uint64_t p2=p1 ? OW::SDK->RPM<uint64_t>(p1+offsets.VM_P2) : 0;
+src\Game\camera\CameraWorker.cpp:37:            const uint64_t parent=OW::SDK->RPM<uint64_t>(p2+offsets.VM_ViewProjectionParent);
+src\Game\camera\CameraWorker.cpp:38:            const uint64_t render=parent ? OW::SDK->RPM<uint64_t>(parent+offsets.VM_ViewProjectionPtr) : 0;
+include\Game\EntityMaintenance\CacheRebuild.inl:55:                    cache.rotationLeaf = SDK->RPM<uint64_t>(
+src\Renderer\Overlay.cpp:140:    const UINT detectedWidth = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportWidth_RVA);
+src\Renderer\Overlay.cpp:141:    const UINT detectedHeight = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportHeight_RVA);
+include\Game\Target.hpp:69:        return SDK->RPM<Vector3>(playerControllerBase + kPlayerControllerViewDirectionOffset);
+include\Game\Target.hpp:1687:            uint64_t pSkill = SDK->RPM<uint64_t>(localSkillBase + 0x1848);
+include\Game\Target.hpp:1688:            uint64_t SkillRawList = SDK->RPM<uint64_t>(pSkill + 0x10);
+include\Game\Target.hpp:1689:            uint32_t SkillSize = SDK->RPM<uint32_t>(pSkill + 0x18);
+include\Game\Target.hpp:1691:                if (SDK->RPM<uint16_t>(SkillRawList + (i * 0x80)) == a1) {
+include\Game\Target.hpp:1692:                    float val = SDK->RPM<float>(SkillRawList + (i * 0x80) + 0x30);

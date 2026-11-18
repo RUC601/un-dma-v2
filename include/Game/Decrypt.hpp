@@ -103,7 +103,13 @@ namespace OW {
             {
                 uint64_t gk_addr = SDK->dwGameBase + offset::GetGlobalKey_RVA;
                 uint8_t code[128] = {};
-                SDK->read_buf(gk_addr, (char*)code, sizeof(code));
+                if (!SDK->read_buf(gk_addr, (char*)code, sizeof(code))) {
+                    Diagnostics::Warn("GetGlobalKey instruction read failed at 0x%llX.",
+                        static_cast<unsigned long long>(gk_addr));
+                    Diagnostics::SetKeyStatus(Diagnostics::KeyStatus::Failed);
+                    RuntimeWorkerSleep(2000);
+                    continue;
+                }
 
                 uint64_t lea_target = 0;
                 for (int i = 0; i < 120; i++) {
@@ -288,10 +294,7 @@ namespace OW {
                 parent_snapshot->ReadParentOffset(offset, value)) {
                 return true;
             }
-            if (requireExactReads)
-                return SDK->read_range(parent + offset, &value, sizeof(value));
-            value = SDK->RPM<std::remove_reference_t<decltype(value)>>(parent + offset);
-            return true;
+            return SDK->read_range(parent + offset, &value, sizeof(value));
         };
 
         uint64_t component_bits = 0;
@@ -324,12 +327,8 @@ namespace OW {
         }
 
         uint64_t component = 0;
-        if (requireExactReads) {
-            if (!SDK->read_range(component_table + 8ull * component_index, &component, sizeof(component)))
-                return 0;
-        } else {
-            component = SDK->RPM<uint64_t>(component_table + 8ull * component_index);
-        }
+        if (!SDK->read_range(component_table + 8ull * component_index, &component, sizeof(component)))
+            return 0;
         if (!component) {
             Diagnostics::RecordDecryptFailure();
             return 0;
@@ -2294,7 +2293,8 @@ namespace OW {
 
         const size_t kEntityListReadSize =
             registryGuard.dynamic ? registryGuard.snapshot.Bytes() : (cnProfile ? 0x40000 : 0x1E000);
-        const size_t kEntityListChunkSize = 0x1000;
+        const size_t kEntityListChunkSize =
+            cnProfile ? EntityScannerCnEntityListChunkSize() : 0x1000;
         scanDetail.cnEntityListChunkSize = cnProfile ? kEntityListChunkSize : 0;
         constexpr size_t kEntityListFallbackChunkSize = 0x1000;
         const bool lightScanRequested = EntityLightScanRequested();
@@ -2776,7 +2776,7 @@ namespace OW {
                     {
                         const Diagnostics::ScopedDmaCallsite listReadCallsite(
                             Diagnostics::DmaCallsite::EntityScanListRead);
-                        chunkRead = registryGuard.dynamic ? mem.ReadFreshExact(entity_list + offset, entity_chunk.data(), chunk_size) : mem.Read(entity_list + offset, entity_chunk.data(), chunk_size);
+                        chunkRead = mem.ReadFreshExact(entity_list + offset, entity_chunk.data(), chunk_size);
                     }
                     scanDetail.scanListReadMs += elapsedMs(listReadStartedAt);
                     if (chunkRead)

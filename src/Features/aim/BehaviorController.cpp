@@ -1086,13 +1086,13 @@ namespace AimbotDetail {
             return false;
         if (submittedAt) *submittedAt = GetTickCount();
         OW::RuntimeWorkerSleep(sleep_ms);
-        (void)OW::SendMouseButtonActionState(
+        const OW::ActionOutputStatus releaseStatus = OW::SendMouseButtonActionState(
             button,
             false,
             ownerSource,
             ownerKey,
             operationGeneration);
-        return true;
+        return OW::ActionOutputSucceeded(releaseStatus);
     }
 
     inline uint32_t PhysicalMouseMaskForButton(int button) {
@@ -1578,34 +1578,49 @@ namespace AimbotDetail {
         return true;
     }
 
-    inline void FireConfiguredAction(
+    inline bool FireConfiguredAction(
         const OW::c_entity& local,
         DWORD sleep_ms = 10,
         OW::OutputOwnerSource ownerSource = OW::OutputOwnerSource::GlobalAim,
         const char* ownerKey = kGlobalAimGeneratedFireOwnerKey) {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
-            return;
+            return false;
         if (!GeneratedFireAllowedForSource(ownerSource))
-            return;
+            return false;
         const OW::WeaponSpec* weapon = OW::ResolveWeaponSpec(local.HeroID, OW::Config::View_aimbotAttack());
         const uint32_t fireKey = OW::ResolveGeneratedFireKeyMask(weapon, OW::Config::View_aimbotAttack());
         if (fireKey == 0)
-            return;
+            return false;
+
+        DWORD actionDuration = sleep_ms;
+        if (weapon) {
+            switch (weapon->firePolicy.type) {
+            case OW::FirePolicyType::ReleaseAfterDelay:
+                if (weapon->firePolicy.releaseDelayMs > 0.0f)
+                    actionDuration = static_cast<DWORD>(std::clamp(weapon->firePolicy.releaseDelayMs, 0.0f, 5000.0f));
+                break;
+            case OW::FirePolicyType::TimedBurst:
+                if (weapon->firePolicy.burstDurationMs > 0.0f)
+                    actionDuration = static_cast<DWORD>(std::clamp(weapon->firePolicy.burstDurationMs, 0.0f, 5000.0f));
+                break;
+            default:
+                break;
+            }
+        }
 
         if (ShouldReleaseChargedFire(local, weapon)) {
             if (ShouldSkipChargeReleaseForHeldActivation(local, weapon, fireKey, "configured"))
-                return;
+                return false;
             Diagnostics::Aim("fire.configured mode=charge_release hero=0x%llX action=%d weapon=%s keyMask=0x%X",
                 static_cast<unsigned long long>(local.HeroID),
                 OW::Config::View_aimbotAttack(),
                 weapon ? weapon->weaponId.data() : "none",
                 fireKey);
-            ReleaseDmaMouseKey(
-                fireKey, sleep_ms, true, ownerSource, ownerKey);
-            return;
+            return ReleaseDmaMouseKey(
+                fireKey, actionDuration, true, ownerSource, ownerKey);
         }
 
-        ClickDmaMouseKey(fireKey, sleep_ms, ownerSource, ownerKey);
+        return ClickDmaMouseKey(fireKey, actionDuration, ownerSource, ownerKey);
     }
 
     inline bool PressWithSensitivity(
@@ -1624,11 +1639,11 @@ namespace AimbotDetail {
         return accepted;
     }
 
-    inline void ClickConfiguredFire(
+    inline bool ClickConfiguredFire(
         DWORD sleep_ms = 10,
         OW::OutputOwnerSource ownerSource = OW::OutputOwnerSource::GlobalAim,
         const char* ownerKey = kGlobalAimGeneratedFireOwnerKey) {
-        FireConfiguredAction(LocalEntity(), sleep_ms, ownerSource, ownerKey);
+        return FireConfiguredAction(LocalEntity(), sleep_ms, ownerSource, ownerKey);
     }
 
     inline bool CurrentTarget(c_entity& target, bool requireVisible = false) {
@@ -4326,9 +4341,10 @@ namespace AimbotDetail {
                                 OW::Config::View_aimbotAttack(),
                                 OW::ResolveGeneratedFireKeyMask(weapon, OW::Config::View_aimbotAttack()));
                         }
-                        ClickConfiguredFire();
+                        const bool fireAccepted = ClickConfiguredFire();
                         OW::RuntimeWorkerSleep(1);
-                        OW::Config::shooted2 = true;
+                        if (fireAccepted)
+                            OW::Config::shooted2 = true;
                     }
                 }
 

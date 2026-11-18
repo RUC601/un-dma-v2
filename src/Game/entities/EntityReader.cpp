@@ -1275,8 +1275,13 @@ void entity_thread() {
             item.readCompletedTick = skeletonCompleted;
             std::fill(next.model_shapes.valid.begin(),next.model_shapes.valid.end(),false);
             if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
-                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxDisplayEnabled())
-                    next.native_hitboxes=item.nativeHitboxes.Commit(cached.skeletonCache.revision,item.readStartedTick,next.model_world,item.geometryPoses);
+                if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxDisplayEnabled()) {
+                    const auto* nativeModel = cached.skeletonCache.shapeModelIndex >= 0
+                        ? &OW::ModelShapes::kModels[cached.skeletonCache.shapeModelIndex] : nullptr;
+                    next.native_hitboxes=item.nativeHitboxes.Commit(
+                        cached.skeletonCache.revision,item.readStartedTick,next.model_world,
+                        item.geometryPoses,nativeModel);
+                }
                 if(item.nativeHitboxes.Complete()) {
                     if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount))cached.nativeHitboxLayout={};
                     else if(item.nativeHitboxes.layout.boneIndices!=cached.nativeHitboxLayout.boneIndices)++pipelineStats.hotGeometryBindingChanges;

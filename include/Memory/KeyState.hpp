@@ -422,8 +422,7 @@ namespace KeyState {
 
     inline constexpr DWORD kKeyStateReadFlags =
         VMMDLL_FLAG_NOCACHE |
-        VMMDLL_FLAG_NOPAGING |
-        VMMDLL_FLAG_ZEROPAD_ON_FAIL;
+        VMMDLL_FLAG_NOPAGING;
 
     inline constexpr DWORD kResolverProcessReadFlags = VMMDLL_FLAG_NOCACHE;
 
@@ -446,7 +445,7 @@ namespace KeyState {
     {
         auto session = mem.AcquireSession();
         const auto start = std::chrono::steady_clock::now();
-        if (!session || !mem.vHandle || !buffer || size == 0) {
+        if (!session || !mem.vHandle || !buffer || size == 0 || size > MAXDWORD) {
             Diagnostics::RecordDmaRead(false, std::chrono::steady_clock::duration::zero());
             return false;
         }

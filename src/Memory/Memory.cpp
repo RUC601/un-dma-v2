@@ -1407,14 +1407,14 @@ uint64_t Memory::FindSignature(const char* signature, uint64_t range_start,
 static constexpr DWORD VMM_READ_FLAGS =
 	VMMDLL_FLAG_NOCACHE |
 	VMMDLL_FLAG_NOPAGING |
-	VMMDLL_FLAG_ZEROPAD_ON_FAIL |
 	VMMDLL_FLAG_NOPAGING_IO;
 
 bool Memory::Read(uintptr_t address, void* buffer, size_t size) const
 {
 	auto session = AcquireSession();
 	const auto start = std::chrono::steady_clock::now();
-	if (!session || !vHandle || m_cancelPending.load(std::memory_order_acquire))
+	if (!session || !vHandle || !buffer || !size || size > MAXDWORD ||
+		m_cancelPending.load(std::memory_order_acquire))
 	{
 		Diagnostics::RecordDmaRead(false, std::chrono::steady_clock::duration::zero());
 		return false;
@@ -1461,7 +1461,8 @@ bool Memory::Read(uintptr_t address, void* buffer, size_t size, int pid) const
 {
 	auto session = AcquireSession();
 	const auto start = std::chrono::steady_clock::now();
-	if (!session || !vHandle || m_cancelPending.load(std::memory_order_acquire))
+	if (!session || !vHandle || !buffer || !size || size > MAXDWORD ||
+		m_cancelPending.load(std::memory_order_acquire))
 	{
 		Diagnostics::RecordDmaRead(false, std::chrono::steady_clock::duration::zero());
 		return false;

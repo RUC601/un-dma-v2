@@ -85,24 +85,29 @@ struct Capture {
         if(!Complete() || !target.Matches(layout.modelBase,layout.revision) || target.root!=layout.root)return false;
         return CollectBindings(target.boneIndices,spheres,capsules,boneCount);
     }
-    Sample Commit(uint64_t revision,uint32_t tick,const ModelWorld::Sample& world,const PosePlan& plan) const {
+    Sample Commit(uint64_t revision,uint32_t tick,const ModelWorld::Sample& world,
+                  const PosePlan& plan, const ModelShapes::Model* model = nullptr) const {
         Sample out{};
         if(!Complete() || revision!=layout.revision || !world.valid || world.modelBase!=layout.modelBase)return out;
         out.modelBase=layout.modelBase;out.root=layout.root;out.skeletonRevision=revision;out.tick=tick;
         out.world=world;
         out.shapes.reserve(layout.sphereCount+layout.capsuleCount);
         out.poses.reserve(layout.sphereCount+layout.capsuleCount);
+        size_t shapeOrdinal = 0;
         const auto append=[&](const std::vector<uint8_t>& data,size_t stride,size_t indexAt,size_t radiusAt,bool sphere) {
             for(size_t at=0;at<data.size();at+=stride) {
                 const auto index=Field<uint16_t>(data.data()+at,indexAt);
                 ModelShapes::Pose pose{};
                 if(!plan.Read(index,pose) || !pose.Valid())return false;
                 ModelShapes::Shape shape{};
+                shape.boneId = model && shapeOrdinal < model->shapes.size()
+                    ? model->shapes[shapeOrdinal].boneId : -1;
                 shape.a=Field<Vector3>(data.data()+at,0);shape.b=sphere?shape.a:Field<Vector3>(data.data()+at,16);
                 shape.radius=Field<float>(data.data()+at,radiusAt);
                 if(!std::isfinite(shape.radius) || shape.radius<=0 || shape.radius>10)return false;
                 for(auto p:{shape.a,shape.b})if(!std::isfinite(p.X)||!std::isfinite(p.Y)||!std::isfinite(p.Z)||p.Size()>20)return false;
                 out.shapes.push_back(shape);out.poses.push_back(pose);
+                ++shapeOrdinal;
             }
             return true;
         };

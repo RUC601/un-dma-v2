@@ -182,10 +182,16 @@ namespace OW {
             return mem.Read<T>(address);
         }
 
-        // ---- DMA buffer reads -----------------------------------------------
-        __forceinline void read_buf(uint64_t address, char* buffer, size_t size)
+        template <typename T>
+        __forceinline bool ReadValue(uint64_t address, T& value)
         {
-            mem.Read(address, buffer, size);
+            return mem.ReadValue(address, value);
+        }
+
+        // ---- DMA buffer reads -----------------------------------------------
+        __forceinline bool read_buf(uint64_t address, char* buffer, size_t size)
+        {
+            return mem.ReadFreshExact(address, buffer, size);
         }
 
         __forceinline bool read_range(uint64_t address, void* buffer, size_t size)
@@ -201,7 +207,10 @@ namespace OW {
         // ---- Relative address helper ----------------------------------------
         __forceinline uint64_t calc_relative(uint64_t current, int32_t relative)
         {
-            return current + RPM<int32_t>(current) + relative;
+            int32_t value = 0;
+            if (!ReadValue(current, value))
+                return 0;
+            return current + value + relative;
         }
 
         // ---- Module base by name (DMA) --------------------------------------
@@ -235,13 +244,16 @@ namespace OW {
             lock.unlock();
             RuntimeTrace::SdkSpan activity(RuntimeTrace::SdkPhase::KeyMaterial,sourcePointerAddress);
             Diagnostics::RecordSdkComponentKeyCacheMiss();
-            const uint64_t loadedSource = RPM<uint64_t>(sourcePointerAddress);
-            if (!loadedSource)
+            uint64_t loadedSource = 0;
+            uint64_t loadedMaterial = 0;
+            uint8_t loadedByte = 0;
+            if (!mem.ReadFreshExact(sourcePointerAddress, &loadedSource, sizeof(loadedSource)) ||
+                !loadedSource ||
+                !mem.ReadFreshExact(loadedSource + sourceOffset, &loadedMaterial, sizeof(loadedMaterial)) ||
+                !mem.ReadFreshExact(byteAddress, &loadedByte, sizeof(loadedByte))) {
+                activity.Result(false);
                 return false;
-
-            const uint64_t loadedMaterial =
-                RPM<uint64_t>(loadedSource + sourceOffset);
-            const uint8_t loadedByte = RPM<uint8_t>(byteAddress);
+            }
 
             activity.Result(true);
             lock.lock();

@@ -140,10 +140,17 @@ public:
 
 	// -- Direct read (typed) --
 	template <typename T>
+	bool ReadValue(uint64_t address, T& value) const
+	{
+		value = {};
+		return Read(static_cast<uintptr_t>(address), reinterpret_cast<void*>(&value), sizeof(T));
+	}
+
+	template <typename T>
 	T Read(uint64_t address) const
 	{
 		T buffer{};
-		Read(static_cast<uintptr_t>(address), reinterpret_cast<void*>(&buffer), sizeof(T));
+		ReadValue(address, buffer);
 		return buffer;
 	}
 

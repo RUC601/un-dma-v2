@@ -10,6 +10,7 @@
 #include "Game/Entity.hpp"
 #include "Game/AimPlan.hpp"
 #include "Game/ContourTargeting.hpp"
+#include "Game/TargetVisibility.hpp"
 #include "Utils/Types.hpp"
 
 namespace OW {
@@ -33,13 +34,6 @@ enum class PredictionOverrideMode : int {
     Auto = 0,
     ForceOn = 1,
     ForceOff = 2,
-};
-
-// User-facing visibility semantics. The persisted bool remains a compatibility
-// projection until the full AimSlot model migration is complete.
-enum class TargetVisibilityMode : int {
-    VisibleOnly = 0,
-    All = 1,
 };
 
 enum class AimBehaviorType : int {
@@ -250,21 +244,6 @@ struct TargetCandidate {
 inline PredictionOverrideMode ClampPredictionOverride(int value)
 {
     return static_cast<PredictionOverrideMode>(std::clamp(value, 0, 2));
-}
-
-inline TargetVisibilityMode ClampTargetVisibilityMode(int value)
-{
-    return static_cast<TargetVisibilityMode>(std::clamp(value, 0, 1));
-}
-
-inline TargetVisibilityMode TargetVisibilityFromLegacyIgnoreInvisible(bool ignoreInvisible)
-{
-    return ignoreInvisible ? TargetVisibilityMode::VisibleOnly : TargetVisibilityMode::All;
-}
-
-inline bool LegacyIgnoreInvisible(TargetVisibilityMode mode)
-{
-    return ClampTargetVisibilityMode(static_cast<int>(mode)) == TargetVisibilityMode::VisibleOnly;
 }
 
 inline AimBehaviorType ClampAimBehavior(int value)
