@@ -81,6 +81,9 @@
                     }
                 }
                 auto existingRosterIt = entityRoster.find(entity.roster_key);
+                const auto* incomingDiscovery = cycleDiscoveries.Find(
+                    entity.address, entity.LinkParent, entityAdmissionNow());
+                const bool currentMapProof = incomingDiscovery && incomingDiscovery->current_map;
                 OW::EntityRosterPolicy::VerifiedDeadParticipantReplacement deadReplacement;
                 if (entity.participant_key != 0 &&
                     existingRosterIt != entityRoster.end() &&
@@ -121,7 +124,8 @@
                         incomingFresh,
                         completeActorMembershipKnown,
                         latestCompleteActorMembers.contains(existingRosterIt->second->entity.address),
-                        latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired,deadReplacement)) {
+                        latestCompleteActorMembers.contains(entity.address),sameController,incomingPaired,
+                        currentMapProof,deadReplacement)) {
                     case OW::EntityRosterPolicy::SameParticipantObservationAction::KeepExisting:
                         rejectAdmission(1,!incomingFresh?"incoming_not_alive":sameController?"controller_pair_unconfirmed":"participant_ambiguous",replacementFailure);
                         continue;

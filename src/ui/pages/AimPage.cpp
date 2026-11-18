@@ -185,28 +185,26 @@ void UI::AimbotPage() {
             PushControlWidth();
             presetChanged |= UISelect("##aimTeam", &activePreset.targetTeam, kTeam, IM_ARRAYSIZE(kTeam));
             ImGui::PopItemWidth();
-            SettingRow(L("Ally key"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##allyKey", &activePreset.allyKey, OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
-            ImGui::PopItemWidth();
-            SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
-            ImGui::PopItemWidth();
-            SettingRow(L("Ally skeleton"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
-            ImGui::PopItemWidth();
+            // Enemy-only Slots do not need ally-specific controls.  Keep the
+            // stored ally values for a later All/Ally selection, but only
+            // expose them when the selected target team can include allies.
+            if (activePreset.targetTeam != 0) {
+                SettingRow(L("Ally key"), kAimbotRightLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISelect("##allyKey", &activePreset.allyKey, OW::Labels::kAimActivationKeys, OW::Labels::AimActivationKeyCount());
+                ImGui::PopItemWidth();
+                SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
+                ImGui::PopItemWidth();
+                SettingRow(L("Ally skeleton"), kAimbotRightLabelWidth);
+                PushControlWidth();
+                presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
+                ImGui::PopItemWidth();
+            }
             SettingRow(L("Protection filter"), kAimbotRightLabelWidth);
             presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Skips targets with a fresh, explicitly known protection signal."));
-            // Hitbox Scale
-            SettingRow("Hitbox Scale", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##aimHitbox", &activePreset.hitbox,
-                                      OW::Config::kMinHitboxScalePercent,
-                                      OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
-            ImGui::PopItemWidth();
 
             // Visibility is the user-facing form of the legacy ignoreInvisible bool.
             SettingRow(L("Visibility"), kAimbotRightLabelWidth);
@@ -264,12 +262,6 @@ void UI::AimbotPage() {
                 }
             }
 
-            // Trace Condition
-            SettingRow("Trace Condition", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimTrace", &activePreset.traceCondition, kTrace, IM_ARRAYSIZE(kTrace));
-            ImGui::PopItemWidth();
-
             // Max Distance
             SettingRow("Max Distance", kAimbotRightLabelWidth);
             PushControlWidth();
@@ -289,7 +281,7 @@ void UI::AimbotPage() {
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("0 means unlimited. Faster targets stay out of the Basic candidate set.");
-        presetChanged |= UI::AimPlanEditor::Policy(activePreset);
+        presetChanged |= UI::AimPlanEditor::HealthLimits(activePreset);
         CloseGroupBox();
     }, [&]() {
         UIGroupBox("Behavior & Input");
@@ -494,11 +486,6 @@ void UI::AimbotPage() {
                 ImGui::PopItemWidth();
             }
 
-            SettingRow("Target Priority", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
-            ImGui::PopItemWidth();
-
             SettingRow("Prediction", kAimbotLeftLabelWidth);
             ImGui::TextDisabled("Automatic");
             ImGui::SetItemTooltip("%s", L("Prediction stays enabled. Edit shared weapon and skill data under Prediction Data."));
@@ -520,6 +507,24 @@ void UI::AimbotPage() {
         CloseGroupBox();
         }, [&]() {
         UIGroupBox("Tracking & Limits");
+            SettingRow("Target Priority", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimPriority", &activePreset.priority, kPriority, IM_ARRAYSIZE(kPriority));
+            ImGui::PopItemWidth();
+            presetChanged |= UI::AimPlanEditor::Policy(activePreset, true, false);
+
+            SettingRow("Hitbox Scale", kAimbotLeftLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISlider("##aimHitbox", &activePreset.hitbox,
+                                      OW::Config::kMinHitboxScalePercent,
+                                      OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
+            ImGui::PopItemWidth();
+
+            SettingRow("Trace Condition", kAimbotRightLabelWidth);
+            PushControlWidth();
+            presetChanged |= UISelect("##aimTrace", &activePreset.traceCondition, kTrace, IM_ARRAYSIZE(kTrace));
+            ImGui::PopItemWidth();
+
             // Max Head Distance
             SettingRow("Max Head Distance", kAimbotLeftLabelWidth);
             PushControlWidth();

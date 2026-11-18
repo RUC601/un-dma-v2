@@ -19,6 +19,7 @@
 #include "Game/Target.hpp"
 #include "Game/FlickRepeat.hpp"
 #include "Game/WeaponSpec.hpp"
+#include "Game/ProjectilePhysics.hpp"
 #include "Utils/Diagnostics.hpp"
 #include "Utils/InputLabels.hpp"
 
@@ -4549,8 +4550,10 @@ namespace OW { namespace Config {
         {
             std::lock_guard<std::mutex> lock(predictionProfilesMutex);
             predictionProfiles.clear();
-            if (!storeObject.IsObject())
+            if (!storeObject.IsObject()) {
+                predictionProfilesVersion.fetch_add(1, std::memory_order_release);
                 return;
+            }
             for (auto item = storeObject.MemberBegin(); item != storeObject.MemberEnd(); ++item) {
                 if (!item->name.IsString())
                     continue;
@@ -4559,6 +4562,10 @@ namespace OW { namespace Config {
                 if (!profile.profileId.empty())
                     predictionProfiles[profile.profileId] = std::move(profile);
             }
+            // Loading replaces the shared store.  Invalidate the hero-document
+            // cache even when the incoming JSON has the same number of rows so
+            // a subsequent save cannot reuse a document from another profile.
+            predictionProfilesVersion.fetch_add(1, std::memory_order_release);
         }
 
         HeroSkillSequenceStep ReadHeroSkillSequenceStepJson(const rapidjson::Value& value,
@@ -4858,6 +4865,65 @@ namespace OW { namespace Config {
             return value.FindMember("trackingAimBehavior") == value.MemberEnd() ||
                 value.FindMember("projectileSpeed") == value.MemberEnd() ||
                 value.FindMember("preFireDelayMs") == value.MemberEnd();
+        }
+
+        bool EnsureLegacySkillPredictionProfilesUnlocked()
+        {
+            bool changed = false;
+            for (const auto& definition : AllHeroSkillDefinitions()) {
+                if (!definition.skillId || !*definition.skillId)
+                    continue;
+                const auto hero = heroSkillPresets.find(definition.heroId);
+                if (hero == heroSkillPresets.end())
+                    continue;
+                const auto settingsIt = hero->second.find(definition.skillId);
+                if (settingsIt == hero->second.end())
+                    continue;
+
+                const std::string profileId = std::string("skill:") + definition.skillId;
+                bool profileExists = false;
+                {
+                    std::lock_guard<std::mutex> lock(predictionProfilesMutex);
+                    profileExists = predictionProfiles.find(profileId) != predictionProfiles.end();
+                }
+                if (profileExists)
+                    continue;
+
+                const HeroSkillSettings& settings = settingsIt->second;
+                ProjectileSpec fallback{};
+                fallback.enabledByDefault =
+                    settings.projectileSpeed > 0.0f || definition.defaultSettings.projectileSpeed > 0.0f;
+                fallback.projectileSpeed = settings.projectileSpeed > 0.0f
+                    ? settings.projectileSpeed : definition.defaultSettings.projectileSpeed;
+                fallback.gravity = settings.projectileGravity || definition.defaultSettings.projectileGravity;
+                fallback.projectileRadius = settings.projectileRadius > 0.0f
+                    ? settings.projectileRadius : definition.defaultSettings.projectileRadius;
+                fallback.gravityAcceleration = fallback.gravity ? 9.8f : 0.0f;
+                fallback.castDelayMs = settings.preFireDelayMs > 0.0f
+                    ? settings.preFireDelayMs : definition.defaultSettings.preFireDelayMs;
+
+                const std::string physicsId = definition.castGroup && *definition.castGroup
+                    ? definition.castGroup : definition.skillId;
+                const auto* physics = FindProjectilePhysicsProfile(
+                    physicsId == "energy-javelin" ? "orisa_energy_javelin" :
+                    physicsId == "particle-bomb" ? "zarya_particle_cannon_alt" : physicsId);
+                if (physics) {
+                    if (fallback.projectileSpeed <= 0.0f)
+                        fallback.projectileSpeed = physics->referenceSpeed;
+                    fallback.gravity = fallback.gravity || physics->gravityAcceleration > 0.0f;
+                    fallback.gravityAcceleration = physics->gravityAcceleration;
+                    fallback.launchDirectionUpBias = physics->launchDirectionUpBias;
+                    fallback.castDelayMs = (std::max)(fallback.castDelayMs, physics->castDelayMs);
+                }
+
+                ResolvePredictionProfile(
+                    profileId,
+                    definition.heroId,
+                    static_cast<int>(definition.inputAction),
+                    fallback);
+                changed = true;
+            }
+            return changed;
         }
 
         TriggerPreset ReadTriggerPresetJson(const rapidjson::Value& value, TriggerPreset defaults)
@@ -5202,6 +5268,7 @@ namespace OW { namespace Config {
             else {
                 std::lock_guard<std::mutex> lock(predictionProfilesMutex);
                 predictionProfiles.clear();
+                predictionProfilesVersion.fetch_add(1, std::memory_order_release);
                 gLastHeroConfigNeedsSave = true;
             }
 
@@ -5229,6 +5296,12 @@ namespace OW { namespace Config {
                     skillStore->value,
                     heroConfigVersion,
                     legacyFovApertureValues);
+
+            // Old hero JSON/INI stores kept projectile fields on each skill.
+            // Materialize those values into the shared Profile store before
+            // any UI snapshot can create default rows for the same skill.
+            if (EnsureLegacySkillPredictionProfilesUnlocked())
+                gLastHeroConfigNeedsSave = true;
 
             const bool needsSaveBeforeGeneratedSlots = gLastHeroConfigNeedsSave;
             ValidateHeroPresetsUnlocked();
@@ -5439,6 +5512,12 @@ namespace OW { namespace Config {
             if (legacyIni && IniHasHeroPresetSections(*legacyIni)) {
                 LoadHeroPresetsUnlocked(*legacyIni);
                 MigrateLegacyGenjiSkillUnlocked(legacyIni);
+                // The legacy INI path has no predictionProfiles object.  Build
+                // the shared skill profiles after all INI skill migration has
+                // completed so Aim, Trigger, and Hero Skills consume the same
+                // runtime values before the first save or UI snapshot.
+                if (EnsureLegacySkillPredictionProfilesUnlocked())
+                    gLastHeroConfigNeedsSave = true;
                 if (deferMigrationSave) { gLastHeroConfigNeedsSave = true; return true; }
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,

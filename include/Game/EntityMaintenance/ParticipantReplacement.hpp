@@ -53,8 +53,13 @@ struct ParticipantReplacementVerifier {
         if(!AuthorityCurrent(previous,registry,scene,true))return fail("previous_death_superseded");
         CnLinkTargetMapIdentity map;
         if(!ReadCurrent(incoming,incomingControllerUid,incomingLabel,registry,scene,true,clock,map,failure))return {};
-        if(map.context!=saved.context)
-            return fail("replacement_other_context");
+        // The map context is the current controller parent. A respawn or
+        // component relocation can legitimately give the successor a new
+        // controller, so it must not equal the predecessor's saved context.
+        // ReadCurrent already proves that the successor's map resolves to its
+        // own controller and actor pair.
+        if(map.context!=saved.context && map.context!=incoming.LinkParent)
+            return fail("replacement_context_changed");
         if(!AuthorityCurrent(previous,registry,scene,true))return fail("previous_death_superseded");
         return Proof{true};
     }

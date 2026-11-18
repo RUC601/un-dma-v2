@@ -67,6 +67,7 @@ namespace AimbotDetail {
     inline void CancelConfiguredAimShot(RuntimeState& state);
 
     inline OW::c_entity LocalEntity();
+    inline bool IsAimActivationKeyDown();
     inline bool IsConfiguredActivationKeyPressedForSelection(int keySetting,
                                                              int* matchedKeySetting = nullptr);
     inline bool IsInputVkDownQuiet(int vk);
@@ -121,12 +122,66 @@ namespace AimbotDetail {
         return identity;
     }
 
+    inline bool ProtectionFilterPasses(const c_entity& target) {
+        return OW::TargetingDetail::ProtectionFilterPasses(target);
+    }
+
     inline bool SameTrackingSessionIdentity(const RuntimeState& state,
                                             const TrackingSessionIdentity& identity) {
         return state.trackingSessionSlotId == identity.slotId &&
             state.trackingSessionHeroId == identity.heroId &&
             state.trackingSessionSlotIndex == identity.slotIndex &&
             state.trackingSessionAimKey == identity.aimKey;
+    }
+
+    inline bool FireCycleIdentityMatches(const RuntimeState& state,
+                                         const TrackingSessionIdentity& identity,
+                                         FirePolicyType policy,
+                                         std::uint64_t connectionEpoch) {
+        return state.fireCycleInitialized &&
+            state.fireCycleHeroId == identity.heroId &&
+            state.fireCycleSlotIndex == identity.slotIndex &&
+            state.fireCycleSlotId == identity.slotId &&
+            state.fireCyclePolicy == static_cast<int>(policy) &&
+            state.fireCycleConnectionEpoch == connectionEpoch;
+    }
+
+    inline bool FireCycleShotIssued(const RuntimeState& state) {
+        return state.fireCycleShotIssued;
+    }
+
+    inline void ProjectFireCycleShot(RuntimeState& state, bool issued) {
+        state.fireCycleShotIssued = issued;
+        state.singleShotIssued = issued &&
+            ClampFirePolicy(state.fireCyclePolicy) == FirePolicyType::SingleShot;
+        // Keep the old global bit synchronized for legacy status/log readers.
+        // Runtime decisions use the Slot-owned field above.
+        OW::Config::shooted = issued;
+    }
+
+    inline void ObserveFireCycle(RuntimeState& state) {
+        const TrackingSessionIdentity identity = CurrentTrackingSessionIdentity();
+        const FirePolicyType policy = ClampFirePolicy(
+            OW::Config::View_aimbotFirePolicy());
+        const std::uint64_t connectionEpoch =
+            OW::ProcessConnection::ConnectionEpoch();
+        if (!FireCycleIdentityMatches(state, identity, policy, connectionEpoch)) {
+            state.fireCycleInitialized = true;
+            state.fireCycleHeroId = identity.heroId;
+            state.fireCycleSlotIndex = identity.slotIndex;
+            state.fireCycleSlotId = identity.slotId;
+            state.fireCyclePolicy = static_cast<int>(policy);
+            state.fireCycleConnectionEpoch = connectionEpoch;
+            state.lastFlickFireTick = 0;
+            state.trajectoryWaitEntityKey = 0;
+            state.trajectoryWaitStartedTick = 0;
+            ProjectFireCycleShot(state, false);
+        }
+
+        // A release starts the next cycle.  Keep the projection synchronized
+        // even when the old configuration path is still present.
+        if (!IsAimActivationKeyDown() && !state.releasePending)
+            ProjectFireCycleShot(state, false);
     }
 
 
@@ -238,7 +293,21 @@ namespace AimbotDetail {
                 (effective.limits.maxDistance<=0 || d<=effective.limits.maxDistance) : DistancePassesAimPresetRange(d,preset); };
             if (!OW::TargetingDetail::IsRuntimeTargetValid(entity, false))
                 continue;
-            if (!OW::TargetingDetail::TargetTeamMatches(entity, preset.targetTeam, local))
+            // Slot probing happens before its local config overlay is applied.
+            // Use the candidate Slot's protection choice directly instead of
+            // inheriting a previous Slot's thread-local rule projection.
+            if (!OW::TargetingDetail::ProtectionFilterPasses(
+                    entity, preset.requireTargetable))
+                continue;
+            const OW::Config::SlotTargetRules candidateRules{
+                true,
+                preset.ignoreSombraStealth,
+                preset.requireTargetable,
+                preset.allyHealthMaxPercent,
+                preset.maxTargetSpeedMps,
+                preset.allyBoneMask};
+            if (!OW::TargetingDetail::TargetTeamMatches(
+                    entity, preset.targetTeam, local, &candidateRules))
                 continue;
             if ((contourFallback || preset.ignoreInvisible) && !selectionVisible)
                 continue;
@@ -255,7 +324,7 @@ namespace AimbotDetail {
                     effective.overrideAimPoint?effective.point.boneMask:preset.aimBoneMask;
                 const auto observation=contour.ResolveMask(entityIndex,
                     OW::Contour::AimMaskForDistance(rawMask,chestDistance,preset.maxHeadDistance));
-                if(!observation.evidence.exposed && !observation.retained) continue;
+                if(!observation.evidence.exposed || !observation.evidence.fresh) continue;
                 aimPoint=observation.aimWorld;
             }
             if (!OW::TargetingDetail::IsFiniteVector(aimPoint) ||
@@ -1009,8 +1078,13 @@ namespace AimbotDetail {
         // AcquireTarget has published that candidate, firing follows the same
         // state machine as a native-visible target. Contact confirmation is
         // diagnostic evidence, not a second fire policy.
-        return candidate.valid &&
-            OW::TargetingDetail::IsRuntimeTargetValid(candidate.entitySnapshot,false);
+        if (!candidate.valid ||
+            !OW::TargetingDetail::IsRuntimeTargetValid(candidate.entitySnapshot,false))
+            return false;
+        if (!candidate.entitySnapshot.Vis &&
+            (!candidate.contour.evidence.exposed || !candidate.contour.evidence.fresh))
+            return false;
+        return true;
     }
 
     struct ScopedIndependentAimSelection {
@@ -1116,9 +1190,7 @@ namespace AimbotDetail {
     }
 
     inline void MarkAimShot(RuntimeState& state) {
-        OW::Config::shooted = true;
-        if (IsSingleShotFirePolicy())
-            state.singleShotIssued = true;
+        ProjectFireCycleShot(state, true);
     }
 
     inline bool IsKeepFiringFirePolicy() {
@@ -1499,7 +1571,7 @@ namespace AimbotDetail {
                 !changed && !state.releaseNeedsActivationUp) {
                 state.releasePending=true;state.releaseActionStarted=GetTickCount();
                 state.releaseAimReportTick=0;state.releaseChargeWaitLogged=false;
-                state.releaseShotLatched=false;OW::Config::shooted=false;
+                state.releaseShotLatched=false;ProjectFireCycleShot(state, false);
                 OW::ResetAimSmoothingState();
                 Diagnostics::Info("[V2 shot] release.execute mode=%d slot=%d charge=%.2f chargeMs=%lu",mode,session.slotIndex,
                     OW::ReadWeaponChargePercent(LocalEntity(),OW::Config::View_aimbotAttack()),
@@ -1721,7 +1793,7 @@ namespace AimbotDetail {
         if (!OW::TargetingDetail::IsRuntimeTargetValid(target, false)) return false;
         if (target.skill2act && target.HeroID == OW::eHero::HERO_GENJI) return false;
         if (target.skill1act && target.HeroID == OW::eHero::HERO_VENTURE) return false;
-        if ((target.imort || target.barrprot) && !OW::Config::switch_team) return false;
+        if (!ProtectionFilterPasses(target)) return false;
         return true;
     }
 
@@ -1729,7 +1801,7 @@ namespace AimbotDetail {
         if (!OW::TargetingDetail::IsRuntimeTargetValid(target, false)) return false;
         if (target.skill2act && target.HeroID == OW::eHero::HERO_GENJI) return false;
         if (target.skill1act && target.HeroID == OW::eHero::HERO_VENTURE) return false;
-        if ((target.imort || target.barrprot) && !OW::Config::switch_team) return false;
+        if (!ProtectionFilterPasses(target)) return false;
         return true;
     }
 
@@ -2394,7 +2466,7 @@ namespace AimbotDetail {
 
     inline void ArmDelayedShot(RuntimeState& state) {
         if (!OW::Config::hitboxdelayshoot) return;
-        if (OW::Config::shooted || !IsAimKeyPressed()) {
+        if (FireCycleShotIssued(state) || !IsAimKeyPressed()) {
             state.dodelay = true;
             state.hitbotdelaytime = 0;
         }
@@ -2503,7 +2575,7 @@ namespace AimbotDetail {
     }
 
     inline AimFirePhase::Phase ResolveMagneticFirePhase(const RuntimeState& state) {
-        const bool shotLatched = OW::Config::shooted && state.lastFlickFireTick != 0;
+        const bool shotLatched = FireCycleShotIssued(state) && state.lastFlickFireTick != 0;
         const float elapsedMs = shotLatched
             ? static_cast<float>(GetTickCount() - state.lastFlickFireTick)
             : 0.0f;
@@ -2517,16 +2589,16 @@ namespace AimbotDetail {
     }
 
     inline void UpdateFlickShotCooldown(RuntimeState& state) {
-        if (!OW::Config::shooted || !OW::Config::View_aimbotKeepFiring())
+        if (!FireCycleShotIssued(state) || !OW::Config::View_aimbotKeepFiring())
             return;
         if (state.lastFlickFireTick == 0) {
-            OW::Config::shooted = false;
+            ProjectFireCycleShot(state, false);
             return;
         }
 
         const DWORD elapsed = GetTickCount() - state.lastFlickFireTick;
         if (elapsed >= ResolveFlickRestartDelayMs()) {
-            OW::Config::shooted = false;
+            ProjectFireCycleShot(state, false);
             OW::Config::lasttime = 0;
         }
     }
@@ -3043,7 +3115,7 @@ namespace AimbotDetail {
             ResetTrackingSession(state);
             return;
         }
-        if (IsSingleShotFirePolicy() && OW::Config::shooted) {
+        if (IsSingleShotFirePolicy() && FireCycleShotIssued(state)) {
             // Single Shot owns one complete activation cycle.  A held key
             // cannot keep Magnetic Trigger tracking after its accepted shot.
             ResetMagneticTriggerQuantization(state, "single_shot_cycle_complete");
@@ -3439,7 +3511,7 @@ namespace AimbotDetail {
         const c_entity localAtEntry = LocalEntity();
         Diagnostics::Aim("magnetic_trigger.enter originSens=%.6f shooted=%d reloading=%d trackingScale=%.6f baseSpeed=%.6f method=%d acceleration=%.6f prediction=%d targetDelay=%d",
             origin_sens,
-            OW::Config::shooted ? 1 : 0,
+            FireCycleShotIssued(state) ? 1 : 0,
             OW::Config::reloading ? 1 : 0,
             OW::Config::View_Tracking_smooth(),
             OW::Config::AimBehaviorBaseSpeed(behavior),
@@ -3518,7 +3590,7 @@ namespace AimbotDetail {
             return;
         }
 
-        if (!OW::Config::shooted && GlobalAimFirePolicyAllowsGeneratedFire())
+        if (!FireCycleShotIssued(state) && GlobalAimFirePolicyAllowsGeneratedFire())
             ArmDelayedShot(state);
 
         while (AimModeStructureCurrent() && OW::RuntimeWorkersRunning() && IsAimKeyPressed() &&
@@ -3527,7 +3599,7 @@ namespace AimbotDetail {
                OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
                !OW::Config::reloading &&
                !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
-            if (IsSingleShotFirePolicy() && OW::Config::shooted)
+            if (IsSingleShotFirePolicy() && FireCycleShotIssued(state))
                 break;
             OW::consumerFrame=OW::SnapshotFrame();
             if(CompleteReleasedAimAtCrosshair(state,false)) break;
@@ -3599,7 +3671,7 @@ namespace AimbotDetail {
                 OW::RuntimeWorkerSleep(1);
                 continue;
             }
-            if (!OW::Config::shooted && GlobalAimFirePolicyAllowsGeneratedFire())
+            if (!FireCycleShotIssued(state) && GlobalAimFirePolicyAllowsGeneratedFire())
                 PrimeDelayedShot(state);
 
             const Vector3 aimTarget = vec;
@@ -3628,7 +3700,7 @@ namespace AimbotDetail {
             ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);
             bool hitAfterMove = hitBeforeMove;
 
-            if (!OW::Config::shooted &&
+            if (!FireCycleShotIssued(state) &&
                 GlobalAimFirePolicyAllowsGeneratedFire() &&
                 DelayedShotTimedOut(state)) {
                 const c_entity local = LocalEntity();
@@ -3751,7 +3823,7 @@ namespace AimbotDetail {
                 }
             }
 
-            if (!OW::Config::shooted &&
+            if (!FireCycleShotIssued(state) &&
                 GlobalAimFirePolicyAllowsGeneratedFire() &&
                 firePhase.readyToFire && hitBeforeMove) {
                 ResetMagneticTriggerQuantization(state, "inside_hit_window_fire");
@@ -3773,7 +3845,7 @@ namespace AimbotDetail {
                 break;
             }
 
-            if (!OW::Config::shooted &&
+            if (!FireCycleShotIssued(state) &&
                 GlobalAimFirePolicyAllowsGeneratedFire() &&
                 !contourActive &&
                 OW::Config::dontshot &&
@@ -3811,7 +3883,7 @@ namespace AimbotDetail {
                 exitReason = "output_transition_changed";
             } else if (OW::Config::reloading) {
                 exitReason = "reloading";
-            } else if (OW::Config::shooted) {
+            } else if (FireCycleShotIssued(state)) {
                 exitReason = "fire_finished";
             } else if (OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
                 exitReason = "sequence_preempted";
@@ -3877,13 +3949,13 @@ namespace AimbotDetail {
                 return;
             }
             if (!IsSingleShotFirePolicy() || !state.singleShotIssued)
-                OW::Config::shooted = false;
+                ProjectFireCycleShot(state, false);
         }
         ObserveReleaseFireInput(state);
         if (!ordinaryFlick) UpdateFlickShotCooldown(state);
         if (!ordinaryFlick && FlickPostFireLockoutActive(state))
             return;
-        if (!IsAimKeyPressed() || OW::Config::shooted ||
+        if (!IsAimKeyPressed() || FireCycleShotIssued(state) ||
             (IsSingleShotFirePolicy() && state.singleShotIssued) ||
             OW::Config::reloading)
             return;
@@ -3891,7 +3963,7 @@ namespace AimbotDetail {
 
         Diagnostics::Aim("flick.enter originSens=%.6f shooted=%d reloading=%d scale=%.6f baseSpeed=%.6f method=%d acceleration=%.6f prediction=%d",
             origin_sens,
-            OW::Config::shooted ? 1 : 0,
+            FireCycleShotIssued(state) ? 1 : 0,
             OW::Config::reloading ? 1 : 0,
             OW::Config::View_Flick_smooth(),
             OW::Config::AimBehaviorBaseSpeed(behavior),
@@ -3943,8 +4015,8 @@ namespace AimbotDetail {
                OW::ProcessConnection::IsConnected() &&
                OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
                OW::RuntimeOutputTransitionMatches(outputTransitionEpoch) &&
-               (!IsSingleShotFirePolicy() || !OW::Config::shooted) &&
-               (ordinaryFlick || !OW::Config::shooted) &&
+               (!IsSingleShotFirePolicy() || !FireCycleShotIssued(state)) &&
+               (ordinaryFlick || !FireCycleShotIssued(state)) &&
                !OW::Config::reloading &&
                !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
             OW::consumerFrame=OW::SnapshotFrame();
@@ -4222,12 +4294,11 @@ namespace AimbotDetail {
         if (IsAimKeyPressed()) return;
         EndOrdinaryFlickActivation(state);
 
-        OW::Config::shooted = false;
-        state.singleShotIssued = false;
+        ProjectFireCycleShot(state, false);
         OW::Config::lasttime = 0;
         if (OW::Config::reloading) {
             OW::Config::lasttime = 0;
-            OW::Config::shooted = false;
+            ProjectFireCycleShot(state, false);
         }
         OW::Config::Targetenemyi = -1;
         OW::TargetingDetail::ResetTargetLockRuntime();
@@ -4486,6 +4557,7 @@ namespace AimbotDetail {
         if(!RefreshAimScene(state)) return;
         ScopedHeroPresetOverride heroPresetOverride(state);
         activeAimShotState=&state;
+        ObserveFireCycle(state);
         if(state.contourWasEnabled!=OW::Config::View_aimbotContourEnabled()) {
             state.contourContact.Reset();OW::TargetingDetail::ResetContourSelection();
             state.contourWasEnabled=OW::Config::View_aimbotContourEnabled();

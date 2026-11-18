@@ -21,7 +21,8 @@
                 const DWORD outlineNow = GetTickCount();
                 // Vis chooses the unselected colour only. The game's native
                 // depth handling determines which fragments can be rendered.
-                const bool enabled = OW::Config::gameOutlines && actor.Team && actor.team_known;
+                const bool bodyUsable = actor.HasUsableBody(outlineNow, processSceneGeneration);
+                const bool enabled = OW::Config::gameOutlines && actor.Team && actor.team_known && bodyUsable;
                 if (!enabled && !state.Active()) continue;
                 const bool selected = selectedOutlineTarget.active &&
                     selectedOutlineTarget.entityKey == OW::TargetingDetail::StableTargetKey(actor) &&
@@ -35,19 +36,20 @@
                     animated, GetTickCount64());
                 const bool outlineDue = supported && state.Due(outlineNow, enabled, actor.Vis, packed, animated);
                 if (!outlineDue || !outlineBudget) continue;
-                if (!actor.HasUsableBody(outlineNow, processSceneGeneration)) continue;
                 --outlineBudget;
                 auto read = [](uint64_t at, void* data, size_t size) { return SDK->read_range(at, data, size); };
                 auto freshRead = [](uint64_t at, void* data, size_t size) { return mem.ReadFreshExact(at, data, size); };
                 auto write = [](uint64_t at, const void* data, size_t size) { return mem.Write(at, data, size); };
                 const auto component = OW::DecryptComponent(actor.address, 0x5A);
-                auto bodyCurrent = [&] {
+                auto identityCurrent = [&] {
                     uint32_t match = 0;
                     return OW::RuntimeWorkersRunning() && offset::ActiveProfile() == runtimeProfile &&
                         OW::ProcessConnection::ConnectionEpoch() == connectionEpoch &&
-                        actor.HasUsableBody(GetTickCount(), processSceneGeneration) &&
                         freshRead(actor.address + offset::Entity_MatchId, &match, sizeof(match)) && match == actor.match_id &&
                         OW::DecryptComponent(actor.address, 0x5A) == component;
+                };
+                auto bodyCurrent = [&] {
+                    return identityCurrent() && actor.HasUsableBody(GetTickCount(), processSceneGeneration);
                 };
                 state.restoring = !enabled;
                 state.attempted = true;
@@ -60,11 +62,15 @@
                     OW::EdOutline::Target checked{};
                     return bodyCurrent() && OW::EdOutline::Resolve(component, read, checked) && checked == target;
                 };
+                auto restoreCurrent = [&] {
+                    OW::EdOutline::Target checked{};
+                    return identityCurrent() && OW::EdOutline::Resolve(component, read, checked) && checked == target;
+                };
                 if (enabled) {
                     state.ApplyColorOnly(target, actor.Vis, packed, outlineNow, freshRead, write, current,
                         animated ? 100 : 500);
                 } else if (state.target == target) {
-                    if (state.Restore(read, write, current)) state = {};
+                    if (state.Restore(read, write, restoreCurrent)) state = {};
                 } else state = {};
             }
         }

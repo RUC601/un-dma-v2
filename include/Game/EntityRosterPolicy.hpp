@@ -27,6 +27,7 @@ inline void PrioritizeDiscoveryLinks(std::vector<uint64_t>& pending,
 struct Discovery {
     uint64_t address = 0, link = 0, hero = 0;
     uint32_t match = 0, tick = 0;
+    bool current_map = false;
 };
 
 inline bool ValidTeamKey(uint32_t key) noexcept {
@@ -239,12 +240,17 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     bool incomingMember = true,
     bool sameController = false,
     bool incomingPaired = false,
+    bool currentMapProof = false,
     const VerifiedDeadParticipantReplacement& deadReplacement = {}) noexcept
 {
     (void)existingSeenThisCycle;
     if(sameActor)return SameParticipantObservationAction::ReplaceExisting;
     if(!incomingFresh)return SameParticipantObservationAction::KeepExisting;
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
+        return SameParticipantObservationAction::ReplaceExisting;
+    // A current controller map can supersede a stale missing/dead body even
+    // when the last complete membership snapshot still contains that address.
+    if (currentMapProof && !existingFresh && incomingFresh && membershipKnown && existingMember)
         return SameParticipantObservationAction::ReplaceExisting;
     if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if(deadReplacement.Verified())return SameParticipantObservationAction::ReplaceExisting;

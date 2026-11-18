@@ -713,6 +713,26 @@ namespace OW {
             return true;
         }
 
+        // Protection Filter is a slot-owned hard gate.  Keep the freshness
+        // boundary in one helper so target selection and behavior consumers do
+        // not accidentally reject protected targets when the filter is off.
+        inline bool ProtectionFilterPasses(const c_entity& entity,
+                                           bool requireTargetable) {
+            if (!requireTargetable)
+                return true;
+            const DWORD now = GetTickCount();
+            const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
+                now - entity.health_sample_tick_ms <= 500;
+            return protectionFresh && !entity.imort && !entity.barrprot;
+        }
+
+        inline bool ProtectionFilterPasses(const c_entity& entity) {
+            return ProtectionFilterPasses(
+                entity,
+                Config::slotTargetRules.active &&
+                    Config::slotTargetRules.requireTargetable);
+        }
+
         inline bool TryEntityAt(int index, c_entity& entity, bool requireVisible = false) {
             const auto snapshot = SnapshotEntities();
             if (!IsValidIndex(index, snapshot.size())) return false;
@@ -720,12 +740,15 @@ namespace OW {
             return IsRuntimeTargetValid(entity, requireVisible);
         }
 
-        inline bool TargetTeamMatches(const c_entity& entity, int teamMode, const c_entity& local) {
+        inline bool TargetTeamMatches(const c_entity& entity,
+                                      int teamMode,
+                                      const c_entity& local,
+                                      const Config::SlotTargetRules* rulesOverride = nullptr) {
             if (!entity.team_known || !local.team_known) return false;
             if (entity.address == local.address)
                 return false;
 
-            const auto& rules=Config::slotTargetRules;
+            const auto& rules = rulesOverride ? *rulesOverride : Config::slotTargetRules;
             if(rules.active) {
                 if (rules.maxTargetSpeedMps > 0.0f) {
                     const Vector3 velocity = entity.velocity;
@@ -737,10 +760,7 @@ namespace OW {
                         return false;
                 }
                 if (rules.requireTargetable) {
-                    const DWORD now = GetTickCount();
-                    const bool protectionFresh = entity.health_sample_tick_ms != 0 &&
-                        now - entity.health_sample_tick_ms <= 500;
-                    if (!protectionFresh || entity.imort || entity.barrprot)
+                    if (!ProtectionFilterPasses(entity, true))
                         return false;
                 }
                 if(!entity.Team) {
@@ -978,7 +998,11 @@ namespace OW {
                 }
                 for(std::size_t i=0;i<actors.size();++i) {
                     const auto observation=Resolve(i,0xffffu);
-                    contourVisibility.push_back({actors[i].identity,observation.evidence.exposed||observation.retained});
+                    // Retention preserves identity for diagnostics only. It is
+                    // not a current screen observation and cannot make a
+                    // hidden actor selectable.
+                    contourVisibility.push_back({actors[i].identity,
+                        observation.evidence.exposed && observation.evidence.fresh});
                 }
             }
             Contour::Observation Resolve(std::size_t index,std::uint16_t slots) const {
@@ -1802,9 +1826,25 @@ namespace OW {
         const auto& entities = frame.entities;
         const auto& hp_dy_entities = frame.dynamic;
         const auto& local_entity = frame.local;
+        const DWORD now = GetTickCount();
+        const bool localTargetingReady =
+            local_entity.Alive &&
+            local_entity.roster_state == EntityRosterState::Fresh &&
+            local_entity.HasUsableBody(now, EntitySceneGeneration()) &&
+            PresentationTiming::Fresh(local_entity.anchor_sample_tick_ms, now);
+        if (!localTargetingReady) {
+            // A local death or body handoff must not leave the previous enemy
+            // highlighted while the renderer continues showing the scene.
+            Config::Targetenemyi = -1;
+            Config::health = 0.0f;
+            Config::aimbotEffectiveHitWindow = 0.0f;
+            TargetingDetail::ResetTargetLockRuntime();
+            TargetingDetail::StoreLastTargetCandidate(best);
+            PublishSelectedAimPlan(best);
+            return best;
+        }
         const WeaponSpec* weaponSpec = ResolveWeaponSpec(local_entity.HeroID, Config::View_aimbotAttack());
         const TargetLockPolicy lockPolicy = TargetingDetail::ResolveTargetLockPolicy();
-        const DWORD now = GetTickCount();
         TargetingDetail::TargetLockRuntime activeLock = TargetingDetail::SnapshotTargetLockRuntime();
         if (TargetingDetail::TargetLockExpired(activeLock, lockPolicy, now))
             activeLock.active = false;
@@ -1884,7 +1924,7 @@ namespace OW {
                     Vector3 rootPosition{};
                     const auto contourObservation=contourFallback ? contour.ResolveMask(i,candidateMask) : Contour::Observation{};
                     if(contourFallback) {
-                        if(!contourObservation.evidence.exposed && !contourObservation.retained) continue;
+                        if(!contourObservation.evidence.exposed || !contourObservation.evidence.fresh) continue;
                         candidateBoneId=contourObservation.boneId;rootPosition=contourObservation.aimWorld;
                     } else if (!TargetingDetail::TrySelectClosestSelectedSkeletonPoint(
                             entities[i],
@@ -2002,8 +2042,8 @@ namespace OW {
         const auto& planSelection=Config::View_aimPlan().selection;
         // Explicit lock duration wins over Prefer while the old target remains admissible.
         // A hard filter cannot trap us on an ineligible current target.
-        if(lockedCandidate.valid && best.valid && (lockedCandidate.contour.retained ||
-            TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now))) {
+        if(lockedCandidate.valid && best.valid &&
+            TargetingDetail::CandidateBlockedByMinLock(lockPolicy,activeLock,best.entityKey,now)) {
             best=lockedCandidate; origin=lockedScore; TarGetIndex=best.entityIndex;
         }
         const bool holdAlternateDuringDropout = trackingContinuityEnabled &&
@@ -2098,6 +2138,11 @@ namespace OW {
         const TriggerBoneMask boneMask = NormalizeTriggerBoneMask(rawBoneMask);
         const auto& entities = frame.entities;
         const auto& localEntity = frame.local;
+        const DWORD now = GetTickCount();
+        if (!localEntity.Alive || localEntity.roster_state != EntityRosterState::Fresh ||
+            !localEntity.HasUsableBody(now, EntitySceneGeneration()) ||
+            !PresentationTiming::Fresh(localEntity.anchor_sample_tick_ms, now))
+            return best;
         const Matrix& view = frame.view;
         const TargetingDetail::FovRuntimeContext fovContext =
             TargetingDetail::SnapshotFovRuntimeContext();

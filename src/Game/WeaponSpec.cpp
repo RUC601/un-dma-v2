@@ -44,6 +44,21 @@ constexpr FirePolicy Policy(FP type)
     return FirePolicy{ type, 0.0f, 0.0f, 0.0f, 100.0f };
 }
 
+void ApplyInstantHitDefaultRadius(const WeaponSpec* weapon, ProjectileSpec& projectile)
+{
+    if (!weapon || projectile.projectileRadius > 0.0f)
+        return;
+    switch (weapon->aimClass) {
+    case AimClass::HitscanSingle:
+    case AimClass::HitscanAuto:
+    case AimClass::HitscanBurst:
+        projectile.projectileRadius = 0.07f;
+        break;
+    default:
+        break;
+    }
+}
+
 constexpr WeaponControlSpec Control(int generatedFireButton = kWeaponControlUseActionButton,
                                     int trackingHoldButton = kWeaponControlUseActionButton,
                                     int stanceHoldButton = kWeaponControlNoButton)
@@ -247,11 +262,18 @@ PredictionProfile ResolvePredictionProfile(const WeaponSpec* weapon)
         profile.heroId = weapon->heroId;
         profile.actionId = weapon->action;
         profile.projectile = weapon->projectile;
+        ApplyInstantHitDefaultRadius(weapon, profile.projectile);
     }
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
     const auto it = Config::predictionProfiles.find(profile.profileId);
-    if (it != Config::predictionProfiles.end())
+    if (it != Config::predictionProfiles.end()) {
         profile = it->second;
+    } else if (!profile.profileId.empty()) {
+        // Resolve is the runtime initialization path. Aim and Trigger then
+        // consume the same profile even before the editor page is opened.
+        Config::predictionProfiles.emplace(profile.profileId, profile);
+        Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
+    }
     if (profile.profileId.empty())
         profile.profileId = weapon ? std::string(weapon->weaponId) : "default";
     if (profile.heroId == 0 && weapon)
@@ -293,6 +315,7 @@ std::vector<PredictionProfile> SnapshotPredictionProfiles()
         profile.heroId = weapon.heroId;
         profile.actionId = weapon.action;
         profile.projectile = weapon.projectile;
+        ApplyInstantHitDefaultRadius(&weapon, profile.projectile);
         Config::predictionProfiles.emplace(profileId, std::move(profile));
         changed = true;
     }
@@ -357,6 +380,10 @@ bool UpdatePredictionProfile(const PredictionProfile& profile)
     normalized.projectile.gravityAcceleration = (std::max)(0.0f, normalized.projectile.gravityAcceleration);
     normalized.projectile.castDelayMs = (std::max)(0.0f, normalized.projectile.castDelayMs);
     std::lock_guard<std::mutex> lock(Config::predictionProfilesMutex);
+    const auto existing = Config::predictionProfiles.find(normalized.profileId);
+    if (existing != Config::predictionProfiles.end() &&
+        normalized.configVersion <= existing->second.configVersion)
+        normalized.configVersion = existing->second.configVersion + 1;
     Config::predictionProfiles[normalized.profileId] = std::move(normalized);
     Config::predictionProfilesVersion.fetch_add(1, std::memory_order_release);
     return true;
@@ -516,14 +543,14 @@ const char* AimBehaviorName(AimBehaviorType value)
 const char* FirePolicyName(FirePolicyType value)
 {
     switch (value) {
-    case FirePolicyType::ManualOnly: return "ManualOnly";
-    case FirePolicyType::TrackingWithHold: return "TrackingWithHold";
-    case FirePolicyType::SingleShot: return "SingleShot";
-    case FirePolicyType::ReleaseAfterDelay: return "ReleaseAfterDelay";
-    case FirePolicyType::TimedBurst: return "TimedBurst";
-    case FirePolicyType::ChargeRelease: return "ChargeRelease";
-    case FirePolicyType::KeepFiring: return "KeepFiring";
-    default: return "ManualOnly";
+    case FirePolicyType::ManualOnly: return "Manual Only";
+    case FirePolicyType::TrackingWithHold: return "Tracking With Hold";
+    case FirePolicyType::SingleShot: return "Single Shot";
+    case FirePolicyType::ReleaseAfterDelay: return "Release After Delay";
+    case FirePolicyType::TimedBurst: return "Timed Burst";
+    case FirePolicyType::ChargeRelease: return "Charge and Release";
+    case FirePolicyType::KeepFiring: return "Keep Firing";
+    default: return "Manual Only";
     }
 }
 

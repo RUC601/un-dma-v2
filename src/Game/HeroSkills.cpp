@@ -1979,8 +1979,6 @@ namespace {
                 continue;
             if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
                 continue;
-            if (entity.imort || entity.barrprot)
-                continue;
             if (entity.skill1act && entity.HeroID == eHero::HERO_VENTURE)
                 continue;
             ++stats.selectable;
@@ -2101,9 +2099,6 @@ namespace {
             if (settings.requireVisible && entity.HeroID == eHero::HERO_SOMBRA &&
                 (!entity.sombraStealthKnown || entity.sombraStealth))
                 continue;
-            if ((entity.imort || entity.barrprot) && !Config::switch_team)
-                continue;
-
             const float vitality = VitalityPercent(entity);
             if ((absoluteHealth ? entity.PlayerHealth : vitality) > settings.enemyHealthThreshold)
                 continue;
@@ -2741,9 +2736,6 @@ namespace {
                 continue;
             if (Config::View_aimbotIgnoreInvisible() && !entity.Vis)
                 continue;
-            if ((entity.imort || entity.barrprot) && !Config::switch_team)
-                continue;
-
             const float vitality = VitalityPercent(entity);
             if (vitality > settings.enemyHealthThreshold)
                 continue;
@@ -4036,7 +4028,7 @@ namespace {
         for (size_t index = 0; index < entities.size(); ++index) {
             c_entity entity = entities[index];
             if (!TargetingDetail::IsSelectableCandidate(entity, 0, local) ||
-                !entity.Vis || entity.imort || entity.barrprot || !IsUsablePosition(entity.pos) ||
+                !entity.Vis || !IsUsablePosition(entity.pos) ||
                 VitalityPercent(entity) > settings.enemyHealthThreshold)
                 continue;
             Vector3 point = entity.pos;
@@ -4411,7 +4403,7 @@ namespace {
                 !target.HasUsableBody(GetTickCount(), EntitySceneGeneration()) ||
                 !std::isfinite(target.PlayerHealth) || target.PlayerHealth <= 0 ||
                 target.Team == allies || (settings.requireVisible && !target.Vis)) continue;
-            if (!allies && (target.imort || target.barrprot)) continue;
+            if (!allies && !TargetingDetail::ProtectionFilterPasses(target)) continue;
             if (allies && (!FreshHealthForSkill(target) || !SkillConditions::HealthAtOrBelow(target.PlayerHealth, target.PlayerHealthMax,
                     settings.allyHealthThreshold, false))) continue;
             const auto position = CandidatePositionForAction(target);

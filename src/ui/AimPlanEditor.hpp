@@ -89,7 +89,17 @@ inline bool Motion(AimPlan::Motion& m,bool chooseMethod=true) {
     if(m.method==9) ImGui::TextWrapped("%s",L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
     return changed;
 }
-inline bool Policy(OW::Config::HeroPreset& preset, bool weightedRanking = true) {
+inline bool HealthLimits(OW::Config::HeroPreset& preset) {
+    auto& s = preset.aimPlan.selection;
+    bool changed = false;
+    changed |= Float("Minimum HP", "##minHP", s.minHealth, 0, 2000, " HP");
+    changed |= Float("Maximum HP (0 = any)", "##maxHP", s.maxHealth, 0, 2000, " HP");
+    return changed;
+}
+
+inline bool Policy(OW::Config::HeroPreset& preset,
+                   bool weightedRanking = true,
+                   bool includeHealthLimits = true) {
     auto& p=preset.aimPlan; auto& s=p.selection; bool changed=false;
     static const char* modes[]={"Any","Prefer","Only"};
     static const char* predicates[]={"Selected heroes","Full health","Visible"};
@@ -100,8 +110,8 @@ inline bool Policy(OW::Config::HeroPreset& preset, bool weightedRanking = true) 
         ImGui::TextWrapped("%s",L(s.mode==2?"Only: no match means no target. An empty hero set selects nobody.":
             "Prefer: matching valid targets rank first, otherwise use the rest. An active minimum lock expires first."));
     }
-    changed|=Float("Minimum HP","##minHP",s.minHealth,0,2000," HP");
-    changed|=Float("Maximum HP (0 = any)","##maxHP",s.maxHealth,0,2000," HP");
+    if (includeHealthLimits)
+        changed |= HealthLimits(preset);
     if(weightedRanking && preset.priority==3) {
         changed|=Float("Angle weight","##angleWeight",s.angleWeight,0,100);
         changed|=Float("Distance weight","##distanceWeight",s.distanceWeight,0,100);

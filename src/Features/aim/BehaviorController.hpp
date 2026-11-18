@@ -39,6 +39,17 @@ namespace AimbotDetail {
         std::uint64_t releaseOutputGeneration=0;
         bool trackingSessionActive = false;
         bool singleShotIssued = false;
+        // Fire-cycle state belongs to the currently selected Aim Slot.  The
+        // legacy Config::shooted flag remains a compatibility projection for
+        // older diagnostics and consumers, but it is never the decision
+        // source for the active behavior loop.
+        bool fireCycleInitialized = false;
+        bool fireCycleShotIssued = false;
+        uint64_t fireCycleHeroId = 0;
+        int fireCycleSlotIndex = -1;
+        uint64_t fireCycleSlotId = 0;
+        int fireCyclePolicy = -1;
+        uint64_t fireCycleConnectionEpoch = 0;
         std::array<OW::AimHoldWindow::State, OW::Labels::kAimActivationKeyStateCount> aimHoldWindows{};
         bool keepFiringHeld = false;
         int keepFiringButton = -1;

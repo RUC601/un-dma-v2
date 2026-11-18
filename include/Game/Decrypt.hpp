@@ -1775,7 +1775,7 @@ namespace OW {
         }
         if (!current() || uint32_t(EntityRegistryNowMs()-tick)>100) return {};
         const auto& value=candidates.front();
-        if (discoveries) discoveries->push_back({value.actor,parent,value.hero,value.uid,tick});
+        if (discoveries) discoveries->push_back({value.actor,parent,value.hero,value.uid,tick,true});
         return {{value.actor,parent}};
     }
 
@@ -1997,7 +1997,7 @@ namespace OW {
                 if(component!=parent && actorMatch!=linkId && actorMatch!=targetId) {
                     result.pop_back(); continue;
                 }
-                discoveries->push_back({component, parent, hero.heroid, actorMatch, discoveryTick});
+                discoveries->push_back({component, parent, hero.heroid, actorMatch, discoveryTick, currentMapPositiveOnly});
             }
             trace(0,component);
         }
