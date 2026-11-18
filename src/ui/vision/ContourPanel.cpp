@@ -70,10 +70,17 @@ void DrawPreview(Settings& draft,bool& edited) {
     SettingRow(Tr("Freeze for sampling","定格取色"));UICheckbox("##contourFreeze",&frozen);
     if(!frozen)preview=GetService().Snapshot();
     if(!preview){
-        ImGui::TextWrapped("%s",Tr("Start capture to see the raw frame. A missing or stale frame cannot authorize firing.","开始采集后显示原始画面。无画面或画面过期时，轮廓路径不允许开火。"));return;
+        ImGui::TextDisabled("%s", Tr("No capture frame", "暂无采集画面"));
+        SettingTooltip(Tr("Start capture to see the raw frame. A missing or stale frame cannot authorize firing.",
+                          "开始采集后显示原始画面。无画面或画面过期时，轮廓路径不允许开火。"));
+        return;
     }
     const auto frame=preview;
-    if(!Upload(*frame,mode)) {ImGui::TextWrapped("%s",Tr("Preview unavailable. Stop and restart capture, then reopen this page.","预览不可用。请停止并重新开始采集，再打开此页。"));return;}
+    if (!Upload(*frame, mode)) {
+        ImGui::TextDisabled("%s", Tr("Preview unavailable", "预览不可用"));
+        SettingTooltip(Tr("Stop and restart capture, then reopen this page.", "请停止并重新开始采集，再打开此页。"));
+        return;
+    }
     const float available=(std::max)(80.f,ImGui::GetContentRegionAvail().x);
     const float scale=(std::min)(available/frame->width,440.f/frame->height);
     const ImVec2 size(frame->width*scale,frame->height*scale),start=ImGui::GetCursorScreenPos();
@@ -97,9 +104,10 @@ void DrawPreview(Settings& draft,bool& edited) {
     if(ImGui::IsItemFocused())draw->AddRect(start,end,ImGui::GetColorU32(ImGuiCol_NavCursor),0.f,2.f);
     ImGui::Text(Tr("%d x %d | frame %llu | %zu contours | age %.0f ms%s","%d × %d | 帧 %llu | %zu 个轮廓 | 帧龄 %.0f ms%s"),frame->width,frame->height,
         static_cast<unsigned long long>(frame->sequence),frame->components.size(),(std::max)(0.0,MonotonicMs()-frame->arrivalMs),frozen?Tr(" | frozen"," | 已定格"):"");
-    ImGui::TextWrapped("%s",Tr("Click the image to sample the original pixel. You can also enter X/Y and press Sample; preview scaling and annotations never affect the sampled color.","点击画面可取原始像素颜色，也可填写 X/Y 后点击取色；预览缩放和标记不影响取色。"));
     ImGui::SetNextItemWidth(100);ImGui::InputInt("X##sampleX",&pickX,0);ImGui::SameLine();ImGui::SetNextItemWidth(100);ImGui::InputInt("Y##sampleY",&pickY,0);
     ImGui::SameLine();if(ImGui::Button(Tr("Sample","取色"))){pickedValid=SampleColor(*frame,pickX,pickY,picked);frozen=true;}
+    SettingTooltip(Tr("Click the image or enter X/Y and press Sample to sample the original pixel.",
+                      "点击画面或填写 X/Y 后点击取色，均可取得原始像素颜色。"));
     const char* slots[]={Tr("Hidden color","不可见颜色"),Tr("Visible color","可见颜色"),Tr("Selected color","选中颜色")};
     SettingRow(Tr("Sample destination","取色写入"));PushControlWidth();UISelect("##sampleSlot",&colorSlot,slots,3,false);ImGui::PopItemWidth();
     if(pickedValid){
@@ -127,7 +135,11 @@ void DrawPage() {
     ImGui::Text("%s",state);
     if(active)ImGui::Text(Tr("%d x %d  %.1f fps | received %llu / processed %llu / dropped %llu","%d × %d  %.1f fps | 接收 %llu / 处理 %llu / 丢弃 %llu"),
         status.width,status.height,status.fps,static_cast<unsigned long long>(status.receivedFrames),static_cast<unsigned long long>(status.processedFrames),static_cast<unsigned long long>(status.droppedFrames));
-    if(!status.error.empty()){ImGui::TextWrapped("%s",Utf8(status.error).c_str());ImGui::TextWrapped("%s",Tr("Check the device and selected format, then try Start capture again.","请检查设备与所选格式，再点击开始采集重试。"));}
+    if (!status.error.empty()) {
+        ImGui::TextWrapped("%s", Utf8(status.error).c_str());
+        SettingTooltip(Tr("Check the device and selected format, then try Start capture again.",
+                          "请检查设备与所选格式，再点击开始采集重试。"));
+    }
     if(enumeration.valid()&&enumeration.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=enumeration.get();devices=std::move(result.devices);feedback=result.ok?Tr("Device list refreshed.","设备列表已刷新。"):Utf8(result.error);}
     const bool enumerating=enumeration.valid();
     SettingRow(Tr("Capture device","采集设备"));PushControlWidth();
@@ -144,6 +156,7 @@ void DrawPage() {
     intRow("Capture width","采集宽度","##captureWidth",draft.capture.width);intRow("Capture height","采集高度","##captureHeight",draft.capture.height);
     SettingRow(Tr("Frame rate","帧率"));PushControlWidth();edited|=ImGui::InputDouble("##captureFps",&draft.capture.fps,0,0,"%.3f");ImGui::PopItemWidth();
     SettingRow(Tr("Use game outline colors","沿用游戏描边颜色"));edited|=UICheckbox("##useOutlineColors",&draft.useOutlineColors);
+    SettingTooltip(Tr("All three colors are matched. A color identifies a contour fragment, not a player.","三种颜色均参与检测，颜色本身不代表某个玩家身份。"));
     if(draft.useOutlineColors){const auto palette=GetService().GetSettings().colors;draft.colors=palette;}
     const char* colorNames[]={Tr("Hidden","不可见"),Tr("Visible","可见"),Tr("Selected","选中")};
     for(int i=0;i<3;++i){ImGui::PushID(i);SettingRow(colorNames[i]);auto& c=draft.colors[i];ImVec4 color(c.r/255.f,c.g/255.f,c.b/255.f,1);
@@ -151,16 +164,16 @@ void DrawPage() {
         if(UI::ColorPicker("detectorColor",color)){c={std::uint8_t(std::lround(color.x*255)),std::uint8_t(std::lround(color.y*255)),std::uint8_t(std::lround(color.z*255))};edited=true;}
         ImGui::SameLine();if(ImGui::Button(Tr("Red","红色"))){c={255,0,0};edited=true;}ImGui::SameLine();if(ImGui::Button(Tr("Yellow","黄色"))){c={255,255,0};edited=true;}
         ImGui::EndDisabled();ImGui::SameLine();ImGui::Text("#%02X%02X%02X",c.r,c.g,c.b);ImGui::PopID();}
-    ImGui::TextWrapped("%s",Tr("All three colors are matched. A color identifies a contour fragment, not a player.","三种颜色均参与检测，颜色本身不代表某个玩家身份。"));
     intRow("RGB tolerance (0-128)","RGB 容差（0–128）","##contourTolerance",draft.tolerance);
     intRow("Search width (px)","搜索宽度（像素）","##contourRoiWidth",draft.roiWidth);intRow("Search height (px)","搜索高度（像素）","##contourRoiHeight",draft.roiHeight);
     if(ImGui::CollapsingHeader(Tr("Association and firing","关联与开火"))){
         SettingRow(Tr("Maximum frame age (ms)","最大帧龄（毫秒）"));PushControlWidth();edited|=ImGui::InputDouble("##contourAge",&draft.maxFrameAgeMs,0,0,"%.0f");ImGui::PopItemWidth();
         floatRow("Association radius (px)","关联半径（像素）","##contourAssociation",draft.associationRadiusPx);
         floatRow("Contact radius (px)","接触半径（像素）","##contourContact",draft.contactRadiusPx);
-        intRow("Contact delay (ms)","触边延迟（毫秒）","##contourDelay",draft.touchDelayMs);intRow("Loss grace (ms)","丢失宽限（毫秒）","##contourGrace",draft.lostGraceMs);
+        intRow("Contact delay (ms)","触边延迟（毫秒）","##contourDelay",draft.touchDelayMs);
+        SettingTooltip(Tr("Delay begins at contact with the associated target. Loss grace preserves association only; stale frames never authorize firing.","延迟从接触当前目标轮廓开始。丢失宽限只保持关联；过期画面不允许开火。"));
+        intRow("Loss grace (ms)","丢失宽限（毫秒）","##contourGrace",draft.lostGraceMs);
         intRow("Minimum fragment pixels","最小片段像素数","##contourMinPixels",draft.minComponentPixels);
-        ImGui::TextWrapped("%s",Tr("Delay begins at contact with the associated target. Loss grace preserves association only; stale frames never authorize firing.","延迟从接触当前目标轮廓开始。丢失宽限只保持关联；过期画面不允许开火。"));
     }
     DrawPreview(draft,edited);
     std::wstring validation;const bool valid=ValidateSettings(draft,&validation);

@@ -11,16 +11,6 @@
 using namespace UI::Theme;
 
 void DrawMiscOutputPage() {
-    const auto device=V2::Output::Describe(V2::Output::ActiveRuntimeSnapshot().descriptor);
-    ImGui::TextWrapped("%s · 移动 %s / 鼠标 %s / 键盘 %s / 物理监测 %s",
-        device.name,device.move?"可用":"不支持",device.buttons?"可用":"不支持",
-        device.keyboard?"可用":"不支持",device.physicalMonitor?"可用":"不支持");
-    ImGui::TextWrapped("%s", L("Device rate is not measured in this build."));
-    ImGui::TextWrapped("%s", L("MAKCU Controller / Medius: unavailable until their action mapping and protocol are established."));
-    ImGui::Spacing();
-
-    const auto physical=V2::Output::ActivePhysicalInput();
-    UI::OutputSettings::DrawDeviceNotes(OW::Config::outputDeviceType, physical.available);
     UIGroupBox(T(UiText::GroupOutputSettings));
     {
         bool outputRuntimeReinitRequested = false;
@@ -66,7 +56,7 @@ void DrawMiscOutputPage() {
         SettingRow(L("Automatically select connected device"));
         if (ImGui::Checkbox("##AutoDetectDevice", &OW::Config::outputAutoDetect))
             markOutputRuntimeConfigChanged();
-        ImGui::TextWrapped("%s", L("Each device keeps its connection, calibration and delay settings. A working device stays selected; after disconnecting, saved devices are checked again."));
+        SettingTooltip(L("Each device keeps its connection, calibration and delay settings. A working device stays selected; after disconnecting, saved devices are checked again."));
         const auto detection = V2::Output::GetAutomaticDeviceStatus();
         if (OW::Config::outputAutoDetect && !detection.message.empty())
             ImGui::TextWrapped("%s", L(detection.message.c_str()));
@@ -79,6 +69,17 @@ void DrawMiscOutputPage() {
             markOutputRuntimeConfigChanged();
         }
         ImGui::PopItemWidth();
+        if (BeginSettingTooltip()) {
+            const auto device = V2::Output::Describe(V2::Output::ActiveRuntimeSnapshot().descriptor);
+            ImGui::TextWrapped("%s · 移动 %s / 鼠标 %s / 键盘 %s / 物理监测 %s",
+                device.name,device.move?"可用":"不支持",device.buttons?"可用":"不支持",
+                device.keyboard?"可用":"不支持",device.physicalMonitor?"可用":"不支持");
+            ImGui::TextWrapped("%s", L("Device rate is not measured in this build."));
+            ImGui::TextWrapped("%s", L("MAKCU Controller / Medius: unavailable until their action mapping and protocol are established."));
+            UI::OutputSettings::DrawDeviceNotes(OW::Config::outputDeviceType,
+                                               V2::Output::ActivePhysicalInput().available);
+            EndSettingTooltip();
+        }
 
         UI::OutputSettings::DrawConnectionFields(
             OW::Config::outputDeviceType, markOutputRuntimeConfigChanged);

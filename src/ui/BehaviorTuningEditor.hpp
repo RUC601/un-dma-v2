@@ -49,6 +49,14 @@ inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior,
             SettingRow("Charge control");PushControlWidth();
             if(UISelect("##chargeControl",&source,sources,2)) {t.autoCharge=source==1;changed=true;}
             ImGui::PopItemWidth();
+            if (BeginSettingTooltip()) {
+                ImGui::TextUnformatted(L(t.autoCharge
+                    ?"Automatic charging needs a separate aim activation key. Stopping releases the owned button."
+                    :"Hold the fire button. Release and press it again after each assisted shot."));
+                if(!t.autoCharge && (!V2::Output::SupportsMouseMask(V2::Output::ActiveRuntimeSnapshot().descriptor)||!V2::Output::ActivePhysicalInput().available))
+                    ImGui::TextUnformatted(L("Manual release is unavailable: this output device needs physical-button monitoring and masking."));
+                EndSettingTooltip();
+            }
             if(t.autoCharge) {
                 const char* timings[]={"While holding the auxiliary key","After releasing the auxiliary key"};
                 SettingRow("Aim and fire timing");PushControlWidth();
@@ -56,16 +64,12 @@ inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior,
                 ImGui::PopItemWidth();
                 if(t.releaseExecution==1) {
                     changed|=Float("Release aim limit","##releaseAimLimit",t.releaseAimTimeoutMs,50,5000," ms");
-                    ImGui::TextWrapped("%s",L("Hold to charge anywhere. Release to aim and fire once. With no target, or when the aim limit expires, fire at the current crosshair."));
+                    SettingTooltip(L("Hold to charge anywhere. Release to aim and fire once. With no target, or when the aim limit expires, fire at the current crosshair."));
                 }
             }
             changed|=Float("Minimum fire charge","##chargeMin",t.minCharge,0,100," %");
             changed|=Float("Charge fallback wait","##chargeFallback",t.chargeFallbackMs,0,10000," ms");
-            ImGui::TextWrapped("%s",L(t.autoCharge
-                ?"Automatic charging needs a separate aim activation key. Stopping releases the owned button."
-                :"Hold the fire button. Release and press it again after each assisted shot."));
-            if(!t.autoCharge && (!V2::Output::SupportsMouseMask(V2::Output::ActiveRuntimeSnapshot().descriptor)||!V2::Output::ActivePhysicalInput().available))
-                ImGui::TextWrapped("%s",L("Manual release is unavailable: this output device needs physical-button monitoring and masking."));
+
         }
         changed|=Float("Shot Clamp","##shotClamp",t.flickShotClampMs,0,1000," ms");
         changed|=Float("Post-fire Delay","##postFire",t.flickPostFireDelayMs,0,500," ms");

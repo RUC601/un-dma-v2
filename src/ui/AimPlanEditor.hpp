@@ -21,8 +21,9 @@ inline bool Heroes(const char* id,std::vector<uint64_t>& heroes,const AimPlan::P
 }
 inline bool Shuwu(koi::ShuwuConfig& s) {
     bool changed=false;
-    ImGui::TextWrapped("%s",L("Shuwu uses 16 virtual units per degree. These are not screen pixels or device counts."));
-    changed|=Double("Shuwu KP",s.kp,0,2); changed|=Double("Shuwu KD",s.kd,0,1);
+    changed|=Double("Shuwu KP",s.kp,0,2);
+    SettingTooltip(L("Shuwu uses 16 virtual units per degree. These are not screen pixels or device counts."));
+    changed|=Double("Shuwu KD",s.kd,0,1);
     changed|=Double("Yaw prediction",s.predict_x,-2,3); changed|=Double("Pitch prediction",s.predict_y,-2,3);
     changed|=Double("Gain response",s.rate,.01f,1); changed|=Double("Nonlinear smoothing",s.smooth,0,1);
     changed|=Double("Virtual deadzone",s.deadzone,0,10);
@@ -51,6 +52,8 @@ inline bool Motion(AimPlan::Motion& m,bool chooseMethod=true) {
     if(chooseMethod) { SettingRow("Motion method"); PushControlWidth();
     changed|=UISelect("##motionMethod",&m.method,kAimMethod,IM_ARRAYSIZE(kAimMethod)); ImGui::PopItemWidth(); }
     changed|=Float("Method speed scale","##methodScale",m.angularSpeedScale,0,200," %");
+    if (m.method == 9)
+        SettingTooltip(L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
     if(m.method==1||m.method==6) {
         changed|=Float("PID P","##p",m.pidP,0,2);
         changed|=Float("PID I","##i",m.pidI,0,.5f);
@@ -86,7 +89,6 @@ inline bool Motion(AimPlan::Motion& m,bool chooseMethod=true) {
     }
     if(m.method==7) changed|=Shuwu(m.shuwu);
     if(m.method==8) changed|=UI::ResponseCurveEditor(m.responseCurve);
-    if(m.method==9) ImGui::TextWrapped("%s",L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
     return changed;
 }
 inline bool HealthLimits(OW::Config::HeroPreset& preset) {
@@ -104,19 +106,20 @@ inline bool Policy(OW::Config::HeroPreset& preset,
     static const char* modes[]={"Any","Prefer","Only"};
     static const char* predicates[]={"Selected heroes","Full health","Visible"};
     SettingRow("Target preference"); PushControlWidth(); changed|=UISelect("##preference",&s.mode,modes,3); ImGui::PopItemWidth();
+    if (s.mode != 0) SettingTooltip(L(s.mode == 2
+        ? "Only: no match means no target. An empty hero set selects nobody."
+        : "Prefer: matching valid targets rank first, otherwise use the rest. An active minimum lock expires first."));
     if(s.mode) {
         SettingRow("Preference condition"); PushControlWidth(); changed|=UISelect("##predicate",&s.predicate,predicates,3); ImGui::PopItemWidth();
         if(s.predicate==0) changed|=Heroes("##policyHeroes",s.heroes);
-        ImGui::TextWrapped("%s",L(s.mode==2?"Only: no match means no target. An empty hero set selects nobody.":
-            "Prefer: matching valid targets rank first, otherwise use the rest. An active minimum lock expires first."));
     }
     if (includeHealthLimits)
         changed |= HealthLimits(preset);
     if(weightedRanking && preset.priority==3) {
         changed|=Float("Angle weight","##angleWeight",s.angleWeight,0,100);
+        SettingTooltip(L("Smart compares normalized angle, distance and remaining health fraction. Zero weights use angle."));
         changed|=Float("Distance weight","##distanceWeight",s.distanceWeight,0,100);
         changed|=Float("Health weight","##healthWeight",s.healthWeight,0,100);
-        ImGui::TextWrapped("%s",L("Smart compares normalized angle, distance and remaining health fraction. Zero weights use angle."));
     }
     return changed;
 }

@@ -922,6 +922,17 @@ namespace AimbotDetail {
         return IsInputVkDown(vk, keySetting);
     }
 
+    inline uint32_t PhysicalMouseMaskForActivationVk(int vk) {
+        switch (vk) {
+        case VK_LBUTTON:  return 0x01u;
+        case VK_RBUTTON:  return 0x02u;
+        case VK_MBUTTON:  return 0x04u;
+        case VK_XBUTTON1: return 0x08u;
+        case VK_XBUTTON2: return 0x10u;
+        default:          return 0u;
+        }
+    }
+
     inline bool IsAimActivationKeyDown() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return false;
@@ -929,7 +940,22 @@ namespace AimbotDetail {
         // Policy owns attack-button output, so the activation key alone
         // establishes the slot cycle.  The old field remains loadable and is
         // normalized to false for persistence compatibility.
-        return IsConfiguredAimKeyPressed(OW::Config::View_aim_key());
+        const int keySetting = OW::Config::View_aim_key();
+        const int vk = OW::get_bind_id(keySetting);
+        const uint32_t physicalMask = PhysicalMouseMaskForActivationVk(vk);
+        if (physicalMask != 0) {
+            // The output device can inject the same mouse button used as the
+            // activation key. Prefer its physical monitor here so our own
+            // held output cannot re-arm the Aim Slot after the user releases
+            // the mouse button.
+            const auto runtime = V2::Output::ActiveRuntimeSnapshot();
+            const auto capabilities = V2::Output::CapabilitiesFor(runtime.descriptor);
+            if (capabilities.physicalMonitor) {
+                const auto physical = V2::Output::ActivePhysicalInput();
+                return physical.available && (physical.buttons & physicalMask) != 0;
+            }
+        }
+        return IsConfiguredAimKeyPressed(keySetting);
     }
 
     inline bool IsAimKeyPressed() {

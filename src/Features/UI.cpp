@@ -1153,11 +1153,11 @@ bool UIAlertHeroSelect(const char* id, uint64_t& heroId, const std::function<boo
     const auto label = std::string(zh ? "显示所有英雄###" : "Show all heroes###") + id;
     if (ImGui::Button(label.c_str()))
         ImGui::OpenPopup("##alertHeroBrowser");
+    SettingTooltip(zh ? "亮色：已开启预警规则　淡色：未开启" : "Bright: alerts enabled   Dim: alerts off");
     ImGui::EndGroup();
     HeroBrowserSize();
     if (!ImGui::BeginPopup("##alertHeroBrowser")) return false;
     static char search[128]{};
-    ImGui::TextWrapped("%s", zh ? "亮色：已开启预警规则　淡色：未开启" : "Bright: alerts enabled   Dim: alerts off");
     HeroBrowserSearch(search);
     const bool changed = HeroBrowserGrid(search, false, ControlHeight() + 8,
         [&](const HeroOption& item) { return item.heroId == heroId; },
@@ -1213,7 +1213,7 @@ bool UIHeroMultiSelect(const char* id, std::vector<uint64_t>& heroes,
         static char search[128]{};
         ImGui::TextUnformatted(L("Browse all heroes"));
         HeroBrowserSearch(search);
-        if (plan) ImGui::TextWrapped("%s", L("Unavailable heroes already belong to another exception."));
+        if (plan) SettingTooltip(L("Unavailable heroes already belong to another exception."));
         changed = HeroBrowserGrid(search, false, ControlHeight() + 8,
             [&](const HeroOption& hero) { return OW::AimPlan::Contains(heroes, hero.heroId); },
             [&](const HeroOption& hero) -> const char* {
@@ -1353,15 +1353,6 @@ static bool CreateTextureFromIconResource(ID3D11Device* device, int resourceId, 
     return true;
 }
 
-static void DrawText(ImDrawList* drawList, ImFont* font, const ImVec2& pos,
-                     ImU32 color, const char* text) {
-    if (font)
-        ImGui::PushFont(font);
-    drawList->AddText(pos, color, text);
-    if (font)
-        ImGui::PopFont();
-}
-
 // =====================================================================
 // FORMAT SLIDER VALUE  (mirrors React formatSliderText)
 // =====================================================================
@@ -1389,11 +1380,10 @@ static float RoundToSliderStep(float value, float step) {
 //                 box (drawing its border lazily via CloseGroupBox).
 // =====================================================================
 bool UIGroupBox(const char* title, float minHeightPx, float bottomGapPx) {
-    UI::Search::Anchor(title);
-    title = L(title);
-    // Close previous group box first (draws its border)
     if (g_gbOpen)
         CloseGroupBox();
+    UI::Search::Anchor(title);
+    title = L(title);
 
     g_gbOpen = true;
     g_gbMinHeight = minHeightPx;
@@ -1412,10 +1402,9 @@ bool UIGroupBox(const char* title, float minHeightPx, float bottomGapPx) {
     g_gbDrawSplitter.Split(dl, 2);
     g_gbDrawSplitter.SetCurrentChannel(dl, 1);
 
-    ImGui::Dummy(ImVec2(0.0f, textSize.y + 10.0f));
+    ImGui::Dummy(ImVec2(0.0f, textSize.y + 8.0f));
 
-    // Save state for lazy border drawing
-    g_gbStartPos = ImGui::GetCursorScreenPos();
+    g_gbStartPos = pos;
     g_gbWidth    = ImGui::GetContentRegionAvail().x;
 
     ImGui::Indent(kGroupContentIndent);
@@ -1427,55 +1416,59 @@ bool UIGroupBox(const char* title, float minHeightPx, float bottomGapPx) {
 // CloseGroupBox  --  Draws the border and legend of the current group
 //                    box and restores indentation.
 // =====================================================================
-void CloseGroupBox() {
-    if (!g_gbOpen) return;
+struct GroupBoxFrame {
+    ImVec2 min;
+    ImVec2 max;
+    std::string title;
+};
 
-    ImVec2 textSize = s_boldFont ? ImGui::CalcTextSize(g_gbTitle) : ImGui::CalcTextSize(g_gbTitle);
-    float  titleH   = textSize.y + 10.0f;
-    float  borderTopY = g_gbStartPos.y - titleH;
+static void DrawGroupBoxFrame(ImDrawList* draw, const GroupBoxFrame& frame) {
+    draw->AddRectFilled(frame.min, frame.max, kColPanelSoft, kGroupRounding);
+    draw->AddRect(frame.min, frame.max, kColStroke, kGroupRounding);
+    if (s_boldFont)
+        ImGui::PushFont(s_boldFont);
+    const ImVec2 textMin(frame.min.x + kGroupContentIndent, frame.min.y + 4.0f);
+    const ImVec2 textMax(frame.max.x - kControlRightPadding, textMin.y + ImGui::GetFontSize());
+    ImGui::RenderTextEllipsis(draw, textMin, textMax, textMax.x, frame.title.c_str(), nullptr, nullptr);
+    if (s_boldFont)
+        ImGui::PopFont();
+}
 
+static GroupBoxFrame FinishGroupBox(bool drawFrame) {
     if (g_gbMinHeight > 0.0f) {
-        float desiredContentEndY = borderTopY + g_gbMinHeight - 6.0f;
-        float currentY = ImGui::GetCursorScreenPos().y;
+        const float desiredContentEndY = g_gbStartPos.y + g_gbMinHeight - 9.0f;
+        const float currentY = ImGui::GetCursorScreenPos().y;
         if (currentY < desiredContentEndY)
             ImGui::Dummy(ImVec2(0.0f, desiredContentEndY - currentY));
     }
 
-    ImGui::EndGroup();   // tracks the content bounds
+    ImGui::EndGroup();
     ImGui::Unindent(kGroupContentIndent);
 
-    ImVec2 contentEnd = ImGui::GetItemRectMax();
-    auto*  dl = ImGui::GetWindowDrawList();
+    const GroupBoxFrame frame{
+        g_gbStartPos,
+        ImVec2(MaxFloat(g_gbStartPos.x + 1.0f, g_gbStartPos.x + g_gbWidth - kGroupBorderClipInset),
+               MaxFloat(ImGui::GetItemRectMax().y + 9.0f, g_gbStartPos.y + g_gbMinHeight)),
+        g_gbTitle
+    };
+    if (drawFrame) {
+        g_gbDrawSplitter.SetCurrentChannel(ImGui::GetWindowDrawList(), 0);
+        DrawGroupBoxFrame(ImGui::GetWindowDrawList(), frame);
+    }
 
-    ImVec2 borderMin = g_gbStartPos;
-    borderMin.y       = borderTopY;
-    ImVec2 borderMax  = ImVec2(
-        MaxFloat(borderMin.x + 1.0f, g_gbStartPos.x + g_gbWidth - kGroupBorderClipInset),
-        contentEnd.y + 9.0f);
-    if (g_gbMinHeight > 0.0f)
-        borderMax.y = MaxFloat(borderMax.y, borderMin.y + g_gbMinHeight);
+    const float cursorY = ImGui::GetCursorScreenPos().y;
+    if (cursorY < frame.max.y + g_gbBottomGap)
+        ImGui::Dummy(ImVec2(0.0f, frame.max.y + g_gbBottomGap - cursorY));
 
-    g_gbDrawSplitter.SetCurrentChannel(dl, 0);
-    dl->AddRectFilled(borderMin, borderMax, kColPanelSoft, kGroupRounding);
-    dl->AddRect(borderMin, borderMax, kColStroke, kGroupRounding, 0, 1.0f);
-
-    dl->AddRectFilled(
-        ImVec2(borderMin.x + 13.0f, borderMin.y - 1.0f),
-        ImVec2(borderMin.x + 18.0f + textSize.x + 12.0f, borderMin.y + textSize.y + 4.0f),
-        kColPanel
-    );
-
-    g_gbDrawSplitter.SetCurrentChannel(dl, 1);
-    DrawText(dl, s_boldFont, ImVec2(borderMin.x + 17.0f, borderMin.y + 2.0f),
-             kColText, g_gbTitle);
-
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    if (cursor.y < borderMax.y + g_gbBottomGap)
-        ImGui::Dummy(ImVec2(0.0f, borderMax.y + g_gbBottomGap - cursor.y));
-
-    g_gbDrawSplitter.Merge(dl);
+    g_gbDrawSplitter.Merge(ImGui::GetWindowDrawList());
     g_gbOpen = false;
     g_gbMinHeight = 0.0f;
+    return frame;
+}
+
+void CloseGroupBox() {
+    if (g_gbOpen)
+        FinishGroupBox(true);
 }
 
 // =====================================================================
@@ -1487,7 +1480,7 @@ bool UICheckbox(const char* label, bool* value) {
 
     ImGuiContext& g    = *GImGui;
     const ImGuiID id   = window->GetID(label);
-    const float sz = (std::max)(30.0f,ImGui::GetFontSize()*2);
+    const float sz = ToggleWidth();
     const float height = ControlHeight();
     const float spacing = g.Style.ItemInnerSpacing.x + 2.0f;
 
@@ -1693,46 +1686,27 @@ bool UISlider(const char* label, int* value, float v_min, float v_max,
 // UISelect  --  Custom-styled dropdown using ImGui BeginCombo.
 //               Dropdown items get a red #e41143 background on hover/active.
 // =====================================================================
+static bool BeginControlCombo(const char* label, const char* preview) {
+    const auto& style = ImGui::GetStyle();
+    const float paddingY = (ControlHeight() - ImGui::GetTextLineHeight()) * 0.5f;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x, paddingY));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    [[maybe_unused]] const ImGuiID id = ImGui::GetID(label);
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    const bool open = ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest);
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags);
+    ImGui::PopStyleVar(3);
+    return open;
+}
+
 bool UISelect(const char* label, int* current, const char* const items[], int itemCount, bool translateItems) {
     if (*current < 0 || *current >= itemCount)
         *current = 0;
 
     const char* preview = translateItems ? L(items[*current]) : items[*current];
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    const float availableWidth = ImGui::GetContentRegionAvail().x;
-    float width = ImGui::CalcItemWidth();
-    if (width <= 0.0f || width > availableWidth)
-        width = availableWidth;
-    width = MaxFloat(1.0f, width);
-    const float height = ControlHeight();
-    ImRect bb(pos, ImVec2(pos.x + width, pos.y + height));
-
-    bool preHovered = ImGui::IsMouseHoveringRect(bb.Min, bb.Max);
-    float hoverT = VisualTransition(window->GetID(label) ^ 0x3911, preHovered, 18.0f);
-    ImU32 frameCol = MixColor(kColControl, kColControlHover, hoverT);
-    window->DrawList->AddRectFilled(bb.Min, bb.Max, IM_COL32(0x00, 0x00, 0x00, 0x2E), kControlRounding);
-    window->DrawList->AddRectFilled(ImVec2(bb.Min.x, bb.Min.y + 1.0f), bb.Max,
-                                    frameCol, kControlRounding);
-
-    ImGui::PushStyleColor(ImGuiCol_Header,        kColAccentDark);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kColAccent);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  kColAccent);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg,       kColPanel);
-    ImGui::PushStyleColor(ImGuiCol_Border,        kColStroke);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,       frameCol);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, MixColor(kColControlHover, kColControlHot, hoverT));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, kColControlHot);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(8.0f, MaxFloat(0.0f, (height - ImGui::GetTextLineHeight()) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, kControlRounding);
-
     bool changed = false;
-    ImGui::SetNextItemWidth(width);
-    if (ImGui::BeginCombo(label, preview,
-                          ImGuiComboFlags_HeightLargest | ImGuiComboFlags_NoArrowButton)) {
+    if (BeginControlCombo(label, preview)) {
         for (int i = 0; i < itemCount; i++) {
             const bool isSelected = (*current == i);
             std::string optionLabel = translateItems ? L(items[i]) : items[i];
@@ -1749,22 +1723,6 @@ bool UISelect(const char* label, int* current, const char* const items[], int it
         ImGui::EndCombo();
     }
 
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor(8);
-
-    window->DrawList->AddRect(bb.Min, bb.Max,
-                              MixColor(kColStrokeDark, kColStroke, hoverT),
-                              kControlRounding, 0, 1.0f);
-    ImVec2 caretCenter(bb.Max.x - 11.0f, bb.Min.y + height * 0.5f);
-    ImU32 caretCol = MixColor(kColTextDim, kColText, hoverT);
-    window->DrawList->AddLine(ImVec2(caretCenter.x - 4.0f, caretCenter.y - 2.0f),
-                              ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              caretCol, 1.35f);
-    window->DrawList->AddLine(ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              ImVec2(caretCenter.x + 4.0f, caretCenter.y - 2.0f),
-                              caretCol, 1.35f);
-    ImGuiContext& g = *ImGui::GetCurrentContext();
-    IMGUI_TEST_ENGINE_ITEM_INFO(window->GetID(label), label, g.LastItemData.StatusFlags);
     return changed;
 }
 
@@ -1830,12 +1788,17 @@ bool UI::UIKeyBinding(const char* id,
         : KeyBindingLabel(*value, storage);
     bool changed = false;
 
-    ImGui::PushID(bindingId);
-    if (ImGui::Button(bindingLabel.c_str(), ImVec2(220.0f, ControlHeight()))) {
+    const float width = MaxFloat(1.0f, (std::min)(ImGui::CalcItemWidth(), ImGui::GetContentRegionAvail().x));
+    const std::string buttonLabel = bindingLabel + "###" + id;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    if (ImGui::Button(buttonLabel.c_str(), ImVec2(width, ControlHeight()))) {
         g_keyBindingCaptureId = bindingId;
         g_keyBindingCaptureArmed = false;
     }
-    ImGui::PopID();
+    ImGui::PopStyleVar(2);
+    if (ImGui::CalcTextSize(bindingLabel.c_str()).x + 2.0f * ImGui::GetStyle().FramePadding.x > width)
+        ImGui::SetItemTooltip("%s", bindingLabel.c_str());
 
     if (!disabled && g_keyBindingCaptureId == bindingId) {
         if (!g_keyBindingCaptureArmed) {
@@ -1896,41 +1859,8 @@ bool UISkeletonBoneMultiSelect(const char* label, OW::SkeletonBoneMask* rawMask)
 
     *rawMask = OW::NormalizeSkeletonBoneMask(*rawMask);
     const std::string preview = SkeletonBoneMaskPreview(*rawMask);
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const float availableWidth = ImGui::GetContentRegionAvail().x;
-    float width = ImGui::CalcItemWidth();
-    if (width <= 0.0f || width > availableWidth)
-        width = availableWidth;
-    width = MaxFloat(1.0f, width);
-    const float height = ControlHeight();
-    const ImRect bb(pos, ImVec2(pos.x + width, pos.y + height));
-
-    const bool preHovered = ImGui::IsMouseHoveringRect(bb.Min, bb.Max);
-    const float hoverT = VisualTransition(window->GetID(label) ^ 0x5B71, preHovered, 18.0f);
-    const ImU32 frameCol = MixColor(kColControl, kColControlHover, hoverT);
-    window->DrawList->AddRectFilled(bb.Min, bb.Max, IM_COL32(0x00, 0x00, 0x00, 0x2E), kControlRounding);
-    window->DrawList->AddRectFilled(ImVec2(bb.Min.x, bb.Min.y + 1.0f), bb.Max,
-                                    frameCol, kControlRounding);
-
-    ImGui::PushStyleColor(ImGuiCol_Header, kColAccentDark);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kColAccent);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, kColAccent);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, kColPanel);
-    ImGui::PushStyleColor(ImGuiCol_Border, kColStroke);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, frameCol);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, MixColor(kColControlHover, kColControlHot, hoverT));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, kColControlHot);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(8.0f, MaxFloat(0.0f, (height - ImGui::GetTextLineHeight()) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kControlRounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, kControlRounding);
-
     bool changed = false;
-    ImGui::SetNextItemWidth(width);
-    if (ImGui::BeginCombo(label, L(preview.c_str()),
-                          ImGuiComboFlags_HeightLargest | ImGuiComboFlags_NoArrowButton)) {
+    if (BeginControlCombo(label, preview.c_str())) {
         const bool allSelected = OW::IsAllSkeletonBonesSelected(*rawMask);
         if (ImGui::Selectable(L("All"), allSelected, ImGuiSelectableFlags_NoAutoClosePopups) &&
             !allSelected) {
@@ -1954,20 +1884,6 @@ bool UISkeletonBoneMultiSelect(const char* label, OW::SkeletonBoneMask* rawMask)
         ImGui::EndCombo();
     }
 
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor(8);
-
-    window->DrawList->AddRect(bb.Min, bb.Max,
-                              MixColor(kColStrokeDark, kColStroke, hoverT),
-                              kControlRounding, 0, 1.0f);
-    const ImVec2 caretCenter(bb.Max.x - 11.0f, bb.Min.y + height * 0.5f);
-    const ImU32 caretCol = MixColor(kColTextDim, kColText, hoverT);
-    window->DrawList->AddLine(ImVec2(caretCenter.x - 4.0f, caretCenter.y - 2.0f),
-                              ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              caretCol, 1.35f);
-    window->DrawList->AddLine(ImVec2(caretCenter.x, caretCenter.y + 2.5f),
-                              ImVec2(caretCenter.x + 4.0f, caretCenter.y - 2.0f),
-                              caretCol, 1.35f);
     return changed;
 }
 
@@ -2095,7 +2011,7 @@ bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod)
 
     bool changed = false;
     const char* preview = AimMethodPresetPreview(*presetId, L("Current Method Config"));
-    if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest)) {
+    if (BeginControlCombo(label, preview)) {
         const bool noneSelected = *presetId < 0;
         if (ImGui::Selectable(L("Current Method Config"), noneSelected)) {
             *presetId = -1;
@@ -2134,7 +2050,7 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
         *presetId = fallback;
     }
     const char* preview = AimBehaviorPresetPreview(*presetId, noneText ? L(noneText) : "");
-    if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest)) {
+    if (BeginControlCombo(label, preview)) {
         const bool noneSelected = *presetId < 0;
         if (noneText && ImGui::Selectable(L(noneText), noneSelected)) {
             *presetId = -1;
@@ -2167,8 +2083,6 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
         }
         ImGui::EndCombo();
     }
-    ImGuiContext& g = *ImGui::GetCurrentContext();
-    IMGUI_TEST_ENGINE_ITEM_INFO(ImGui::GetID(label), label, g.LastItemData.StatusFlags);
     return changed;
 }
 
@@ -2178,7 +2092,7 @@ bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone) 
 
     bool changed = false;
     const char* preview = DynamicFovPresetPreview(*presetId, allowNone ? L("Fixed FOV") : L("Select Preset"));
-    if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLargest)) {
+    if (BeginControlCombo(label, preview)) {
         if (allowNone) {
             const bool noneSelected = *presetId < 0;
             if (ImGui::Selectable(L("Fixed FOV"), noneSelected)) {
@@ -2263,6 +2177,8 @@ void UIDisabledSelect(const char* label, const char* previewText) {
     window->DrawList->AddText(textPos, kColTextDim, previewText);
     ImGui::PopClipRect();
 
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", previewText);
 }
@@ -2300,8 +2216,10 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int s
             return static_cast<int>(OW::Config::DefaultAimScopeRequirementForHeroAction(heroId, value)) != scopeFilter;
         });
     }
-    if (actionValues.empty())
+    if (actionValues.empty()) {
+        UIDisabledSelect(label, L("None"));
         return false;
+    }
 
     bool changed = false;
     int currentIndex = 0;
@@ -2314,7 +2232,7 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int s
     }
 
     if (scopeFilter >= 0 && actionValues.size() == 1) {
-        ImGui::TextDisabled("%s", L(OW::AttackActionNameForHero(heroId, *action)));
+        UIDisabledSelect(label, L(OW::AttackActionNameForHero(heroId, *action)));
         return changed;
     }
 
@@ -2331,7 +2249,7 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int s
     return changed;
 }
 
-bool UIPredictionAlgorithmSelect(const char* label, int* algorithm, float labelWidth) {
+bool UIPredictionAlgorithmSelect(const char* label, int* algorithm) {
     const char* const labels[] = {
         L("Legacy Linear"),
         L("Legacy Linear Relative Motion"),
@@ -2349,7 +2267,7 @@ bool UIPredictionAlgorithmSelect(const char* label, int* algorithm, float labelW
     int selection = 0;
     for (int index = 0; index < IM_ARRAYSIZE(algorithmValues); ++index)
         if (algorithmValues[index] == storedAlgorithm) selection = index;
-    SettingRow(L("Prediction algorithm"), labelWidth);
+    SettingRow(L("Prediction algorithm"));
     PushControlWidth();
     const bool changed = UISelect(label, &selection, labels, IM_ARRAYSIZE(labels));
     if (changed) *algorithm = algorithmValues[selection];
@@ -2460,15 +2378,43 @@ bool UIActionSlotSelector(ActionSlotKind kind, uint64_t heroId) {
 }
 
 // =====================================================================
-// UITwoColumns  --  Two equal-width columns.
-// =====================================================================
-void UITwoColumns(std::function<void()> left, std::function<void()> right) {
+// Paired cards share a bottom edge based on the content drawn this frame.
+void UIGroupPair(const char* leftTitle, const std::function<void()>& left,
+                 const char* rightTitle, const std::function<void()>& right) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 6.0f));
-    if(ImGui::GetContentRegionAvail().x < 620.0f * (ImGui::GetFontSize()/15.0f)) {
-        left(); CloseGroupBox(); ImGui::Spacing(); right();
+    if (ImGui::GetContentRegionAvail().x < 620.0f * ImGui::GetFontSize() / 15.0f) {
+        UIGroupBox(leftTitle);
+        left();
+        CloseGroupBox();
+        if (rightTitle) {
+            UIGroupBox(rightTitle);
+            right();
+            CloseGroupBox();
+        }
     } else {
+        auto* draw = ImGui::GetWindowDrawList();
+        ImDrawListSplitter rowLayers;
+        rowLayers.Split(draw, 2);
+        rowLayers.SetCurrentChannel(draw, 1);
         ImGui::Columns(2, nullptr, false);
-        left(); ImGui::NextColumn(); right(); ImGui::Columns(1);
+        UIGroupBox(leftTitle);
+        left();
+        auto leftFrame = FinishGroupBox(false);
+        GroupBoxFrame rightFrame{};
+        if (rightTitle) {
+            ImGui::NextColumn();
+            UIGroupBox(rightTitle);
+            right();
+            rightFrame = FinishGroupBox(false);
+            leftFrame.max.y = rightFrame.max.y = MaxFloat(leftFrame.max.y, rightFrame.max.y);
+        }
+        ImGui::Columns(1);
+
+        rowLayers.SetCurrentChannel(draw, 0);
+        DrawGroupBoxFrame(draw, leftFrame);
+        if (rightTitle)
+            DrawGroupBoxFrame(draw, rightFrame);
+        rowLayers.Merge(draw);
     }
     ImGui::PopStyleVar();
 }
@@ -2476,13 +2422,15 @@ void UITwoColumns(std::function<void()> left, std::function<void()> right) {
 // =====================================================================
 // SettingRow  --  Renders a fixed-width label column + the next widget.
 // =====================================================================
-void SettingRow(const char* label, float labelWidthPx) {
+void SettingRow(const char* label, float labelWidthPx, float minControlWidthPx) {
     UI::Search::Anchor(label);
     label = L(label);
     const float available = ImGui::GetContentRegionAvail().x;
     labelWidthPx *= (std::max)(1.0f, ImGui::GetFontSize()/15.0f);
-    if(available < labelWidthPx + ImGui::GetFontSize()*7.0f || ImGui::CalcTextSize(label).x > labelWidthPx - 8.0f) {
-        ImGui::TextWrapped("%s",label);
+    if (minControlWidthPx <= 0.0f)
+        minControlWidthPx = ImGui::GetFontSize() * 7.0f + kControlRightPadding;
+    if (available < labelWidthPx + minControlWidthPx) {
+        ImGui::TextWrapped("%s", label);
         return;
     }
     const ImVec2 cursor = ImGui::GetCursorPos();
@@ -2498,12 +2446,12 @@ void SettingRow(const char* label, float labelWidthPx) {
 
 bool UIActionSlotEnabledCheckbox(ActionSlotKind kind,
                                         const HeroOption& hero,
-                                        const char* checkboxId,
-                                        float labelWidthPx) {
-    SettingRow("Slot Enabled", labelWidthPx);
+                                        const char* checkboxId) {
+    SettingRow("Slot Enabled");
     if (hero.heroId == 0) {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(L("Always"));
+        PushControlWidth();
+        UIDisabledSelect("##slotAlways", L("Always"));
+        ImGui::PopItemWidth();
         return false;
     }
 
@@ -2733,7 +2681,7 @@ void DrawRuntimeReadinessDetails() {
         else
             nextStep = chinese ? "采样及外设就绪；完整状态可在设置→诊断查看。" : "Samples and device ready. See Settings > Diagnostics for details.";
     ImGui::TextWrapped("%s", readiness);
-    ImGui::TextWrapped("%s", nextStep);
+    SettingTooltip(nextStep);
     CloseGroupBox();
 }
 
@@ -2882,21 +2830,23 @@ static void DrawEditingContext() {
     const bool ringPage = UI::state.activeTab == UI::TAB_THEME;
     const bool slotPage = UI::state.activeTab == UI::TAB_AIMING && UI::state.aimingSubTab < 2;
     const char* source = L("Hero-specific settings");
-    if (ringPage) source = L("Shared ring styles; hero selects the preview schemes.");
+    const char* description = L("Current settings edits the live configuration. Select a hero to edit its own schemes.");
+    if (ringPage) {
+        source = L("Shared settings");
+        description = L("Shared ring styles; hero selects the preview schemes.");
+    }
     else if (hero.heroId == 0) source = L("Current runtime settings");
     else if (slotPage) {
         OW::Config::HeroSlotPreset slot{};
         const bool present = UI::state.aimingSubTab == 0
             ? OW::Config::TryGetHeroAimSlot(hero.heroId, UI::state.aimHeroSegActive, slot)
             : OW::Config::TryGetHeroTriggerSlot(hero.heroId, UI::state.triggerHeroSegActive, slot);
-        source = present ? L("Hero-specific scheme")
-            : L("Uses current settings until an independent scheme is saved.");
+        source = present ? L("Hero-specific scheme") : L("Current runtime settings");
+        if (!present)
+            description = L("Uses current settings until an independent scheme is saved.");
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", source);
-    ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", L("Current settings edits the live configuration. Select a hero to edit its own schemes."));
+    ImGui::TextDisabled("%s", source);
+    SettingTooltip(description);
     ImGui::Spacing();
 }
 

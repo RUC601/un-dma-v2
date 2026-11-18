@@ -27,7 +27,7 @@ void ReservedAlert(const char* title, bool zh) {
     ImGui::BeginDisabled();
     UICheckbox(zh ? "开启###enabled" : "Enable###enabled", &enabled);
     ImGui::EndDisabled();
-    ImGui::TextDisabled("%s", zh ? "预留，等待接入检测" : "Detection pending");
+    SettingTooltip(zh ? "预留，等待接入检测" : "Detection pending");
     CloseGroupBox();
 }
 }
@@ -62,6 +62,8 @@ void UI::AlertPage() {
         ImGui::EndCombo();
     }
     ImGui::PopItemWidth();
+    SettingTooltip(zh ? "使用离线 Kokoro 中文声音。传给 Oopz 队友：此处选择虚拟音频线的播放端，副机 Oopz 的麦克风选择同一音频线的录音端。"
+        : "Uses offline Kokoro Chinese voices. For Oopz, choose the virtual cable playback end here and its recording end as Oopz's microphone on this PC.");
     SettingRow(zh ? "播报声音" : "Voice", kDefaultLabelWidth);
     const char* voicesZh[]{"中文女声", "中文男声"};
     const char* voicesEn[]{"Chinese / Female", "Chinese / Male"};
@@ -91,9 +93,6 @@ void UI::AlertPage() {
     default: break;
     }
     ImGui::TextWrapped("%s", state);
-    ImGui::Spacing();
-    ImGui::TextWrapped("%s", zh ? "使用离线 Kokoro 中文声音。传给 Oopz 队友：此处选择虚拟音频线的播放端，副机 Oopz 的麦克风选择同一音频线的录音端。"
-        : "Uses offline Kokoro Chinese voices. For Oopz, choose the virtual cable playback end here and its recording end as Oopz's microphone on this PC.");
     CloseGroupBox();
 
     ImGui::BeginDisabled(localHero==0);
@@ -103,7 +102,7 @@ void UI::AlertPage() {
     ImGui::PushID("skillAlert");
     UIGroupBox(zh ? "技能预警" : "Skill alerts");
     edited |= UICheckbox(zh ? "开启技能预警###enabled" : "Enable skill alerts###enabled", &settings.skillEnabled);
-    ImGui::TextWrapped("%s", zh ? "敌方英雄使用所选技能时播报一次。" : "Announces once when an enemy uses a selected skill.");
+    SettingTooltip(zh ? "敌方英雄使用所选技能时播报一次。" : "Announces once when an enemy uses a selected skill.");
     static uint64_t skillHero = kAnaHeroId;
     UIAlertHeroSelect("skillBrowse", skillHero, [&](uint64_t hero) {
         for (size_t i = 0; i < kDefinitions.size(); ++i)
@@ -166,7 +165,7 @@ void UI::AlertPage() {
     ImGui::PushID("ultimateAlert");
     UIGroupBox(zh ? "大招预警" : "Ultimate alerts");
     edited |= UICheckbox(zh ? "开启大招预警###enabled" : "Enable ultimate alerts###enabled", &settings.ultimateEnabled);
-    ImGui::TextWrapped("%s", zh ? "敌方大招充能达到 100% 时播报一次。" : "Announces once when an enemy's ultimate charge reaches 100%.");
+    SettingTooltip(zh ? "敌方大招充能达到 100% 时播报一次。" : "Announces once when an enemy's ultimate charge reaches 100%.");
     ImGui::PushID("global");
     edited |= UICheckbox(zh ? "全局默认开启###all" : "Enabled for all by default###all", &settings.ultimateAll);
     ImGui::TextUnformatted(zh ? "全局播报文案" : "Default announcement");

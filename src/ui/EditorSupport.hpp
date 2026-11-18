@@ -111,10 +111,8 @@ inline constexpr float kHeaderHeight = 86.0f;
 inline constexpr float kMinShellHeight = 140.0f;
 inline constexpr float kMaxShellHeight = 1200.0f;
 inline constexpr float kBodyBottomPadding = 10.0f;
-inline constexpr float kDefaultLabelWidth = 120.0f;
-inline constexpr float kAimbotHeroLabelWidth = 98.0f;
-inline constexpr float kAimbotLeftLabelWidth = 134.0f;
-inline constexpr float kAimbotRightLabelWidth = 134.0f;
+inline constexpr float kDefaultLabelWidth = 156.0f;
+inline float ToggleWidth() { return (std::max)(30.0f, ImGui::GetFontSize() * 2.0f); }
 inline float ControlHeight() { return (std::max)(26.0f, ImGui::GetFontSize() + 10.0f); }
 inline bool UIActionButton(const char* label,float minimumWidth) {
     float width=(std::max)(minimumWidth,ImGui::CalcTextSize(label).x+20.0f);
@@ -122,6 +120,26 @@ inline bool UIActionButton(const char* label,float minimumWidth) {
     width=(std::min)(width,ImGui::GetContentRegionAvail().x);
     return ImGui::Button(label,ImVec2(width,ControlHeight()));
 }
+inline bool BeginSettingTooltip() {
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled) ||
+        !ImGui::BeginTooltip())
+        return false;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * 28.0f);
+    return true;
+}
+
+inline void EndSettingTooltip() {
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+inline void SettingTooltip(const char* text) {
+    if (text && BeginSettingTooltip()) {
+        ImGui::TextUnformatted(text);
+        EndSettingTooltip();
+    }
+}
+
 inline constexpr float kControlRounding = 4.0f;
 inline constexpr float kGroupRounding = 8.0f;
 inline constexpr float kGroupContentIndent = 14.0f;
@@ -247,14 +265,15 @@ bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone);
 void ApplyAimBehaviorToHeroPreset(OW::Config::HeroPreset& preset, int behavior);
 void UIDisabledSelect(const char* label, const char* previewText = nullptr);
 bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int scopeFilter = -1);
-bool UIPredictionAlgorithmSelect(const char* label, int* algorithm, float labelWidth);
+bool UIPredictionAlgorithmSelect(const char* label, int* algorithm);
 bool UIActionSlotSelector(ActionSlotKind kind, uint64_t heroId);
-void UITwoColumns(std::function<void()> left, std::function<void()> right);
-void SettingRow(const char* label, float labelWidthPx = kDefaultLabelWidth);
+void UIGroupPair(const char* leftTitle, const std::function<void()>& left,
+                 const char* rightTitle = nullptr, const std::function<void()>& right = {});
+void SettingRow(const char* label, float labelWidthPx = kDefaultLabelWidth,
+                float minControlWidthPx = 0.0f);
 bool UIActionSlotEnabledCheckbox(ActionSlotKind kind,
                                         const HeroOption& hero,
-                                        const char* checkboxId,
-                                        float labelWidthPx);
+                                        const char* checkboxId);
 bool UIColorEdit(const char* label, ImVec4* value,
                         float labelWidthPx = kDefaultLabelWidth);
 void DrawCheckboxGrid3(const char* labels[], bool* values[], int rowCount,

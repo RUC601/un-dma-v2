@@ -13,10 +13,10 @@ inline bool ResponseCurveEditor(OW::AimResponseCurve::Points& points) {
     SettingRow("Response preset");PushControlWidth();
     if(UISelect("##responsePreset",&preset,labels,4) && preset<3) {points=Preset(preset);changed=true;}
     ImGui::PopItemWidth();
-    ImGui::TextWrapped("%s",L("Error / effective FOV -> correction / effective FOV"));
     const ImVec2 origin=ImGui::GetCursorScreenPos();
     const ImVec2 size((std::max)(120.f,ImGui::GetContentRegionAvail().x),160.f);
     ImGui::InvisibleButton("Response curve graph",size);
+    SettingTooltip(L("Error / effective FOV -> correction / effective FOV"));
     auto* draw=ImGui::GetWindowDrawList();
     auto screen=[&](float x,float y){return ImVec2(origin.x+x*size.x,origin.y+(1-y)*size.y);};
     draw->AddRectFilled(origin,ImVec2(origin.x+size.x,origin.y+size.y),ImGui::GetColorU32(ImGuiCol_FrameBg),4);

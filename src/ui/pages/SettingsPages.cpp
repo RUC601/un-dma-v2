@@ -144,8 +144,7 @@ void DrawMiscGeneralPage() {
         }
         ImGui::PopItemWidth();
 
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", T(UiText::SavePolicyNotice));
+        SettingTooltip(T(UiText::SavePolicyNotice));
 
         SettingRow(T(UiText::Folder));
         {
@@ -287,8 +286,10 @@ void DrawMiscGeneralPage() {
         const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
         if (OW::ProcessConnection::IsConnected() && matched)
             ImGui::TextWrapped("%s %s", matched->region, matched->build);
-        else
-            ImGui::TextWrapped("%s", L("No verified active layout. Open Diagnostics to choose or retry."));
+        else {
+            ImGui::TextDisabled("%s", OW::Config::uiLanguage == 1 ? "未识别" : "Unrecognized");
+            SettingTooltip(L("No verified active layout. Open Diagnostics to choose or retry."));
+        }
 
         SettingRow(T(UiText::Process));
         const bool connected = OW::ProcessConnection::IsConnected();
@@ -406,9 +407,7 @@ void DrawMiscDiagnosticsPage() {
         if (ImGui::Button(T(UiText::ClearLog)))
             Diagnostics::ClearLogLines();
         ImGui::Checkbox(T(UiText::VerboseAimLogs), &OW::Config::aimVerboseLog);
-        if (OW::Config::aimVerboseLog) {
-            ImGui::TextWrapped("%s", T(UiText::VerboseLogsWarning));
-        }
+        SettingTooltip(T(UiText::VerboseLogsWarning));
         SettingRow(T(UiText::LogIntervalMs));
         PushControlWidth();
         UISlider("##LogInterval", &OW::Config::aimDryRunLogIntervalMs, 50.0f, 1000.0f, Number(0, " ms"));
@@ -449,7 +448,7 @@ void DrawMiscBehaviorPage() {
     }
     ImGui::PopItemWidth();
     ImGui::EndDisabled();
-    ImGui::TextWrapped("%s",L("Edit mode structure and defaults here. Existing Slot parameters stay independent."));
+    SettingTooltip(L("Edit mode structure and defaults here. Existing Slot parameters stay independent."));
     changed|=UI::BehaviorTuningEditor(mode,mode.behavior);
     changed|=UI::AimPlanEditor::Motion(mode.motion);
     mode.method=mode.motion.method;mode.methodPresetId=-1;
@@ -463,7 +462,7 @@ void DrawMiscBehaviorPage() {
         View_aimBehaviorPresets().push_back(created);selectedId=created.id;lastId=-2;changed=true;
     }
     ImGui::EndDisabled();
-    if(modeListFull) ImGui::TextWrapped("%s",L("The mode list is full (64). Delete an unused mode to add another."));
+    if(modeListFull) SettingTooltip(L("The mode list is full (64). Delete an unused mode to add another."));
     if(selectedId>=0) {
         const auto* deleteCandidate=FindAimBehaviorPreset(selectedId);
         const bool protectedDefault=deleteCandidate && deleteCandidate->defaultBehavior>=0;
@@ -474,8 +473,8 @@ void DrawMiscBehaviorPage() {
             selectedId=-1;lastId=-2;changed=true;
         }
         ImGui::EndDisabled();
-        if(protectedDefault) ImGui::TextWrapped("%s",L("Default modes cannot be deleted."));
-        else if(used) ImGui::TextWrapped("%s",L("This mode is in use. Choose another mode in its Slots before deleting it."));
+        if(protectedDefault) SettingTooltip(L("Default modes cannot be deleted."));
+        else if(used) SettingTooltip(L("This mode is in use. Choose another mode in its Slots before deleting it."));
     }
     CloseGroupBox();
     UIGroupBox("Output shaping");
@@ -720,7 +719,7 @@ void DrawMiscMethodPage() {
             drawAngularSpeed("##methodShuwuAngularSpeed");
             koi::ShuwuConfig defaults{};
             if (!selectedPreset)
-                ImGui::TextWrapped("%s", L("Save a new method preset to edit Shuwu parameters."));
+                SettingTooltip(L("Save a new method preset to edit Shuwu parameters."));
             ImGui::BeginDisabled(!selectedPreset);
             UI::AimPlanEditor::Shuwu(selectedPreset ? selectedPreset->shuwu : defaults);
             ImGui::EndDisabled();
@@ -729,14 +728,14 @@ void DrawMiscMethodPage() {
         case 8: {
             drawAngularSpeed("##methodResponseAngularSpeed");
             OW::AimResponseCurve::Points defaults;
-            if(!selectedPreset) ImGui::TextWrapped("%s",L("Save a new method preset to edit response curve parameters."));
+            if(!selectedPreset) SettingTooltip(L("Save a new method preset to edit response curve parameters."));
             ImGui::BeginDisabled(!selectedPreset);
             UI::ResponseCurveEditor(selectedPreset?selectedPreset->responseCurve:defaults);
             ImGui::EndDisabled();break;
         }
         case 9:
             drawAngularSpeed("##methodKoiAngularSpeed");
-            ImGui::TextWrapped("%s", L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
+            SettingTooltip(L("Follows the remaining aim error proportionally. Speed scale adjusts response."));
             break;
         default:
             break;
@@ -939,11 +938,15 @@ void DrawMiscScreenPage() {
     const bool fresh=V2::HostInteraction::Fresh(*host,OW::ProcessConnection::ConnectionEpoch(),GetTickCount());
     ImGui::BeginDisabled(!(fresh&&host->chatKnown)&&!display.pauseOnChat);
     SettingRow(OW::Config::uiLanguage==1?"聊天开启时暂停":"Pause while chatting");displayChanged|=UICheckbox("##chatPause",&display.pauseOnChat);
+    if (!(fresh && host->chatKnown))
+        SettingTooltip(OW::Config::uiLanguage == 1 ? "主机状态不可用" : "Host state unavailable");
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!(fresh&&host->focusKnown)&&!display.pauseOnFocusLoss);
     SettingRow(OW::Config::uiLanguage==1?"游戏失焦时暂停":"Pause when game loses focus");displayChanged|=UICheckbox("##focusPause",&display.pauseOnFocusLoss);
+    if (!(fresh && host->focusKnown))
+        SettingTooltip(OW::Config::uiLanguage == 1 ? "主机状态不可用" : "Host state unavailable");
     ImGui::EndDisabled();
-    ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"主机状态来源待接入":"Host state source pending");
+
     CloseGroupBox();
     if(displayChanged)V2::HeroSettings::SetDisplay(std::move(display));
 
@@ -1019,19 +1022,36 @@ void DrawHeroKeyPage() {
     const bool zh=OW::Config::uiLanguage==1;
     auto settings=Get(hero.heroId);
     bool changed=false;
-    UIGroupBox(zh?"英雄游戏按键":"Hero action keys");
-    ImGui::BeginDisabled(hero.heroId==0);
-    for(int i=0;i<int(Action::Count);++i) {
-        ImGui::PushID(i);SettingRow(kActionNames[i]);
-        changed |= UIKeyBinding("##heroActionKey", &settings.keys[i],
-                                KeyBindingStorage::VirtualKey, false);
-        ImGui::PopID();
-    }
-    ImGui::TextDisabled("%s",zh?"鼠标侧键输出、键盘物理按住释放尚不支持；蓄力释放请用鼠标动作键。":"Side-button output and physical keyboard release are unavailable; use mouse action keys for charged releases.");
-    if(ImGui::Button(zh?"恢复当前英雄默认键":"Reset this hero to default keys")){settings.keys=kDefaultKeys;changed=true;UIKeyBindingCancelCapture();}
+    const bool hasHero = hero.heroId != 0;
+    const auto drawHeroKeys = [&](Action first, Action end) {
+        for (int i = static_cast<int>(first); i < static_cast<int>(end); ++i) {
+            ImGui::PushID(i);
+            SettingRow(kActionNames[i]);
+            PushControlWidth();
+            changed |= UIKeyBinding("##heroActionKey", &settings.keys[i],
+                                    KeyBindingStorage::VirtualKey, false);
+            if (hasHero)
+                SettingTooltip(zh ? "鼠标侧键输出、键盘物理按住释放尚不支持；蓄力释放请用鼠标动作键。"
+                                       : "Side-button output and physical keyboard release are unavailable; use mouse action keys for charged releases.");
+            else
+                SettingTooltip(zh ? "选择英雄以编辑按键" : "Select a hero to edit action keys");
+            ImGui::PopItemWidth();
+            ImGui::PopID();
+        }
+    };
+
+    ImGui::BeginDisabled(!hasHero);
+    UIGroupPair(zh ? "英雄游戏按键" : "Hero action keys", [&]() {
+        drawHeroKeys(Action::Primary, Action::Jump);
+    }, zh ? "移动与其他按键" : "Movement and other keys", [&]() {
+        drawHeroKeys(Action::Jump, Action::Count);
+        if (UIActionButton(zh ? "恢复当前英雄默认键" : "Reset this hero to default keys", 0.0f)) {
+            settings.keys = kDefaultKeys;
+            changed = true;
+            UIKeyBindingCancelCapture();
+        }
+    });
     ImGui::EndDisabled();
-    if(hero.heroId==0)ImGui::TextDisabled("%s",zh?"选择英雄以编辑按键":"Select a hero to edit action keys");
-    CloseGroupBox();
     if(changed) {
         std::lock_guard transition(OW::RuntimeOutputProducerTransitionMutex());
         const bool wasEnabled=OW::RuntimeOutputSessionEnabled();
@@ -1042,17 +1062,19 @@ void DrawHeroKeyPage() {
         Set(hero.heroId,std::move(settings));
         OW::SetRuntimeOutputSessionEnabled(wasEnabled);
     }
-    UIGroupBox(zh?"全局快捷键":"Global shortcuts");
-    SettingRow(T(UiText::ToggleKey));PushControlWidth();
-    UIKeyBinding("##globalMenuKey", &OW::Config::MenuToggleKey,
-                 KeyBindingStorage::VirtualKey);
-    ImGui::PopItemWidth();
-    SettingRow(L("Cache refresh key"));PushControlWidth();
-    UIKeyBinding("##globalRefreshKey", &OW::Config::CacheRefreshKey,
-                 KeyBindingStorage::VirtualKey);
-    if(OW::Config::CacheRefreshKey==OW::Config::MenuToggleKey)
-        OW::Config::CacheRefreshKey=0;
-    ImGui::PopItemWidth();CloseGroupBox();
+    UIGroupPair(zh ? "全局快捷键" : "Global shortcuts", [&]() {
+        SettingRow(T(UiText::ToggleKey));
+        PushControlWidth();
+        UIKeyBinding("##globalMenuKey", &OW::Config::MenuToggleKey, KeyBindingStorage::VirtualKey);
+        ImGui::PopItemWidth();
+
+        SettingRow(L("Cache refresh key"));
+        PushControlWidth();
+        UIKeyBinding("##globalRefreshKey", &OW::Config::CacheRefreshKey, KeyBindingStorage::VirtualKey);
+        ImGui::PopItemWidth();
+        if (OW::Config::CacheRefreshKey == OW::Config::MenuToggleKey)
+            OW::Config::CacheRefreshKey = 0;
+    });
 }
 
 namespace {

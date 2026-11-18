@@ -1,4 +1,6 @@
 #include "SlotSelector.hpp"
+#include "ui/EditorSupport.hpp"
+#include <cstdio>
 #include <imgui.h>
 #include <algorithm>
 
@@ -24,10 +26,17 @@ Command Render(std::span<const Item> items, int selected, int limit, bool chines
     }
     // 极窄可用区域时另起一行，保证增删按钮仍在滚动区域内。
     if(!items.empty() && ImGui::GetContentRegionAvail().x>=76)ImGui::SameLine(0,8);
-    ImGui::BeginDisabled(static_cast<int>(items.size())>=limit);
+    const bool atLimit = static_cast<int>(items.size()) >= limit;
+    ImGui::BeginDisabled(atLimit);
     if(ImGui::Button("+##AddScheme",ImVec2(30,height)))command={Action::Add,selected};
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("%s", chinese?"新增方案：复制参数，清空绑定并停用":"Add scheme: copy settings, clear bindings and disable");
+    if (atLimit) {
+        char hint[96]{};
+        std::snprintf(hint, sizeof(hint), chinese ? "已达到 %d 个方案上限" : "Maximum of %d schemes", limit);
+        SettingTooltip(hint);
+    } else {
+        SettingTooltip(chinese ? "新增方案：复制参数，清空绑定并停用" : "Add scheme: copy settings, clear bindings and disable");
+    }
     ImGui::SameLine(0,6);
     ImGui::BeginDisabled(items.size()<=1);
     ImGui::PushStyleColor(ImGuiCol_Border,ImVec4(1.0f,.55f,.45f,1));
@@ -35,11 +44,10 @@ Command Render(std::span<const Item> items, int selected, int limit, bool chines
     if(ImGui::Button("-##DeleteScheme",ImVec2(30,height)))command={Action::Remove,selected};
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
-    ImGui::SetItemTooltip("%s",chinese?"删除当前方案":"Delete selected scheme");
     ImGui::EndDisabled();
-    if(items.size()<=1)ImGui::TextDisabled("%s",chinese?"至少保留一个方案":"Keep at least one scheme");
-    else if(static_cast<int>(items.size())>=limit)
-        ImGui::TextDisabled(chinese?"已达到 %d 个方案上限":"Maximum of %d schemes",limit);
+    SettingTooltip(items.size() <= 1
+        ? (chinese ? "至少保留一个方案" : "Keep at least one scheme")
+        : (chinese ? "删除当前方案" : "Delete selected scheme"));
     ImGui::Spacing();
     return command;
 }

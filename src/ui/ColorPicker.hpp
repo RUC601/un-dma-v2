@@ -9,12 +9,13 @@
 #include <functional>
 
 namespace UI {
+inline constexpr float kColorSwatchWidth = 26.0f;
 // Layout follows the Reloaded color card; no gradient storage is added to flat colors.
 inline bool ColorPicker(const char* id, ImVec4& color, const std::function<void()>& details = {}) {
     ImGui::PushID(id);
     bool changed=false;
     const float height=(std::max)(26.f,ImGui::GetFontSize()+10.f);
-    if(ImGui::ColorButton("##swatch",color,ImGuiColorEditFlags_AlphaPreviewHalf,ImVec2(26,height)))
+    if(ImGui::ColorButton("##swatch",color,ImGuiColorEditFlags_AlphaPreviewHalf,ImVec2(kColorSwatchWidth,height)))
         ImGui::OpenPopup("##colorCard");
 #ifdef IMGUI_ENABLE_TEST_ENGINE
     ImGuiContext& g=*ImGui::GetCurrentContext();

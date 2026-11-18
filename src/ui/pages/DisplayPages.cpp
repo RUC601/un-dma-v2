@@ -73,12 +73,20 @@ bool StyleDetails(Style& style,Element element) {
     ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("Y",&style.offsetY,-300,300,"%.0f px");
     return changed;
 }
+constexpr float kEspDetailsWidth = 26.0f;
+
+void EspSettingRow(const char* label) {
+    const float scale = (std::max)(1.0f, ImGui::GetFontSize() / 15.0f);
+    const float controls = ToggleWidth() + 4.0f * UI::kColorSwatchWidth + kEspDetailsWidth
+        + ImGui::GetStyle().ItemSpacing.x * 5.0f;
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float labelWidth = (std::max)(64.0f, std::floor((width - controls) / scale));
+    SettingRow(label, labelWidth, controls);
+}
+
 bool ElementRow(Settings& settings,Element element,bool& enabled) {
     const int index=int(element);ImGui::PushID(index);
-    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
-    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+4*30.f+26.f+ImGui::GetStyle().ItemSpacing.x*5;
-    const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
-    SettingRow(V2::VisualSettings::kElementNames[index],labelWidth);
+    EspSettingRow(V2::VisualSettings::kElementNames[index]);
     bool changed=UICheckbox("##enabled",&enabled);
     auto& style=settings.elements[index];
     ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
@@ -90,7 +98,7 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
     ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
     ImGui::SetItemTooltip("%s",L("Ally"));
     const std::string detailsLabel=std::string("...##")+V2::VisualSettings::kElementNames[index];
-    ImGui::SameLine();if(ImGui::Button(detailsLabel.c_str(),ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SameLine();if(ImGui::Button(detailsLabel.c_str(),ImVec2(kEspDetailsWidth,ControlHeight())))ImGui::OpenPopup("##details");
     ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
     const char* typeLabel=element==Element::Box?"Box Type":element==Element::Name?"Name Type":nullptr;
     if(typeLabel&&UI::Search::Pending()&&UI::Search::requested==typeLabel)ImGui::OpenPopup("##details");
@@ -121,10 +129,7 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
 }
 bool CustomStyleRow(const char* label,const char* id,Style& style,bool& enabled) {
     ImGui::PushID(id);
-    const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
-    const float controls=(std::max)(30.f,ImGui::GetFontSize()*2)+4*30.f+26.f+ImGui::GetStyle().ItemSpacing.x*5;
-    const float labelWidth=(std::max)(40.f,(ImGui::GetContentRegionAvail().x-controls)/scale);
-    SettingRow(label,labelWidth);
+    EspSettingRow(label);
     bool changed=UICheckbox("##enabled",&enabled);
     ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
     ImGui::SetItemTooltip("%s",L("Enemy"));
@@ -134,7 +139,7 @@ bool CustomStyleRow(const char* label,const char* id,Style& style,bool& enabled)
     ImGui::SetItemTooltip("%s",L("Target"));
     ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
     ImGui::SetItemTooltip("%s",L("Ally"));
-    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(kEspDetailsWidth,ControlHeight())))ImGui::OpenPopup("##details");
     ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
     if(ImGui::BeginPopup("##details")) {
         ImGui::TextUnformatted(L(label));ImGui::Spacing();
@@ -151,12 +156,14 @@ bool CrosshairRow(Settings& settings,bool& enabled) {
     const char* const* styles=zh?stylesZh:stylesEn;
     bool changed=false;
     ImGui::PushID("crosshair");
-    SettingRow(zh?"准星":"Crosshair");
+    EspSettingRow("Crosshair");
     changed|=UICheckbox("##enabled",&enabled);
     ImGui::SameLine();changed|=UI::ColorPicker("##color",crosshair.color);
     ImGui::SetItemTooltip("%s",zh?"颜色":"Color");
-    ImGui::SameLine();ImGui::SetNextItemWidth(142);changed|=UISelect("##style",&crosshair.style,styles,int(V2::VisualSettings::CrosshairStyle::Count),false);
-    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(26,ControlHeight())))ImGui::OpenPopup("##details");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-kEspDetailsWidth - ImGui::GetStyle().ItemSpacing.x);
+    changed |= UISelect("##style", &crosshair.style, styles, int(V2::VisualSettings::CrosshairStyle::Count), false);
+    ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(kEspDetailsWidth,ControlHeight())))ImGui::OpenPopup("##details");
     ImGui::SetItemTooltip("%s",zh?"调整样式、间隙、粗细和轮廓":"Adjust style, gap, thickness and outline");
     if(ImGui::BeginPopup("##details")) {
         ImGui::TextUnformatted(zh?"准星样式":"Crosshair style");ImGui::Spacing();
@@ -190,6 +197,7 @@ void DrawCrosshairPreview(ImDrawList* draw,const ImVec2& center,const CrosshairS
 void OutlineControls() {
     bool paletteChanged=false;
     SettingRow("Game Outlines");UICheckbox("##gameOutlines",&OW::Config::gameOutlines);
+    SettingTooltip(OW::Config::uiLanguage == 1 ? "仅更改游戏原生轮廓颜色，遮挡由游戏处理。" : "Changes native outline colors only; the game handles occlusion.");
     ImGui::SameLine();paletteChanged|=UI::ColorPicker("outlineVisible",OW::Config::enargb);
     ImGui::SetItemTooltip("%s",L("Visible"));
     ImGui::SameLine();paletteChanged|=UI::ColorPicker("outlineHidden",OW::Config::invisnenargb);
@@ -202,8 +210,7 @@ void OutlineControls() {
     ImGui::BeginDisabled(contourCaptureEnabled);
     SettingRow("Rainbow Color");UICheckbox("##outlineRainbow",&OW::Config::gameOutlineRainbow);
     ImGui::EndDisabled();
-    if(contourCaptureEnabled)ImGui::TextWrapped("%s",OW::Config::uiLanguage==1?"轮廓采集开启时使用固定三色，彩虹暂停。":"Capture uses three fixed colors; rainbow is paused while capture is enabled.");
-    ImGui::TextWrapped("%s",OW::Config::uiLanguage==1?"仅更改游戏原生轮廓颜色，遮挡由游戏处理。":"Changes native outline colors only; the game handles occlusion.");
+    if(contourCaptureEnabled)SettingTooltip(OW::Config::uiLanguage==1?"轮廓采集开启时使用固定三色，彩虹暂停。":"Capture uses three fixed colors; rainbow is paused while capture is enabled.");
     if(paletteChanged)V2::Vision::SyncOutlinePalette();
 #ifndef UNLEASHED_OBSERVATION_ONLY
     namespace Brightness = OW::OutlineBrightness;
@@ -213,18 +220,23 @@ void OutlineControls() {
     const float buttonWidth = ImGui::CalcTextSize(L("Apply")).x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::SetNextItemWidth((std::max)(80.f, ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x));
     ImGui::InputFloat("##outlineBrightnessPercentDraft", &brightnessDraft, 0.f, 0.f, "%.7g");
+    if (BeginSettingTooltip()) {
+        ImGui::TextUnformatted(L("Uses the game's original outline brightness setting, independently of Game Outlines. Values above 100% are allowed."));
+        ImGui::TextUnformatted(L("New objects use the new brightness; existing objects may not update immediately. Reopening game settings limits the value to the game's range."));
+        EndSettingTooltip();
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(!Brightness::Valid(brightnessDraft));
     if (ImGui::Button(L("Apply"))) Brightness::Submit(brightnessDraft);
     ImGui::EndDisabled();
-    if (!Brightness::Valid(brightnessDraft)) ImGui::TextWrapped("%s", L("Enter a finite percentage of zero or greater."));
+    if (!Brightness::Valid(brightnessDraft)) SettingTooltip(L("Enter a finite percentage of zero or greater."));
     if (brightnessCommand.enabled || Brightness::RestoreCount.load()) {
         if (ImGui::Button(L("Restore Original Setting"))) Brightness::Disable();
         ImGui::SameLine();
         ImGui::Text(L("Submitted Brightness: %.7g%%"), brightnessCommand.value);
         ImGui::Text(L("Applied: %u / Failed: %u / Restore pending: %u"), Brightness::AppliedCount.load(),
             Brightness::FailureCount.load(), Brightness::RestoreCount.load());
-    } else ImGui::TextWrapped("%s", L("Edit the percentage, then click Apply."));
+    }
     const char* brightnessStatus = nullptr;
     switch (Brightness::LastResult.load()) {
     case Brightness::Result::Restored:
@@ -260,8 +272,6 @@ void OutlineControls() {
     default: break;
     }
     if (brightnessStatus) ImGui::TextWrapped("%s", L(brightnessStatus));
-    ImGui::TextWrapped("%s", L("Uses the game's original outline brightness setting, independently of Game Outlines. Values above 100% are allowed."));
-    ImGui::TextWrapped("%s", L("New objects use the new brightness; existing objects may not update immediately. Reopening game settings limits the value to the game's range."));
 #endif
 }
 void Card(const char* title,const std::function<void()>& content) {
@@ -357,7 +367,7 @@ void UI::VisualsPage() {
         SettingRow("Max Distance");PushControlWidth();UISlider("##maxDistance",&OW::Config::visualMaxDist,0,1000,Number(0," m"));ImGui::PopItemWidth();
     });
     Card("Player ESP",[&]{
-        SettingRow("Dynamic Font Scaling");changed|=UICheckbox("##dynamicFont",&settings.dynamicFont);
+        EspSettingRow("Dynamic Font Scaling");changed|=UICheckbox("##dynamicFont",&settings.dynamicFont);
         changed|=ElementRow(settings,Element::Box,OW::Config::draw_info);
         changed|=ElementRow(settings,Element::Name,OW::Config::name);
         changed|=ElementRow(settings,Element::BattleTag,OW::Config::drawbattletag);
@@ -382,8 +392,8 @@ void UI::VisualsPage() {
     Card("Game Outlines",[]{OutlineControls();});
     Card("World",[&]{
         auto& world=settings.world;
-        ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"物品识别与字段待现场核验；轮胎缺少可靠身份":"Object capture pending live validation; tire identity unavailable");
         SettingRow("Enabled");changed|=UICheckbox("##worldEnabled",&world.enabled);
+        SettingTooltip(OW::Config::uiLanguage == 1 ? "物品识别与字段待现场核验；轮胎缺少可靠身份" : "Object capture pending live validation; tire identity unavailable");
         SettingRow("Box");changed|=UICheckbox("##worldBox",&world.box);
         SettingRow("Name");changed|=UICheckbox("##worldName",&world.name);
         SettingRow("Icon");changed|=UICheckbox("##worldIcon",&world.icon);

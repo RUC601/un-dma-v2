@@ -77,157 +77,137 @@ void UI::TriggerPage() {
 
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.triggerHeroSegActive);
 
-    // One UI switch controls both legacy gates; merely viewing an old slot never changes it.
-    bool triggerEnabled = activePreset.trigger.enabled && (selectedHero->heroId == 0 ||
-        IsHeroActionSlotEnabled(slotKind, selectedHero->heroId, state.triggerHeroSegActive));
-    SettingRow("Enable Trigger", kAimbotHeroLabelWidth);
-    if (UICheckbox("##triggerEnabled", &triggerEnabled)) {
-        activePreset.trigger.enabled = triggerEnabled;
-        if (selectedHero->heroId != 0)
-            OW::Config::SetHeroTriggerSlotEnabled(selectedHero->heroId, state.triggerHeroSegActive, triggerEnabled);
-        presetChanged = slotEnabledChanged = true;
-    }
-    ImGui::Spacing();
+    UIGroupPair("Trigger Slot", [&]() {
+        // One UI switch controls both legacy gates; merely viewing an old slot never changes it.
+        bool triggerEnabled = activePreset.trigger.enabled && (selectedHero->heroId == 0 ||
+            IsHeroActionSlotEnabled(slotKind, selectedHero->heroId, state.triggerHeroSegActive));
+        SettingRow("Enable Trigger");
+        if (UICheckbox("##triggerEnabled", &triggerEnabled)) {
+            activePreset.trigger.enabled = triggerEnabled;
+            if (selectedHero->heroId != 0)
+                OW::Config::SetHeroTriggerSlotEnabled(selectedHero->heroId, state.triggerHeroSegActive, triggerEnabled);
+            presetChanged = slotEnabledChanged = true;
+        }
+        SettingRow("Action");
+        PushControlWidth();
+        presetChanged |= UIAttackActionSelect("##triggerSlotAction", &activePreset.trigger.action, selectedHero->heroId);
+        ImGui::PopItemWidth();
 
-    UITwoColumns([&]() {
-        UIGroupBox("Trigger Slot");
-        {
-            SettingRow("Action", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            presetChanged |= UIAttackActionSelect("##triggerSlotAction", &activePreset.trigger.action, selectedHero->heroId);
-            ImGui::PopItemWidth();
-
-            SettingRow("Mode", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            if (UISelect("##triggerSlotMode", &activePreset.trigger.mode,
-                         OW::Labels::kTriggerbotModes, OW::Labels::TriggerbotModeCount())) {
-                if (activePreset.trigger.mode == 2)
-                    activePreset.trigger.key = OW::Labels::kAimActivationKeyNoneIndex;
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
-
-            SettingRow("Activation Key", kAimbotLeftLabelWidth);
-            PushControlWidth();
-            const bool triggerAlways = activePreset.trigger.mode == 2;
-            if (triggerAlways) {
+        SettingRow("Mode");
+        PushControlWidth();
+        if (UISelect("##triggerSlotMode", &activePreset.trigger.mode,
+                     OW::Labels::kTriggerbotModes, OW::Labels::TriggerbotModeCount())) {
+            if (activePreset.trigger.mode == 2)
                 activePreset.trigger.key = OW::Labels::kAimActivationKeyNoneIndex;
-                ImGui::BeginDisabled();
-            }
-            if (!triggerAlways)
-                presetChanged |= UIKeyBinding("##triggerSlotKey", &activePreset.trigger.key,
-                                              KeyBindingStorage::AimActivationIndex);
-            else
-                ImGui::TextDisabled("%s", L("None"));
-            if (triggerAlways)
-                ImGui::EndDisabled();
-            ImGui::PopItemWidth();
+            presetChanged = true;
         }
-        CloseGroupBox();
-    }, [&]() {
-        UIGroupBox("Trigger Conditions");
-        {
-            SettingRow("Shot Interval", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##triggerSlotInterval", &activePreset.trigger.shotInterval,
-                                      0.0f, 100.0f, AtOrBelow("Auto", 0, Number(0, " ms", 5)));
-            ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", L("0 uses trigger_cycle_interval_ms for the current WeaponSpec. A non-zero value remains the manual override."));
+        ImGui::PopItemWidth();
 
-            SettingRow("Disable During Reload", kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox(
-                "##triggerSlotDisableWhileReloading",
-                &activePreset.trigger.disableWhileReloading);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", L("Skip this Trigger Slot while the local hero is reloading."));
-
-            SettingRow("Skeleton", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISkeletonBoneMultiSelect(
-                "##triggerSlotSkeleton",
-                &activePreset.trigger.boneMask);
-            ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", L("Choose All or combine groups, for example Head + Feet."));
-
-            SettingRow("Target Filter", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISelect("##triggerSlotTeam", &activePreset.targetTeam,
-                                      kTeam, IM_ARRAYSIZE(kTeam));
-            ImGui::PopItemWidth();
-
-            SettingRow(L("Ally key"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UIKeyBinding("##allyKey", &activePreset.allyKey,
-                                          KeyBindingStorage::AimActivationIndex);
-            ImGui::PopItemWidth();
-            SettingRow(L("Ally HP limit"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
-            ImGui::PopItemWidth();
-            SettingRow(L("Ally skeleton"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
-            ImGui::PopItemWidth();
-            SettingRow(L("Skip known protected targets"), kAimbotRightLabelWidth);
-            presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
-            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
-            SettingRow(L("Visibility"), kAimbotRightLabelWidth);
-            PushControlWidth();
-            static const char* const kVisibility[] = { "Visible Only", "All" };
-            int visibility = activePreset.trigger.ignoreInvisible ? 0 : 1;
-            if (UISelect("##triggerSlotVisibility", &visibility, kVisibility, IM_ARRAYSIZE(kVisibility))) {
-                activePreset.trigger.ignoreInvisible = visibility == 0;
-                presetChanged = true;
-            }
-            ImGui::PopItemWidth();
-
-            SettingRow("Fast Target Limit", kAimbotRightLabelWidth);
-            PushControlWidth();
-            presetChanged |= UISlider("##triggerMaxTargetSpeed", &activePreset.maxTargetSpeedMps,
-                                      0.0f, 100.0f, AtOrBelow("Unlimited", 0, Number(1, " m/s")));
-            ImGui::PopItemWidth();
-
+        SettingRow("Activation Key");
+        PushControlWidth();
+        const bool triggerAlways = activePreset.trigger.mode == 2;
+        if (triggerAlways) {
+            activePreset.trigger.key = OW::Labels::kAimActivationKeyNoneIndex;
+            ImGui::BeginDisabled();
         }
-        CloseGroupBox();
+        presetChanged |= UIKeyBinding("##triggerSlotKey", &activePreset.trigger.key,
+                                      KeyBindingStorage::AimActivationIndex);
+        if (triggerAlways)
+            ImGui::EndDisabled();
+        ImGui::PopItemWidth();
+    }, "Trigger Conditions", [&]() {
+        SettingRow("Shot Interval");
+        PushControlWidth();
+        presetChanged |= UISlider("##triggerSlotInterval", &activePreset.trigger.shotInterval,
+                                  0.0f, 100.0f, AtOrBelow("Auto", 0, Number(0, " ms", 5)));
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("0 uses trigger_cycle_interval_ms for the current WeaponSpec. A non-zero value remains the manual override."));
+
+        SettingRow("Disable During Reload");
+        presetChanged |= UICheckbox(
+            "##triggerSlotDisableWhileReloading",
+            &activePreset.trigger.disableWhileReloading);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("Skip this Trigger Slot while the local hero is reloading."));
+
+        SettingRow("Skeleton");
+        PushControlWidth();
+        presetChanged |= UISkeletonBoneMultiSelect(
+            "##triggerSlotSkeleton",
+            &activePreset.trigger.boneMask);
+        ImGui::PopItemWidth();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("Choose All or combine groups, for example Head + Feet."));
     });
 
-    UIGroupBox("Target preference");
-    presetChanged |= UI::AimPlanEditor::Policy(activePreset, false);
-    CloseGroupBox();
+    UIGroupPair("Target Filter", [&]() {
+        SettingRow("Target Team");
+        PushControlWidth();
+        presetChanged |= UISelect("##triggerSlotTeam", &activePreset.targetTeam,
+                                  kTeam, IM_ARRAYSIZE(kTeam));
+        ImGui::PopItemWidth();
+
+        SettingRow(L("Ally key"));
+        PushControlWidth();
+        presetChanged |= UIKeyBinding("##allyKey", &activePreset.allyKey,
+                                      KeyBindingStorage::AimActivationIndex);
+        ImGui::PopItemWidth();
+        SettingRow(L("Ally HP limit"));
+        PushControlWidth();
+        presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
+        ImGui::PopItemWidth();
+        SettingRow(L("Ally skeleton"));
+        PushControlWidth();
+        presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
+        ImGui::PopItemWidth();
+        SettingRow(L("Protection filter"));
+        presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
+        if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
+        SettingRow(L("Visibility"));
+        PushControlWidth();
+        static const char* const kVisibility[] = { "Visible Only", "All" };
+        int visibility = activePreset.trigger.ignoreInvisible ? 0 : 1;
+        if (UISelect("##triggerSlotVisibility", &visibility, kVisibility, IM_ARRAYSIZE(kVisibility))) {
+            activePreset.trigger.ignoreInvisible = visibility == 0;
+            presetChanged = true;
+        }
+        ImGui::PopItemWidth();
+
+        SettingRow("Fast Target Limit");
+        PushControlWidth();
+        presetChanged |= UISlider("##triggerMaxTargetSpeed", &activePreset.maxTargetSpeedMps,
+                                  0.0f, 100.0f, AtOrBelow("Unlimited", 0, Number(1, " m/s")));
+        ImGui::PopItemWidth();
+    }, "Target preference", [&]() {
+        presetChanged |= UI::AimPlanEditor::Policy(activePreset, false);
+    });
 
     if(ImGui::Button(L("Edit advanced parameters...")))ImGui::OpenPopup("##TriggerAdvanced");
     const auto viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(viewport->WorkSize.x-24,viewport->WorkSize.y-24));
     ImGui::SetNextWindowSize(ImVec2((std::min)(650.f,viewport->WorkSize.x-24),380),ImGuiCond_Appearing);
     if (ImGui::BeginPopup("##TriggerAdvanced",ImGuiWindowFlags_NoSavedSettings)) {
-        UITwoColumns([&]() {
-            UIGroupBox("Timing & Prediction");
+        UIGroupPair("Timing & Prediction", [&]() {
             presetChanged |= UIPredictionAlgorithmSelect("##triggerPredictionAlgorithm",
-                &activePreset.predictionAlgorithm, kAimbotRightLabelWidth);
-            SettingRow("Charge Aware", kAimbotRightLabelWidth);
+                &activePreset.predictionAlgorithm);
+            SettingRow("Charge Aware");
             presetChanged |= UICheckbox("##triggerSlotChargeAware", &activePreset.trigger.chargeAware);
 
             if (activePreset.trigger.chargeAware) {
-                SettingRow("Min Charge", kAimbotRightLabelWidth);
+                SettingRow("Min Charge");
                 PushControlWidth();
                 presetChanged |= UISlider("##triggerSlotMinCharge", &activePreset.trigger.minCharge,
                                           0.0f, 100.0f, Number(2, " %"));
                 ImGui::PopItemWidth();
             }
-
-            CloseGroupBox();
-        }, [&]() {
-            UIGroupBox("Range & Target");
-            SettingRow("Detection Scale", kAimbotRightLabelWidth);
+        }, "Range & Target", [&]() {
+            SettingRow("Detection Scale");
             PushControlWidth();
             presetChanged |= UISlider("##triggerSlotHitbox", &activePreset.hitbox,
                                       OW::Config::kMinHitboxScalePercent,
                                       OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
             ImGui::PopItemWidth();
-
-            CloseGroupBox();
         });
         ImGui::EndPopup();
     }

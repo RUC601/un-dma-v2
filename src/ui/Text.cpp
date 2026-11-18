@@ -187,6 +187,7 @@ const char* Label(const char* text, bool chinese) {
     { "Activation & Action", "激活与动作" },
     { "Behavior & Fire", "行为与开火" },
     { "Target Eligibility", "目标资格" },
+    { "Target Limits", "目标范围与血量" },
     { "FOV & Prediction Entry", "视野与预测进入" },
     { "Target Ranking", "目标排序" },
     { "Target Switching", "目标切换" },
