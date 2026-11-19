@@ -6,6 +6,93 @@
 
 namespace OW::DoomfistPunch {
 
+// OverLab measures self movement separately from enemy knockback.
+// https://overlab.cn/zh/wiki/hero/doomfist#rocket-punch
+inline constexpr float kNormalSpeed = 45.0f;
+inline constexpr float kNormalMaxReach = 20.0f;
+inline constexpr float kEmpoweredMultiplier = 1.5f;
+inline constexpr std::uint64_t kEmpoweredDurationMs = 20'000;
+inline constexpr std::uint64_t kPunchCooldownMs = 4'000;
+
+struct EmpowermentEstimate {
+    static constexpr std::uint64_t kMeteorStartupMs = 500;
+    static constexpr std::uint64_t kMeteorTargetingMs = 4'000;
+    static constexpr std::uint64_t kMeteorLandingMs = 1'000;
+    static constexpr std::uint64_t kBlockDurationMs = 2'500;
+    static constexpr std::uint64_t kCooldownEdgeMarginMs = 100;
+
+    void MeteorActivated(std::uint64_t at) {
+        meteorActivatedAt = at;
+        meteorLandingAt = at + kMeteorStartupMs + kMeteorTargetingMs + kMeteorLandingMs;
+        blockStartedAt = blockEndsAt = 0;
+        empoweredUntil = 0;
+    }
+
+    void MeteorConfirmed(std::uint64_t at) {
+        // The confirm input selects the landing zone. Impact follows after the windup.
+        if (meteorActivatedAt && at >= meteorActivatedAt + kMeteorStartupMs &&
+            at <= meteorActivatedAt + kMeteorStartupMs + kMeteorTargetingMs) {
+            meteorLandingAt = at + kMeteorLandingMs;
+            meteorActivatedAt = 0;
+        }
+    }
+
+    void Advance(std::uint64_t now) {
+        if (meteorLandingAt && now >= meteorLandingAt) {
+            empoweredUntil = meteorLandingAt + kEmpoweredDurationMs;
+            meteorActivatedAt = meteorLandingAt = cooldownStartedAt = 0;
+            blockStartedAt = blockEndsAt = 0;
+        }
+    }
+
+    bool Empowered(std::uint64_t now) const { return now < empoweredUntil; }
+    bool MeteorLandingPending() const { return meteorLandingAt != 0; }
+
+    void PunchCooldownStarted(std::uint64_t at) {
+        empoweredUntil = 0;
+        cooldownStartedAt = at;
+        blockStartedAt = blockEndsAt = cooldownSampleAt = 0;
+        wasCooling = false;
+    }
+
+    void PowerBlockStarted(std::uint64_t at) {
+        if (cooldownStartedAt && at >= cooldownStartedAt && at < cooldownStartedAt + kPunchCooldownMs &&
+            !meteorLandingAt && !Empowered(at)) {
+            blockStartedAt = at;
+            blockEndsAt = at + kBlockDurationMs;
+        }
+    }
+
+    void PowerBlockEnded(std::uint64_t at) {
+        if (blockStartedAt && at >= blockStartedAt)
+            blockEndsAt = (std::min)(blockEndsAt, at);
+    }
+
+    // Feed successful right-button cooldown observations. A clock estimate or an
+    // input press cannot establish a Ready edge.
+    void ObservePunchCooldown(std::uint64_t at, bool cooling) {
+        if (!cooldownStartedAt || at < cooldownStartedAt || at <= cooldownSampleAt) return;
+        if (!cooling && wasCooling && at - cooldownSampleAt <= 250 &&
+            blockStartedAt && at >= blockStartedAt && at <= blockEndsAt &&
+            at + kCooldownEdgeMarginMs < cooldownStartedAt + kPunchCooldownMs) {
+            empoweredUntil = at + kEmpoweredDurationMs;
+            blockStartedAt = blockEndsAt = 0;
+        }
+        wasCooling = cooling;
+        cooldownSampleAt = at;
+    }
+
+private:
+    std::uint64_t meteorActivatedAt = 0;
+    std::uint64_t meteorLandingAt = 0;
+    std::uint64_t empoweredUntil = 0;
+    std::uint64_t cooldownStartedAt = 0;
+    std::uint64_t blockStartedAt = 0;
+    std::uint64_t blockEndsAt = 0;
+    std::uint64_t cooldownSampleAt = 0;
+    bool wasCooling = false;
+};
+
 enum class BlockReason { None, Deadline, CancelInput, OutputFailure, Released };
 
 inline const char* BlockReasonName(BlockReason reason) {

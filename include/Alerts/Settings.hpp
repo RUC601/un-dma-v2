@@ -22,9 +22,9 @@ struct Definition {
     bool enabledByDefault = false;
 };
 inline constexpr std::array kDefinitions{
-    Definition{kAnaSleepId, kAnaHeroId, 0, "Sleep Dart / Shift", "睡眠针 · Shift", "安娜没睡针", true},
+    Definition{kAnaSleepId, kAnaHeroId, 0, "Sleep Dart / Shift", "睡针 · Shift", "安娜没睡针", true},
     Definition{kEchoFlightId, kEchoHeroId, 0, "Flight / Shift", "飞行 · Shift", "echo没飞", true},
-    Definition{kAnaGrenadeId, kAnaHeroId, 1, "Biotic Grenade / E", "生化手雷 · E", "安娜没瓶"},
+    Definition{kAnaGrenadeId, kAnaHeroId, 1, "Biotic Grenade / E", "生物手雷 · E", "安娜没瓶"},
     Definition{"echo.focusing_beam", kEchoHeroId, 1, "Focusing Beam / E", "聚焦光线 · E", "回声没光线"}
 };
 inline const Definition* SkillForHero(uint64_t hero, uint8_t slot = 0) {

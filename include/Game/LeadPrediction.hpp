@@ -25,6 +25,9 @@ struct LeadTimingEstimate {
     float estimatedSettleMs = 0.0f;
     int inputDelayMs = 0;
     float preFireDelayMs = 0.0f;
+    // Aim settling is a control estimate, not a reason to move the target by
+    // the whole settle interval before launch.
+    float targetExtrapolationMs = 0.0f;
 };
 
 struct AimSettleEstimateInput {
@@ -44,8 +47,6 @@ struct LeadPredictionResult {
     Vector3 preFireAimPoint{};
     Vector3 finalAimPoint{};
     Vector3 targetVelocity{};
-    Vector3 localVelocity{};
-    bool relativeMotion = false;
     ProjectileRuntimeSpec projectile{};
     LeadTimingEstimate timing{};
     float distance = 0.0f;
@@ -72,7 +73,7 @@ inline NativeHitWindowInput MakeNativeHitWindowInput(const LeadPredictionResult&
     if (straightProjectile) {
         // A moving target reduces to a stationary capsule in the projectile's
         // relative frame after advancing the target through the pre-fire delay.
-        input.displacement = lead.targetVelocity * (lead.timing.preFireDelayMs / 1000.0f);
+        input.displacement = lead.targetVelocity * (lead.timing.targetExtrapolationMs / 1000.0f);
         input.targetVelocity = lead.targetVelocity;
         input.launchUpBias = projectile.launchDirectionUpBias;
     } else {
@@ -87,6 +88,8 @@ inline constexpr float kLeadMaxFrameSeconds = 0.1f;
 inline constexpr float kLeadSettleEpsilonRad = 0.0005f;
 inline constexpr float kLeadMaxSettleMs = 250.0f;
 inline constexpr float kLeadMaxPreFireDelayMs = 300.0f;
+inline constexpr float kLeadMaxTargetExtrapolationMs = 10.0f;
+
 inline constexpr float kLeadMaxTargetSpeed = 250.0f;
 inline constexpr float kLeadRadToDeg = 57.29577951308232f;
 
@@ -95,20 +98,16 @@ inline bool IsFiniteLeadVector(const Vector3& value)
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
 }
 
-inline Vector3 ApplyPredictionMotionModel(const Vector3& targetVelocity,
-                                           const Vector3& localVelocity,
-                                           int algorithm)
+inline Vector3 ExtrapolateLaunchPoint(const Vector3& sampledPoint,
+                                      const Vector3& localVelocity,
+                                      float sampleAgeMs)
 {
-    const Vector3 effective = IsRelativeMotionPredictionAlgorithm(algorithm)
-        ? targetVelocity - localVelocity : targetVelocity;
-    const float length = effective.Size();
-    if (!std::isfinite(length) || length <= kLeadMaxTargetSpeed)
-        return IsFiniteLeadVector(effective) ? effective : Vector3{};
-    return effective * (kLeadMaxTargetSpeed / length);
+    if (!IsFiniteLeadVector(sampledPoint) || !IsFiniteLeadVector(localVelocity) ||
+        !std::isfinite(sampleAgeMs) || sampleAgeMs <= 0.0f)
+        return sampledPoint;
+    const float ageSeconds = (std::min)(sampleAgeMs, kLeadMaxTargetExtrapolationMs) / 1000.0f;
+    return sampledPoint + localVelocity * ageSeconds;
 }
-
-
-
 inline Vector3 CompensateProjectileLaunchBias(const Vector3& camera,
                                              const Vector3& ballisticAimPoint,
                                              float upBias)
@@ -205,6 +204,8 @@ inline LeadTimingEstimate BuildLeadTiming(float estimatedSettleMs, int inputDela
     timing.preFireDelayMs = ClampLeadDelayMs(
         timing.estimatedSettleMs + static_cast<float>(timing.inputDelayMs),
         kLeadMaxPreFireDelayMs);
+    timing.targetExtrapolationMs = (std::min)(
+        timing.preFireDelayMs, kLeadMaxTargetExtrapolationMs);
     return timing;
 }
 

@@ -1143,18 +1143,19 @@ bool UIAlertHeroSelect(const char* id, uint64_t& heroId, const std::function<boo
     const bool zh = OW::Config::uiLanguage == OW::Config::kUiLanguageChineseSimplified;
     const auto* hero = FindHeroOptionById(heroId);
     auto* avatar = hero ? HeroAvatarForOption(*hero) : nullptr;
+    SettingRow(zh ? "目标英雄" : "Target hero");
     if (avatar) {
-        const float size = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeight();
+        const float size = ControlHeight();
         ImGui::Image(reinterpret_cast<ImTextureID>(avatar), ImVec2(size, size));
-        ImGui::SameLine();
+        ImGui::SameLine(0, 8);
     }
-    ImGui::BeginGroup();
-    ImGui::TextUnformatted(hero ? HeroScopeName(*hero) : (zh ? "选择英雄" : "Choose a hero"));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(hero ? HeroScopeName(*hero) : (zh ? "全部英雄" : "All heroes"));
+    ImGui::SameLine(0, 10);
     const auto label = std::string(zh ? "显示所有英雄###" : "Show all heroes###") + id;
-    if (ImGui::Button(label.c_str()))
+    if (ImGui::Button(label.c_str(), ImVec2(0, ControlHeight())))
         ImGui::OpenPopup("##alertHeroBrowser");
     SettingTooltip(zh ? "亮色：已开启预警规则　淡色：未开启" : "Bright: alerts enabled   Dim: alerts off");
-    ImGui::EndGroup();
     HeroBrowserSize();
     if (!ImGui::BeginPopup("##alertHeroBrowser")) return false;
     static char search[128]{};
@@ -1474,6 +1475,8 @@ void CloseGroupBox() {
 // =====================================================================
 // UICheckbox  --  compact custom checkbox with premium dark-state styling.
 // =====================================================================
+static float g_settingRowCursorY = -1000.0f;
+
 bool UICheckbox(const char* label, bool* value) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -1483,10 +1486,13 @@ bool UICheckbox(const char* label, bool* value) {
     const float sz = ToggleWidth();
     const float height = ControlHeight();
     const float spacing = g.Style.ItemInnerSpacing.x + 2.0f;
+    const bool inSettingRow = std::abs(window->DC.CursorPos.y - g_settingRowCursorY) < 2.0f;
+    if (inSettingRow)
+        g_settingRowCursorY = -1000.0f;
 
     const char* displayLabel = label[0] == '#' ? label : L(label);
     const char* labelEnd = ImGui::FindRenderedTextEnd(displayLabel);
-    const bool hasVisibleLabel = labelEnd > displayLabel;
+    const bool hasVisibleLabel = !inSettingRow && (labelEnd > displayLabel);
     const ImVec2 labelSize = hasVisibleLabel
         ? ImGui::CalcTextSize(displayLabel, labelEnd, false)
         : ImVec2(0.0f, 0.0f);
@@ -2250,27 +2256,13 @@ bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int s
 }
 
 bool UIPredictionAlgorithmSelect(const char* label, int* algorithm) {
-    const char* const labels[] = {
-        L("Legacy Linear"),
-        L("Legacy Linear Relative Motion"),
-        L("Ballistic Intercept"),
-        L("Ballistic Intercept Relative Motion")
-    };
-    *algorithm = OW::ClampPredictionAlgorithm(*algorithm);
-    const int storedAlgorithm = *algorithm;
-    const int algorithmValues[] = {
-        static_cast<int>(OW::PredictionAlgorithm::LegacyLinear),
-        static_cast<int>(OW::PredictionAlgorithm::LegacyLinearRelativeMotion),
-        static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept),
-        static_cast<int>(OW::PredictionAlgorithm::BallisticInterceptRelativeMotion)
-    };
-    int selection = 0;
-    for (int index = 0; index < IM_ARRAYSIZE(algorithmValues); ++index)
-        if (algorithmValues[index] == storedAlgorithm) selection = index;
+    const char* const labels[] = { L("Legacy Linear"), L("Ballistic Intercept") };
+    int selection = OW::ClampPredictionAlgorithm(*algorithm);
     SettingRow(L("Prediction algorithm"));
     PushControlWidth();
-    const bool changed = UISelect(label, &selection, labels, IM_ARRAYSIZE(labels));
-    if (changed) *algorithm = algorithmValues[selection];
+    UISelect(label, &selection, labels, IM_ARRAYSIZE(labels));
+    const bool changed = *algorithm != selection;
+    *algorithm = selection;
     ImGui::SetItemTooltip("%s", L("Both algorithms use the same weapon and projectile data."));
     ImGui::PopItemWidth();
     return changed;
@@ -2442,6 +2434,7 @@ void SettingRow(const char* label, float labelWidthPx, float minControlWidthPx) 
     if (size.x > labelMax.x - labelMin.x && ImGui::IsMouseHoveringRect(labelMin, labelMax))
         ImGui::SetTooltip("%s", label);
     ImGui::SetCursorPos(ImVec2(cursor.x + labelWidthPx, cursor.y));
+    g_settingRowCursorY = ImGui::GetCursorScreenPos().y;
 }
 
 bool UIActionSlotEnabledCheckbox(ActionSlotKind kind,
@@ -2879,7 +2872,7 @@ void UI::Render() {
         {chinese?"扳机":"Trigger", chinese?"英雄方案":"Hero schemes"},
         {chinese?"技能":"Skills", chinese?"英雄方案":"Hero schemes"},
         {chinese?"序列":"Sequences", chinese?"英雄方案":"Hero schemes"},
-        {chinese?"预警 Alert":"Alert", chinese?"英雄方案":"Hero schemes"},
+        {chinese?"预警":"Alert", chinese?"英雄方案":"Hero schemes"},
         {chinese?"画面":"Visuals", chinese?"显示":"Display"},
         {chinese?"主题":"Theme", chinese?"显示":"Display", false},
         {chinese?"范围圈":"FOV rings", chinese?"显示":"Display"},
@@ -2887,7 +2880,7 @@ void UI::Render() {
         {chinese?"运动方法":"Methods", chinese?"共享参数":"Shared settings", false},
         {chinese?"动态范围":"Dynamic FOV", chinese?"共享参数":"Shared settings"},
         {chinese?"输入与设备":"Input and devices", chinese?"系统":"System"},
-        {chinese?"Overlay 与字体":"Overlay and fonts", chinese?"系统":"System"},
+        {chinese?"屏幕与字体":"Overlay and fonts", chinese?"系统":"System"},
         {chinese?"采集与轮廓":"Capture and contours", chinese?"系统":"System"},
         {chinese?"配置与界面":"Configuration", chinese?"系统":"System"},
         {chinese?"诊断":"Diagnostics", chinese?"系统":"System"},

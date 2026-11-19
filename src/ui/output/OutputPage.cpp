@@ -6,6 +6,7 @@
 #include "Game/Target.hpp"
 #include "features/aim/BehaviorController.hpp"
 #include "Utils/Diagnostics.hpp"
+#include <imgui_internal.h>
 #include <cstdio>
 
 using namespace UI::Theme;
@@ -28,7 +29,7 @@ void DrawMiscOutputPage() {
 
         SettingRow(T(UiText::EnableOutput));
         const bool wasOutputEnabled = OW::Config::outputEnabled;
-        if (ImGui::Checkbox("##Enable", &OW::Config::outputEnabled)) {
+        if (UICheckbox("##Enable", &OW::Config::outputEnabled)) {
             UI::OutputSettings::ResetDeviceFeedback();
             if (OW::Config::outputEnabled && !wasOutputEnabled) {
                 const OutputConnectionTestResult initResult =
@@ -54,7 +55,7 @@ void DrawMiscOutputPage() {
         }
 
         SettingRow(L("Automatically select connected device"));
-        if (ImGui::Checkbox("##AutoDetectDevice", &OW::Config::outputAutoDetect))
+        if (UICheckbox("##AutoDetectDevice", &OW::Config::outputAutoDetect))
             markOutputRuntimeConfigChanged();
         SettingTooltip(L("Each device keeps its connection, calibration and delay settings. A working device stays selected; after disconnecting, saved devices are checked again."));
         const auto detection = V2::Output::GetAutomaticDeviceStatus();
@@ -83,8 +84,11 @@ void DrawMiscOutputPage() {
 
         UI::OutputSettings::DrawConnectionFields(
             OW::Config::outputDeviceType, markOutputRuntimeConfigChanged);
-        if (OW::Config::outputAutoDetect && UIActionButton(L("Detect again"), 104.0f))
-            markOutputRuntimeConfigChanged();
+        if (OW::Config::outputAutoDetect) {
+            SettingRow(OW::Config::uiLanguage == 1 ? "连接探测" : "Device scan");
+            if (UIActionButton(L("Detect again"), 104.0f))
+                markOutputRuntimeConfigChanged();
+        }
 
         SettingRow(T(UiText::BaseCountsRad));
         PushControlWidth();
@@ -182,10 +186,10 @@ void DrawMiscOutputPage() {
 
         SettingRow(T(UiText::ReferenceGameSens));
         const float useCurrentButtonWidth = 88.0f;
-        const float useCurrentSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
+        const float useCurrentSpacing = ImGui::GetStyle().ItemSpacing.x;
         const float referenceWidth = MaxFloat(
             80.0f,
-            ImGui::GetContentRegionAvail().x - useCurrentButtonWidth - useCurrentSpacing);
+            ImGui::GetContentRegionAvail().x - useCurrentButtonWidth - useCurrentSpacing - kControlRightPadding);
         ImGui::PushItemWidth(referenceWidth);
         ImGui::InputFloat("##ReferenceGameSens", &OW::Config::referenceGameSensitivity,
                           0.0f, 0.0f, "%.2f");
@@ -238,9 +242,12 @@ void DrawMiscOutputPage() {
             ImGui::PopTextWrapPos();
         }
         ImGui::Spacing();
-        if (ImGui::CollapsingHeader(L("Advanced device tools"))) {
+        ImGui::GetCurrentWindow()->WorkRect.Max.x -= kControlRightPadding;
+        const bool advOpen = ImGui::CollapsingHeader(L("Advanced device tools"));
+        ImGui::GetCurrentWindow()->WorkRect.Max.x += kControlRightPadding;
+        if (advOpen) {
         SettingRow(T(UiText::DebugLogging));
-        ImGui::Checkbox("##Debug", &OW::Config::outputDebugLog);
+        UICheckbox("##Debug", &OW::Config::outputDebugLog);
 
         UI::OutputSettings::DrawDiagnosticTools(OW::Config::outputDeviceType);
 

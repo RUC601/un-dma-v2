@@ -16,11 +16,13 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     int selected=std::clamp(storage->GetInt(selectedId,0),0,preset.pointCount-1);
     float view=storage->GetFloat(ImGui::GetID("viewDistance"),100);
     const bool zh=uiLanguage==1;
-    ImGui::SetNextItemWidth(150);
-    if(ImGui::SliderFloat(zh?"距离视野 (m)":"Distance view (m)",&view,10,500,"%.0f"))
+    SettingRow(zh?"距离视野":"Distance view (m)");
+    PushControlWidth();
+    if(UISlider("##distanceView",&view,10.0f,500.0f,Number(0," m")))
         storage->SetFloat(ImGui::GetID("viewDistance"),view);
+    ImGui::PopItemWidth();
     const ImVec2 start=ImGui::GetCursorScreenPos();
-    const ImVec2 area((std::max)(150.f,ImGui::GetContentRegionAvail().x),220);
+    const ImVec2 area((std::max)(150.f,ImGui::GetContentRegionAvail().x - kControlRightPadding),220);
     const ImVec2 origin(start.x+38,start.y+12),size(area.x-50,area.y-40);
     ImGui::BeginDisabled(preset.worldDiameterM > 0);
     ImGui::InvisibleButton("##dynamicFovGraph",area);
@@ -85,8 +87,9 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     }
     draw->PopClipRect();
     ImGui::SetItemTooltip("%s",zh?"双击添加节点；拖动节点调整距离和 FOV":"Double-click to add; drag a point to edit distance and FOV");
+    SettingRow(zh?"曲线节点":"Curve points");
     ImGui::BeginDisabled(preset.pointCount>=kMaxDynamicFovPoints);
-    if(ImGui::Button(zh?"添加节点":"Add point")) {
+    if(ImGui::Button(zh?"添加节点":"Add point",ImVec2(0,ControlHeight()))) {
         int gap=0;
         for(int i=1;i<preset.pointCount-1;++i)
             if(preset.points[i+1].distanceM-preset.points[i].distanceM>preset.points[gap+1].distanceM-preset.points[gap].distanceM)gap=i;
@@ -95,7 +98,7 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     }
     ImGui::EndDisabled();ImGui::SameLine();
     ImGui::BeginDisabled(preset.pointCount<=2);
-    if(ImGui::Button(zh?"删除节点":"Delete point")) {
+    if(ImGui::Button(zh?"删除节点":"Delete point",ImVec2(0,ControlHeight()))) {
         for(int i=selected;i<preset.pointCount-1;++i)preset.points[i]=preset.points[i+1];
         --preset.pointCount;selected=(std::min)(selected,preset.pointCount-1);changed=true;
     }
@@ -103,22 +106,30 @@ inline bool DynamicFovEditor(OW::Config::DynamicFovPreset& preset) {
     for(int i=0;i<preset.pointCount;++i) {
         ImGui::SameLine();ImGui::PushID(i);
         char label[16];std::snprintf(label,sizeof(label),"%02d",i+1);
-        if(ImGui::Selectable(label,i==selected,0,ImVec2(26,ImGui::GetFrameHeight())))selected=i;
+        if(ImGui::Selectable(label,i==selected,0,ImVec2(28,ControlHeight())))selected=i;
         ImGui::PopID();
     }
     auto& point=preset.points[selected];
     const float low=selected?preset.points[selected-1].distanceM+.01f:0;
     const float high=selected+1<preset.pointCount?preset.points[selected+1].distanceM-.01f:500;
-    ImGui::SetNextItemWidth(150);
-    changed|=ImGui::DragFloat(zh?"距离 (m)":"Distance (m)",&point.distanceM,.1f,low,high,"%.2f",ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetNextItemWidth(150);
-    changed|=ImGui::DragFloat("FOV (deg)",&point.fovDeg,.1f,kMinFovDeg,kMaxFovDeg,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    SettingRow(zh?"节点距离":"Distance (m)");
+    PushControlWidth();
+    changed|=UISlider("##pointDistance",&point.distanceM,low,high,Number(2," m"));
+    ImGui::PopItemWidth();
+    SettingRow(zh?"节点视野":"FOV (deg)");
+    PushControlWidth();
+    changed|=UISlider("##pointFov",&point.fovDeg,kMinFovDeg,kMaxFovDeg,Number(2," deg"));
+    ImGui::PopItemWidth();
     point.distanceM=std::clamp(point.distanceM,low,high);point.fovDeg=ClampFovDeg(point.fovDeg);
     ImGui::EndDisabled();
     float preview=storage->GetFloat(ImGui::GetID("previewDistance"),10);
-    ImGui::SetNextItemWidth(150);
-    if(ImGui::SliderFloat(zh?"预览距离 (m)":"Preview distance (m)",&preview,0,500,"%.1f"))storage->SetFloat(ImGui::GetID("previewDistance"),preview);
-    ImGui::SameLine();ImGui::Text("FOV %.2f deg",EvaluateDynamicFovPreset(preset,preview,kDefaultFovDeg));
+    SettingRow(zh?"预览距离":"Preview distance (m)");
+    const float fovTextWidth = 112.0f;
+    ImGui::SetNextItemWidth(MaxFloat(100.0f, ImGui::GetContentRegionAvail().x - fovTextWidth - ImGui::GetStyle().ItemSpacing.x - kControlRightPadding));
+    if(UISlider("##previewDistance",&preview,0.0f,500.0f,Number(1," m")))storage->SetFloat(ImGui::GetID("previewDistance"),preview);
+    ImGui::SameLine(0, 10);
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("FOV %.2f deg",EvaluateDynamicFovPreset(preset,preview,kDefaultFovDeg));
     storage->SetInt(selectedId,selected);
     ImGui::PopID();return changed;
 }

@@ -4,6 +4,7 @@
 #include <array>
 #include <string_view>
 
+#include "Game/DoomfistPunch.hpp"
 #include "Game/HeroPerkRuntime.hpp"
 #include "Game/HeroSkills.hpp"
 #include "Game/ProjectilePhysics.hpp"
@@ -158,9 +159,9 @@ constexpr std::array<WeaponSpec, 77> kWeaponSpecs = {
     W(eHero::HERO_MEI, "Mei", "mei_icicle", "Icicle", 1, 2, AC::ProjectileSingle, Projectile(115.0f, 0.2f), AB::FlickDelay, FP::ReleaseAfterDelay),
     W(eHero::HERO_SOMBRA, "Sombra", "sombra_machine_pistol", "Machine Pistol", 0, 1, AC::HitscanAuto, Hitscan(0.04f), AB::Tracking, FP::HoldWhileTracking),
     W(eHero::HERO_DOOMFIST, "Doomfist", "doomfist_hand_cannon", "Hand Cannon", 0, 1, AC::Shotgun, Projectile(80.0f, 0.05f), AB::FlickClamp, FP::TapOnHitWindow),
-    W(eHero::HERO_DOOMFIST, "Doomfist", "doomfist_rocket_punch", "Rocket Punch", 1, 2, AC::Movement, ChargedProjectile(15.0f, 35.0f, 1.0f), AB::Flick, FP::ManualOnly,
+    W(eHero::HERO_DOOMFIST, "Doomfist", "doomfist_rocket_punch", "Rocket Punch", 1, 2, AC::Movement, Projectile(DoomfistPunch::kNormalSpeed, 1.0f), AB::Flick, FP::ManualOnly,
       0.80f,
-      "Local hero catalog: Rocket Punch movement/knockback lead speed is 15-35 m/s; aim assist must never emit its button.",
+      "OverLab: normal Rocket Punch moves Doomfist at 45 m/s; charge affects travel distance.",
       RuntimeVariantRequirement::None,
       std::string_view{},
       std::string_view{},

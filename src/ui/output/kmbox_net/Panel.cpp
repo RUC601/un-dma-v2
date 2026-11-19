@@ -47,28 +47,25 @@ void DrawFields(const ConfigChanged& changed)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", L("Effective KMBox monitor UDP port. Auto mode keeps this synced to the recommended port."));
 
-    if (ImGui::TreeNodeEx((std::string(L("Advanced")) + "###OutputMonitorPort").c_str())) {
-        SettingRow("Manual Monitor Port");
-        if (UICheckbox("##MonitorPortManualOverride", &OW::Config::outputMonitorPortManualOverride)) {
+    SettingRow("Manual Monitor Port");
+    if (UICheckbox("##MonitorPortManualOverride", &OW::Config::outputMonitorPortManualOverride)) {
+        OW::Config::NormalizeOutputPorts();
+        changed();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", L("Advanced override. Auto mode uses the recommended monitor port derived from the command port."));
+
+    if (OW::Config::outputMonitorPortManualOverride) {
+        SettingRow(T(UiText::MonitorPort));
+        PushControlWidth();
+        ImGui::InputInt("##ManualMonitorPort", &OW::Config::outputMonitorPort, 0, 0);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
             OW::Config::NormalizeOutputPorts();
             changed();
         }
+        ImGui::PopItemWidth();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Advanced override. Auto mode uses the recommended monitor port derived from the command port."));
-
-        if (OW::Config::outputMonitorPortManualOverride) {
-            SettingRow(T(UiText::MonitorPort));
-            PushControlWidth();
-            ImGui::InputInt("##ManualMonitorPort", &OW::Config::outputMonitorPort, 0, 0);
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                OW::Config::NormalizeOutputPorts();
-                changed();
-            }
-            ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", L("Manual monitor UDP port. It will be repaired if it matches the command port."));
-        }
-        ImGui::TreePop();
+            ImGui::SetTooltip("%s", L("Manual monitor UDP port. It will be repaired if it matches the command port."));
     }
 
     SettingRow(T(UiText::Mac));

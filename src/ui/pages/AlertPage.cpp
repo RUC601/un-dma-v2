@@ -11,24 +11,28 @@ using namespace V2::Alerts;
 bool EditMessage(const char* id, std::string& message, const char* hint, float width = -1) {
     char buffer[kMaxMessageBytes+1]{};
     std::memcpy(buffer, message.data(), (std::min)(message.size(), kMaxMessageBytes));
-    ImGui::SetNextItemWidth(width > 0 ? width : (std::max)(1.0f, ImGui::GetContentRegionAvail().x - 8.0f));
+    ImGui::SetNextItemWidth(width > 0 ? width : (std::max)(1.0f, ImGui::GetContentRegionAvail().x - kControlRightPadding));
     if (!ImGui::InputTextWithHint(id, hint, buffer, sizeof(buffer))) return false;
     message = buffer;
     return true;
 }
 
-void PreviewButton(const std::string& message, std::string& preview, bool zh) {
-    if (ImGui::SmallButton(zh ? "试听###preview" : "Preview###preview")) preview = message;
+float PreviewButtonWidth(bool zh) {
+    return (std::max)(58.0f, ImGui::CalcTextSize(zh ? "试听" : "Preview").x + 20.0f);
 }
 
-void ReservedAlert(const char* title, bool zh) {
-    UIGroupBox(title);
+void PreviewButton(const std::string& message, std::string& preview, bool zh) {
+    if (ImGui::Button(zh ? "试听###preview" : "Preview###preview", ImVec2(PreviewButtonWidth(zh), ControlHeight())))
+        preview = message;
+}
+
+void ReservedAlertBody(bool zh) {
     bool enabled = false;
     ImGui::BeginDisabled();
+    SettingRow(zh ? "启用预警" : "Enabled");
     UICheckbox(zh ? "开启###enabled" : "Enable###enabled", &enabled);
     ImGui::EndDisabled();
     SettingTooltip(zh ? "预留，等待接入检测" : "Detection pending");
-    CloseGroupBox();
 }
 }
 
@@ -72,8 +76,9 @@ void UI::AlertPage() {
     ImGui::PopItemWidth();
     SettingRow(zh ? "音量" : "Volume", kDefaultLabelWidth);
     PushControlWidth();
-    edited |= ImGui::SliderInt("##volume", &settings.volume, 0, 100, "%d%%");
+    edited |= UISlider("##volume", &settings.volume, 0.0f, 100.0f, Number(0, "%"));
     ImGui::PopItemWidth();
+    SettingRow(zh ? "声音状态" : "Voice status", kDefaultLabelWidth);
     if (ImGui::Button(zh ? "刷新设备与声音" : "Refresh devices and voice", ImVec2(0, ControlHeight()))) {
         devices = PlaybackDevices(); RetrySpeech();
     }
@@ -92,15 +97,21 @@ void UI::AlertPage() {
         break;
     default: break;
     }
+    ImGui::SameLine(0, 10);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextWrapped("%s", state);
     CloseGroupBox();
 
+    UIGroupBox(zh ? "当前英雄预警" : "Current hero alerts");
     ImGui::BeginDisabled(localHero==0);
+    SettingRow(zh ? "启用当前英雄预警" : "Enable alerts for this hero", kDefaultLabelWidth);
     edited|=UICheckbox(zh?"启用当前英雄预警":"Enable alerts for this hero",&heroSettings.alertsEnabled);
     ImGui::EndDisabled();
+    CloseGroupBox();
     ImGui::BeginDisabled(localHero==0||!heroSettings.alertsEnabled);
     ImGui::PushID("skillAlert");
     UIGroupBox(zh ? "技能预警" : "Skill alerts");
+    SettingRow(zh ? "开启技能预警" : "Enable skill alerts", kDefaultLabelWidth);
     edited |= UICheckbox(zh ? "开启技能预警###enabled" : "Enable skill alerts###enabled", &settings.skillEnabled);
     SettingTooltip(zh ? "敌方英雄使用所选技能时播报一次。" : "Announces once when an enemy uses a selected skill.");
     static uint64_t skillHero = kAnaHeroId;
@@ -110,12 +121,11 @@ void UI::AlertPage() {
         return false;
     });
     bool hasRules = false;
-    float skillLabelWidth = 0;
+    float skillLabelWidth = kDefaultLabelWidth * (std::max)(1.0f, ImGui::GetFontSize() / 15.0f);
     const float gap = ImGui::GetStyle().ItemSpacing.x;
     for (const auto& definition : kDefinitions)
         if (definition.hero == skillHero)
-            skillLabelWidth = (std::max)(skillLabelWidth, ImGui::CalcTextSize(zh ? definition.skillNameZh : definition.skillName).x);
-    skillLabelWidth += ControlHeight() + gap;
+            skillLabelWidth = (std::max)(skillLabelWidth, ImGui::CalcTextSize(zh ? definition.skillNameZh : definition.skillName).x + ToggleWidth() + gap * 2.0f);
     for (size_t i = 0; i < kDefinitions.size(); ++i) {
         const auto& definition = kDefinitions[i];
         if (definition.hero != skillHero) continue;
@@ -125,13 +135,13 @@ void UI::AlertPage() {
         ImGui::Spacing();
         const char* label = zh ? definition.skillNameZh : definition.skillName;
         const float width = ImGui::GetContentRegionAvail().x;
-        const float previewWidth = ImGui::CalcTextSize(zh ? "试听" : "Preview").x + ImGui::GetStyle().FramePadding.x * 2;
+        const float previewWidth = PreviewButtonWidth(zh);
         const bool inlineRow = width >= skillLabelWidth + previewWidth + ImGui::GetFontSize() * 12 + gap * 2;
         edited |= UICheckbox(label, &rule.enabled);
-        if (inlineRow) ImGui::SameLine(skillLabelWidth + gap + ImGui::GetCursorPosX());
+        if (inlineRow) ImGui::SameLine(ImGui::GetCursorStartPos().x + skillLabelWidth);
         const auto inputId = std::string("##message-") + definition.id;
         edited |= EditMessage(inputId.c_str(), rule.message, definition.defaultMessage,
-            inlineRow ? (std::max)(1.0f, ImGui::GetContentRegionAvail().x - previewWidth - gap - 8.0f) : -1);
+            inlineRow ? (std::max)(1.0f, ImGui::GetContentRegionAvail().x - previewWidth - gap - kControlRightPadding) : -1);
         if (inlineRow) ImGui::SameLine();
         PreviewButton(rule.message.empty() ? definition.defaultMessage : rule.message, preview, zh);
         ImGui::PopID();
@@ -155,24 +165,31 @@ void UI::AlertPage() {
     CloseGroupBox();
     ImGui::PopID();
 
-    ImGui::PushID("flankAlert");
-    ReservedAlert(zh ? "绕后预警" : "Flanking warning", zh);
-    ImGui::PopID();
-    ImGui::PushID("aimThreatAlert");
-    ReservedAlert(zh ? "被瞄准预警" : "Being aimed at", zh);
-    ImGui::PopID();
+    UIGroupPair(zh ? "绕后预警" : "Flanking warning", [&]() {
+        ImGui::PushID("flankAlert");
+        ReservedAlertBody(zh);
+        ImGui::PopID();
+    }, zh ? "被瞄准预警" : "Being aimed at", [&]() {
+        ImGui::PushID("aimThreatAlert");
+        ReservedAlertBody(zh);
+        ImGui::PopID();
+    });
 
     ImGui::PushID("ultimateAlert");
     UIGroupBox(zh ? "大招预警" : "Ultimate alerts");
+    SettingRow(zh ? "开启大招预警" : "Enable ultimate alerts", kDefaultLabelWidth);
     edited |= UICheckbox(zh ? "开启大招预警###enabled" : "Enable ultimate alerts###enabled", &settings.ultimateEnabled);
     SettingTooltip(zh ? "敌方大招充能达到 100% 时播报一次。" : "Announces once when an enemy's ultimate charge reaches 100%.");
     ImGui::PushID("global");
+    SettingRow(zh ? "全局默认开启" : "Enabled for all by default", kDefaultLabelWidth);
     edited |= UICheckbox(zh ? "全局默认开启###all" : "Enabled for all by default###all", &settings.ultimateAll);
-    ImGui::TextUnformatted(zh ? "全局播报文案" : "Default announcement");
-    edited |= EditMessage("##ultimateDefault", settings.ultimateMessage, kDefaultUltimateMessage);
+    SettingRow(zh ? "全局播报文案" : "Default announcement", kDefaultLabelWidth);
+    const float ultPreviewW = PreviewButtonWidth(zh);
+    edited |= EditMessage("##ultimateDefault", settings.ultimateMessage, kDefaultUltimateMessage,
+        (std::max)(80.0f, ImGui::GetContentRegionAvail().x - ultPreviewW - gap - kControlRightPadding));
+    ImGui::SameLine();
     PreviewButton(settings.ultimateMessage.empty() ? kDefaultUltimateMessage : settings.ultimateMessage, preview, zh);
     ImGui::PopID();
-    ImGui::Spacing();
     static uint64_t ultimateHero = 0;
     UIAlertHeroSelect("ultimateBrowse", ultimateHero, [&](uint64_t hero) { return UltimateHeroEnabled(settings, hero); });
     if (UltimateHeroSupported(ultimateHero)) {
@@ -182,11 +199,15 @@ void UI::AlertPage() {
         const char* modesEn[]{settings.ultimateAll ? "Use default (on)" : "Use default (off)", "Always off", "Always on"};
         int mode = rule.mode + 1;
         ImGui::PushID("hero");
-        ImGui::SetNextItemWidth((std::max)(1.0f, ImGui::GetContentRegionAvail().x - 8.0f));
+        SettingRow(zh ? "该英雄策略" : "Hero policy", kDefaultLabelWidth);
+        PushControlWidth();
         bool changed = UISelect("##heroMode", &mode, zh ? modesZh : modesEn, 3);
+        ImGui::PopItemWidth();
         rule.mode = mode - 1;
-        ImGui::TextUnformatted(zh ? "英雄专属文案（留空使用全局）" : "Hero announcement (blank uses default)");
-        changed |= EditMessage("##ultimateHeroMessage", rule.message, settings.ultimateMessage.c_str());
+        SettingRow(zh ? "英雄专属文案" : "Hero announcement", kDefaultLabelWidth);
+        changed |= EditMessage("##ultimateHeroMessage", rule.message, settings.ultimateMessage.c_str(),
+            (std::max)(80.0f, ImGui::GetContentRegionAvail().x - ultPreviewW - gap - kControlRightPadding));
+        ImGui::SameLine();
         PreviewButton(rule.message.empty() ? settings.ultimateMessage : rule.message, preview, zh);
         if (changed) {
             if (existing) settings.ultimates[size_t(existing - settings.ultimates.data())] = std::move(rule);

@@ -102,18 +102,24 @@ void DrawPreview(Settings& draft,bool& edited) {
         }
     }
     if(ImGui::IsItemFocused())draw->AddRect(start,end,ImGui::GetColorU32(ImGuiCol_NavCursor),0.f,2.f);
+    SettingRow(Tr("Frame status","画面状态"));
+    ImGui::AlignTextToFramePadding();
     ImGui::Text(Tr("%d x %d | frame %llu | %zu contours | age %.0f ms%s","%d × %d | 帧 %llu | %zu 个轮廓 | 帧龄 %.0f ms%s"),frame->width,frame->height,
         static_cast<unsigned long long>(frame->sequence),frame->components.size(),(std::max)(0.0,MonotonicMs()-frame->arrivalMs),frozen?Tr(" | frozen"," | 已定格"):"");
+    SettingRow(Tr("Sample coordinates","取色坐标"));
     ImGui::SetNextItemWidth(100);ImGui::InputInt("X##sampleX",&pickX,0);ImGui::SameLine();ImGui::SetNextItemWidth(100);ImGui::InputInt("Y##sampleY",&pickY,0);
-    ImGui::SameLine();if(ImGui::Button(Tr("Sample","取色"))){pickedValid=SampleColor(*frame,pickX,pickY,picked);frozen=true;}
+    ImGui::SameLine();if(ImGui::Button(Tr("Sample","取色"),ImVec2(0,ControlHeight()))){pickedValid=SampleColor(*frame,pickX,pickY,picked);frozen=true;}
     SettingTooltip(Tr("Click the image or enter X/Y and press Sample to sample the original pixel.",
                       "点击画面或填写 X/Y 后点击取色，均可取得原始像素颜色。"));
     const char* slots[]={Tr("Hidden color","不可见颜色"),Tr("Visible color","可见颜色"),Tr("Selected color","选中颜色")};
     SettingRow(Tr("Sample destination","取色写入"));PushControlWidth();UISelect("##sampleSlot",&colorSlot,slots,3,false);ImGui::PopItemWidth();
     if(pickedValid){
+        SettingRow(Tr("Sampled color","已取颜色"));
         ImGui::ColorButton("##pickedColor",ImVec4(picked.r/255.f,picked.g/255.f,picked.b/255.f,1));ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("#%02X%02X%02X  RGB %u %u %u",picked.r,picked.g,picked.b,picked.r,picked.g,picked.b);
-        if(ImGui::Button(Tr("Use sampled color","使用此颜色"))){draft.useOutlineColors=false;draft.colors[colorSlot]=picked;edited=true;}
+        ImGui::SameLine(0,10);
+        if(ImGui::Button(Tr("Use sampled color","使用此颜色"),ImVec2(0,ControlHeight()))){draft.useOutlineColors=false;draft.colors[colorSlot]=picked;edited=true;}
         ImGui::SetItemTooltip("%s",Tr("Updates the detection color draft only. Click Apply settings below to use it.","仅更新检测颜色草稿；点击下方应用设置后生效。"));
     }
 }
@@ -132,9 +138,14 @@ void DrawPage() {
     ImGui::PushID("ContourCapture");UIGroupBox(Tr("Capture card and contours","采集卡与轮廓"));
     const char* state=status.state==ServiceState::Running?Tr("Running","采集中"):status.state==ServiceState::Starting?Tr("Starting","正在连接"):
         status.state==ServiceState::Faulted?Tr("Capture failed","采集失败"):Tr("Stopped","已停止");
+    SettingRow(Tr("Capture status","采集状态"));
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("%s",state);
-    if(active)ImGui::Text(Tr("%d x %d  %.1f fps | received %llu / processed %llu / dropped %llu","%d × %d  %.1f fps | 接收 %llu / 处理 %llu / 丢弃 %llu"),
-        status.width,status.height,status.fps,static_cast<unsigned long long>(status.receivedFrames),static_cast<unsigned long long>(status.processedFrames),static_cast<unsigned long long>(status.droppedFrames));
+    if(active){
+        ImGui::SameLine(0,10);
+        ImGui::TextDisabled(Tr("%d x %d  %.1f fps | received %llu / processed %llu / dropped %llu","%d × %d  %.1f fps | 接收 %llu / 处理 %llu / 丢弃 %llu"),
+            status.width,status.height,status.fps,static_cast<unsigned long long>(status.receivedFrames),static_cast<unsigned long long>(status.processedFrames),static_cast<unsigned long long>(status.droppedFrames));
+    }
     if (!status.error.empty()) {
         ImGui::TextWrapped("%s", Utf8(status.error).c_str());
         SettingTooltip(Tr("Check the device and selected format, then try Start capture again.",
@@ -142,14 +153,17 @@ void DrawPage() {
     }
     if(enumeration.valid()&&enumeration.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto result=enumeration.get();devices=std::move(result.devices);feedback=result.ok?Tr("Device list refreshed.","设备列表已刷新。"):Utf8(result.error);}
     const bool enumerating=enumeration.valid();
-    SettingRow(Tr("Capture device","采集设备"));PushControlWidth();
+    const char* refreshLabel=enumerating?Tr("Finding devices...","正在查找设备…"):Tr("Refresh devices","刷新设备");
+    const float refreshWidth=(std::max)(88.f,ImGui::CalcTextSize(refreshLabel).x+20.f);
+    SettingRow(Tr("Capture device","采集设备"));
+    ImGui::SetNextItemWidth(MaxFloat(120.f,ImGui::GetContentRegionAvail().x-refreshWidth-ImGui::GetStyle().ItemSpacing.x-kControlRightPadding));
     const auto selectedName=Utf8(draft.capture.deviceName);
     if(ImGui::BeginCombo("##captureDevice",selectedName.empty()?Tr("Select device","选择设备"):selectedName.c_str())){
         for(const auto& device:devices){const auto name=Utf8(device.friendlyName);const bool selected=draft.capture.devicePath==device.devicePath;
             ImGui::PushID(Utf8(device.devicePath).c_str());if(ImGui::Selectable(name.c_str(),selected)){draft.capture.devicePath=device.devicePath;draft.capture.deviceName=device.friendlyName;edited=true;}ImGui::PopID();}
         if(devices.empty())ImGui::TextUnformatted(Tr("Refresh the device list first.","请先刷新设备列表。"));ImGui::EndCombo();}
-    ImGui::PopItemWidth();
-    ImGui::BeginDisabled(enumerating);if(ImGui::Button(enumerating?Tr("Finding devices...","正在查找设备…"):Tr("Refresh devices","刷新设备")))
+    ImGui::SameLine();
+    ImGui::BeginDisabled(enumerating);if(ImGui::Button(refreshLabel,ImVec2(refreshWidth,ControlHeight())))
         enumeration=std::async(std::launch::async,[]{Enumeration result;result.ok=Service::EnumerateDevices(result.devices,result.error);return result;});ImGui::EndDisabled();
     auto intRow=[&](const char* en,const char* zh,const char* id,int& value){SettingRow(Tr(en,zh));PushControlWidth();edited|=ImGui::InputInt(id,&value,0,0);ImGui::PopItemWidth();};
     auto floatRow=[&](const char* en,const char* zh,const char* id,float& value){SettingRow(Tr(en,zh));PushControlWidth();edited|=ImGui::InputFloat(id,&value,0,0,"%.1f");ImGui::PopItemWidth();};
@@ -162,11 +176,14 @@ void DrawPage() {
     for(int i=0;i<3;++i){ImGui::PushID(i);SettingRow(colorNames[i]);auto& c=draft.colors[i];ImVec4 color(c.r/255.f,c.g/255.f,c.b/255.f,1);
         ImGui::BeginDisabled(draft.useOutlineColors);
         if(UI::ColorPicker("detectorColor",color)){c={std::uint8_t(std::lround(color.x*255)),std::uint8_t(std::lround(color.y*255)),std::uint8_t(std::lround(color.z*255))};edited=true;}
-        ImGui::SameLine();if(ImGui::Button(Tr("Red","红色"))){c={255,0,0};edited=true;}ImGui::SameLine();if(ImGui::Button(Tr("Yellow","黄色"))){c={255,255,0};edited=true;}
-        ImGui::EndDisabled();ImGui::SameLine();ImGui::Text("#%02X%02X%02X",c.r,c.g,c.b);ImGui::PopID();}
+        ImGui::SameLine();if(ImGui::Button(Tr("Red","红色"),ImVec2(0,ControlHeight()))){c={255,0,0};edited=true;}ImGui::SameLine();if(ImGui::Button(Tr("Yellow","黄色"),ImVec2(0,ControlHeight()))){c={255,255,0};edited=true;}
+        ImGui::EndDisabled();ImGui::SameLine();ImGui::AlignTextToFramePadding();ImGui::Text("#%02X%02X%02X",c.r,c.g,c.b);ImGui::PopID();}
     intRow("RGB tolerance (0-128)","RGB 容差（0–128）","##contourTolerance",draft.tolerance);
     intRow("Search width (px)","搜索宽度（像素）","##contourRoiWidth",draft.roiWidth);intRow("Search height (px)","搜索高度（像素）","##contourRoiHeight",draft.roiHeight);
-    if(ImGui::CollapsingHeader(Tr("Association and firing","关联与开火"))){
+    ImGui::GetCurrentWindow()->WorkRect.Max.x -= kControlRightPadding;
+    const bool assocOpen = ImGui::CollapsingHeader(Tr("Association and firing","关联与开火"));
+    ImGui::GetCurrentWindow()->WorkRect.Max.x += kControlRightPadding;
+    if(assocOpen){
         SettingRow(Tr("Maximum frame age (ms)","最大帧龄（毫秒）"));PushControlWidth();edited|=ImGui::InputDouble("##contourAge",&draft.maxFrameAgeMs,0,0,"%.0f");ImGui::PopItemWidth();
         floatRow("Association radius (px)","关联半径（像素）","##contourAssociation",draft.associationRadiusPx);
         floatRow("Contact radius (px)","接触半径（像素）","##contourContact",draft.contactRadiusPx);
@@ -179,12 +196,13 @@ void DrawPage() {
     std::wstring validation;const bool valid=ValidateSettings(draft,&validation);
     if(!valid)ImGui::TextWrapped("%s",Utf8(validation).c_str());
     auto apply=[&](){draft.enabled=GetService().GetSettings().enabled;std::wstring error;if(!GetService().Configure(draft,&error)){feedback=Utf8(error);return false;}SyncOutlinePalette();draft=GetService().GetSettings();edited=false;return true;};
+    SettingRow(Tr("Capture actions","采集操作"));
     ImGui::BeginDisabled(!valid);
-    if(ImGui::Button(Tr("Apply settings","应用设置"))&&apply())feedback=Tr("Settings applied.","设置已应用。");
-    ImGui::SameLine();if(ImGui::Button(Tr("Save settings","保存设置"))&&apply())feedback=V2::Vision::Preferences::Save()?Tr("Saved. Capture stays stopped on next launch.","已保存；下次启动仍为停止状态。"):V2::Vision::Preferences::Error();
-    ImGui::BeginDisabled(active);if(ImGui::Button(Tr("Start capture","开始采集"))&&apply()){auto start=GetService().GetSettings();start.enabled=true;GetService().Configure(start);if(!GetService().Start())feedback=Tr("Could not start capture. Check the status above.","无法开始采集，请查看上方状态。");}ImGui::EndDisabled();
+    if(ImGui::Button(Tr("Apply settings","应用设置"),ImVec2(0,ControlHeight()))&&apply())feedback=Tr("Settings applied.","设置已应用。");
+    ImGui::SameLine();if(ImGui::Button(Tr("Save settings","保存设置"),ImVec2(0,ControlHeight()))&&apply())feedback=V2::Vision::Preferences::Save()?Tr("Saved. Capture stays stopped on next launch.","已保存；下次启动仍为停止状态。"):V2::Vision::Preferences::Error();
+    ImGui::SameLine();ImGui::BeginDisabled(active);if(ImGui::Button(Tr("Start capture","开始采集"),ImVec2(0,ControlHeight()))&&apply()){auto start=GetService().GetSettings();start.enabled=true;GetService().Configure(start);if(!GetService().Start())feedback=Tr("Could not start capture. Check the status above.","无法开始采集，请查看上方状态。");}ImGui::EndDisabled();
     ImGui::EndDisabled();
-    ImGui::SameLine();ImGui::BeginDisabled(!active&&!current.enabled);if(ImGui::Button(Tr("Stop capture","停止采集"))){GetService().Stop();auto stopped=GetService().GetSettings();stopped.enabled=false;GetService().Configure(stopped);ReleasePreviewResources();}ImGui::EndDisabled();
+    ImGui::SameLine();ImGui::BeginDisabled(!active&&!current.enabled);if(ImGui::Button(Tr("Stop capture","停止采集"),ImVec2(0,ControlHeight()))){GetService().Stop();auto stopped=GetService().GetSettings();stopped.enabled=false;GetService().Configure(stopped);ReleasePreviewResources();}ImGui::EndDisabled();
     if(edited)ImGui::TextDisabled("%s",Tr("Changes have not been applied.","修改尚未应用。"));
     if(!feedback.empty())ImGui::TextWrapped("%s",feedback.c_str());
     if(!V2::Vision::Preferences::Error().empty())ImGui::TextWrapped("%s",V2::Vision::Preferences::Error().c_str());

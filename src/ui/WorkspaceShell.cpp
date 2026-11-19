@@ -284,9 +284,10 @@ void Render(Model& model, const std::function<void()>& save,
         ImGui::BeginGroup();
         const ImVec2 navStart=ImGui::GetCursorScreenPos();
         const float navPadX=collapsed?5.f*scale:20.f;
-        const float toggleHeight=(std::max)(28.f,ImGui::GetFrameHeight());
-        const float navBodyY=navStart.y+(collapsed?6.f*scale:16.f)+toggleHeight+rowGap;
-        ImGui::SetCursorScreenPos(ImVec2(navStart.x+navPadX,navStart.y+(collapsed?6.f*scale:16.f)));
+        const float topOffset=6.f*scale;
+        const float toggleHeight=(std::max)(24.f,ImGui::GetFontSize()+8.f);
+        const float navBodyY=navStart.y+topOffset+toggleHeight+4.f;
+        ImGui::SetCursorScreenPos(ImVec2(navStart.x+navPadX,navStart.y+topOffset));
         if(ImGui::Button(collapsed?">##Expand":"<##Collapse",ImVec2((std::max)(1.f,navWidth-navPadX*2),toggleHeight))) {
             preferences.sidebarCollapsed=!preferences.sidebarCollapsed;
             Preferences::Save();
@@ -295,15 +296,18 @@ void Render(Model& model, const std::function<void()>& save,
         ImGui::SetCursorScreenPos(ImVec2(navStart.x,navBodyY));
         ImGui::PushStyleColor(ImGuiCol_ChildBg,Theme::kColShell1);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(navPadX,0));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(gap,3.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,0.f);
         ImGui::BeginChild("BusinessNavigation",ImVec2(navWidth,(std::max)(1.f,height-cardHeight-(navBodyY-navStart.y)-rowGap)),ImGuiChildFlags_AlwaysUseWindowPadding,
             collapsed?ImGuiWindowFlags_NoScrollbar:ImGuiWindowFlags_None);
         const char* group=nullptr;
+        const float navRowHeight=(std::max)(28.f,ImGui::GetFontSize()+12.f);
         for(int order=0;order<int(model.pages.size());++order) {
             const int i=model.pages.size()==16?(order==12?15:order>12?order-1:order):order;
             const auto& page=model.pages[i];
             if(!page.visible)continue;
             if(!group||std::strcmp(group,page.group)!=0) {
-                if(group)ImGui::Dummy(ImVec2(0,10));
+                if(group)ImGui::Dummy(ImVec2(0,4));
                 if(!collapsed)ImGui::TextDisabled("%s",page.group);
                 group=page.group;
             }
@@ -312,19 +316,18 @@ void Render(Model& model, const std::function<void()>& save,
             const auto p=ImGui::GetCursorScreenPos();
             const float rowWidth=ImGui::GetContentRegionAvail().x;
             ImGui::PushStyleColor(ImGuiCol_Button,selected?Theme::kColAccentDark:Theme::kColShell1);
-            if(ImGui::Button("##Page",ImVec2(rowWidth,(std::max)(32.f,ImGui::GetFrameHeight()+4))))model.selected=i;
+            if(ImGui::Button("##Page",ImVec2(rowWidth,navRowHeight)))model.selected=i;
             ImGui::PopStyleColor();
             auto* nav=ImGui::GetWindowDrawList();
             const auto color=selected?Theme::kColAccent:Theme::kColTextDim;
-            const float rowHeight=(std::max)(32.f,ImGui::GetFrameHeight()+4);
-            Icon(nav,ImVec2(p.x+(collapsed?(rowWidth-18.f)*.5f:8.f),p.y+(rowHeight-18.f)*.5f),i,color);
-            if(!collapsed)nav->AddText(ImVec2(p.x+34,p.y+(rowHeight-ImGui::GetFontSize())*.5f),selected?Theme::kColText:Theme::kColTextDim,page.label);
-            if(selected)nav->AddRectFilled(p,ImVec2(p.x+2,p.y+(std::max)(32.f,ImGui::GetFrameHeight()+4)),Theme::kColAccent,1);
+            Icon(nav,ImVec2(p.x+(collapsed?(rowWidth-18.f)*.5f:8.f),p.y+(navRowHeight-18.f)*.5f),i,color);
+            if(!collapsed)nav->AddText(ImVec2(p.x+34,p.y+(navRowHeight-ImGui::GetFontSize())*.5f),selected?Theme::kColText:Theme::kColTextDim,page.label);
+            if(selected)nav->AddRectFilled(p,ImVec2(p.x+2,p.y+navRowHeight),Theme::kColAccent,1);
             ImGui::SetItemTooltip("%s / %s",page.group,page.label);
             ImGui::PopID();
         }
         ImGui::EndChild();
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(3);
         ImGui::PopStyleColor();
         AccountCard(model,navWidth,cardHeight,cardScale,collapsed,zh);
         ImGui::EndGroup();

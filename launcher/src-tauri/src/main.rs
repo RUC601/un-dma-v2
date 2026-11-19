@@ -58,8 +58,7 @@ fn prefs() -> Result<Value, String> {
                 String::new()
             }
         };
-        let profile = ini_value(&read("app-state.ini"), "Application", "activeProfile")
-            .or_else(|| ini_value(&read("config.ini"), "Global", "lastConfigProfile"));
+        let profile = ini_value(&read("app-state.ini"), "Application", "activeProfile");
         let profile = profile
             .filter(|p| {
                 !p.is_empty()

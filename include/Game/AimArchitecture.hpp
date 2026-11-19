@@ -38,42 +38,29 @@ enum class PredictionOverrideMode : int {
     ForceOff = 2,
 };
 
-// All prediction paths share projectile data. Relative-motion variants use
-// target velocity minus local-actor velocity for the target model. Local
-// velocity never becomes part of projectile muzzle velocity.
+// Both prediction paths share projectile data. Target motion is sampled from
+// the target only. Local velocity never becomes part of projectile muzzle
+// velocity or target lead input.
 enum class PredictionAlgorithm : int {
     LegacyLinear = 0,
     BallisticIntercept = 1,
-    LegacyLinearRelativeMotion = 2,
-    BallisticInterceptRelativeMotion = 3,
 };
 
 inline constexpr int ClampPredictionAlgorithm(int value) {
-    return value >= static_cast<int>(PredictionAlgorithm::LegacyLinear) &&
-        value <= static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion)
-        ? value : static_cast<int>(PredictionAlgorithm::LegacyLinear);
+    // The retired relative-motion variants used 2 (linear) and 3 (ballistic).
+    return value == static_cast<int>(PredictionAlgorithm::BallisticIntercept) || value == 3
+        ? static_cast<int>(PredictionAlgorithm::BallisticIntercept)
+        : static_cast<int>(PredictionAlgorithm::LegacyLinear);
 }
 
 inline constexpr bool IsBallisticPredictionAlgorithm(int value) {
-    const int normalized = ClampPredictionAlgorithm(value);
-    return normalized == static_cast<int>(PredictionAlgorithm::BallisticIntercept) ||
-        normalized == static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion);
-}
-
-inline constexpr bool IsRelativeMotionPredictionAlgorithm(int value) {
-    const int normalized = ClampPredictionAlgorithm(value);
-    return normalized == static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion) ||
-        normalized == static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion);
+    return ClampPredictionAlgorithm(value) == static_cast<int>(PredictionAlgorithm::BallisticIntercept);
 }
 
 inline const char* PredictionAlgorithmId(int value) {
     switch (ClampPredictionAlgorithm(value)) {
-    case static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion):
-        return "legacy_linear_relative_motion";
     case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
         return "ballistic_intercept";
-    case static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion):
-        return "ballistic_intercept_relative_motion";
     case static_cast<int>(PredictionAlgorithm::LegacyLinear):
     default:
         return "legacy_linear";
@@ -82,12 +69,8 @@ inline const char* PredictionAlgorithmId(int value) {
 
 inline const char* PredictionAlgorithmName(int value) {
     switch (ClampPredictionAlgorithm(value)) {
-    case static_cast<int>(PredictionAlgorithm::LegacyLinearRelativeMotion):
-        return "Legacy Linear Relative Motion";
     case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
         return "Ballistic Intercept";
-    case static_cast<int>(PredictionAlgorithm::BallisticInterceptRelativeMotion):
-        return "Ballistic Intercept Relative Motion";
     case static_cast<int>(PredictionAlgorithm::LegacyLinear):
     default:
         return "Legacy Linear";

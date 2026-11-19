@@ -155,7 +155,6 @@ void UI::AimbotPage() {
 
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.aimHeroSegActive);
 
-    ImGui::TextUnformatted(L("Basic Options"));
     UIGroupPair("Target Eligibility", [&]() {
         // Target Team
         SettingRow(L("Target Team"));
@@ -221,13 +220,11 @@ void UI::AimbotPage() {
             else if (!captureFrame)
                 captureMessage = zh ? "漏打等待新画面" : "Leak shot waiting for a fresh frame";
             if (captureMessage) {
+                SettingRow(zh ? "采集状态" : "Capture status");
+                ImGui::AlignTextToFramePadding();
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.64f, 0.25f, 1.0f));
                 ImGui::TextWrapped("%s", captureMessage);
                 ImGui::PopStyleColor();
-            }
-            if (ImGui::SmallButton(zh ? "打开采集设置" : "Open capture settings")) {
-                state.activeTab = TAB_MISC;
-                state.miscSubTab = 7;
             }
         }
     }, "Activation & Action", [&]() {
@@ -424,9 +421,6 @@ void UI::AimbotPage() {
             presetChanged |= UIPredictionAlgorithmSelect("##aimPredictionAlgorithm",
                 &activePreset.predictionAlgorithm);
 
-            if (UIActionButton(L("Prediction Data"), 0.0f))
-                state.activeTab = TAB_PREDICTION;
-
         }, "Target Switching", [&]() {
             const char* const kTraceLabels[] = { L("Strict"), L("Relaxed"), L("Off") };
             const char* const kUnlockLabels[] = { L("Anytime"), L("On Release"), L("Never") };
@@ -473,10 +467,14 @@ void UI::AimbotPage() {
                                       OW::Config::kMinHitboxScalePercent,
                                       OW::Config::kMaxHitboxScalePercent, Number(0, " %"));
             ImGui::PopItemWidth();
-            if (UIActionButton(L("Edit motion..."), 0.0f))
+            SettingRow(OW::Config::uiLanguage == 1 ? "精细调校" : "Detailed tuning");
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            const float avail = MaxFloat(120.0f, ImGui::GetContentRegionAvail().x - kControlRightPadding);
+            const float btnWidth = (avail - gap) * 0.5f;
+            if (ImGui::Button(L("Edit motion..."), ImVec2(btnWidth, ControlHeight())))
                 ImGui::OpenPopup("##MotionEditor");
             ImGui::SameLine();
-            if (UIActionButton(L("Edit hero overrides..."), 0.0f))
+            if (ImGui::Button(L("Edit hero overrides..."), ImVec2(btnWidth, ControlHeight())))
                 ImGui::OpenPopup("##ExceptionEditor");
         });
         ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(ImGui::GetMainViewport()->WorkSize.x-24,ImGui::GetMainViewport()->WorkSize.y-24));
@@ -499,15 +497,6 @@ void UI::AimbotPage() {
             ImGui::EndPopup();
         }
     }
-    ImGui::Spacing();
-    ImGui::TextDisabled("%s", L("Shared presets"));
-    if (ImGui::SmallButton(L("Edit behavior preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 2; }
-    ImGui::SameLine();
-    if (ImGui::SmallButton(L("Edit method preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 2; }
-    ImGui::SameLine();
-    if (ImGui::SmallButton(L("Edit FOV preset"))) { state.activeTab = TAB_MISC; state.miscSubTab = 4; }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", L("Mode structure is shared. Slot parameters stay independent."));
 
     if(presetChanged) OW::Config::StoreHeroBehaviorMode(activePreset);
     if (selectedHero->heroId == 0) {

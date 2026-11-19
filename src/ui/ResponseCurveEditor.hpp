@@ -14,7 +14,7 @@ inline bool ResponseCurveEditor(OW::AimResponseCurve::Points& points) {
     if(UISelect("##responsePreset",&preset,labels,4) && preset<3) {points=Preset(preset);changed=true;}
     ImGui::PopItemWidth();
     const ImVec2 origin=ImGui::GetCursorScreenPos();
-    const ImVec2 size((std::max)(120.f,ImGui::GetContentRegionAvail().x),160.f);
+    const ImVec2 size((std::max)(120.f,ImGui::GetContentRegionAvail().x - kControlRightPadding),160.f);
     ImGui::InvisibleButton("Response curve graph",size);
     SettingTooltip(L("Error / effective FOV -> correction / effective FOV"));
     auto* draw=ImGui::GetWindowDrawList();
@@ -51,10 +51,11 @@ inline bool ResponseCurveEditor(OW::AimResponseCurve::Points& points) {
     const char* names[]={"Control 1 X","Control 1 Y","Control 2 X","Control 2 Y"};
     for(int i=0;i<4;++i) {
         SettingRow(names[i]);PushControlWidth();ImGui::PushID(i);
-        changed|=ImGui::DragFloat("##coordinate",values[i],.005f,0,1,"%.3f",ImGuiSliderFlags_AlwaysClamp);
+        changed|=UISlider("##coordinate",values[i],0.0f,1.0f,Number(3,""));
         ImGui::PopID();ImGui::PopItemWidth();
     }
-    if(ImGui::Button(L("Reset curve"))) {points={};changed=true;}
+    SettingRow(OW::Config::uiLanguage == 1 ? "曲线操作" : "Curve action");
+    if(ImGui::Button(L("Reset curve"), ImVec2(0, ControlHeight()))) {points={};changed=true;}
     Normalize(points);return changed;
 }
 }

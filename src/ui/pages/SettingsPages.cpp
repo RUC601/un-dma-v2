@@ -99,13 +99,6 @@ void UI::MiscPage() {
     }
 
     CloseGroupBox();
-    ImGui::Spacing();
-    ImGui::TextDisabled("%s", L("Shared presets"));
-    if (ImGui::SmallButton(L("Edit behavior preset"))) state.miscSubTab = 2;
-    ImGui::SameLine();
-    if (ImGui::SmallButton(L("Edit method preset"))) state.miscSubTab = 3;
-    ImGui::SameLine();
-    if (ImGui::SmallButton(L("Edit FOV preset"))) state.miscSubTab = 4;
 
     ImGui::PopID();
 }
@@ -146,37 +139,38 @@ void DrawMiscGeneralPage() {
 
         SettingTooltip(T(UiText::SavePolicyNotice));
 
+        const float profileActionButtonWidth = (std::max)(
+            68.0f,
+            (std::max)(ImGui::CalcTextSize(T(UiText::Open)).x, ImGui::CalcTextSize(T(UiText::Create)).x) + 24.0f);
         SettingRow(T(UiText::Folder));
         {
             char folderBuffer[MAX_PATH] = {};
             const std::string configDirectory = OW::Config::ConfigDirectoryPath();
             std::snprintf(folderBuffer, sizeof(folderBuffer), "%s", configDirectory.c_str());
-            const float openButtonWidth = (std::max)(54.0f,ImGui::CalcTextSize(T(UiText::Open)).x+20);
-            const float spacing = ImGui::GetStyle().ItemSpacing.x + 10;
+            const float spacing = ImGui::GetStyle().ItemSpacing.x + kControlRightPadding;
             const float folderWidth = MaxFloat(
                 120.0f,
-                ImGui::GetContentRegionAvail().x - openButtonWidth - spacing);
+                ImGui::GetContentRegionAvail().x - profileActionButtonWidth - spacing);
             ImGui::PushItemWidth(folderWidth);
             ImGui::InputText("##configFolder", folderBuffer, IM_ARRAYSIZE(folderBuffer),
                              ImGuiInputTextFlags_ReadOnly);
             ImGui::PopItemWidth();
             ImGui::SameLine();
-            if (ImGui::Button(T(UiText::Open), ImVec2(openButtonWidth, ControlHeight())))
+            if (ImGui::Button(T(UiText::Open), ImVec2(profileActionButtonWidth, ControlHeight())))
                 ShellExecuteA(nullptr, "open", configDirectory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
 
         SettingRow(T(UiText::NewProfile));
         {
-            const float createButtonWidth = (std::max)(64.0f,ImGui::CalcTextSize(T(UiText::Create)).x+20);
-            const float spacing = ImGui::GetStyle().ItemSpacing.x + 10;
+            const float spacing = ImGui::GetStyle().ItemSpacing.x + kControlRightPadding;
             const float inputWidth = MaxFloat(
                 90.0f,
-                ImGui::GetContentRegionAvail().x - createButtonWidth - spacing);
+                ImGui::GetContentRegionAvail().x - profileActionButtonWidth - spacing);
             ImGui::PushItemWidth(inputWidth);
             ImGui::InputText("##newConfigProfile", newProfileName, IM_ARRAYSIZE(newProfileName));
             ImGui::PopItemWidth();
             ImGui::SameLine();
-            if (ImGui::Button(T(UiText::Create), ImVec2(createButtonWidth, ControlHeight()))) {
+            if (ImGui::Button(T(UiText::Create), ImVec2(profileActionButtonWidth, ControlHeight()))) {
                 const std::string normalizedProfile = NormalizeProfileFileName(newProfileName);
                 if (CreateConfigProfileFromCurrent(normalizedProfile) &&
                     SelectConfigProfile(normalizedProfile.c_str(), profileName, false)) {
@@ -226,14 +220,17 @@ void DrawMiscGeneralPage() {
 
     UIGroupBox(T(UiText::GroupApplication));
     {
+        const float appGap = ImGui::GetStyle().ItemSpacing.x;
+        const float appHalfWidth = 108.0f;
+        const float appFullWidth = appHalfWidth * 2.0f + appGap;
         SettingRow(T(UiText::Unleashed));
-        if (UIActionButton(T(UiText::CloseUn), 96.0f))
+        if (ImGui::Button(T(UiText::CloseUn), ImVec2(appHalfWidth, ControlHeight())))
             g_Overlay.RequestExit();
         ImGui::SameLine();
         const bool reconnectBusy = OW::ProcessConnection::IsRecoveryBusy();
         if (reconnectBusy)
             ImGui::BeginDisabled();
-        if (UIActionButton(T(UiText::ReconnectUn), 112.0f))
+        if (ImGui::Button(T(UiText::ReconnectUn), ImVec2(appHalfWidth, ControlHeight())))
             OW::ProcessConnection::RequestReconnect();
         if (reconnectBusy)
             ImGui::EndDisabled();
@@ -243,7 +240,7 @@ void DrawMiscGeneralPage() {
         SettingRow(L("Runtime cache"));
         if (reconnectBusy)
             ImGui::BeginDisabled();
-        if (UIActionButton(L("Refresh caches"), 144.0f)) {
+        if (ImGui::Button(L("Refresh caches"), ImVec2(appFullWidth, ControlHeight()))) {
             StopFirePatternRecorder();
             OW::ProcessConnection::RequestCacheRefresh();
         }
@@ -255,7 +252,7 @@ void DrawMiscGeneralPage() {
         SettingRow("DMA");
         if (reconnectBusy)
             ImGui::BeginDisabled();
-        if (UIActionButton(L("Rebuild DMA connection"), 176.0f)) {
+        if (ImGui::Button(L("Rebuild DMA connection"), ImVec2(appFullWidth, ControlHeight()))) {
             StopFirePatternRecorder();
             OW::ProcessConnection::RequestDmaRecovery();
         }
@@ -265,7 +262,7 @@ void DrawMiscGeneralPage() {
             ImGui::SetTooltip("%s", L("Stops the current session, reloads DMA device settings, and rebuilds the device connection. Old data and commands are discarded."));
 
         SettingRow(T(UiText::Overlay));
-        if (UIActionButton(T(UiText::MinimizeOverlay), 144.0f))
+        if (ImGui::Button(T(UiText::MinimizeOverlay), ImVec2(appFullWidth, ControlHeight())))
             g_Overlay.MinimizeToTaskbar();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", T(UiText::TooltipMinimizeOverlay));
@@ -279,9 +276,11 @@ void DrawMiscGeneralPage() {
             ImGui::SetTooltip("%s", L("0 = unlimited. Changes apply immediately. Only limits canvas drawing; data acquisition stays at 300 Hz and the menu at about 60 FPS."));
 
         SettingRow(L("Actual overlay FPS"));
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("%.0f FPS", Diagnostics::RenderFps());
 
         SettingRow(T(UiText::RuntimeVersion));
+        ImGui::AlignTextToFramePadding();
         const auto layout = V2::Profiles::Snapshot();
         const auto* matched = V2::Profiles::MatchedProfile(layout.detection);
         if (OW::ProcessConnection::IsConnected() && matched)
@@ -292,6 +291,7 @@ void DrawMiscGeneralPage() {
         }
 
         SettingRow(T(UiText::Process));
+        ImGui::AlignTextToFramePadding();
         const bool connected = OW::ProcessConnection::IsConnected();
         const bool connecting = OW::ProcessConnection::IsConnecting();
         const ImVec4 statusColor = connected
@@ -303,6 +303,7 @@ void DrawMiscGeneralPage() {
         ImGui::TextWrapped("%s", OW::ProcessConnection::StatusText().c_str());
         ImGui::PopStyleColor();
         if (connected) {
+            ImGui::SameLine(0, 8);
             ImGui::TextDisabled("PID %d", OW::ProcessConnection::ConnectedPid());
         }
     }
@@ -312,17 +313,22 @@ void DrawMiscGeneralPage() {
 void DrawMiscDiagnosticsPage() {
     const auto profile = V2::Profiles::Snapshot();
     const auto* matched = V2::Profiles::MatchedProfile(profile.detection);
-    UIGroupBox("版本与布局");
+    const bool zh = OW::Config::uiLanguage == 1;
+    UIGroupBox(zh ? "版本与布局" : "Version and layout");
     int selected = V2::Profiles::requestedProfile.load() + 1;
-    const char* choices[] = {"Auto", "CN", "World", "Nexon"};
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.44f);
-    if (ImGui::Combo("##RequestedProfile", &selected, choices, IM_ARRAYSIZE(choices))) {
+    const char* choicesEn[] = {"Auto", "CN", "World", "Nexon"};
+    const char* choicesZh[] = {"自动识别 (Auto)", "国服 (CN)", "国际服 (World)", "韩服 (Nexon)"};
+    SettingRow(zh ? "目标区服" : "Target region");
+    PushControlWidth();
+    if (UISelect("##RequestedProfile", &selected, zh ? choicesZh : choicesEn, 4, false)) {
         V2::Profiles::requestedProfile.store(selected - 1);
         OW::ProcessConnection::RequestReconnect();
     }
-    ImGui::SameLine();
+    ImGui::PopItemWidth();
+    SettingRow(zh ? "匹配状态" : "Layout status");
+    ImGui::AlignTextToFramePadding();
     if (matched)
-        ImGui::TextWrapped("已识别 %s · %s", matched->region, matched->build);
+        ImGui::TextWrapped(zh ? "已识别 %s · %s" : "Matched %s · %s", matched->region, matched->build);
     else
         ImGui::TextWrapped("%s", V2::Profiles::StatusText(profile.detection.status));
     if (matched && OW::ProcessConnection::IsConnected()) {
@@ -395,18 +401,22 @@ void DrawMiscDiagnosticsPage() {
         ImGui::PopTextWrapPos();
 
         ImGui::Spacing();
-        ImGui::Checkbox(T(UiText::DryRunLogOnly), &OW::Config::aimDryRun);
+        SettingRow(T(UiText::DryRunLogOnly));
+        UICheckbox("##DryRunLogOnly", &OW::Config::aimDryRun);
         if (OW::Config::aimDryRun) {
             ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "%s", T(UiText::NoCursorMovement));
         }
         bool showLogOverlay = Diagnostics::IsLogOverlayVisible();
-        if (ImGui::Checkbox(T(UiText::ShowLogOverlay), &showLogOverlay))
+        SettingRow(T(UiText::ShowLogOverlay));
+        if (UICheckbox("##ShowLogOverlay", &showLogOverlay))
             Diagnostics::SetLogOverlayVisible(showLogOverlay);
-        ImGui::SameLine();
-        if (ImGui::Button(T(UiText::ClearLog)))
+        ImGui::SameLine(0, 10);
+        if (ImGui::Button(T(UiText::ClearLog), ImVec2(0, ControlHeight())))
             Diagnostics::ClearLogLines();
-        ImGui::Checkbox(T(UiText::VerboseAimLogs), &OW::Config::aimVerboseLog);
+        SettingRow(T(UiText::VerboseAimLogs));
+        UICheckbox("##VerboseAimLogs", &OW::Config::aimVerboseLog);
         SettingTooltip(T(UiText::VerboseLogsWarning));
         SettingRow(T(UiText::LogIntervalMs));
         PushControlWidth();
@@ -454,8 +464,9 @@ void DrawMiscBehaviorPage() {
     mode.method=mode.motion.method;mode.methodPresetId=-1;
     const bool modeListFull = std::count_if(Read_aimBehaviorPresets().begin(), Read_aimBehaviorPresets().end(),
         [](const auto& p) { return p.defaultBehavior < 0; }) >= 64;
+    SettingRow(OW::Config::uiLanguage == 1 ? "模式操作" : "Mode actions");
     ImGui::BeginDisabled(modeListFull);
-    if(UIActionButton(L("Save as new mode"),140.f)) {
+    if(UIActionButton(L("Save as new mode"),124.f)) {
         auto created=CaptureBehaviorPresetFromCurrent(mode.behavior,mode.method,-1,mode.baseSpeed,
             mode.startLimiter,mode.moveSplitEnabled,mode.moveSplitMaxPixels,mode.moveSplitDelayUs,name);
         static_cast<AimBehaviorTuning&>(created)=mode;created.motion=mode.motion;
@@ -468,7 +479,7 @@ void DrawMiscBehaviorPage() {
         const bool protectedDefault=deleteCandidate && deleteCandidate->defaultBehavior>=0;
         const bool used=AimBehaviorPresetInUse(selectedId);
         ImGui::SameLine();ImGui::BeginDisabled(used);
-        if(UIActionButton(L("Delete mode"),110.f)) {
+        if(UIActionButton(L("Delete mode"),124.f)) {
             std::erase_if(View_aimBehaviorPresets(),[&](const auto& p){return p.id==selectedId && p.defaultBehavior<0;});
             selectedId=-1;lastId=-2;changed=true;
         }
@@ -746,8 +757,8 @@ void DrawMiscMethodPage() {
             selectedPreset->name = NormalizeUiPresetName(methodPresetName, "Method Preset", -1);
         }
 
-        ImGui::Spacing();
-        if (UIActionButton(T(UiText::SaveNew), 92.0f)) {
+        SettingRow(OW::Config::uiLanguage == 1 ? "预设操作" : "Preset actions");
+        if (UIActionButton(T(UiText::SaveNew), 112.0f)) {
             OW::Config::AimMethodPreset preset =
                 selectedPreset ? *selectedPreset : CaptureMethodPresetFromCurrent(selectedMethod, methodPresetName);
             preset.id = NextAimMethodPresetId();
@@ -837,7 +848,7 @@ void DrawMiscDynamicFovPage() {
 
         SettingRow(OW::Config::uiLanguage == 1 ? "覆盖宽度（米）" : "Coverage width (m)");
         PushControlWidth();
-        ImGui::DragFloat("##worldDiameterM", &editPreset.worldDiameterM, 0.05f, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        UISlider("##worldDiameterM", &editPreset.worldDiameterM, 0.0f, 50.0f, Number(2, " m"));
         ImGui::SetItemTooltip("%s", OW::Config::uiLanguage == 1 ? "0：编辑曲线节点；大于 0：按距离保持固定的覆盖宽度。" : "0 edits curve points; a positive value keeps this world-space width at every distance.");
         ImGui::PopItemWidth();
         SettingRow("Smooth Curve");
@@ -859,10 +870,11 @@ void DrawMiscDynamicFovPage() {
                       preview10,
                       preview20,
                       preview30);
-        ImGui::Spacing();
+        SettingRow(OW::Config::uiLanguage == 1 ? "距离采样" : "Sampled FOV");
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.78f, 0.84f, 0.92f, 1.0f), "%s", preview);
 
-        ImGui::Spacing();
+        SettingRow(OW::Config::uiLanguage == 1 ? "预设操作" : "Preset actions");
         if (selectedPreset && UIActionButton(OW::Config::uiLanguage == 1 ? "更新预设" : "Update Preset", 112.0f)) {
             editPreset.name = NormalizeUiPresetName(presetName, "Dynamic FOV", -1);
             editPreset.id = selectedPresetId;
@@ -870,7 +882,7 @@ void DrawMiscDynamicFovPage() {
                 *destination = OW::Config::ValidateDynamicFovPresetValue(editPreset);
         }
         if (selectedPreset) ImGui::SameLine(0.0f, 8.0f);
-        if (UIActionButton(T(UiText::SaveNew), 92.0f)) {
+        if (UIActionButton(T(UiText::SaveNew), 112.0f)) {
             OW::Config::DynamicFovPreset preset = editPreset;
             preset.id = NextDynamicFovPresetId();
             preset.name = NormalizeUiPresetName(
@@ -920,12 +932,14 @@ void DrawMiscScreenPage() {
     UIGroupBox(OW::Config::uiLanguage==1?"ESP / HUD 字体":"ESP / HUD fonts");
     auto fontInput=[&](const char* label,std::string& path) {
         char text[1024]{};std::snprintf(text,sizeof(text),"%s",path.c_str());
-        SettingRow(label);ImGui::SetNextItemWidth(-1);
+        SettingRow(label);PushControlWidth();
         if(ImGui::InputText("##fontPath",text,sizeof(text),ImGuiInputTextFlags_EnterReturnsTrue)){path=text;displayChanged=true;}
+        ImGui::PopItemWidth();
     };
     ImGui::PushID("latin");fontInput(OW::Config::uiLanguage==1?"西文字体":"Font",display.font);ImGui::PopID();
     ImGui::PushID("chinese");fontInput(OW::Config::uiLanguage==1?"中文回退字体":"Chinese fallback",display.chineseFont);ImGui::PopID();
-    if(ImGui::Button(OW::Config::uiLanguage==1?"恢复默认字体":"Restore default fonts")) {
+    SettingRow(OW::Config::uiLanguage==1?"默认字体":"Default fonts");
+    if(ImGui::Button(OW::Config::uiLanguage==1?"恢复默认字体":"Restore default fonts", ImVec2(0, ControlHeight()))) {
         display.font="C:/Windows/Fonts/consola.ttf";display.chineseFont="C:/Windows/Fonts/msyh.ttc";displayChanged=true;
     }
     ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"输入字体文件完整路径，按 Enter 应用；不影响菜单字体":"Enter a font file path and press Enter; menu fonts are separate");
@@ -1045,7 +1059,9 @@ void DrawHeroKeyPage() {
         drawHeroKeys(Action::Primary, Action::Jump);
     }, zh ? "移动与其他按键" : "Movement and other keys", [&]() {
         drawHeroKeys(Action::Jump, Action::Count);
-        if (UIActionButton(zh ? "恢复当前英雄默认键" : "Reset this hero to default keys", 0.0f)) {
+        SettingRow(zh ? "默认设置" : "Default keys");
+        const float avail = MaxFloat(80.0f, ImGui::GetContentRegionAvail().x - kControlRightPadding);
+        if (ImGui::Button(zh ? "恢复当前英雄默认键" : "Reset this hero to default keys", ImVec2(avail, ControlHeight()))) {
             settings.keys = kDefaultKeys;
             changed = true;
             UIKeyBindingCancelCapture();
@@ -1179,8 +1195,12 @@ void UI::DrawPredictionDataPage() {
     }
 
     const float iconSide = ImGui::GetFontSize() * 2.0f;
+    SettingRow(zh ? "武器与技能" : "Weapon / Skill");
+    const float stripContentWidth = static_cast<float>(cards.size()) *
+        (iconSide + 2.0f * ImGui::GetStyle().FramePadding.x + ImGui::GetStyle().ItemSpacing.x);
+    const bool needsScrollbar = stripContentWidth > ImGui::GetContentRegionAvail().x;
     const float rowHeight = iconSide + 2.0f * ImGui::GetStyle().FramePadding.y +
-        ImGui::GetStyle().ScrollbarSize + 10.0f;
+        (needsScrollbar ? ImGui::GetStyle().ScrollbarSize + 6.0f : 2.0f);
     ImGui::PushID(static_cast<int>(&hero - kHeroOptions));
     if (ImGui::BeginChild("##predictionActions", ImVec2(0.0f, rowHeight), false,
                           ImGuiWindowFlags_HorizontalScrollbar)) {
@@ -1214,8 +1234,11 @@ void UI::DrawPredictionDataPage() {
 
     PredictionProfile profile = *selected->profile;
     ImGui::PushID(profile.profileId.c_str());
-    ImGui::TextWrapped("%s", PredictionActionTitle(*selected));
-    ImGui::TextDisabled("%s %d", zh ? "配置版本" : "Config version", profile.configVersion);
+    SettingRow(zh ? "当前动作" : "Active action");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(PredictionActionTitle(*selected));
+    ImGui::SameLine(0, 10);
+    ImGui::TextDisabled("(%s %d)", zh ? "配置版本" : "Config version", profile.configVersion);
     bool changed = false;
 
     SettingRow(zh ? "投射速度" : "Projectile speed");

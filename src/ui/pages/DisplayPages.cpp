@@ -66,11 +66,12 @@ bool StyleDetails(Style& style,Element element) {
     const bool size=element==Element::Name||element==Element::BattleTag||element==Element::Health||element==Element::Resources||element==Element::Distance||element==Element::Avatar||element==Element::Skills||element==Element::Ultimate||element==Element::Prediction||element==Element::Offscreen||element==Element::Crosshair||element==Element::CenterArrow;
     const bool line=element==Element::Box||element==Element::Health||element==Element::Resources||element==Element::Skeleton||element==Element::Prediction||element==Element::Hitbox||element==Element::Snapline||element==Element::EyeRay||element==Element::Crosshair;
     bool changed=false;
-    if(size){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Size"),&style.size,6,80,"%.1f");}
-    if(element==Element::CenterArrow){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Ring Radius"),&style.radius,40,600,"%.0f px");}
-    if(line){ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat(L("Thickness"),&style.thickness,.5f,8,"%.1f px");}
-    ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("X",&style.offsetX,-300,300,"%.0f px");
-    ImGui::SetNextItemWidth(150);changed|=ImGui::SliderFloat("Y",&style.offsetY,-300,300,"%.0f px");
+    ImGui::Dummy(ImVec2(260.0f, 0.0f));
+    if(size){SettingRow(L("Size"), 92.0f);ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##size",&style.size,6,80,Number(1,""));}
+    if(element==Element::CenterArrow){SettingRow(L("Ring Radius"), 92.0f);ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##ringRadius",&style.radius,40,600,Number(0," px"));}
+    if(line){SettingRow(L("Thickness"), 92.0f);ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##thickness",&style.thickness,.5f,8,Number(1," px"));}
+    SettingRow("X", 92.0f);ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##offsetX",&style.offsetX,-300,300,Number(0," px"));
+    SettingRow("Y", 92.0f);ImGui::SetNextItemWidth(-FLT_MIN);changed|=UISlider("##offsetY",&style.offsetY,-300,300,Number(0," px"));
     return changed;
 }
 constexpr float kEspDetailsWidth = 26.0f;
@@ -80,7 +81,7 @@ void EspSettingRow(const char* label) {
     const float controls = ToggleWidth() + 4.0f * UI::kColorSwatchWidth + kEspDetailsWidth
         + ImGui::GetStyle().ItemSpacing.x * 5.0f;
     const float width = ImGui::GetContentRegionAvail().x;
-    const float labelWidth = (std::max)(64.0f, std::floor((width - controls) / scale));
+    const float labelWidth = (std::min)(kDefaultLabelWidth, (std::max)(64.0f, std::floor((width - controls) / scale)));
     SettingRow(label, labelWidth, controls);
 }
 
@@ -107,10 +108,10 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
         ImGui::Spacing();
         if(typeLabel){
             UI::Search::Anchor(typeLabel);
-            ImGui::TextDisabled("%s",L(typeLabel));
             const char* boxes[]={"Corner","Rectangle","Filled"};
             const char* names[]={"Hero Name","BattleTag","Hero / BattleTag"};
-            ImGui::SetNextItemWidth(220);
+            SettingRow(L(typeLabel), 92.0f);
+            ImGui::SetNextItemWidth(-FLT_MIN);
             changed|=UISelect(element==Element::Box?"##boxType":"##nameType",
                 element==Element::Box?&settings.boxType:&settings.nameType,element==Element::Box?boxes:names,3);
         }
@@ -118,8 +119,8 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
             const bool zh=OW::Config::uiLanguage==1;
             const char* styles[]={zh?"1 · ED 侧边细条":"1 · ED side line",zh?"2 · 框上方横条":"2 · Above box",zh?"3 · 游戏分类血条":"3 · Game resource pools"};
             int healthStyle=settings.healthBarStyle-1;
-            ImGui::TextDisabled("%s",zh?"血条样式":"Health Bar Style");
-            ImGui::SetNextItemWidth(220);
+            SettingRow(zh?"血条样式":"Health Bar Style", 92.0f);
+            ImGui::SetNextItemWidth(-FLT_MIN);
             if(UISelect("##healthBarStyle",&healthStyle,styles,3)){settings.healthBarStyle=healthStyle+1;changed=true;}
         }
         changed|=StyleDetails(style,element);
@@ -288,7 +289,11 @@ void Card(const char* title,const std::function<void()>& content) {
 }
 void Preview(const Settings& settings) {
     static bool visible=true;
-    UICheckbox(L("Visible"),&visible);ImGui::SameLine();ImGui::TextDisabled("%s",L("Example"));
+    SettingRow(OW::Config::uiLanguage == 1 ? "可见状态预览" : "Visible state");
+    UICheckbox(L("Visible"),&visible);
+    ImGui::SameLine(0, 8);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s",L("Example"));
     const ImVec2 p=ImGui::GetCursorScreenPos();
     const float width=ImGui::GetContentRegionAvail().x;
     ImGui::Dummy(ImVec2(width,320));
@@ -441,16 +446,17 @@ void UI::VisualsPage() {
     });
     Card("HUD",[&]{
         auto placement=[](const char* id,float& x,float& y,float* scale){ImGui::PushID(id);bool edited=false;
-            ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat("X",&x,0,1,"%.3f");ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat("Y",&y,0,1,"%.3f");
-            if(scale){ImGui::SetNextItemWidth(140);edited|=ImGui::SliderFloat(L("Scale"),scale,.35f,2.5f,"%.2fx");}ImGui::PopID();return edited;};
+            SettingRow("Horizontal position");PushControlWidth();edited|=UISlider("##x",&x,0,1,Number(3,""));ImGui::PopItemWidth();
+            SettingRow("Vertical position");PushControlWidth();edited|=UISlider("##y",&y,0,1,Number(3,""));ImGui::PopItemWidth();
+            if(scale){SettingRow("Scale");PushControlWidth();edited|=UISlider("##scale",scale,.35f,2.5f,Number(2,"x"));ImGui::PopItemWidth();}ImGui::PopID();return edited;};
         SettingRow("Top-left Info");UICheckbox("##info",&OW::Config::showOverlayInfo);
         changed|=placement("info",settings.infoX,settings.infoY,&settings.infoScale);
         SettingRow("Hero Status");UICheckbox("##heroStatus",&OW::Config::ult);
         const char* styles[]={"ED Compact","Custom Status"};SettingRow("Style");PushControlWidth();UISelect("##heroStyle",&OW::Config::heroStatusStyle,styles,2);ImGui::PopItemWidth();
-        placement("hero",OW::Config::heroStatusPosX,OW::Config::heroStatusPosY,&OW::Config::heroStatusScale);
+        changed|=placement("hero",OW::Config::heroStatusPosX,OW::Config::heroStatusPosY,&OW::Config::heroStatusScale);
         const char* teams[]={"All","Enemy","Ally"};SettingRow("Hero Status Team");PushControlWidth();UISelect("##roster",&OW::Config::ultimateRosterFilter,teams,3);ImGui::PopItemWidth();
         SettingRow("Behavior and Slots");UICheckbox("##slotStatus",&OW::Config::showSlotStatus);
-        placement("slots",OW::Config::slotPosX,OW::Config::slotPosY,nullptr);
+        changed|=placement("slots",OW::Config::slotPosX,OW::Config::slotPosY,nullptr);
     });
     ImGui::EndChild();
     if(changed)V2::HeroSettings::SetDisplay(std::move(settings));
@@ -468,31 +474,35 @@ static void DrawFovRingCard(OW::Config::FovRingSlotKind kind,
     char slotLabel[32] = {};
     std::snprintf(slotLabel, sizeof(slotLabel), L("Slot %d"), slotIndex + 1);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,10.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(12,12));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(14,12));
     ImGui::PushStyleColor(ImGuiCol_ChildBg,kColPanelSoft);
     ImGui::BeginChild("RingCard",ImVec2(0,0),
         ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY|ImGuiChildFlags_AlwaysAutoResize|ImGuiChildFlags_AlwaysUseWindowPadding,
         ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted(slotLabel);
+    ImGui::SameLine();
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(slotEnabled ? kColTextMuted : kColTextDim),
-                       "%s %.0f deg",
+                       "· %s %.0f deg",
                        slotEnabled ? L("On") : L("Off"),
                        OW::Config::ClampFovDeg(slotFovDeg));
 
     ImGui::Spacing();
+    constexpr float kRingLabelWidth = 72.0f;
+    SettingRow(L("Show"), kRingLabelWidth);
     changed |= UICheckbox(L("Show"), &style.visible);
-    ImGui::SameLine();
+    ImGui::SameLine(0, 8);
     changed |= UI::ColorPicker("##color",style.color);
     ImGui::SetItemTooltip("%s",L("Color"));
-    ImGui::TextDisabled("%s",L("Thickness"));
+    SettingRow(L("Thickness"), kRingLabelWidth);
     ImGui::SetNextItemWidth(-FLT_MIN);
     changed |= UISlider("##thickness", &style.thickness, 0.5f, 6.0f, Number(1, " px"));
 
     static const char* kLineStyles[] = { "Solid", "Dashed" };
-    ImGui::TextDisabled("%s",OW::Config::uiLanguage==1?"线型":"Line style");
+    SettingRow(OW::Config::uiLanguage==1?"线型":"Line style", kRingLabelWidth);
     ImGui::SetNextItemWidth(-FLT_MIN);
     changed |= UISelect("##lineStyle", &style.lineStyle, kLineStyles, IM_ARRAYSIZE(kLineStyles));
 
+    SettingRow(L("Label"), kRingLabelWidth);
     changed |= UICheckbox(L("Label"), &style.showLabel);
 
     if (changed)
@@ -508,16 +518,17 @@ static void DrawFovRingStyleGroup(OW::Config::FovRingSlotKind kind,
                                   const HeroOption& selectedHero) {
     ImGui::TextUnformatted(L("Aim Slot Rings"));
     ImGui::Spacing();
+    const int slotCount = selectedHero.heroId == 0
+        ? OW::Config::kMaxHeroPresetSlots
+        : ImClamp(OW::Config::GetHeroAimSlotCount(selectedHero.heroId),
+            1,
+            OW::Config::kMaxHeroPresetSlots);
     const float scale=(std::max)(1.f,ImGui::GetFontSize()/15.f);
     const float gap=12.f*scale;
-    const int columns=std::clamp(int((ImGui::GetContentRegionAvail().x+gap)/(190.f*scale+gap)),1,4);
+    const int maxColumns = (std::min)(4, (std::max)(1, slotCount));
+    const int columns=std::clamp(int((ImGui::GetContentRegionAvail().x+gap)/(190.f*scale+gap)),1,maxColumns);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(gap*.5f,gap*.5f));
     if(ImGui::BeginTable("FovRingCards",columns,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_NoPadOuterX)) {
-        const int slotCount = selectedHero.heroId == 0
-            ? OW::Config::kMaxHeroPresetSlots
-            : ImClamp(OW::Config::GetHeroAimSlotCount(selectedHero.heroId),
-                1,
-                OW::Config::kMaxHeroPresetSlots);
 
         for (int slotIndex = 0; slotIndex < slotCount; ++slotIndex) {
             OW::Config::HeroSlotPreset slot{};

@@ -445,6 +445,15 @@ namespace {
 
     struct RocketPunchRuntime {
         DoomfistPunch::ChargeSession charge{};
+        DoomfistPunch::EmpowermentEstimate empowerment{};
+        uint32_t ultimateSampleTick = 0;
+        uint32_t blockSampleTick = 0;
+        uint64_t punchMotionUntil = 0;
+        float lastUltimate = 0.0f;
+        bool blockActive = false;
+        bool primaryWasUp = false;
+        bool punchMotionObserved = false;
+        int stateSource = Config::kPunchStateInferred;
         std::string maskKey;
         uint64_t generation = 0;
         uint64_t scene = 0;
@@ -4022,15 +4031,16 @@ namespace {
     }
 
     SkillAimCandidate FindRocketPunchCandidate(const Config::HeroSkillSettings& settings,
-                                               const c_entity& local, float fraction)
+                                               const c_entity& local, float fraction, bool empowered)
     {
         SkillAimCandidate best{};
         const Vector3 source = SourcePositionForAction(local);
         if (!IsUsablePosition(source) || !IsUsablePosition(local.pos))
             return best;
-        // shortcut: conservative normal-punch reach estimate; calibrate against live charge data.
-        const float reach = (std::min)(settings.distance, 20.0f * fraction);
-        const float speed = 15.0f + 20.0f * fraction;
+        // shortcut: conservative reach ramp; calibrate against live charge data.
+        const float scale = empowered ? DoomfistPunch::kEmpoweredMultiplier : 1.0f;
+        const float reach = (std::min)(settings.distance, DoomfistPunch::kNormalMaxReach * fraction * scale);
+        const float speed = DoomfistPunch::kNormalSpeed * scale;
         const auto fov = TargetingDetail::SnapshotFovRuntimeContext();
         const auto entities = TargetingDetail::SnapshotEntities();
         float bestScore = (std::numeric_limits<float>::max)();
@@ -4073,6 +4083,50 @@ namespace {
         return best;
     }
 
+    void ObserveRocketPunchEmpowerment(RocketPunchRuntime& runtime, const c_entity& local,
+                                       uint64_t now, bool primaryAvailable, bool primaryDown)
+    {
+        const auto tick = static_cast<uint32_t>(now);
+        const auto ultimateTick = local.display_ultimate_tick;
+        if (SkillConditions::FreshSample(ultimateTick, tick) && std::isfinite(local.ultimate) &&
+            ultimateTick != runtime.ultimateSampleTick) {
+            if (runtime.ultimateSampleTick && uint32_t(ultimateTick - runtime.ultimateSampleTick) <= 1000 &&
+                runtime.lastUltimate >= 100.0f && local.ultimate >= 0.0f && local.ultimate <= 10.0f) {
+                runtime.empowerment.MeteorActivated(now - uint32_t(tick - ultimateTick));
+            }
+            runtime.ultimateSampleTick = ultimateTick;
+            runtime.lastUltimate = local.ultimate;
+        }
+        if (primaryAvailable && primaryDown && runtime.primaryWasUp)
+            runtime.empowerment.MeteorConfirmed(now);
+        runtime.primaryWasUp = primaryAvailable && !primaryDown;
+        runtime.empowerment.Advance(now);
+
+        const auto blockTick = local.skill_active_tick_ms[1];
+        if (!SkillConditions::FreshSample(blockTick, tick)) {
+            runtime.blockSampleTick = 0;
+        } else if (blockTick != runtime.blockSampleTick) {
+            const auto at = now - uint32_t(tick - blockTick);
+            if (!runtime.blockActive && local.skill2act)
+                runtime.empowerment.PowerBlockStarted(at);
+            if (!local.skill2act)
+                runtime.empowerment.PowerBlockEnded(at);
+            runtime.blockSampleTick = blockTick;
+            runtime.blockActive = local.skill2act;
+        }
+
+        // A short movement window after release also covers a manually released punch.
+        // The right-button cooldown itself is not currently published by the reader.
+        if (runtime.punchMotionUntil && now <= runtime.punchMotionUntil &&
+            local.last_hot_read_tick_ms && uint32_t(tick - local.last_hot_read_tick_ms) <= 50 &&
+            !local.skill1act && !local.skill2act && IsFiniteVector(local.velocity) &&
+            DoomfistPunch::HorizontalDistance(local.velocity.X, local.velocity.Z) >= 30.0f) {
+            runtime.empowerment.PunchCooldownStarted(now);
+            runtime.punchMotionUntil = 0;
+            runtime.punchMotionObserved = true;
+        }
+    }
+
     void EvaluateRocketPunch(const std::string& runtimeKey,
                              const Config::HeroSkillSettings& settings,
                              const c_entity& local)
@@ -4086,11 +4140,12 @@ namespace {
         const auto connection = ProcessConnection::ConnectionEpoch();
         const auto scene = EntitySceneGeneration();
         if (runtime.generation != applied.generation || runtime.connection != connection ||
-            runtime.scene != scene) {
+            runtime.scene != scene || runtime.stateSource != settings.punchStateSource) {
             CancelRocketPunch();
             runtime.generation = applied.generation;
             runtime.connection = connection;
             runtime.scene = scene;
+            runtime.stateSource = settings.punchStateSource;
             runtime.maskKey = runtimeKey + ":physical_rmb_mask";
         }
         const uint64_t now = GetTickCount64();
@@ -4104,6 +4159,10 @@ namespace {
                 Diagnostics::Info("doomfist.punch blocked reason=mask_or_scene_unavailable dryRun=%d", Config::aimDryRun);
             return;
         }
+        const auto leftSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Primary));
+        const bool inferEmpowerment = runtime.stateSource == Config::kPunchStateInferred;
+        if (inferEmpowerment)
+            ObserveRocketPunchEmpowerment(runtime, local, now, leftSample.available, leftSample.down);
         if (runtime.masked) {
             // Never use DMA KeyState here: our own mask makes the game see RMB up.
             if (DoomfistPunch::RestoreMouseAfterRelease(now - runtime.releasedAtMs,
@@ -4123,6 +4182,12 @@ namespace {
         // Allow the mask restoration and the next DMA poll to settle before accepting an up sample.
         if (runtime.unmaskedAtMs != 0 && now - runtime.unmaskedAtMs < 100)
             return;
+        if (inferEmpowerment && runtime.empowerment.MeteorLandingPending()) {
+            runtime.charge = {};
+            runtime.punchMotionUntil = 0;
+            g_rocketPunchOwnsAim.store(false, std::memory_order_release);
+            return;
+        }
         const auto rightSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Secondary));
         const auto assistSample = KeyState::SampleVk(Labels::AimActivationKeyVk(settings.key));
         if (!rightSample.available || !assistSample.available) {
@@ -4131,7 +4196,10 @@ namespace {
             return;
         }
         const bool rightDown = rightSample.down;
-        const auto leftSample = KeyState::SampleVk(V2::HeroSettings::Key(local.HeroID,V2::HeroSettings::Action::Primary));
+        if (rightDown && !runtime.charge.charging && runtime.charge.armed) {
+            runtime.punchMotionObserved = false;
+            runtime.punchMotionUntil = 0;
+        }
         const unsigned cancelInputs = (leftSample.available && leftSample.down ? 1u : 0u) |
             (AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ability1)) ? 2u : 0u) |
             (AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(local.HeroID, V2::HeroSettings::Action::Ability2)) ? 4u : 0u) |
@@ -4140,6 +4208,15 @@ namespace {
             Diagnostics::Info("doomfist.punch blocked reason=cancel_input keys=0x%X elapsedMs=%llu",
                 cancelInputs, runtime.charge.charging ? now-runtime.charge.startedMs : 0);
             runtime.charge.Block();
+        }
+        if (inferEmpowerment && runtime.charge.charging &&
+            !cancelInputs && !runtime.charge.released &&
+            !runtime.punchMotionObserved && runtime.charge.blockReason != DoomfistPunch::BlockReason::CancelInput) {
+            if (!rightDown) {
+                runtime.punchMotionUntil = now + 200;
+            } else if (now - runtime.charge.startedMs >= 1'600 && !runtime.punchMotionUntil) {
+                runtime.punchMotionUntil = runtime.charge.startedMs + 2'100;
+            }
         }
         const bool assistHeld = assistSample.down;
         const bool wasBlocked = runtime.charge.blocked;
@@ -4166,7 +4243,8 @@ namespace {
         const float elapsed = static_cast<float>(now - runtime.charge.startedMs);
         const float fraction = DoomfistPunch::ChargeFraction(elapsed, settings.punchFullChargeMs);
         ScopedTrackingConfig trackingOverride(settings.tracking);
-        const auto candidate = FindRocketPunchCandidate(settings, local, fraction);
+        const bool empowered = inferEmpowerment && runtime.empowerment.Empowered(now);
+        const auto candidate = FindRocketPunchCandidate(settings, local, fraction, empowered);
         if (!candidate.valid || settings.tracking.fov <= 0.0f || settings.tracking.speedScale <= 0.0f) {
             if (ShouldLogSkillGuard(runtimeKey + ":punch_target"))
                 Diagnostics::Info("doomfist.punch waiting reason=no_eligible_target_or_aim_disabled elapsedMs=%.1f fraction=%.3f", elapsed, fraction);
@@ -4202,11 +4280,14 @@ namespace {
         const bool beforeDeadline = static_cast<float>(runtime.releasedAtMs - runtime.charge.startedMs) <
             settings.punchMaxHoldMs - settings.punchReleaseLeadMs;
         const bool released = beforeDeadline && ReleaseRocketPunchInput(runtimeKey, runtime.generation);
-        if (released)
+        if (released) {
             runtime.charge.MarkReleased();
-        Diagnostics::Info("doomfist.punch release accepted=%d targetIndex=%d distance=%.2f chargeMs=%llu yawErrorDeg=%.3f deadline=%d",
+            if (inferEmpowerment)
+                runtime.punchMotionUntil = runtime.releasedAtMs + 200;
+        }
+        Diagnostics::Info("doomfist.punch release accepted=%d targetIndex=%d distance=%.2f chargeMs=%llu yawErrorDeg=%.3f deadline=%d empoweredEstimate=%d",
             released, candidate.entityIndex, candidate.distance,
-            runtime.releasedAtMs-runtime.charge.startedMs, yawError*kRadToDeg, beforeDeadline);
+            runtime.releasedAtMs-runtime.charge.startedMs, yawError*kRadToDeg, beforeDeadline, empowered);
         if (!released) {
             const bool restored = ReleasePhysicalMouseMaskLease(runtime.maskKey,
                 OutputOwnerSource::HeroTimedAction, runtime.generation);
@@ -4569,6 +4650,7 @@ SkillConditions::ObservationNeeds HeroSkillObservationNeeds()
             definition.automation==SkillAutomation::LucioSong ||
             (definition.automation==SkillAutomation::ProjectileDefense && definition.heroId==eHero::HERO_DVA);
         needs.localSkills |= SkillControls(definition, HeroSkillControls::TrajectoryAction) || settings.cooldownGuard || SkillControls(definition, HeroSkillControls::PausePolicy) ||
+            (SkillControls(definition, HeroSkillControls::PunchAssist) && settings.punchStateSource == Config::kPunchStateInferred) ||
             definition.automation==SkillAutomation::RecastReturn || definition.automation==SkillAutomation::GenjiBlade ||
             definition.automation==SkillAutomation::RecentDamageDeflect || definition.automation==SkillAutomation::HealthSurvival;
         const std::string id = definition.skillId;

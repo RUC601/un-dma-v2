@@ -148,19 +148,21 @@ void UI::TriggerPage() {
                                   kTeam, IM_ARRAYSIZE(kTeam));
         ImGui::PopItemWidth();
 
-        SettingRow(L("Ally key"));
-        PushControlWidth();
-        presetChanged |= UIKeyBinding("##allyKey", &activePreset.allyKey,
-                                      KeyBindingStorage::AimActivationIndex);
-        ImGui::PopItemWidth();
-        SettingRow(L("Ally HP limit"));
-        PushControlWidth();
-        presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
-        ImGui::PopItemWidth();
-        SettingRow(L("Ally skeleton"));
-        PushControlWidth();
-        presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
-        ImGui::PopItemWidth();
+        if (activePreset.targetTeam != 0) {
+            SettingRow(L("Ally key"));
+            PushControlWidth();
+            presetChanged |= UIKeyBinding("##allyKey", &activePreset.allyKey,
+                                          KeyBindingStorage::AimActivationIndex);
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally HP limit"));
+            PushControlWidth();
+            presetChanged |= UISlider("##allyHp", &activePreset.allyHealthMaxPercent,0.f,100.f,Number(0," %"));
+            ImGui::PopItemWidth();
+            SettingRow(L("Ally skeleton"));
+            PushControlWidth();
+            presetChanged |= UISkeletonBoneMultiSelect("##allyBones",&activePreset.allyBoneMask);
+            ImGui::PopItemWidth();
+        }
         SettingRow(L("Protection filter"));
         presetChanged |= UICheckbox("##targetableFilter",&activePreset.requireTargetable);
         if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",L("Existing protection signals; full targetability pending validation."));
@@ -181,9 +183,12 @@ void UI::TriggerPage() {
         ImGui::PopItemWidth();
     }, "Target preference", [&]() {
         presetChanged |= UI::AimPlanEditor::Policy(activePreset, false);
+        SettingRow(OW::Config::uiLanguage == 1 ? "高阶参数" : "Advanced");
+        const float avail = MaxFloat(80.0f, ImGui::GetContentRegionAvail().x - kControlRightPadding);
+        if (ImGui::Button(L("Edit advanced parameters..."), ImVec2(avail, ControlHeight())))
+            ImGui::OpenPopup("##TriggerAdvanced");
     });
 
-    if(ImGui::Button(L("Edit advanced parameters...")))ImGui::OpenPopup("##TriggerAdvanced");
     const auto viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowSizeConstraints(ImVec2(300,180),ImVec2(viewport->WorkSize.x-24,viewport->WorkSize.y-24));
     ImGui::SetNextWindowSize(ImVec2((std::min)(650.f,viewport->WorkSize.x-24),380),ImGuiCond_Appearing);

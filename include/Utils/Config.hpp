@@ -1768,6 +1768,7 @@ namespace OW { namespace Config {
 
     enum AutoMeleeHealthMode { kMeleeAnyHealth = 0, kMeleeHealthPercent = 1, kMeleeHealthAbsolute = 2 };
     enum ZaryaAmmoSource { kZaryaAmmoLeftHoldEstimate = 0, kZaryaAmmoHudRecognition = 1 };
+    enum PunchStateSource { kPunchStateInferred = 0, kPunchStateDirect = 1 };
 
     struct HeroSkillSettings {
         bool enabled = false;
@@ -1824,6 +1825,7 @@ namespace OW { namespace Config {
         float punchFullChargeMs = 1000.0f;
         float punchMaxHoldMs = 2000.0f; // estimated total hold until automatic release; calibrate in game
         float punchReleaseLeadMs = 80.0f;
+        int punchStateSource = kPunchStateInferred;
         bool healthTriggerEnabled = true;
         bool threatTriggerEnabled = true;
         int normalThreatMask = 15;
@@ -1954,8 +1956,6 @@ namespace OW { namespace Config {
                                            const std::string& skillId,
                                            const HeroSkillSettings& defaultSettings);
     void SetHeroSkillSettings(uint64_t heroId, const std::string& skillId, const HeroSkillSettings& settings);
-    void SaveHeroPresets(const std::string& path);
-    void LoadHeroPresets(const std::string& path);
     bool SaveConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase);
     void LoadConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase);
     void NormalizeOutputPorts();

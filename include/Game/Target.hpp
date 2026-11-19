@@ -431,6 +431,25 @@ namespace OW {
             return OW::SnapshotCameraPosition();
         }
 
+        inline Vector3 SnapshotLaunchPoint() {
+            const Vector3 sampledPoint = CameraPosition();
+            if (!FovGeometry::IsFiniteVector(sampledPoint))
+                return sampledPoint;
+            uint64_t sampledAtMs = 0;
+            if (consumerFrame)
+                sampledAtMs = consumerFrame->cameraSample.lastSuccessfulSampleMs;
+            else {
+                std::lock_guard<std::mutex> lock(g_viewMatrixMutex);
+                sampledAtMs = viewMatrixSampleState.lastSuccessfulSampleMs;
+            }
+            const uint64_t nowMs = GetTickCount64();
+            if (!sampledAtMs || nowMs < sampledAtMs)
+                return sampledPoint;
+            const c_entity local = OW::SnapshotLocalEntity();
+            return ExtrapolateLaunchPoint(sampledPoint, local.velocity,
+                static_cast<float>(nowMs - sampledAtMs));
+        }
+
         using FovRuntimeContext = FovGeometry::RuntimeContext;
 
         inline bool IsFiniteVector(const Vector3& value) {

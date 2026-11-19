@@ -79,11 +79,11 @@ void Apply() {
     style.GrabRounding      = 4.0f;
     style.TabRounding       = 0.0f;
     style.WindowBorderSize  = 0.0f;
-    style.FrameBorderSize   = 0.0f;
+    style.FrameBorderSize   = 1.0f;
     style.PopupRounding     = 8.0f;
     style.PopupBorderSize   = 1.0f;
     style.WindowPadding     = ImVec2(0, 0);
-    style.FramePadding      = ImVec2(8*scale,4*scale);
+    style.FramePadding      = ImVec2(8*scale,5*scale);
     style.ItemSpacing       = ImVec2(8*scale,6*scale);
     style.ItemInnerSpacing  = ImVec2(6*scale,4*scale);
     style.ScrollbarSize     = 7.0f*scale;

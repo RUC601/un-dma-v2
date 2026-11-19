@@ -202,21 +202,6 @@ namespace OW { namespace Config {
             return slash == std::string::npos ? "." : path.substr(0, slash);
         }
 
-        std::string CurrentDirectoryPathRaw()
-        {
-            std::vector<char> buffer(MAX_PATH);
-            DWORD length = GetCurrentDirectoryA(static_cast<DWORD>(buffer.size()), buffer.data());
-            while (length >= buffer.size()) {
-                buffer.resize(static_cast<size_t>(length) + 1);
-                length = GetCurrentDirectoryA(static_cast<DWORD>(buffer.size()), buffer.data());
-            }
-
-            if (length == 0)
-                return ".";
-
-            return std::string(buffer.data(), length);
-        }
-
         bool SamePathText(std::string lhs, std::string rhs)
         {
             std::replace(lhs.begin(), lhs.end(), '/', '\\');
@@ -228,28 +213,6 @@ namespace OW { namespace Config {
             return lhs == rhs;
         }
 
-        FILETIME LastWriteTimeOrZero(const std::string& path)
-        {
-            WIN32_FILE_ATTRIBUTE_DATA data{};
-            if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data))
-                return FILETIME{};
-            return data.ftLastWriteTime;
-        }
-
-        bool FileTimeGreater(FILETIME lhs, FILETIME rhs)
-        {
-            return CompareFileTime(&lhs, &rhs) > 0;
-        }
-
-        std::string HeroSidecarFileName(const std::string& profileFileName)
-        {
-            const size_t dot = profileFileName.find_last_of('.');
-            const std::string stem = dot == std::string::npos
-                ? profileFileName
-                : profileFileName.substr(0, dot);
-            return stem + ".heroes.json";
-        }
-
         void AddUniquePath(std::vector<std::string>& paths, const std::string& path)
         {
             for (const std::string& existing : paths) {
@@ -259,71 +222,6 @@ namespace OW { namespace Config {
             paths.emplace_back(path);
         }
 
-        void CopyNewestLegacyFile(const std::vector<std::string>& sourceDirectories,
-                                  const std::string& targetDirectory,
-                                  const std::string& fileName)
-        {
-            const std::string targetPath = JoinPathRaw(targetDirectory, fileName);
-            if (PathIsRegularFile(targetPath))
-                return;
-
-            std::string newestSource;
-            FILETIME newestTime{};
-            for (const std::string& sourceDirectory : sourceDirectories) {
-                const std::string sourcePath = JoinPathRaw(sourceDirectory, fileName);
-                if (!PathIsRegularFile(sourcePath))
-                    continue;
-
-                const FILETIME writeTime = LastWriteTimeOrZero(sourcePath);
-                if (newestSource.empty() || FileTimeGreater(writeTime, newestTime)) {
-                    newestSource = sourcePath;
-                    newestTime = writeTime;
-                }
-            }
-
-            if (!newestSource.empty())
-                CopyFileA(newestSource.c_str(), targetPath.c_str(), TRUE);
-        }
-
-        void MigrateLegacyConfigFiles(const std::string& targetDirectory)
-        {
-            static bool migrated = false;
-            if (migrated)
-                return;
-            migrated = true;
-
-            std::vector<std::string> sourceDirectories;
-            AddUniquePath(sourceDirectories, ExecutableDirectoryPath());
-            AddUniquePath(sourceDirectories, CurrentDirectoryPathRaw());
-
-            std::vector<std::string> profileNames;
-            for (const std::string& sourceDirectory : sourceDirectories) {
-                WIN32_FIND_DATAA findData{};
-                const std::string searchPath = JoinPathRaw(sourceDirectory, "*.ini");
-                HANDLE findHandle = FindFirstFileA(searchPath.c_str(), &findData);
-                if (findHandle == INVALID_HANDLE_VALUE)
-                    continue;
-
-                do {
-                    if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
-                        _stricmp(findData.cFileName, "app-state.ini") != 0) {
-                        const std::string profileName = findData.cFileName;
-                        if (std::find(profileNames.begin(), profileNames.end(), profileName) == profileNames.end())
-                            profileNames.emplace_back(profileName);
-                    }
-                } while (FindNextFileA(findHandle, &findData));
-                FindClose(findHandle);
-            }
-
-            if (std::find(profileNames.begin(), profileNames.end(), "config.ini") == profileNames.end())
-                profileNames.emplace_back("config.ini");
-
-            for (const std::string& profileName : profileNames) {
-                CopyNewestLegacyFile(sourceDirectories, targetDirectory, profileName);
-                CopyNewestLegacyFile(sourceDirectories, targetDirectory, HeroSidecarFileName(profileName));
-            }
-        }
-
     } // anonymous namespace
 
     std::string ConfigDirectoryPath()
@@ -331,7 +229,6 @@ namespace OW { namespace Config {
         const std::string directory = JoinPathRaw(ExecutableDirectoryPath(), "config");
         if (!PathIsDirectory(directory))
             CreateDirectoryA(directory.c_str(), nullptr);
-        MigrateLegacyConfigFiles(directory);
         return directory;
     }
 
@@ -1082,24 +979,6 @@ namespace OW { namespace Config {
             return value;
         }
 
-        uint64_t ReadUInt64(const IniFile& ini, const char* section, const char* key, uint64_t def)
-        {
-            std::string raw;
-            if (!ini.TryGet(section, key, raw)) {
-                LogDefault(section, key, ToText(def));
-                return def;
-            }
-
-            uint64_t value = def;
-            if (!ParseStrictUint64(raw, value)) {
-                LogInvalid(section, key, raw, ToText(def));
-                return def;
-            }
-
-            LogLoaded(section, key, ToText(value));
-            return value;
-        }
-
         bool ReadBool(const IniFile& ini, const char* section, const char* key, bool def)
         {
             std::string raw;
@@ -1222,18 +1101,6 @@ namespace OW { namespace Config {
             return true;
         }
 
-        bool DeleteSection(const std::string& path, const char* section)
-        {
-            if (capturedConfig) return true;
-            if (!WritePrivateProfileStringA(section, nullptr, nullptr, path.c_str())) {
-                LogConfig(Diagnostics::LogLevel::Warn,
-                    "Failed to delete [%s] from %s (GetLastError=%lu).",
-                    section, path.c_str(), static_cast<unsigned long>(GetLastError()));
-                return PersistenceFailure(path, "Delete INI section");
-            }
-            return true;
-        }
-
         bool DeleteValue(const std::string& path, const char* section, const char* key)
         {
             if (capturedConfig) return true;
@@ -1251,11 +1118,6 @@ namespace OW { namespace Config {
             char buffer[64] = {};
             std::snprintf(buffer, sizeof(buffer), "%d", value);
             WriteValue(path, section, key, buffer);
-        }
-
-        void WriteUInt64Value(const std::string& path, const char* section, const char* key, uint64_t value)
-        {
-            WriteValue(path, section, key, ToText(value).c_str());
         }
 
         void WriteBoolValue(const std::string& path, const char* section, const char* key, bool value)
@@ -2238,6 +2100,7 @@ namespace OW { namespace Config {
             settings.punchFullChargeMs = std::clamp(settings.punchFullChargeMs, 200.0f, 2000.0f);
             settings.punchMaxHoldMs = std::clamp(settings.punchMaxHoldMs, settings.punchFullChargeMs + 100.0f, 5000.0f);
             settings.punchReleaseLeadMs = std::clamp(settings.punchReleaseLeadMs, 20.0f, settings.punchMaxHoldMs - 50.0f);
+            settings.punchStateSource = settings.punchStateSource == kPunchStateDirect ? kPunchStateDirect : kPunchStateInferred;
             return settings;
         }
 
@@ -3460,368 +3323,6 @@ namespace OW { namespace Config {
             ApplyHeroTriggerPresetUnlocked(rawPreset);
         }
 
-        HeroSlotPreset ReadHeroPresetSectionUnlocked(const IniFile& ini, const char* section,
-                                                     HeroSlotPreset defaults, int slotIndex,
-                                                     bool storedBoneUsesLegacyPresetIndex,
-                                                     bool legacyFovApertureValues,
-                                                     bool legacyAimBehaviorValues)
-        {
-            HeroSlotPreset slot = defaults;
-            slot.preset.releaseConfigVersion=0;
-            slot.name = NormalizeHeroSlotName(
-                ReadString(ini, section, "name", DefaultHeroSlotName(slotIndex).c_str()),
-                slotIndex);
-            ParseStrictUint64(ReadString(ini, section, "stableId", "0"), slot.stableId);
-            const bool hasPresentKey = KeyExists(ini, section, "present");
-            slot.enabled = ReadBool(ini, section, "enabled", slot.enabled);
-            slot.present = hasPresentKey
-                ? ReadBool(ini, section, "present", slot.present)
-                : slot.enabled;
-            slot.scopeRequirement = NormalizeAimScopeRequirement(ReadInt(
-                ini,
-                section,
-                "scopeRequirement",
-                static_cast<int>(slot.scopeRequirement)));
-            slot.preset.fov = ReadFov2Compat(ini, section, "fov", slot.preset.fov, legacyFovApertureValues);
-            slot.preset.fovMode = ReadInt(ini, section, "fovMode", slot.preset.fovMode);
-            slot.preset.dynamicFovPresetId = ReadInt(ini, section, "dynamicFovPresetId", slot.preset.dynamicFovPresetId);
-            slot.preset.smooth = ReadFov2Compat(ini, section, "smooth", slot.preset.smooth);
-            slot.preset.bone = ReadInt(ini, section, "bone", slot.preset.bone);
-            if (storedBoneUsesLegacyPresetIndex)
-                slot.preset.bone = LegacyPresetBoneToAimBone(slot.preset.bone);
-            slot.preset.autoBone = ReadBool(ini, section, "autoBone", slot.preset.autoBone);
-            slot.preset.aimBoneMask = KeyExists(ini, section, "aimBoneMask")
-                ? static_cast<SkeletonBoneMask>(ReadInt(
-                    ini, section, "aimBoneMask", static_cast<int>(slot.preset.aimBoneMask)))
-                : AimBoneMaskFromLegacy(slot.preset.bone, slot.preset.autoBone);
-            slot.preset.boneSelectionMode = std::clamp(ReadInt(ini, section, "boneSelectionMode", slot.preset.boneSelectionMode), 0, 2);
-            slot.preset.preferredBone = NormalizeAimBone(ReadInt(ini, section, "preferredBone", slot.preset.preferredBone));
-            slot.preset.hitbox = ReadHitboxScaleCompat(
-                ini,
-                section,
-                "hitboxScale",
-                "hitbox",
-                slot.preset.hitbox);
-            slot.preset.aimMode = ReadInt(ini, section, "aimMode", slot.preset.aimMode);
-            const bool hasAimBehavior = KeyExists(ini, section, "aimBehavior");
-            slot.preset.aimBehavior = NormalizeAimBehaviorForLoad(ReadInt(
-                ini,
-                section,
-                "aimBehavior",
-                hasAimBehavior ? slot.preset.aimBehavior : slot.preset.aimMode),
-                legacyAimBehaviorValues);
-            slot.preset.aimBehaviorPresetId = ReadInt(
-                ini,
-                section,
-                "aimBehaviorPresetId",
-                slot.preset.aimBehaviorPresetId);
-            slot.preset.aimMethod = ReadInt(ini, section, "aimMethod", slot.preset.aimMethod);
-            slot.preset.smoothType = ReadInt(ini, section, "aimbotSmoothType", slot.preset.smoothType);
-            slot.preset.pidP = ReadFixedFloat(ini, section, "aimPidP", slot.preset.pidP);
-            slot.preset.pidI = ReadFixedFloat(ini, section, "aimPidI", slot.preset.pidI);
-            slot.preset.pidD = ReadFixedFloat(ini, section, "aimPidD", slot.preset.pidD);
-            slot.preset.pidMaxIntegral = ReadFixedFloat(ini, section, "aimPidMaxIntegral", slot.preset.pidMaxIntegral);
-            slot.preset.pidDeadzone = ReadFixedFloat(ini, section, "aimPidDeadzone", slot.preset.pidDeadzone);
-            slot.preset.bezierControlPoints = ReadInt(ini, section, "aimBezierControlPoints", slot.preset.bezierControlPoints);
-            slot.preset.bezierCurvature = ReadFixedFloat(ini, section, "aimBezierCurvature", slot.preset.bezierCurvature);
-            slot.preset.bezierSpeed = ReadFixedFloat(ini, section, "aimBezierSpeed", slot.preset.bezierSpeed);
-            if (KeyExists(ini, section, "key"))
-                slot.preset.key = ReadInt(ini, section, "key", slot.preset.key);
-            else
-                slot.preset.key = ReadInt(ini, section, "aim_key", slot.preset.key);
-            const bool hasAutoshot = KeyExists(ini, section, "aimbotAutoshot");
-            const bool hasKeepFiring = KeyExists(ini, section, "aimbotKeepFiring");
-            slot.preset.autoshot = ReadBool(ini, section, "aimbotAutoshot", slot.preset.autoshot);
-            slot.preset.keepFiring = ReadBool(ini, section, "aimbotKeepFiring", slot.preset.keepFiring);
-            slot.preset.requireActionHeld = ReadBool(
-                ini,
-                section,
-                "requireActionHeld",
-                slot.preset.requireActionHeld);
-            slot.preset.prediction = ReadBool(ini, section, "prediction", slot.preset.prediction);
-            const bool hasPredictionMode = KeyExists(ini, section, "aimbotPredictionMode");
-            slot.preset.predictionMode = ReadInt(
-                ini,
-                section,
-                "aimbotPredictionMode",
-                hasPredictionMode ? slot.preset.predictionMode : (slot.preset.prediction ? 1 : 2));
-            slot.preset.predictionAlgorithm = OW::ClampPredictionAlgorithm(ReadInt(
-                ini, section, "predictionAlgorithm", slot.preset.predictionAlgorithm));
-            slot.preset.predictFovEntry = ReadBool(ini, section, "predictFovEntry", slot.preset.predictFovEntry);
-            slot.preset.fovEntryPredictionMs = ReadFixedFloat(ini, section, "fovEntryPredictionMs", slot.preset.fovEntryPredictionMs);
-            slot.preset.fovEntryMaxOutsideDeg = ReadFixedFloat(ini, section, "fovEntryMaxOutsideDeg", slot.preset.fovEntryMaxOutsideDeg);
-            const bool hasFirePolicy = KeyExists(ini, section, "aimbotFirePolicy");
-            slot.preset.firePolicy = ResolveFirePolicyWithLegacyFallback(
-                ReadInt(ini, section, "aimbotFirePolicy", slot.preset.firePolicy),
-                slot.preset.aimBehavior,
-                hasFirePolicy,
-                hasKeepFiring,
-                slot.preset.keepFiring,
-                hasAutoshot,
-                slot.preset.autoshot);
-            slot.preset.maxHeadDistance = ReadFixedFloat(ini, section, "aimbotMaxHead", slot.preset.maxHeadDistance);
-            slot.preset.stickiness = ReadFixedFloat(ini, section, "aimbotStickiness", slot.preset.stickiness);
-            slot.preset.pitchScale = ReadFixedFloat(ini, section, "aimbotPitchScale", slot.preset.pitchScale);
-            slot.preset.priority = ReadInt(ini, section, "priority", slot.preset.priority);
-            slot.preset.targetTeam = ReadInt(ini, section, "targetTeam", slot.preset.targetTeam);
-            slot.preset.maxAimTime = ReadFixedFloat(ini, section, "aimbotMaxAim", slot.preset.maxAimTime);
-            slot.preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", slot.preset.minCharge);
-            slot.preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", slot.preset.maxCharge);
-            slot.preset.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "visibilityMode", "aimbotIgnoreInvisible", slot.preset.ignoreInvisible));
-            slot.preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
-            slot.preset.traceCondition = ReadInt(ini, section, "aimbotTrace", slot.preset.traceCondition);
-            slot.preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", slot.preset.unlockCondition);
-            slot.preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", slot.preset.lockTime);
-            slot.preset.maxDistance = ReadFixedFloat(ini, section, "aimbotMaxDist", slot.preset.maxDistance);
-            slot.preset.minDistance = ReadFixedFloat(ini, section, "aimbotMinDist", slot.preset.minDistance);
-            slot.preset.maxTargetSpeedMps = ReadFixedFloat(ini, section, "maxTargetSpeedMps", slot.preset.maxTargetSpeedMps);
-            slot.preset.trackingDeadzone = ReadFixedFloat(ini, section, "trackingDeadzone", slot.preset.trackingDeadzone);
-            slot.preset.flickShotClampMs = ReadFixedFloat(ini, section, "flickShotClampMs", slot.preset.flickShotClampMs);
-            slot.preset.flickPostFireDelayMs = ReadFixedFloat(ini, section, "flickPostFireDelayMs", slot.preset.flickPostFireDelayMs);
-            slot.preset.magneticShotIntervalMs = ReadFixedFloat(ini, section, "magneticShotIntervalMs", slot.preset.magneticShotIntervalMs);
-            slot.preset.magneticPostFirePauseMs = ReadFixedFloat(ini, section, "magneticPostFirePauseMs", slot.preset.magneticPostFirePauseMs);
-            slot.preset.magneticRecoveryMs = ReadFixedFloat(ini, section, "magneticRecoveryMs", slot.preset.magneticRecoveryMs);
-            slot.preset.magneticPostFireYawScale = ReadFixedFloat(ini, section, "magneticPostFireYawScale", slot.preset.magneticPostFireYawScale);
-            slot.preset.magneticPostFirePitchScale = ReadFixedFloat(ini, section, "magneticPostFirePitchScale", slot.preset.magneticPostFirePitchScale);
-            slot.preset.magneticPreFireBoostWindowMs = ReadFixedFloat(ini, section, "magneticPreFireBoostWindowMs", slot.preset.magneticPreFireBoostWindowMs);
-            slot.preset.magneticPreFireBoostScale = ReadFixedFloat(ini, section, "magneticPreFireBoostScale", slot.preset.magneticPreFireBoostScale);
-            slot.preset.flickTrajectoryWait = ReadBool(ini, section, "flickTrajectoryWait", slot.preset.flickTrajectoryWait);
-            slot.preset.flickTrajectoryWaitMs = ReadFixedFloat(ini, section, "flickTrajectoryWaitMs", slot.preset.flickTrajectoryWaitMs);
-            slot.preset.flickTrajectoryApexWindowMs = ReadFixedFloat(ini, section, "flickTrajectoryApexWindowMs", slot.preset.flickTrajectoryApexWindowMs);
-            slot.preset.flick2ndTriggerGate = ReadBool(ini, section, "flick2ndTriggerGate",
-                ReadBool(ini, section, "aimbotTwoStageTriggerGate", slot.preset.flick2ndTriggerGate));
-            slot.preset.flick2ndBoxPadding = ReadFixedFloat(ini, section, "flick2ndBoxPadding",
-                ReadFixedFloat(ini, section, "aimbotTwoStageBoxPadding", slot.preset.flick2ndBoxPadding));
-            slot.preset.flick2ndInnerRadius = ReadFixedFloat(ini, section, "flick2ndInnerRadius",
-                ReadFixedFloat(ini, section, "aimbotTwoStageInnerRadius", slot.preset.flick2ndInnerRadius));
-            slot.preset.flick2ndInnerSmoothScale = ReadFixedFloat(ini, section, "flick2ndInnerSmoothScale",
-                ReadFixedFloat(ini, section, "aimbotTwoStageInnerSmoothScale", slot.preset.flick2ndInnerSmoothScale));
-            slot.preset.flick2ndInnerMethod = ReadInt(ini, section, "flick2ndInnerMethod", slot.preset.flick2ndInnerMethod);
-            if (KeyExists(ini, section, "aimbotTwoStage") &&
-                ReadBool(ini, section, "aimbotTwoStage", false) &&
-                IsFlickBehavior(slot.preset.aimBehavior)) {
-                slot.preset.aimBehavior = kAimBehaviorFlick2nd;
-            }
-            slot.preset.trigger.enabled = ReadBool(ini, section, "triggerEnabled", slot.preset.trigger.enabled);
-            slot.preset.trigger.action = ReadInt(ini, section, "triggerAction", slot.preset.trigger.action);
-            slot.preset.trigger.mode = ReadInt(ini, section, "triggerMode", slot.preset.trigger.mode);
-            slot.preset.trigger.key = ReadInt(ini, section, "triggerKey", slot.preset.trigger.key);
-            slot.preset.trigger.shotInterval = ReadFixedFloat(ini, section, "triggerShotInterval", slot.preset.trigger.shotInterval);
-            slot.preset.trigger.chargeAware = ReadBool(ini, section, "triggerChargeAware", slot.preset.trigger.chargeAware);
-            slot.preset.trigger.minCharge = ReadFixedFloat(ini, section, "triggerMinCharge", slot.preset.trigger.minCharge);
-            slot.preset.trigger.disableWhileReloading = ReadBool(
-                ini,
-                section,
-                "triggerDisableWhileReloading",
-                slot.preset.trigger.disableWhileReloading);
-            slot.preset.trigger.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "triggerVisibilityMode", "triggerIgnoreInvisible", slot.preset.trigger.ignoreInvisible));
-            slot.preset.trigger.boneMask = static_cast<TriggerBoneMask>(
-                ReadInt(ini, section, "triggerBoneMask", static_cast<int>(slot.preset.trigger.boneMask)));
-            slot.preset.trigger.drawHitbox = ReadBool(ini, section, "triggerDrawHitbox", slot.preset.trigger.drawHitbox);
-            slot.preset = ValidateHeroPresetValue(slot.preset);
-            return slot;
-        }
-
-        HeroPreset ReadLegacyHeroPresetSectionUnlocked(const IniFile& ini,
-                                                       const char* section,
-                                                       HeroPreset defaults,
-                                                       bool legacyFovApertureValues,
-                                                       bool legacyAimBehaviorValues)
-        {
-            HeroPreset preset = defaults;
-            preset.fov = ReadFov2Compat(ini, section, "FOV", preset.fov, legacyFovApertureValues);
-            preset.fovMode = ReadInt(ini, section, "fovMode", preset.fovMode);
-            preset.dynamicFovPresetId = ReadInt(ini, section, "dynamicFovPresetId", preset.dynamicFovPresetId);
-            const int aimMode = std::clamp(ReadInt(ini, section, "Aim Mode", preset.aimMode), 0, 1);
-            const float trackingSmooth = ReadFixedFloat(ini, section, "Tracking_smooth", preset.smooth);
-            const float flickSmooth = ReadFixedFloat(ini, section, "Flick_smooth", trackingSmooth);
-            preset.smooth = aimMode == 1 ? flickSmooth : trackingSmooth;
-            preset.bone = NormalizeAimBone(ReadInt(ini, section, "Bone", preset.bone));
-            preset.autoBone = ReadBool(ini, section, "autobone", preset.autoBone);
-            preset.aimBoneMask = KeyExists(ini, section, "aimBoneMask")
-                ? static_cast<SkeletonBoneMask>(ReadInt(
-                    ini, section, "aimBoneMask", static_cast<int>(preset.aimBoneMask)))
-                : AimBoneMaskFromLegacy(preset.bone, preset.autoBone);
-            preset.boneSelectionMode = std::clamp(ReadInt(ini, section, "boneSelectionMode", preset.boneSelectionMode), 0, 2);
-            preset.preferredBone = NormalizeAimBone(ReadInt(ini, section, "preferredBone", preset.preferredBone));
-            preset.hitbox = ReadHitboxScaleCompat(
-                ini,
-                section,
-                "hitboxScale",
-                "hitbox",
-                preset.hitbox);
-            preset.aimMode = aimMode;
-            preset.aimBehavior = NormalizeAimBehaviorForLoad(
-                ReadInt(ini, section, "aimBehavior", preset.aimMode),
-                legacyAimBehaviorValues);
-            preset.aimBehaviorPresetId = ReadInt(
-                ini,
-                section,
-                "aimBehaviorPresetId",
-                preset.aimBehaviorPresetId);
-            preset.aimMethod = ReadInt(ini, section, "aimMethod", preset.aimMethod);
-            preset.smoothType = ReadInt(ini, section, "aimbotSmoothType", preset.smoothType);
-            preset.pidP = ReadFixedFloat(ini, section, "aimPidP", preset.pidP);
-            preset.pidI = ReadFixedFloat(ini, section, "aimPidI", preset.pidI);
-            preset.pidD = ReadFixedFloat(ini, section, "aimPidD", preset.pidD);
-            preset.pidMaxIntegral = ReadFixedFloat(ini, section, "aimPidMaxIntegral", preset.pidMaxIntegral);
-            preset.pidDeadzone = ReadFixedFloat(ini, section, "aimPidDeadzone", preset.pidDeadzone);
-            preset.bezierControlPoints = ReadInt(ini, section, "aimBezierControlPoints", preset.bezierControlPoints);
-            preset.bezierCurvature = ReadFixedFloat(ini, section, "aimBezierCurvature", preset.bezierCurvature);
-            preset.bezierSpeed = ReadFixedFloat(ini, section, "aimBezierSpeed", preset.bezierSpeed);
-            preset.key = ReadInt(ini, section, "aim_key", preset.key);
-            const bool hasAutoshot = KeyExists(ini, section, "aimbotAutoshot");
-            const bool hasKeepFiring = KeyExists(ini, section, "aimbotKeepFiring");
-            preset.autoshot = ReadBool(ini, section, "aimbotAutoshot", preset.autoshot);
-            preset.keepFiring = ReadBool(ini, section, "aimbotKeepFiring", preset.keepFiring);
-            preset.requireActionHeld = ReadBool(
-                ini,
-                section,
-                "requireActionHeld",
-                preset.requireActionHeld);
-            preset.prediction = ReadBool(ini, section, "predictdec", preset.prediction);
-            preset.predictionMode = ReadInt(ini, section, "aimbotPredictionMode", preset.prediction ? 1 : 2);
-            const bool hasFirePolicy = KeyExists(ini, section, "aimbotFirePolicy");
-            preset.firePolicy = ResolveFirePolicyWithLegacyFallback(
-                ReadInt(ini, section, "aimbotFirePolicy", preset.firePolicy),
-                preset.aimBehavior,
-                hasFirePolicy,
-                hasKeepFiring,
-                preset.keepFiring,
-                hasAutoshot,
-                preset.autoshot);
-            preset.maxHeadDistance = ReadFixedFloat(ini, section, "aimbotMaxHead", preset.maxHeadDistance);
-            preset.stickiness = ReadFixedFloat(ini, section, "aimbotStickiness", preset.stickiness);
-            preset.pitchScale = ReadFixedFloat(ini, section, "aimbotPitchScale", preset.pitchScale);
-            preset.targetTeam = ReadInt(ini, section, "aimbotTeam", preset.targetTeam);
-            preset.maxAimTime = ReadFixedFloat(ini, section, "aimbotMaxAim", preset.maxAimTime);
-            preset.minCharge = ReadFixedFloat(ini, section, "aimbotMinCharge", preset.minCharge);
-            preset.maxCharge = ReadFixedFloat(ini, section, "aimbotMaxCharge", preset.maxCharge);
-            preset.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "visibilityMode", "aimbotIgnoreInvisible", preset.ignoreInvisible));
-            preset.contourEnabled = ReadBool(ini, section, "aimbotContourEnabled", false);
-            preset.traceCondition = ReadInt(ini, section, "aimbotTrace", preset.traceCondition);
-            preset.unlockCondition = ReadInt(ini, section, "aimbotUnlock", preset.unlockCondition);
-            preset.lockTime = ReadFixedFloat(ini, section, "aimbotLockTime", preset.lockTime);
-            preset.maxDistance = ReadFixedFloat(ini, section, "aimbotMaxDist", preset.maxDistance);
-            preset.minDistance = ReadFixedFloat(ini, section, "aimbotMinDist", preset.minDistance);
-            preset.maxTargetSpeedMps = ReadFixedFloat(ini, section, "maxTargetSpeedMps", preset.maxTargetSpeedMps);
-            preset.trackingDeadzone = ReadFixedFloat(ini, section, "trackingDeadzone", preset.trackingDeadzone);
-            preset.flickShotClampMs = ReadFixedFloat(ini, section, "flickShotClampMs", preset.flickShotClampMs);
-            preset.flickPostFireDelayMs = ReadFixedFloat(ini, section, "flickPostFireDelayMs", preset.flickPostFireDelayMs);
-            preset.flickTrajectoryWait = ReadBool(ini, section, "flickTrajectoryWait", preset.flickTrajectoryWait);
-            preset.flickTrajectoryWaitMs = ReadFixedFloat(ini, section, "flickTrajectoryWaitMs", preset.flickTrajectoryWaitMs);
-            preset.flickTrajectoryApexWindowMs = ReadFixedFloat(ini, section, "flickTrajectoryApexWindowMs", preset.flickTrajectoryApexWindowMs);
-            preset.flick2ndTriggerGate = ReadBool(ini, section, "flick2ndTriggerGate",
-                ReadBool(ini, section, "aimbotTwoStageTriggerGate", preset.flick2ndTriggerGate));
-            preset.flick2ndBoxPadding = ReadFixedFloat(ini, section, "flick2ndBoxPadding",
-                ReadFixedFloat(ini, section, "aimbotTwoStageBoxPadding", preset.flick2ndBoxPadding));
-            preset.flick2ndInnerRadius = ReadFixedFloat(ini, section, "flick2ndInnerRadius",
-                ReadFixedFloat(ini, section, "aimbotTwoStageInnerRadius", preset.flick2ndInnerRadius));
-            preset.flick2ndInnerSmoothScale = ReadFixedFloat(ini, section, "flick2ndInnerSmoothScale",
-                ReadFixedFloat(ini, section, "aimbotTwoStageInnerSmoothScale", preset.flick2ndInnerSmoothScale));
-            preset.flick2ndInnerMethod = ReadInt(ini, section, "flick2ndInnerMethod", preset.flick2ndInnerMethod);
-            if (KeyExists(ini, section, "aimbotTwoStage") &&
-                ReadBool(ini, section, "aimbotTwoStage", false) &&
-                IsFlickBehavior(preset.aimBehavior)) {
-                preset.aimBehavior = kAimBehaviorFlick2nd;
-            }
-            preset.trigger.enabled = ReadBool(ini, section, "triggerbot", preset.trigger.enabled);
-            preset.trigger.action = ReadInt(ini, section, "aimbotAttack", preset.trigger.action);
-            preset.trigger.ignoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "triggerVisibilityMode", "triggerIgnoreInvisible", preset.trigger.ignoreInvisible));
-            preset.trigger.boneMask = static_cast<TriggerBoneMask>(
-                ReadInt(ini, section, "triggerBoneMask", static_cast<int>(preset.trigger.boneMask)));
-            return ValidateHeroPresetValue(preset);
-        }
-
-        void WriteHeroPresetSection(const std::string& path, const char* section,
-                                    const HeroSlotPreset& rawSlot, int slotIndex)
-        {
-            const std::string name = NormalizeHeroSlotName(rawSlot.name, slotIndex);
-            const HeroPreset preset = ValidateHeroPresetValue(rawSlot.preset);
-            WriteStringValue(path, section, "stableId", std::to_string(rawSlot.stableId).c_str());
-            WriteBoolValue(path, section, "present", rawSlot.present);
-            WriteStringValue(path, section, "name", name.c_str());
-            WriteBoolValue(path, section, "enabled", rawSlot.enabled);
-            WriteIntValue(path, section, "scopeRequirement", static_cast<int>(
-                NormalizeAimScopeRequirement(static_cast<int>(rawSlot.scopeRequirement))));
-            WritePlainFloatValue(path, section, "fov", preset.fov);
-            WriteIntValue(path, section, "fovMode", preset.fovMode);
-            WriteIntValue(path, section, "dynamicFovPresetId", preset.dynamicFovPresetId);
-            WritePlainFloatValue(path, section, "smooth", preset.smooth);
-            WriteIntValue(path, section, "bone", preset.bone);
-            WriteBoolValue(path, section, "autoBone", preset.autoBone);
-            WriteIntValue(path, section, "aimBoneMask", static_cast<int>(preset.aimBoneMask));
-            WriteIntValue(path, section, "boneSelectionMode", preset.boneSelectionMode);
-            WriteIntValue(path, section, "preferredBone", preset.preferredBone);
-            WritePlainFloatValue(path, section, "hitboxScale", preset.hitbox);
-            WriteIntValue(path, section, "aimMode", preset.aimMode);
-            WriteIntValue(path, section, "aimBehavior", preset.aimBehavior);
-            WriteIntValue(path, section, "aimBehaviorPresetId", preset.aimBehaviorPresetId);
-            WriteIntValue(path, section, "key", preset.key);
-            WriteBoolValue(path, section, "aimbotAutoshot", preset.autoshot);
-            WriteBoolValue(path, section, "aimbotKeepFiring", preset.keepFiring);
-            WriteBoolValue(path, section, "requireActionHeld", preset.requireActionHeld);
-            const std::string prediction = ToText(preset.prediction);
-            WriteStringValue(path, section, "prediction", prediction.c_str());
-            WriteIntValue(path, section, "aimbotPredictionMode", preset.predictionMode);
-            WriteIntValue(path, section, "predictionAlgorithm", preset.predictionAlgorithm);
-            WriteBoolValue(path, section, "predictFovEntry", preset.predictFovEntry);
-            WriteFixedFloatValue(path, section, "fovEntryPredictionMs", preset.fovEntryPredictionMs);
-            WriteFixedFloatValue(path, section, "fovEntryMaxOutsideDeg", preset.fovEntryMaxOutsideDeg);
-            WriteIntValue(path, section, "aimbotFirePolicy", preset.firePolicy);
-            WriteFixedFloatValue(path, section, "aimbotMaxHead", preset.maxHeadDistance);
-            WriteFixedFloatValue(path, section, "aimbotStickiness", preset.stickiness);
-            WriteFixedFloatValue(path, section, "aimbotPitchScale", preset.pitchScale);
-            WriteIntValue(path, section, "priority", preset.priority);
-            WriteIntValue(path, section, "targetTeam", preset.targetTeam);
-            WriteFixedFloatValue(path, section, "aimbotMaxAim", preset.maxAimTime);
-            WriteFixedFloatValue(path, section, "aimbotMinCharge", preset.minCharge);
-            WriteFixedFloatValue(path, section, "aimbotMaxCharge", preset.maxCharge);
-            WriteIntValue(path, section, "visibilityMode",
-                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.ignoreInvisible)));
-            WriteBoolValue(path, section, "aimbotContourEnabled", preset.contourEnabled);
-            WriteIntValue(path, section, "aimbotTrace", preset.traceCondition);
-            WriteIntValue(path, section, "aimbotUnlock", preset.unlockCondition);
-            WriteFixedFloatValue(path, section, "aimbotLockTime", preset.lockTime);
-            WriteFixedFloatValue(path, section, "aimbotMaxDist", preset.maxDistance);
-            WriteFixedFloatValue(path, section, "aimbotMinDist", preset.minDistance);
-            WriteFixedFloatValue(path, section, "maxTargetSpeedMps", preset.maxTargetSpeedMps);
-            WriteFixedFloatValue(path, section, "trackingDeadzone", preset.trackingDeadzone);
-            WriteFixedFloatValue(path, section, "flickShotClampMs", preset.flickShotClampMs);
-            WriteFixedFloatValue(path, section, "flickPostFireDelayMs", preset.flickPostFireDelayMs);
-            WriteFixedFloatValue(path, section, "magneticShotIntervalMs", preset.magneticShotIntervalMs);
-            WriteFixedFloatValue(path, section, "magneticPostFirePauseMs", preset.magneticPostFirePauseMs);
-            WriteFixedFloatValue(path, section, "magneticRecoveryMs", preset.magneticRecoveryMs);
-            WriteFixedFloatValue(path, section, "magneticPostFireYawScale", preset.magneticPostFireYawScale);
-            WriteFixedFloatValue(path, section, "magneticPostFirePitchScale", preset.magneticPostFirePitchScale);
-            WriteFixedFloatValue(path, section, "magneticPreFireBoostWindowMs", preset.magneticPreFireBoostWindowMs);
-            WriteFixedFloatValue(path, section, "magneticPreFireBoostScale", preset.magneticPreFireBoostScale);
-            WriteBoolValue(path, section, "flickTrajectoryWait", preset.flickTrajectoryWait);
-            WriteFixedFloatValue(path, section, "flickTrajectoryWaitMs", preset.flickTrajectoryWaitMs);
-            WriteFixedFloatValue(path, section, "flickTrajectoryApexWindowMs", preset.flickTrajectoryApexWindowMs);
-            WriteBoolValue(path, section, "flick2ndTriggerGate", preset.flick2ndTriggerGate);
-            WriteFixedFloatValue(path, section, "flick2ndBoxPadding", preset.flick2ndBoxPadding);
-            WriteFixedFloatValue(path, section, "flick2ndInnerRadius", preset.flick2ndInnerRadius);
-            WriteFixedFloatValue(path, section, "flick2ndInnerSmoothScale", preset.flick2ndInnerSmoothScale);
-            WriteIntValue(path, section, "flick2ndInnerMethod", preset.flick2ndInnerMethod);
-            WriteBoolValue(path, section, "triggerEnabled", preset.trigger.enabled);
-            WriteIntValue(path, section, "triggerAction", preset.trigger.action);
-            WriteIntValue(path, section, "triggerMode", preset.trigger.mode);
-            WriteIntValue(path, section, "triggerKey", preset.trigger.key);
-            WriteFixedFloatValue(path, section, "triggerShotInterval", preset.trigger.shotInterval);
-            WriteBoolValue(path, section, "triggerChargeAware", preset.trigger.chargeAware);
-            WriteFixedFloatValue(path, section, "triggerMinCharge", preset.trigger.minCharge);
-            WriteBoolValue(path, section, "triggerDisableWhileReloading", preset.trigger.disableWhileReloading);
-            WriteIntValue(path, section, "triggerVisibilityMode",
-                static_cast<int>(TargetVisibilityFromLegacyIgnoreInvisible(preset.trigger.ignoreInvisible)));
-            WriteIntValue(path, section, "triggerBoneMask", static_cast<int>(preset.trigger.boneMask));
-            WriteBoolValue(path, section, "triggerDrawHitbox", preset.trigger.drawHitbox);
-        }
-
         template <typename Allocator>
         void AddJsonString(rapidjson::Value& object, const char* key, const std::string& value, Allocator& allocator)
         {
@@ -4155,6 +3656,7 @@ namespace OW { namespace Config {
             AddJsonFloat(value, "punchFullChargeMs", settings.punchFullChargeMs, allocator);
             AddJsonFloat(value, "punchMaxHoldMs", settings.punchMaxHoldMs, allocator);
             AddJsonFloat(value, "punchReleaseLeadMs", settings.punchReleaseLeadMs, allocator);
+            AddJsonInt(value, "punchStateSource", settings.punchStateSource, allocator);
             return value;
         }
 
@@ -4490,34 +3992,6 @@ namespace OW { namespace Config {
             return WriteJsonDocument(heroConfigPath, document);
         }
 
-        bool TryLoadLegacyPresetForDefinition(const IniFile& ini,
-                                              const HeroPresetDefinition& def,
-                                              HeroPreset defaults,
-                                              bool legacyFovApertureValues,
-                                              bool legacyAimBehaviorValues,
-                                              HeroPreset& outPreset)
-        {
-            if (def.legacyName && SectionExists(ini, def.legacyName)) {
-                outPreset = ReadLegacyHeroPresetSectionUnlocked(
-                    ini,
-                    def.legacyName,
-                    defaults,
-                    legacyFovApertureValues,
-                    legacyAimBehaviorValues);
-                return true;
-            }
-            if (def.legacyAlias && SectionExists(ini, def.legacyAlias)) {
-                outPreset = ReadLegacyHeroPresetSectionUnlocked(
-                    ini,
-                    def.legacyAlias,
-                    defaults,
-                    legacyFovApertureValues,
-                    legacyAimBehaviorValues);
-                return true;
-            }
-            return false;
-        }
-
         bool ReadJsonBool(const rapidjson::Value& object, const char* key, bool def)
         {
             const auto item = object.FindMember(key);
@@ -4611,9 +4085,12 @@ namespace OW { namespace Config {
             }
             profile.actionId = ReadJsonInt(value, "actionId", 0);
             profile.algorithmProfileId = ReadJsonString(value, "algorithmProfileId", "default");
-            profile.algorithm = OW::ClampPredictionAlgorithm(ReadJsonInt(value, "algorithm", profile.algorithm));
-            if (profile.algorithmProfileId == "default")
-                profile.algorithmProfileId = OW::PredictionAlgorithmName(profile.algorithm);
+            const int storedAlgorithm = ReadJsonInt(value, "algorithm", profile.algorithm);
+            profile.algorithm = OW::ClampPredictionAlgorithm(storedAlgorithm);
+            if (profile.algorithmProfileId == "default" || storedAlgorithm != profile.algorithm ||
+                profile.algorithmProfileId == "legacy_linear_relative_motion" ||
+                profile.algorithmProfileId == "ballistic_intercept_relative_motion")
+                profile.algorithmProfileId = OW::PredictionAlgorithmId(profile.algorithm);
             profile.projectile.enabledByDefault = ReadJsonBool(value, "enabledByDefault", false);
             profile.projectile.projectileSpeed = ReadJsonFloat(value, "projectileSpeed", 0.0f);
             profile.projectile.gravity = ReadJsonBool(value, "gravity", false);
@@ -4798,6 +4275,7 @@ namespace OW { namespace Config {
             defaults.punchFullChargeMs = ReadJsonFloat(value, "punchFullChargeMs", defaults.punchFullChargeMs);
             defaults.punchMaxHoldMs = ReadJsonFloat(value, "punchMaxHoldMs", defaults.punchMaxHoldMs);
             defaults.punchReleaseLeadMs = ReadJsonFloat(value, "punchReleaseLeadMs", defaults.punchReleaseLeadMs);
+            defaults.punchStateSource = ReadJsonInt(value, "punchStateSource", defaults.punchStateSource);
             return ValidateHeroSkillSettingsValue(defaults);
         }
 
@@ -5449,112 +4927,8 @@ namespace OW { namespace Config {
             return true;
         }
 
-        void LoadHeroPresetsUnlocked(const IniFile& ini)
-        {
-            heroAimPresets.clear();
-            heroTriggerPresets.clear();
-            heroSkillPresets.clear();
-            gLoadedHeroConfigVersion = 0;
-            const HeroPreset presetDefaults = MakeHeroPresetFromCurrentUnlocked();
-            const int fileVersion = ReadInt(ini, kMetaSection, kVersionKey, 0);
-            const bool storedBoneUsesLegacyPresetIndex =
-                fileVersion < kPresetBonesStoredAsAimBonesVersion;
-            const bool legacyFovApertureValues =
-                fileVersion < kFovAnglesStoredAsHalfAnglesVersion;
-            const bool legacyAimBehaviorValues =
-                fileVersion < kAimBehaviorSemanticsVersion;
-
-            for (const HeroPresetDefinition& def : kHeroPresetDefinitions) {
-                bool legacyAutoBone = false;
-                if (def.legacyName && SectionExists(ini, def.legacyName))
-                    legacyAutoBone = ReadBool(ini, def.legacyName, "autobone", false);
-                else if (def.legacyAlias && SectionExists(ini, def.legacyAlias))
-                    legacyAutoBone = ReadBool(ini, def.legacyAlias, "autobone", false);
-
-                auto makeDefaultSlots = [&]() {
-                    std::array<HeroSlotPreset, kHeroPresetSlotCount> slots{};
-                    InitializeHeroPresetSlots(slots, 0, false, legacyAutoBone);
-                    for (HeroSlotPreset& slot : slots) {
-                        slot.preset = presetDefaults;
-                        slot.preset.autoBone = legacyAutoBone;
-                    }
-                    return slots;
-                };
-
-                auto loadSlots = [&](HeroPresetSlotKind kind, std::array<HeroSlotPreset, kHeroPresetSlotCount>& slots) {
-                    bool loadedAnySlot = false;
-                    bool hasScopedSlots = false;
-                    for (int slotIndex = 0; slotIndex < kHeroPresetSlotCount; ++slotIndex) {
-                        const std::string scopedSection = HeroPresetSlotSectionName(def.presetName, kind, slotIndex);
-                        if (SectionExists(ini, scopedSection.c_str())) {
-                            hasScopedSlots = true;
-                            break;
-                        }
-                    }
-
-                    for (int slotIndex = 0; slotIndex < kHeroPresetSlotCount; ++slotIndex) {
-                        const std::string scopedSection = HeroPresetSlotSectionName(def.presetName, kind, slotIndex);
-                        const std::string legacySlotSection = HeroPresetSlotSectionName(def.presetName, slotIndex);
-                        const char* sectionToRead = nullptr;
-                        if (SectionExists(ini, scopedSection.c_str()))
-                            sectionToRead = scopedSection.c_str();
-                        else if (!hasScopedSlots && SectionExists(ini, legacySlotSection.c_str()))
-                            sectionToRead = legacySlotSection.c_str();
-
-                        if (sectionToRead) {
-                            slots[static_cast<size_t>(slotIndex)] = ReadHeroPresetSectionUnlocked(
-                                ini,
-                                sectionToRead,
-                                slots[static_cast<size_t>(slotIndex)],
-                                slotIndex,
-                                storedBoneUsesLegacyPresetIndex,
-                                legacyFovApertureValues,
-                                legacyAimBehaviorValues);
-                            loadedAnySlot = true;
-                        }
-                    }
-
-                    if (!loadedAnySlot) {
-                        const std::string legacyPresetSection = HeroPresetSectionName(def.presetName);
-                        if (SectionExists(ini, legacyPresetSection.c_str())) {
-                            slots[0] = ReadHeroPresetSectionUnlocked(
-                                ini, legacyPresetSection.c_str(), slots[0], 0,
-                                storedBoneUsesLegacyPresetIndex,
-                                legacyFovApertureValues,
-                                legacyAimBehaviorValues);
-                            loadedAnySlot = true;
-                        } else {
-                            HeroPreset legacyPreset{};
-                            if (TryLoadLegacyPresetForDefinition(
-                                    ini,
-                                    def,
-                                    presetDefaults,
-                                    legacyFovApertureValues,
-                                    legacyAimBehaviorValues,
-                                    legacyPreset)) {
-                                slots[0].present = true;
-                                slots[0].enabled = true;
-                                slots[0].preset = legacyPreset;
-                                loadedAnySlot = true;
-                            }
-                        }
-                    }
-
-                    return loadedAnySlot;
-                };
-
-                auto aimSlots = makeDefaultSlots();
-                auto triggerSlots = makeDefaultSlots();
-                if (loadSlots(HeroPresetSlotKind::Aim, aimSlots))
-                    heroAimPresets[def.heroId] = aimSlots;
-                if (loadSlots(HeroPresetSlotKind::Trigger, triggerSlots))
-                    heroTriggerPresets[def.heroId] = triggerSlots;
-            }
-
-            ValidateHeroPresetsUnlocked();
-            MigrateDefaultBehaviorModesUnlocked();
-        }
-
+        // Scenario-only fixtures exercise the retired INI migration rules
+        // without making them part of the production loader.
         bool IniHasHeroPresetSections(const IniFile& ini)
         {
             for (const HeroPresetDefinition& def : kHeroPresetDefinitions) {
@@ -5571,74 +4945,72 @@ namespace OW { namespace Config {
                     if (SectionExists(ini, legacySlotSection.c_str()))
                         return true;
 
-                    const std::string aimSlotSection = HeroPresetSlotSectionName(def.presetName, HeroPresetSlotKind::Aim, slotIndex);
+                    const std::string aimSlotSection = HeroPresetSlotSectionName(
+                        def.presetName, HeroPresetSlotKind::Aim, slotIndex);
                     if (SectionExists(ini, aimSlotSection.c_str()))
                         return true;
 
-                    const std::string triggerSlotSection = HeroPresetSlotSectionName(def.presetName, HeroPresetSlotKind::Trigger, slotIndex);
+                    const std::string triggerSlotSection = HeroPresetSlotSectionName(
+                        def.presetName, HeroPresetSlotKind::Trigger, slotIndex);
                     if (SectionExists(ini, triggerSlotSection.c_str()))
                         return true;
                 }
             }
-
             return false;
         }
 
-        void MigrateLegacyGenjiSkillUnlocked(const IniFile* ini) {
-            const uint64_t hero=eHero::HERO_GENJI;
-            if (!ini) return;
+        // Scenario-only fixture helper. Production loading no longer calls it.
+        void MigrateLegacyGenjiSkillUnlocked(const IniFile* ini)
+        {
+            const uint64_t hero = eHero::HERO_GENJI;
+            if (!ini)
+                return;
             for (const auto& definition : AllHeroSkillDefinitions()) {
-                if (definition.heroId != hero) continue;
+                if (definition.heroId != hero)
+                    continue;
                 const std::string id = definition.skillId;
                 const char* legacy = id == "auto-swift-strike" ? "AutoShiftGenji"
                     : id == "dragonblade" ? "GenjiBlade" : nullptr;
-                if (!legacy || !KeyExists(*ini,"Genji",legacy)) continue;
+                if (!legacy || !KeyExists(*ini, "Genji", legacy))
+                    continue;
                 const auto existing = heroSkillPresets.find(hero);
-                if (existing != heroSkillPresets.end() && existing->second.contains(id)) continue;
+                if (existing != heroSkillPresets.end() && existing->second.contains(id))
+                    continue;
                 auto settings = definition.defaultSettings;
-                settings.enabled = ReadBool(*ini,"Genji",legacy,false);
+                settings.enabled = ReadBool(*ini, "Genji", legacy, false);
                 heroSkillPresets[hero][id] = settings;
                 gLastHeroConfigNeedsSave = true;
             }
         }
 
-        bool LoadHeroConfigOrMigrateUnlocked(const std::string& heroConfigPath, const IniFile* legacyIni,
-                                             const rapidjson::Document* prepared = nullptr,
-                                             bool deferMigrationSave = false)
+        bool LoadHeroConfigOrMigrateUnlocked(
+            const std::string& heroConfigPath,
+            const rapidjson::Document* prepared = nullptr,
+            bool deferMigrationSave = false)
         {
             rapidjson::Document read;
-            if (!prepared && !ReadHeroConfigForLoad(heroConfigPath, read)) return false;
+            if (!prepared && !ReadHeroConfigForLoad(heroConfigPath, read))
+                return false;
             const auto& document = prepared ? *prepared : read;
             if (!document.IsNull()) {
-                if(!LoadHeroConfigUnlocked(heroConfigPath, document))return false;
-                MigrateLegacyGenjiSkillUnlocked(legacyIni);
-                if (!gLastHeroConfigNeedsSave || deferMigrationSave) return true;
+                if (!LoadHeroConfigUnlocked(heroConfigPath, document))
+                    return false;
+                if (!gLastHeroConfigNeedsSave || deferMigrationSave)
+                    return true;
                 const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
                 gLastHeroConfigNeedsSave = !saved;
                 return saved;
             }
+
+            // A missing sidecar starts from current defaults. Legacy hero INI
+            // sections are handled only by Scenario fixtures, never by runtime.
             heroAimPresets.clear();
             heroTriggerPresets.clear();
             heroSkillPresets.clear();
             LoadPredictionProfilesJson(document);
-            if (legacyIni && IniHasHeroPresetSections(*legacyIni)) {
-                LoadHeroPresetsUnlocked(*legacyIni);
-                MigrateLegacyGenjiSkillUnlocked(legacyIni);
-                // The legacy INI path has no predictionProfiles object.  Build
-                // the shared skill profiles after all INI skill migration has
-                // completed so Aim, Trigger, and Hero Skills consume the same
-                // runtime values before the first save or UI snapshot.
-                if (EnsureLegacySkillPredictionProfilesUnlocked())
-                    gLastHeroConfigNeedsSave = true;
-                if (deferMigrationSave) { gLastHeroConfigNeedsSave = true; return true; }
-                const bool saved = SaveHeroPresetsUnlocked(heroConfigPath);
-                LogConfig(saved ? Diagnostics::LogLevel::Info : Diagnostics::LogLevel::Warn,
-                    "Legacy INI hero migration at %s: saved=%d.", heroConfigPath.c_str(), saved ? 1 : 0);
-                return saved;
-            }
             ValidateHeroPresetsUnlocked();
             MigrateDefaultBehaviorModesUnlocked();
-            gLastHeroConfigNeedsSave = false; // No existing sidecar or legacy data to migrate.
+            gLastHeroConfigNeedsSave = false;
             return true;
         }
 
@@ -5711,96 +5083,6 @@ namespace OW { namespace Config {
                                  FovRingSlotKind::Aim,
                                  slotIndex,
                                  aimFovRingStyles[static_cast<size_t>(slotIndex)]);
-            }
-        }
-
-        void LoadHeroSettingsUnlocked(const IniFile& ini,
-                                      const char* section,
-                                      uint64_t heroId,
-                                      bool legacyFovApertureValues)
-        {
-            highPriority = ReadBool(ini, section, "highPriority", highPriority);
-            aiaim = ReadBool(ini, section, "aiaim", aiaim);
-            hanzoautospeed = ReadBool(ini, section, "hanzoautospeed", hanzoautospeed);
-            autoscalefov = ReadBool(ini, section, "autoscalefov", autoscalefov);
-            lockontarget = ReadBool(ini, section, "lockontarget", lockontarget);
-            trackcompensate = ReadBool(ini, section, "trackc", trackcompensate);
-            comarea = ReadFixedFloat(ini, section, "comarea", comarea);
-            comspeed = ReadFixedFloat(ini, section, "comspeed", comspeed);
-            Fov = ReadFov2Compat(ini, section, "FOV", Fov, legacyFovApertureValues);
-            minFov1 = Fov;
-            hitbox = ReadHitboxScaleCompat(ini, section, "hitboxScale", "hitbox", hitbox);
-            missbox = ReadFixedFloat(ini, section, "missbox", missbox);
-            Tracking_smooth = ReadFixedFloat(ini, section, "Tracking_smooth", Tracking_smooth);
-            Flick_smooth = ReadFixedFloat(ini, section, "Flick_smooth", Flick_smooth);
-            Shoottime = ReadInt(ini, section, "AutoShootTime", Shoottime);
-            predit_level = static_cast<float>(ReadInt(ini, section, "predit_level", static_cast<int>(predit_level)));
-            aim_key = ReadInt(ini, section, "aim_key", aim_key);
-            Gravitypredit = ReadBool(ini, section, "Gravitypredit", Gravitypredit);
-            SkillHealth = static_cast<float>(ReadInt(ini, section, "SkillHealth", static_cast<int>(SkillHealth)));
-            AutoSkill = ReadBool(ini, section, "AutoSkill", AutoSkill);
-            AntiAFK = ReadBool(ini, section, "AntiAFK", AntiAFK);
-            dontshot = ReadBool(ini, section, "dontshot", dontshot);
-            targetdelay = ReadBool(ini, section, "targetdelay", targetdelay);
-            targetdelaytime = ReadInt(ini, section, "targetdelaytime", targetdelaytime);
-            shotmanydont = ReadInt(ini, section, "dontmanyshot", shotmanydont);
-            hitboxdelayshoot = ReadBool(ini, section, "hitboxdelayshoot", hitboxdelayshoot);
-            hiboxdelaytime = ReadInt(ini, section, "hitboxdelaytime", hiboxdelaytime);
-            accvalue = ReadFixedFloat(ini, section, "accvalue", accvalue);
-            switch_team = ReadBool(ini, section, "switch_team", switch_team);
-            switch_team2 = ReadBool(ini, section, "switch_team2", switch_team2);
-            Bone = ReadInt(ini, section, "Bone", Bone);
-            autobone = ReadBool(ini, section, "autobone", autobone);
-            Bone2 = ReadInt(ini, section, "Bone2", Bone2);
-            autobone2 = ReadBool(ini, section, "autobone2", autobone2);
-            AutoMelee = ReadBool(ini, section, "AutoMelee", AutoMelee);
-            meleedistance = ReadFixedFloat(ini, section, "meleedistance", meleedistance);
-            meleehealth = ReadFixedFloat(ini, section, "meleehealth", meleehealth);
-            AutoRMB = ReadBool(ini, section, "AutoRMB", AutoRMB);
-            AutoRMBdistance = ReadFixedFloat(ini, section, "AutoRMBdistance", AutoRMBdistance);
-            AutoRMBhealth = ReadFixedFloat(ini, section, "AutoRMBhealth", AutoRMBhealth);
-            secondaim = ReadBool(ini, section, "secondaim", secondaim);
-            triggerbot = ReadBool(ini, section, "triggerbot", triggerbot);
-            triggerbotIgnoreInvisible = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "triggerVisibilityMode", "triggerbotIgnoreInvisible", triggerbotIgnoreInvisible));
-            triggerbot2 = ReadBool(ini, section, "triggerbot2", triggerbot2);
-            triggerbotIgnoreInvisible2 = LegacyIgnoreInvisible(ReadTargetVisibilityMode(
-                ini, section, "triggerVisibilityMode2", "triggerbotIgnoreInvisible2", triggerbotIgnoreInvisible2));
-            Tracking2 = ReadBool(ini, section, "Tracking2", Tracking2);
-            Flick2 = ReadBool(ini, section, "Flick2", Flick2);
-            aim_key2 = ReadInt(ini, section, "aim_key2", aim_key2);
-            togglekey = ReadInt(ini, section, "togglekey", togglekey);
-            Tracking_smooth2 = ReadFixedFloat(ini, section, "Tracking_smooth2", Tracking_smooth2);
-            Flick_smooth2 = ReadFixedFloat(ini, section, "Flick_smooth2", Flick_smooth2);
-            accvalue2 = ReadFixedFloat(ini, section, "accvalue2", accvalue2);
-            hitbox2 = ReadHitboxScaleCompat(ini, section, "hitbox2Scale", "hitbox2", hitbox2);
-            Fov2 = ReadFov2Compat(ini, section, "Fov2", Fov2, legacyFovApertureValues);
-            minFov2 = Fov2;
-
-            const int legacyAimMode = ReadInt(ini, section, "Aim Mode", CurrentAimMode());
-            ApplyAimMode(legacyAimMode);
-            if (!KeyExists(ini, kAimbotSection, "aimBehavior") && !KeyExists(ini, section, "aimBehavior"))
-                aimBehavior = CurrentAimMode();
-            else
-                aimBehavior = NormalizeAimBehaviorForLoad(
-                    ReadInt(ini, section, "aimBehavior", aimBehavior),
-                    ReadInt(ini, kMetaSection, kVersionKey, 0) < kAimBehaviorSemanticsVersion);
-            AutoShoot = ReadBool(ini, section, "autoshootonoff", AutoShoot);
-            Prediction = ReadBool(ini, section, "predictdec", Prediction);
-
-            if (heroId == OW::eHero::HERO_GENJI) {
-                GenjiBlade = ReadBool(ini, section, "GenjiBlade", GenjiBlade);
-                AutoShiftGenji = ReadBool(ini, section, "AutoShiftGenji", AutoShiftGenji);
-                bladespeed = ReadFixedFloat(ini, section, "bladespeed", bladespeed);
-            } else {
-                GenjiBlade = false;
-                AutoShiftGenji = false;
-            }
-
-            if (heroId == OW::eHero::HERO_WIDOWMAKER) {
-                widowautounscope = ReadBool(ini, section, "widowautounscope", widowautounscope);
-            } else {
-                widowautounscope = false;
             }
         }
 
@@ -6714,7 +5996,6 @@ namespace OW { namespace Config {
             targetPriority = ReadInt(ini, section, "targetPriority", targetPriority);
             MenuToggleKey = ReadInt(ini, section, "MenuToggleKey", MenuToggleKey);
             CacheRefreshKey = ReadInt(ini, section, "CacheRefreshKey", CacheRefreshKey);
-            lastConfigProfile = ReadString(ini, section, "lastConfigProfile", lastConfigProfile.c_str());
             uiLanguage = ReadInt(ini, section, "uiLanguage", uiLanguage);
             overlayFrameLimit = ReadInt(ini, section, "overlayFrameLimit", overlayFrameLimit);
             manualScreenWidth = ReadInt(ini, section, "manualScreenWidth", manualScreenWidth);
@@ -7551,7 +6832,7 @@ namespace OW { namespace Config {
             WriteIntValue(path, "Global", "targetPriority", targetPriority);
             WriteIntValue(path, "Global", "MenuToggleKey", MenuToggleKey);
             WriteIntValue(path, "Global", "CacheRefreshKey", CacheRefreshKey);
-            WriteStringValue(path, "Global", "lastConfigProfile", lastConfigProfile.c_str());
+            DeleteValue(path, "Global", "lastConfigProfile");
             WriteIntValue(path, "Global", "uiLanguage", ClampUiLanguage(uiLanguage));
             WriteIntValue(path, "Global", "overlayFrameLimit", std::clamp(overlayFrameLimit, 0, 2000));
             WriteIntValue(path, "Global", "manualScreenWidth", manualScreenWidth);
@@ -7770,7 +7051,7 @@ namespace OW { namespace Config {
     {
         std::lock_guard<std::mutex> lock(mutex);
         ScopedConfigAuthority authority;
-        if (!LoadHeroConfigOrMigrateUnlocked(ResolveHeroConfigPath(path), nullptr)) {
+        if (!LoadHeroConfigOrMigrateUnlocked(ResolveHeroConfigPath(path))) {
             LogConfig(Diagnostics::LogLevel::Warn,
                 "%s is missing or unreadable; no hero presets were loaded.",
                 path.c_str());
@@ -7852,25 +7133,6 @@ namespace OW { namespace Config {
         heroSkillPresets[heroId][skillId] = ValidateHeroSkillSettingsValue(settings);
     }
 
-    void SaveHeroPresets(const std::string& path)
-    {
-        SaveHeroConfig(path);
-    }
-
-    void LoadHeroPresets(const std::string& path)
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        ScopedConfigAuthority authority;
-
-        IniFile ini;
-        const bool hasIni = LoadIniFile(path, ini);
-        if (!LoadHeroConfigOrMigrateUnlocked(ResolveHeroConfigPath(path), hasIni ? &ini : nullptr)) {
-            LogConfig(Diagnostics::LogLevel::Warn,
-                "%s is missing or unreadable; no hero presets were loaded.",
-                path.c_str());
-        }
-    }
-
     bool SaveConfigForHero(const std::string& path, uint64_t heroId, uint64_t linkBase)
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -7917,7 +7179,7 @@ namespace OW { namespace Config {
 
         rapidjson::Document heroDocument;
         if (!ReadHeroConfigForLoad(HeroConfigPath(path), heroDocument)) return ConfigLoadResult::Failed;
-        if(heroDocument.IsNull()||!heroDocument.HasMember("heroSettings")) {
+        if(!heroDocument.IsNull() && !heroDocument.HasMember("heroSettings")) {
             for(const auto& source:{path,HeroConfigPath(path)})if(PathIsRegularFile(source)) {
                 const auto backup=source+".before-ui-20261109.bak";
                 if(!CopyFileA(source.c_str(),backup.c_str(),TRUE)&&GetLastError()!=ERROR_FILE_EXISTS) {
@@ -7954,7 +7216,7 @@ namespace OW { namespace Config {
         IniFile ini;
         if (!LoadIniFile(path, ini)) {
             config_version = kCurrentConfigVersion;
-            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr, &heroDocument);
+            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &heroDocument);
             LogConfig(Diagnostics::LogLevel::Warn,
                 "%s is missing or unreadable; using all documented defaults.",
                 path.c_str());
@@ -7972,7 +7234,7 @@ namespace OW { namespace Config {
             LogConfig(Diagnostics::LogLevel::Warn,
                 "Config version %d is newer than supported version %d; resetting to defaults.",
                 fileVersion, kCurrentConfigVersion);
-            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), nullptr, &heroDocument);
+            migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &heroDocument);
             gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
             gSystemHeroFallbackReady = true;
             ApplyLoadedHeroPresetsUnlocked(heroId);
@@ -8006,7 +7268,7 @@ namespace OW { namespace Config {
         }
         if (needsMigration)
             ApplySystemConfigMigrationDefaultsUnlocked(fileVersion);
-        migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &ini, &heroDocument, true);
+        migrationSaved = LoadHeroConfigOrMigrateUnlocked(HeroConfigPath(path), &heroDocument, true);
         gSystemHeroFallback = MakeHeroPresetFromCurrentUnlocked();
         gSystemHeroFallbackReady = true;
         ApplyLoadedHeroPresetsUnlocked(heroId);
@@ -8154,12 +7416,6 @@ namespace OW { namespace Config {
         std::string selected;
         if (LoadIniFile(JoinPathRaw(directory, kAppStateFile), state))
             state.TryGet("Application", "activeProfile", selected);
-        else {
-            // One-time compatibility with the old setting in config.ini.
-            IniFile legacy;
-            if (LoadIniFile(JoinPathRaw(directory, "config.ini"), legacy))
-                legacy.TryGet("Global", "lastConfigProfile", selected);
-        }
         if (!IsProfileFileName(selected) || !PathIsRegularFile(JoinPathRaw(directory, selected)))
             selected = "config.ini";
         configFileName = selected;

@@ -131,7 +131,7 @@
         }
 
         inline Vector3 AimAngleForWorldPoint(const Vector3& worldPoint) {
-            const Vector3 camera = CameraPosition();
+            const Vector3 camera = SnapshotLaunchPoint();
             const Vector3 delta = worldPoint - camera;
             const float distance = delta.Size();
             if (!std::isfinite(distance) || distance <= 0.0001f)
@@ -209,29 +209,30 @@
             if (!predictionEnabled || IsZeroVector(rawAimPoint))
                 return result;
 
-            const Vector3 camera = CameraPosition();
+            const Vector3 camera = SnapshotLaunchPoint();
             result.distance = camera.DistTo(rawAimPoint);
             const Motion::EntityMotionEstimate motion = Motion::EstimateEntityMotion(entity);
             const int algorithm = ClampPredictionAlgorithm(projectile.algorithm);
-            result.relativeMotion = IsRelativeMotionPredictionAlgorithm(algorithm);
-            const c_entity local = SnapshotLocalEntity();
-            result.localVelocity = IsFiniteVector(local.velocity) ? local.velocity : Vector3{};
-            result.targetVelocity = IsBallisticPredictionAlgorithm(algorithm)
+            const Vector3 targetVelocity = IsBallisticPredictionAlgorithm(algorithm)
                 ? AccelerationAwareVelocity(entity, result.distance, projectile.projectileSpeed)
-                : ClampVectorMagnitude(motion.valid ? motion.effectiveVelocity : entity.velocity,
-                                       kLeadMaxTargetSpeed);
-            result.targetVelocity = ApplyPredictionMotionModel(
-                result.targetVelocity, result.localVelocity, algorithm);
+                : (motion.valid ? motion.effectiveVelocity : entity.velocity);
+            result.targetVelocity = ClampVectorMagnitude(targetVelocity, kLeadMaxTargetSpeed);
             result.timing = EstimateLeadTimingForAimPoint(rawAimPoint, secondary);
             const float preFireMaxMs = (extraPreFireDelayMs > 0.0f || projectile.castDelayMs > 0.0f) ? 1000.0f : kLeadMaxPreFireDelayMs;
             result.timing.preFireDelayMs = ClampLeadDelayMs(
                 result.timing.preFireDelayMs + extraPreFireDelayMs + projectile.castDelayMs,
                 preFireMaxMs);
+            const float controlExtrapolationMs = (std::min)(
+                result.timing.targetExtrapolationMs + (std::max)(0.0f, extraPreFireDelayMs),
+                kLeadMaxTargetExtrapolationMs);
+            result.timing.targetExtrapolationMs = ClampLeadDelayMs(
+                controlExtrapolationMs + (std::max)(0.0f, projectile.castDelayMs),
+                preFireMaxMs);
             result.preFireAimPoint = IsBallisticPredictionAlgorithm(algorithm)
                 ? ApplyTargetMotionPreFireDelay(rawAimPoint, result.targetVelocity,
-                                                result.timing.preFireDelayMs, preFireMaxMs)
+                                                result.timing.targetExtrapolationMs, preFireMaxMs)
                 : ApplyLegacyLinearPrediction(rawAimPoint, result.targetVelocity,
-                                              projectile, result.timing.preFireDelayMs);
+                                              projectile, result.timing.targetExtrapolationMs);
             result.finalAimPoint = result.preFireAimPoint;
 
             if (IsBallisticPredictionAlgorithm(algorithm) &&
@@ -244,9 +245,8 @@
                         camera, intercept.aimPoint, projectile.launchDirectionUpBias);
             }
 
-            Diagnostics::Aim("lead.solve algorithm=%s relative=%d enabled=%d secondary=%d projectile(source=%s speed=%.3f gravity=%d acceleration=%.3f upBias=%.4f castMs=%.3f) motion(source=%s confidence=%.3f targetVelocity=(%.3f,%.3f,%.3f) localVelocity=(%.3f,%.3f,%.3f)) timing(settleMs=%.3f inputMs=%d extraPreFireMs=%.3f preFireMs=%.3f) raw=(%.3f,%.3f,%.3f) preFire=(%.3f,%.3f,%.3f) final=(%.3f,%.3f,%.3f)",
+            Diagnostics::Aim("lead.solve algorithm=%s enabled=%d secondary=%d projectile(source=%s speed=%.3f gravity=%d acceleration=%.3f upBias=%.4f castMs=%.3f) motion(source=%s confidence=%.3f targetVelocity=(%.3f,%.3f,%.3f)) timing(settleMs=%.3f inputMs=%d extraPreFireMs=%.3f preFireMs=%.3f targetExtrapolationMs=%.3f) raw=(%.3f,%.3f,%.3f) preFire=(%.3f,%.3f,%.3f) final=(%.3f,%.3f,%.3f)",
                 PredictionAlgorithmName(algorithm),
-                result.relativeMotion ? 1 : 0,
                 predictionEnabled ? 1 : 0,
                 secondary ? 1 : 0,
                 projectile.fromWeaponSpec ? "weapon" : "legacy",
@@ -260,13 +260,11 @@
                 result.targetVelocity.X,
                 result.targetVelocity.Y,
                 result.targetVelocity.Z,
-                result.localVelocity.X,
-                result.localVelocity.Y,
-                result.localVelocity.Z,
                 result.timing.estimatedSettleMs,
                 result.timing.inputDelayMs,
                 extraPreFireDelayMs,
                 result.timing.preFireDelayMs,
+                result.timing.targetExtrapolationMs,
                 result.rawAimPoint.X,
                 result.rawAimPoint.Y,
                 result.rawAimPoint.Z,

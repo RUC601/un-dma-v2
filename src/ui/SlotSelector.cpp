@@ -7,10 +7,12 @@
 namespace UI::Slots {
 Command Render(std::span<const Item> items, int selected, int limit, bool chinese) {
     Command command;
-    ImGui::TextUnformatted(chinese ? "方案" : "Scheme");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", chinese ? "方案" : "Scheme");
+    ImGui::SameLine(0, 10);
     const float available=ImGui::GetContentRegionAvail().x;
-    const float buttonWidth=(std::max)(36.0f,ImGui::CalcTextSize("12 *").x+14.0f);
-    const float height=(std::max)(30.0f,ImGui::GetFontSize()+8);
+    const float buttonWidth=(std::max)(38.0f,ImGui::CalcTextSize("12 *").x+14.0f);
+    const float height=ControlHeight();
     const int perRow=(std::max)(1, static_cast<int>((available-76)/(buttonWidth+6)));
     for(int i=0;i<static_cast<int>(items.size());++i) {
         if(i%perRow)ImGui::SameLine(0,6);
@@ -38,12 +40,11 @@ Command Render(std::span<const Item> items, int selected, int limit, bool chines
         SettingTooltip(chinese ? "新增方案：复制参数，清空绑定并停用" : "Add scheme: copy settings, clear bindings and disable");
     }
     ImGui::SameLine(0,6);
-    ImGui::BeginDisabled(items.size()<=1);
-    ImGui::PushStyleColor(ImGuiCol_Border,ImVec4(1.0f,.55f,.45f,1));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,1.0f);
+    const bool canDelete = items.size() > 1;
+    ImGui::BeginDisabled(!canDelete);
+    if (canDelete) ImGui::PushStyleColor(ImGuiCol_Border,ImVec4(1.0f,.55f,.45f,1));
     if(ImGui::Button("-##DeleteScheme",ImVec2(30,height)))command={Action::Remove,selected};
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+    if (canDelete) ImGui::PopStyleColor();
     ImGui::EndDisabled();
     SettingTooltip(items.size() <= 1
         ? (chinese ? "至少保留一个方案" : "Keep at least one scheme")

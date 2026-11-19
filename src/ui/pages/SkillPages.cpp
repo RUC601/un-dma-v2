@@ -294,34 +294,37 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         SettingRow("Incoming Threat Condition");
         changed |= UICheckbox("##threatTrigger", &settings.threatTriggerEnabled);
         SettingTooltip(L("Ultimate threats are waiting for verified activation signals."));
-        ImGui::TextUnformatted(L("Normal Skill Threats"));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Normal Skill Threats"));
         for (size_t i = 0; i < OW::SkillConditions::kNormalThreats.size(); ++i) {
             if(!OW::SkillConditions::kNormalThreats[i].incoming) continue;
             bool selected = (settings.normalThreatMask & (1 << i)) != 0;
-            if (UICheckbox(L(OW::SkillConditions::kNormalThreats[i].label), &selected)) {
+            ImGui::PushID(static_cast<int>(i));
+            SettingRow(OW::SkillConditions::kNormalThreats[i].label);
+            if (UICheckbox("##incomingThreat", &selected)) {
                 settings.normalThreatMask ^= 1 << i;
                 changed = true;
             }
+            ImGui::PopID();
         }
 
     }
     if(definition.automation==OW::SkillAutomation::NormalInterrupt) {
-        ImGui::TextUnformatted(L("Normal Skill Threats"));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted), "%s", L("Normal Skill Threats"));
         for(size_t i=0;i<OW::SkillConditions::kNormalThreats.size();++i) {
             if(OW::SkillConditions::kNormalThreats[i].interruptWindowMs<=0) continue;
             bool selected=(settings.normalThreatMask & (1<<i))!=0;
-            if(UICheckbox(L(OW::SkillConditions::kNormalThreats[i].label),&selected)) {
+            ImGui::PushID(static_cast<int>(i));
+            SettingRow(OW::SkillConditions::kNormalThreats[i].label);
+            if(UICheckbox("##interruptThreat",&selected)) {
                 settings.normalThreatMask^=1<<i;changed=true;
             }
+            ImGui::PopID();
         }
     }
     if(definition.automation==OW::SkillAutomation::NormalInterrupt ||
        definition.automation==OW::SkillAutomation::LowEnemyHealth) {
         SettingRow("Aim Before Casting");
         changed|=UICheckbox("##autoSkillAim",&settings.automaticAim);
-    }
-    if (definition.automation == OW::SkillAutomation::GenjiBlade) {
-        if (ImGui::SmallButton(L("Edit hero action keys..."))) UI::state.activeTab=UI::TAB_KEYS;
     }
     if (definition.automation == OW::SkillAutomation::ProjectileDefense) {
         SettingRow("Low Health Condition");
@@ -331,7 +334,10 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
         const char* names[]{"Ana Biotic Grenade","Bastion Tactical Grenade"};
         for(int i=0;i<2;++i) {
             bool checked=(settings.projectileThreatMask&(1<<i))!=0;
-            if(UICheckbox(L(names[i]),&checked)) { settings.projectileThreatMask^=1<<i;changed=true; }
+            ImGui::PushID(i);
+            SettingRow(names[i]);
+            if(UICheckbox("##projThreat",&checked)) { settings.projectileThreatMask^=1<<i;changed=true; }
+            ImGui::PopID();
         }
         if(definition.heroId==OW::eHero::HERO_DVA) {
             SettingRow("Assist Turning");
@@ -360,8 +366,6 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
                                 KeyBindingStorage::AimActivationIndex);
         ImGui::PopItemWidth();
     }
-
-    if (hasSkillOutputKey && ImGui::SmallButton(L("Edit hero action keys...")))UI::state.activeTab=UI::TAB_KEYS;
 
 
     if ((hasSequenceControls || hasPitchControls || hasPhaseTiming) &&
@@ -435,7 +439,7 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     if (hasControl(OW::HeroSkillControls::Distance)) {
         SettingRow(hasAbsoluteEnemyHealth ? "Max Distance" : "Distance");
         PushControlWidth();
-        changed |= UISlider("##skillDistance", &settings.distance, 0.0f, hasPunchAssist ? 20.0f : 100.0f,
+        changed |= UISlider("##skillDistance", &settings.distance, 0.0f, hasPunchAssist ? 30.0f : 100.0f,
                             Number(1, " m"));
         ImGui::PopItemWidth();
     }
@@ -743,6 +747,14 @@ static bool DrawHeroSkillDefinition(const OW::HeroSkillDefinition& definition, u
     };
 
     if (hasPunchAssist) {
+        const char* sources[] = { "Infer From Skill Events", "Direct State (Unavailable)" };
+        SettingRow("Empowered Punch Source");
+        PushControlWidth();
+        changed |= UISelect("##punchStateSource", &settings.punchStateSource, sources, IM_ARRAYSIZE(sources));
+        SettingTooltip(L(settings.punchStateSource == OW::Config::kPunchStateDirect
+            ? "Direct state is unavailable. Uses the normal punch model in this mode."
+            : "Estimates the first punch after Meteor Strike. Power Block needs a verified secondary cooldown sample."));
+        ImGui::PopItemWidth();
         drawFloatSlider("Max Height Above", "##punchAbove", settings.punchMaxHeightAbove, 0.0f, 5.0f, Number(1, " m"));
         drawFloatSlider("Max Height Below", "##punchBelow", settings.punchMaxHeightBelow, 0.0f, 5.0f, Number(1, " m"));
         drawFloatSlider("Full Charge Time", "##punchCharge", settings.punchFullChargeMs, 200.0f, 2000.0f, Number(0, " ms"));
