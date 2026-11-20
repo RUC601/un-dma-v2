@@ -2009,8 +2009,9 @@ namespace OW {
                     std::optional<float> nativeScore;
                     if (weaponSpec && NativeHitboxSampleUsable(entity, now)) {
                         const auto hitWindowInput = MakeNativeHitWindowInput(lead, weaponSpec->aimClass, hitboxScale);
+                        // Use the crosshair direction and preserve range for projectile flight time.
                         nativeScore = NativeHitWindowScore(entity, boneId, now, fovContext.camera,
-                            aimPoint - fovContext.camera, hitWindowInput);
+                            fovContext.forward * distance, hitWindowInput);
                     }
                     if (weaponSpec && NativeHitboxSampleUsable(entity, now) && !nativeScore)
                         continue;
