@@ -60,8 +60,8 @@ private:
     bool OpenConfiguredPort(bool AllowDuringStopping = false);
     void ClosePort();
     bool SendCommandOrFailSession(
-        const std::string& command);
-    bool SendCommandOnce(const std::string& command);
+        const std::string& command, bool traceLeftButton = false);
+    bool SendCommandOnce(const std::string& command, bool traceLeftButton = false);
     int EnqueueCommand(
         const std::string& command,
         OutputCommandType type,

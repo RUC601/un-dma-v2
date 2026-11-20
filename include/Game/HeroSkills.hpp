@@ -662,7 +662,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
             HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::LeftShift, 50.0f, 50.0f, 50.0f, 15.0f, 0, 10.0f, true, false, 1, 0.0f }
+        { false, HeroSkillHotkey::LeftShift, 50.0f, 50.0f, 50.0f, 15.0f, 0, 10.0f, true, true, static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept), 1, 0.0f }
     },
     {
         OW::eHero::HERO_HANJO,
@@ -718,7 +718,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::Distance | HeroSkillControls::CooldownGuard |
             HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::Space, 50.0f, 50.0f, 50.0f, 7.85f, 0, 4.0f, true, false, 1, 0.0f }
+        { false, HeroSkillHotkey::Space, 50.0f, 50.0f, 50.0f, 7.85f, 0, 4.0f, true, true, static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept), 1, 0.0f }
     },
     {
         OW::eHero::HERO_GENJI,
@@ -746,7 +746,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::EnemyHealthThreshold | HeroSkillControls::Distance |
             HeroSkillControls::CooldownGuard | HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::LeftShift, 50.0f, 45.0f, 50.0f, 15.0f, 0, 8.0f, true, false, 1, 0.0f }
+        { false, HeroSkillHotkey::LeftShift, 50.0f, 45.0f, 50.0f, 15.0f, 0, 8.0f, true, true, static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept), 1, 0.0f }
     },
     {
         OW::eHero::HERO_GENJI,
@@ -759,7 +759,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
         HeroSkillControls::Enabled | HeroSkillControls::Key |
             HeroSkillControls::HealthThreshold | HeroSkillControls::CooldownGuard |
             HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::EKey, 60.0f, 50.0f, 50.0f, 30.0f, 0, 8.0f, true, false, 1, 0.0f }
+        { false, HeroSkillHotkey::EKey, 60.0f, 50.0f, 50.0f, 30.0f, 0, 8.0f, true, true, static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept), 1, 0.0f }
     },
     {
         OW::eHero::HERO_ANA,
@@ -803,7 +803,7 @@ inline const HeroSkillDefinition kHeroSkillDefinitions[] = {
             HeroSkillControls::Distance | HeroSkillControls::CooldownGuard |
             HeroSkillControls::Prediction | HeroSkillControls::MinTargets |
             HeroSkillControls::Radius | HeroSkillControls::Cooldown,
-        { false, HeroSkillHotkey::EKey, 50.0f, 50.0f, 60.0f, 35.0f, 0, 12.0f, true, true, 1, 4.0f }
+        { false, HeroSkillHotkey::EKey, 50.0f, 50.0f, 60.0f, 35.0f, 0, 12.0f, true, true, static_cast<int>(OW::PredictionAlgorithm::BallisticIntercept), 1, 4.0f }
     },
     {
         OW::eHero::HERO_ZARYA,

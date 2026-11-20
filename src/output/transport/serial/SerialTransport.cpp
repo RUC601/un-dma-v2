@@ -246,25 +246,32 @@ void SerialTransport::ClosePort()
     SetConnectionState(OutputConnectionState::Disconnected);
 }
 
-bool SerialTransport::SendCommandOnce(const std::string& command)
+bool SerialTransport::SendCommandOnce(const std::string& command, bool traceLeftButton)
 {
     if (writeOverride)
         return writeOverride(command);
 
-    std::lock_guard<std::mutex> lock(serialMutex);
-    if (hSerial == INVALID_HANDLE_VALUE && !writeChunkOverride) {
-        return false;
+    bool written = false;
+    bool sessionOk = false;
+    {
+        std::lock_guard<std::mutex> lock(serialMutex);
+        if (hSerial != INVALID_HANDLE_VALUE || writeChunkOverride) {
+            written = WriteLocked(command);
+            sessionOk = written && protocol_.AfterWrite(*this);
+        }
     }
-
-    if (!WriteLocked(command)) return false;
-    if (!protocol_.AfterWrite(*this)) return false;
-    return true;
+    if (traceLeftButton && V2::Output::OutputVerboseLog()) {
+        Diagnostics::Info(
+            "[LEFT-SERIAL] port=%s down=%d write_ok=%d session_ok=%d",
+            serialPortName.c_str(), !protocol_.IsButtonRelease(command), written, sessionOk);
+    }
+    return sessionOk;
 }
 
 bool SerialTransport::SendCommandOrFailSession(
-    const std::string& command)
+    const std::string& command, bool traceLeftButton)
 {
-    if (SendCommandOnce(command)) return true;
+    if (SendCommandOnce(command, traceLeftButton)) return true;
     SetConnectionState(OutputConnectionState::Error);
     protocol_.ClearPhysicalInput();
     CompletePendingCommands(err_queue_stopped);
@@ -402,7 +409,7 @@ int SerialTransport::ExecuteSafetyReleaseAll()
 {
     int aggregateStatus = success;
     for (int button = 0; button < MouseButtonCount(); ++button) {
-        if (!SendCommandOrFailSession(protocol_.EncodeButton(button, false)) &&
+        if (!SendCommandOrFailSession(protocol_.EncodeButton(button, false), button == 0) &&
             aggregateStatus == success) {
             aggregateStatus = err_net_tx;
         }
@@ -526,13 +533,20 @@ void SerialTransport::QueueWorkerLoop()
             continue;
         }
 
+        const bool traceLeftButton = command.type == OutputCommandType::MouseButton &&
+            protocol_.ButtonDomain(command.command) == 0;
         if (connectionState.load()!=OutputConnectionState::Connected) {
+            if (traceLeftButton && V2::Output::OutputVerboseLog()) {
+                Diagnostics::Warn(
+                    "[LEFT-SERIAL] port=%s down=%d write_ok=0 reason=disconnected",
+                    serialPortName.c_str(), !protocol_.IsButtonRelease(command.command));
+            }
             CompleteCommand(command.completion,err_queue_stopped);continue;
         }
         const auto sendStarted = std::chrono::steady_clock::now();
         const int status=command.type==OutputCommandType::Keyboard
             ? ExecuteKeyboardReport(command.keyboardKeys,command.outputIntent==OutputIntent::SafetyRelease)
-            : (SendCommandOrFailSession(command.command) ? success : err_net_tx);
+            : (SendCommandOrFailSession(command.command, traceLeftButton) ? success : err_net_tx);
         if (V2::Output::OutputVerboseLog()) {
             Diagnostics::Aim("serial.send type=%s queue_age_us=%lld send_us=%lld status=%d command=%.*s",
                 ToString(command.type),

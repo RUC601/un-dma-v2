@@ -62,7 +62,23 @@ struct DhzBoxBackend::Impl {
         }
         return success;
     }
-    int AllUp(uint64_t deadline) { int first = success; for (int i = 0; i < 5 && GetTickCount64() < deadline; ++i) { const int s = Exchange(DhzBoxProtocol::Button(i, false), deadline); if (first == success && s != success) first = s; } const int keys = ApplyKeys({}, deadline); if (first == success) first = keys; return first; }
+    int AllUp(uint64_t deadline) {
+        int first = success;
+        for (int i = 0; i < 5; ++i) {
+            if (GetTickCount64() >= deadline) {
+                if (first == success) first = err_completion_timeout;
+                break;
+            }
+            const int s = Exchange(DhzBoxProtocol::Button(i, false), deadline);
+            if (first == success && s != success) first = s;
+        }
+        if (first == success && GetTickCount64() >= deadline) first = err_completion_timeout;
+        if (first == success) {
+            const int keys = ApplyKeys({}, deadline);
+            if (first == success) first = keys;
+        }
+        return first;
+    }
     void Run() {
         while (running) { Job job; { std::unique_lock lock(mutex); cv.wait(lock, [&]{ return !running || !queue.empty(); }); if (!running) break; job = std::move(queue.front()); queue.pop_front(); }
             int result = success; if (!job.safety && (state != OutputConnectionState::Connected || !accepting)) result = err_queue_stopped; else if (!job.safety && OutputSuppressed()) result = err_output_suppressed; else if (job.kind == Job::Wire) result = Exchange(job.command); else if (job.kind == Job::Keys) result = ApplyKeys(job.keys, 0, job.safety); else result = AllUp(job.deadline);
@@ -81,7 +97,16 @@ int DhzBoxBackend::Initialize(const std::string& ip, uint16_t port, uint8_t rand
     std::lock_guard lock(impl_->lifecycle); impl_->Close(); if (!port || !InetPtonA(AF_INET, ip.c_str(), &impl_->endpoint.sin_addr)) return err_net_cmd; impl_->endpoint.sin_family = AF_INET; impl_->endpoint.sin_port = htons(port); impl_->shift = randomShift % 26;
     WSADATA data{}; if (WSAStartup(MAKEWORD(2,2), &data)) return err_creat_socket; impl_->wsa = true; impl_->socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); impl_->monitorSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); if (impl_->socket == INVALID_SOCKET || impl_->monitorSocket == INVALID_SOCKET) { impl_->Close(); return err_creat_socket; }
     if (monitorPort) { sockaddr_in local{}; local.sin_family = AF_INET; local.sin_port = htons(monitorPort); if (bind(impl_->monitorSocket, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == SOCKET_ERROR) { impl_->Close(); return err_creat_socket; } }
-    impl_->state = OutputConnectionState::Connected; impl_->accepting = true; impl_->running = true; impl_->listening = monitorPort != 0; impl_->worker = std::thread([p=impl_.get()]{ p->Run(); }); if (impl_->listening) { impl_->monitor = std::thread([p=impl_.get()]{ p->Listen(); }); impl_->Enqueue({Impl::Job::Wire, "monitor(" + std::to_string(monitorPort) + ")"}); } return success;
+    const auto deadline = GetTickCount64() + 300ull;
+    if (impl_->Exchange(DhzBoxProtocol::Move(0, 0), deadline) != success) {
+        impl_->Close();
+        return err_net_rx_timeout;
+    }
+    if (monitorPort && impl_->Exchange("monitor(" + std::to_string(monitorPort) + ")", deadline) != success) {
+        impl_->Close();
+        return err_net_rx_timeout;
+    }
+    impl_->state = OutputConnectionState::Connected; impl_->accepting = true; impl_->running = true; impl_->listening = monitorPort != 0; impl_->worker = std::thread([p=impl_.get()]{ p->Run(); }); if (impl_->listening) impl_->monitor = std::thread([p=impl_.get()]{ p->Listen(); }); return success;
 }
 OutputConnectionState DhzBoxBackend::GetConnectionState() const { return impl_->state; }
 int DhzBoxBackend::Move(int x, int y) { if (x < -32768 || x > 32767 || y < -32768 || y > 32767) return err_net_cmd; return impl_->Enqueue({Impl::Job::Wire, DhzBoxProtocol::Move(x,y)}); }

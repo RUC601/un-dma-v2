@@ -624,6 +624,41 @@ namespace {
         return AimbotDetail::IsInputVkDown(vk, activationKey);
     }
 
+    constexpr std::uint32_t kAshePhysicalMouse4Mask = 0x08u;
+
+    struct AsheActivationSample {
+        bool available;
+        bool down;
+    };
+
+    AsheActivationSample SampleAsheActivation(int activationKey, bool trace = false)
+    {
+        const int vk = Labels::AimActivationKeyVk(activationKey);
+        if (vk != VK_XBUTTON1) {
+            const auto input = KeyState::SampleVk(vk);
+            return { input.available, input.down };
+        }
+
+        const auto physical = V2::Output::ActivePhysicalInput();
+        if (!physical.available) {
+            const auto input = KeyState::SampleVk(vk);
+            return { input.available, input.down };
+        }
+        const auto buttons = physical.buttons & (1u | kAshePhysicalMouse4Mask);
+        if (trace && Config::aimVerboseLog) {
+            static int lastState = -2;
+            const int state = physical.available ? static_cast<int>(buttons) : -1;
+            if (state != lastState) {
+                Diagnostics::Info(
+                    "[ASHE-INPUT] source=physical_monitor available=%d mouse4=%d left=%d sampled_at_ms=%llu",
+                    physical.available, (buttons & kAshePhysicalMouse4Mask) != 0,
+                    (buttons & 1u) != 0, static_cast<unsigned long long>(physical.sampledAtMs));
+                lastState = state;
+            }
+        }
+        return { physical.available, (buttons & kAshePhysicalMouse4Mask) != 0 };
+    }
+
     bool SequenceDiagnosticsEnabled()
     {
         return Config::aimVerboseLog;
@@ -1460,12 +1495,14 @@ namespace {
             return std::chrono::duration_cast<std::chrono::microseconds>(
                 value.time_since_epoch()).count();
         };
+        AsheActivationSample activation{};
         const auto valid = [&] {
             if (stopToken.stop_requested()) return false;
+            activation = activationKey >= 0 ? SampleAsheActivation(activationKey)
+                : AsheActivationSample{true, completion->activationHeld.load(std::memory_order_acquire)};
             if (!RuntimeWorkersRunning() || !SkillLogicalOutputAllowed() ||
                 Config::Menu.load(std::memory_order_acquire) ||
-                (activationKey >= 0 && !KeyState::SampleVk(
-                    Labels::AimActivationKeyVk(activationKey)).available) ||
+                !activation.available ||
                 !SequenceWorkerRuntimeStillValid(startGeneration)) {
                 reason = SequenceWorkerExitReason::RuntimeChanged;
                 return false;
@@ -1494,12 +1531,7 @@ namespace {
             skillId.c_str(), AsheCombo::kScopeWaitMs, AsheCombo::kFollowupWaitMs, AsheCombo::kClickHoldMs);
         while (valid()) {
             const auto now = Clock::now();
-            // Read the physical key at the actual checkpoint, independently of
-            // main skill-tick latency. Negative keys are the offline test seam.
-            const bool held = activationKey >= 0 ? KeyState::SampleVk(
-                Labels::AimActivationKeyVk(activationKey)).down
-                : completion->activationHeld.load(std::memory_order_acquire);
-            const auto decision = runner.Advance(microseconds(now), held);
+            const auto decision = runner.Advance(microseconds(now), activation.down);
             if (decision.finished) {
                 reason = SequenceWorkerExitReason::ActivationReleased;
                 break;
@@ -1533,10 +1565,7 @@ namespace {
                     // Unknown OCR is not an empty/full clip. Wait for actual
                     // HUD evidence, with immediate release of owned controls
                     // if the user lets go while this shot is still uncommitted.
-                    const bool stillHeld = activationKey >= 0 ? KeyState::SampleVk(
-                        Labels::AimActivationKeyVk(activationKey)).down
-                        : completion->activationHeld.load(std::memory_order_acquire);
-                    if (!stillHeld) { reason = SequenceWorkerExitReason::ActivationReleased; break; }
+                    if (!activation.down) { reason = SequenceWorkerExitReason::ActivationReleased; break; }
                     if (!waitingReported && Clock::now() - ammoWaitStarted >= std::chrono::milliseconds(150)) {
                         Diagnostics::Info("Ashe ammo wait. skill=%s shot=%d reason=%s sequence=%llu ageMs=%.1f",
                             skillId.c_str(), decision.shot, ammo.known ? "awaiting_new_frame" : "hud_unknown",
@@ -1883,6 +1912,7 @@ namespace {
         fallback.projectileRadius = settings.projectileRadius > 0.0f
             ? settings.projectileRadius : params.projectileRadius;
         fallback.gravityAcceleration = params.gravity > 0.0f ? params.gravity : 9.8f;
+        fallback.launchDirectionUpBias = params.launchDirectionUpBias;
         fallback.castDelayMs = settings.preFireDelayMs > 0.0f
             ? settings.preFireDelayMs : params.preFireDelayMs;
         const PredictionProfile profile = profileId.empty()
@@ -3119,7 +3149,7 @@ namespace {
         const SkillProjectileRuntime projectile = ResolveSkillProjectileRuntime(
             settings,
             { 75.0f, 40.0f, 0.0f, 0.125f, 0.0f },
-            "skill:genji:dash-combo");
+            "skill:dash-combo");
 
         if (runtime.active) {
             runtime.prevKeyDown = held;
@@ -4696,14 +4726,21 @@ void RunAsheInputSequence(const std::string& skillId, int key,
                          bool prediction, bool ammoGuardEnabled, int ammoGuardReserve)
 {
     auto& runtime = g_sequences[skillId];
-    const bool held = IsActivationKeyHeld(key);
+    const auto activation = SampleAsheActivation(key, true);
+    const bool held = activation.down;
     if (runtime.workerCompletion)
         runtime.workerCompletion->activationHeld.store(held, std::memory_order_release);
 
     if ((runtime.active && runtime.activationKey != key) ||
         Config::Menu.load(std::memory_order_acquire) ||
         !SkillLogicalOutputAllowed() || !RuntimeWorkersRunning()) {
-        CancelSequenceAndBlockUntilRelease(skillId, runtime, "hard_runtime_pause");
+        if (runtime.active || !runtime.rearmBlockedUntilRelease)
+            CancelSequenceAndBlockUntilRelease(skillId, runtime, "hard_runtime_pause");
+        return;
+    }
+    if (!activation.available) {
+        if (runtime.active || !runtime.rearmBlockedUntilRelease)
+            CancelSequenceAndBlockUntilRelease(skillId, runtime, "activation_unavailable");
         return;
     }
     if (runtime.active && runtime.workerCompletion) {
@@ -5342,17 +5379,18 @@ void ProcessHeroSkills()
         const bool genjiComboSkill = IsGenjiDashComboDefinition(definition);
         const bool sequenceActive = sequenceSkill && IsSequenceActive(skillKey);
         const bool genjiComboActive = genjiComboSkill && IsGenjiComboActive(skillKey);
+        const bool asheSequence = sequenceSkill && UsesAsheAmmoBudgetFallback(skillKey);
         const bool sequenceActivationHeld = sequenceSkill &&
-            IsActivationKeyHeld(settings.key);
+            (asheSequence ? SampleAsheActivation(settings.key).down : IsActivationKeyHeld(settings.key));
         if (sequenceActivationHeld) {
             anySequenceActivationHeld = true;
             // Publish immediately on the press edge; defer clearing until the
             // whole hero pass confirms that no enabled sequence hotkey is held.
             g_anyInputSequenceActivationHeld.store(true, std::memory_order_release);
         }
-        if (sequenceSkill && !UsesAsheAmmoBudgetFallback(skillKey))
+        if (sequenceSkill && !asheSequence)
             UpdateSequenceAmmoBudgetReloadState(skillKey, localSnapshot, settings.ammoGuardReserve);
-        if (sequenceActive && UsesAsheAmmoBudgetFallback(skillKey)) {
+        if (sequenceActive && asheSequence) {
             bool reloading = Config::reloading;
             (void)ReadLocalReloadingFast(localSnapshot, reloading);
             if (reloading || AimbotDetail::IsInputVkDown(
@@ -5361,7 +5399,7 @@ void ProcessHeroSkills()
                 continue;
             }
         }
-        if (sequenceSkill && !UsesAsheAmmoBudgetFallback(skillKey) && !sequenceActive &&
+        if (sequenceSkill && !asheSequence && !sequenceActive &&
             AimbotDetail::IsInputVkDown(V2::HeroSettings::Key(heroId,V2::HeroSettings::Action::Reload)))
             ResetSequenceAmmoBudget(skillKey);
 

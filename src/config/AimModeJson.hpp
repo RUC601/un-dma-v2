@@ -1,6 +1,6 @@
 #pragma once
 #include "config/AimPlanJson.hpp"
-#include "Game/AimArchitecture.hpp"
+#include "Game/AimBehaviorPolicy.hpp"
 #include "Game/AimBehaviorMode.hpp"
 namespace OW::Config::ModeJson {
 using namespace OW::AimPlan::Json;

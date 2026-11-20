@@ -19,11 +19,13 @@ namespace OW
 
         OutputAggregateUpdate BuildUpdate(
             const OutputOwnership& ownership,
-            std::vector<OutputChange> changes)
+            std::vector<OutputChange> changes,
+            std::optional<OwnerToken> owner = std::nullopt)
         {
             OutputAggregateUpdate update{};
             update.changes = std::move(changes);
             update.backendGeneration = ownership.BackendGeneration();
+            update.owner = owner;
             for (const OutputControl& control : ownership.HeldControls()) {
                 if (control.kind == OutputControlKind::KeyboardModifier) {
                     const unsigned int bit =
@@ -547,7 +549,7 @@ namespace OW
                 return false;
             }
             const OutputAggregateUpdate update =
-                BuildUpdate(proposed, std::move(changes));
+                BuildUpdate(proposed, std::move(changes), owner);
             const OutputRuntimeState expected{
                 ownership.BackendGeneration(), true };
             lock.unlock();
@@ -924,7 +926,7 @@ namespace OW
                     acquires,
                     changes);
                 const OutputAggregateUpdate update = valid
-                    ? BuildUpdate(proposed, std::move(changes))
+                    ? BuildUpdate(proposed, std::move(changes), owner)
                     : OutputAggregateUpdate{};
                 const bool releaseOnlyUpdate = acquires.empty();
                 const OutputRuntimeState expected{
@@ -1054,7 +1056,7 @@ namespace OW
             const auto changes = proposed.CancelOwner(action.owner);
             const bool valid = changes.has_value();
             const OutputAggregateUpdate update = valid
-                ? BuildUpdate(proposed, *changes)
+                ? BuildUpdate(proposed, *changes, action.owner)
                 : OutputAggregateUpdate{};
             lock.unlock();
 
@@ -1446,7 +1448,7 @@ namespace OW
                     event.step.acquire,
                     changes);
                 const OutputAggregateUpdate update = validStep
-                    ? BuildUpdate(proposed, std::move(changes))
+                    ? BuildUpdate(proposed, std::move(changes), owner)
                     : OutputAggregateUpdate{};
                 lock.unlock();
 

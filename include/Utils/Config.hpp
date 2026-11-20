@@ -17,7 +17,8 @@
 #include <imgui.h>
 
 #include "Game/AimStartLimiter.hpp"
-#include "Game/AimArchitecture.hpp"
+#include "Game/PredictionAlgorithm.hpp"
+#include "Game/PredictionProfile.hpp"
 #include "Game/AimPlan.hpp"
 #include "Game/AimBehaviorMode.hpp"
 #include "Game/GameData.hpp"

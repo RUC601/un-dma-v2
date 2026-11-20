@@ -46,6 +46,7 @@ bool IsCoreHitboxBoneId(int boneId);
 Vector3 ResolveBoneHitboxOffsetLocal(uint64_t heroId, int boneId);
 Vector3 ResolveBoneHitboxCenter(const c_entity& entity, int boneId, const Vector3& bonePoint);
 bool TryResolveNativeHitboxCenter(const c_entity& entity, int boneId, Vector3& outPoint);
+bool NativeHitboxSampleUsable(const c_entity& entity, uint32_t now);
 // Distance to the closest associated shape's axis divided by its expanded radius.
 // A score of 1 is contact. An absent score means the caller should use its bone fallback.
 std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, uint32_t now,

@@ -2007,11 +2007,13 @@ namespace OW {
                     }
 
                     std::optional<float> nativeScore;
-                    if (weaponSpec) {
+                    if (weaponSpec && NativeHitboxSampleUsable(entity, now)) {
                         const auto hitWindowInput = MakeNativeHitWindowInput(lead, weaponSpec->aimClass, hitboxScale);
                         nativeScore = NativeHitWindowScore(entity, boneId, now, fovContext.camera,
                             aimPoint - fovContext.camera, hitWindowInput);
                     }
+                    if (weaponSpec && NativeHitboxSampleUsable(entity, now) && !nativeScore)
+                        continue;
                     const float fallbackScore = angularScoreDeg / (std::max)(angularWindowDeg, 0.0001f);
                     if (nativeScore ? *nativeScore > 1.0f : angularScoreDeg > angularWindowDeg + 0.0001f)
                         continue;

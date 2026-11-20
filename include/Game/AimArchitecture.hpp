@@ -10,6 +10,9 @@
 #include <Windows.h>
 
 #include "Game/Entity.hpp"
+#include "Game/PredictionAlgorithm.hpp"
+#include "Game/PredictionProfile.hpp"
+#include "Game/AimBehaviorPolicy.hpp"
 #include "Game/AimPlan.hpp"
 #include "Game/ContourTargeting.hpp"
 #include "Game/TargetVisibility.hpp"
@@ -41,69 +44,6 @@ enum class PredictionOverrideMode : int {
 // Both prediction paths share projectile data. Target motion is sampled from
 // the target only. Local velocity never becomes part of projectile muzzle
 // velocity or target lead input.
-enum class PredictionAlgorithm : int {
-    LegacyLinear = 0,
-    BallisticIntercept = 1,
-};
-
-inline constexpr int ClampPredictionAlgorithm(int value) {
-    // The retired relative-motion variants used 2 (linear) and 3 (ballistic).
-    return value == static_cast<int>(PredictionAlgorithm::BallisticIntercept) || value == 3
-        ? static_cast<int>(PredictionAlgorithm::BallisticIntercept)
-        : static_cast<int>(PredictionAlgorithm::LegacyLinear);
-}
-
-inline constexpr bool IsBallisticPredictionAlgorithm(int value) {
-    return ClampPredictionAlgorithm(value) == static_cast<int>(PredictionAlgorithm::BallisticIntercept);
-}
-
-inline const char* PredictionAlgorithmId(int value) {
-    switch (ClampPredictionAlgorithm(value)) {
-    case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
-        return "ballistic_intercept";
-    case static_cast<int>(PredictionAlgorithm::LegacyLinear):
-    default:
-        return "legacy_linear";
-    }
-}
-
-inline const char* PredictionAlgorithmName(int value) {
-    switch (ClampPredictionAlgorithm(value)) {
-    case static_cast<int>(PredictionAlgorithm::BallisticIntercept):
-        return "Ballistic Intercept";
-    case static_cast<int>(PredictionAlgorithm::LegacyLinear):
-    default:
-        return "Legacy Linear";
-    }
-}
-
-enum class AimBehaviorType : int {
-    Tracking = 0,
-    Flick = 1,
-    Flick2nd = 2,
-    Reacquire = 3,
-    MagneticTrigger = 4,
-    FlickClamp = Flick,
-    FlickDelay = Flick,
-    ReacquireAtApex = Reacquire,
-};
-
-enum class FirePolicyType : int {
-    ManualOnly = 0,
-    TrackingWithHold = 1,
-    SingleShot = 2,
-    ReleaseAfterDelay = 3,
-    TimedBurst = 4,
-    ChargeRelease = 5,
-    // User-facing "Keep Firing".  The older six internal policies retain
-    // their persisted values, while this explicit value keeps unconditional
-    // attack-button ownership separate from tracking-session ownership.
-    KeepFiring = 6,
-    // Compatibility names preserve the persisted values used by older V2 configs.
-    HoldWhileTracking = TrackingWithHold,
-    TapOnHitWindow = SingleShot,
-};
-
 enum class RuntimeVariantRequirement : int {
     None = 0,
     PerkOn,
@@ -139,36 +79,6 @@ enum class ExecutionSource : int {
     Trigger = 1,
     HeroSkill = 2,
     SequenceInternal = 3,
-};
-
-inline constexpr float kDefaultInstantHitRadius = 0.07f;
-inline constexpr float kMaxPredictionProjectileRadius = 2.0f;
-
-struct ProjectileSpec {
-    bool enabledByDefault = false;
-    float projectileSpeed = 0.0f;
-    bool gravity = false;
-    float projectileRadius = 0.0f;
-    float chargeMinSpeed = 0.0f;
-    float chargeMaxSpeed = 0.0f;
-    bool directHitOnly = true;
-    float launchDirectionUpBias = 0.0f;
-    float gravityAcceleration = 9.8f;
-    float castDelayMs = 0.0f;
-};
-
-struct PredictionProfile {
-    std::string profileId = "default";
-    int configVersion = 1;
-    ProjectileSpec projectile{};
-    std::optional<bool> inheritInstantHitRadius;
-    // These fields identify the action the profile came from when it is
-    // persisted in the shared prediction store.  The weapon table remains
-    // the migration source for profiles that are absent from old configs.
-    uint64_t heroId = 0;
-    int actionId = 0;
-    std::string algorithmProfileId = "ballistic_intercept";
-    int algorithm = static_cast<int>(PredictionAlgorithm::BallisticIntercept);
 };
 
 struct FirePolicy {
@@ -315,11 +225,6 @@ inline PredictionOverrideMode ClampPredictionOverride(int value)
     return static_cast<PredictionOverrideMode>(std::clamp(value, 0, 2));
 }
 
-inline AimBehaviorType ClampAimBehavior(int value)
-{
-    return static_cast<AimBehaviorType>(std::clamp(value, 0, 4));
-}
-
 inline FirePolicyType ClampFirePolicy(int value)
 {
     return static_cast<FirePolicyType>(std::clamp(value, 0, 6));
@@ -358,13 +263,6 @@ inline bool ResolvePredictionEnabled(PredictionOverrideMode mode,
 inline int LegacyAimModeFromBehavior(AimBehaviorType behavior)
 {
     return behavior == AimBehaviorType::Tracking ? 0 : 1;
-}
-
-inline FirePolicyType DefaultFirePolicyForBehavior(AimBehaviorType behavior)
-{
-    return behavior == AimBehaviorType::Tracking
-        ? FirePolicyType::TrackingWithHold
-        : FirePolicyType::SingleShot;
 }
 
 inline bool AllowsGeneratedAimFire(FirePolicyType policy)

@@ -30,6 +30,7 @@ namespace OW
         std::uint64_t backendGeneration = 0;
         std::uint8_t keyboardModifierMask = 0;
         std::vector<std::uint8_t> keyboardUsages;
+        std::optional<OwnerToken> owner;
 
         bool IsReleaseOnly() const noexcept
         {

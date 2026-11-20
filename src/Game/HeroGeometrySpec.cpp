@@ -62,7 +62,7 @@ bool IsFiniteVector(const Vector3& value)
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
 }
 
-bool NativeHitboxSampleUsable(const c_entity& entity, uint32_t now)
+bool NativeHitboxSampleUsableInternal(const c_entity& entity, uint32_t now)
 {
     const auto& sample = entity.native_hitboxes;
     return sample.Matches(entity.VelocityBase, entity.skeleton_revision) &&
@@ -232,6 +232,11 @@ Vector3 NativeBoneReference(const c_entity& entity, int boneId)
 
 } // namespace
 
+bool NativeHitboxSampleUsable(const c_entity& entity, uint32_t now)
+{
+    return NativeHitboxSampleUsableInternal(entity, now);
+}
+
 bool ContinuousTrajectoryIntersectsHitbox(const ProjectileTrajectory& trajectory,
                                           const HitboxSegment& hitbox,
                                           float projectileRadius,
@@ -293,7 +298,7 @@ float ResolveEffectiveHitWindow(const c_entity& entity,
                                 float projectileRadiusOverride)
 {
     float boneRadius = ResolveBoneHitboxRadius(entity.HeroID, boneId, fallbackBoneRadius);
-    if (NativeHitboxSampleUsable(entity, GetTickCount())) {
+    if (NativeHitboxSampleUsableInternal(entity, GetTickCount())) {
         const Vector3 reference = NativeBoneReference(entity, boneId);
         float nearestDistance = (std::numeric_limits<float>::max)();
         float nativeRadius = 0.0f;
@@ -362,7 +367,7 @@ Vector3 ResolveBoneHitboxCenter(const c_entity& entity, int boneId, const Vector
 bool TryResolveNativeHitboxCenter(const c_entity& entity, int boneId, Vector3& outPoint)
 {
     outPoint = {};
-    if (!NativeHitboxSampleUsable(entity, GetTickCount()))
+    if (!NativeHitboxSampleUsableInternal(entity, GetTickCount()))
         return false;
     const Vector3 reference = NativeBoneReference(entity, boneId);
     float nearestDistance = (std::numeric_limits<float>::max)();
@@ -387,7 +392,7 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
     const Vector3& origin, const Vector3& direction, const Vector3& predictedDisplacement,
     float projectileRadius, float hitboxScalePercent)
 {
-    if (!NativeHitboxSampleUsable(entity, now) || !IsFiniteVector(origin) ||
+    if (!NativeHitboxSampleUsableInternal(entity, now) || !IsFiniteVector(origin) ||
         !IsFiniteVector(direction) || !IsFiniteVector(predictedDisplacement) ||
         !std::isfinite(projectileRadius) || !std::isfinite(hitboxScalePercent))
         return std::nullopt;
@@ -461,7 +466,7 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
         maxTime
     };
 
-    if (!NativeHitboxSampleUsable(entity, now))
+    if (!NativeHitboxSampleUsableInternal(entity, now))
         return std::nullopt;
     const auto& sample = entity.native_hitboxes;
     const Vector3 relativeAnchor = entity.pos - sample.world.sampleAnchor +

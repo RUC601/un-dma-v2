@@ -43,8 +43,12 @@ inline bool InSelectedAimHitWindow(const TargetCandidate& candidate,
     const Vector3& viewAngle, const Vector3& targetAngle, const Vector3& camera,
     const Vector3& aimPoint)
 {
-    if (const auto score = SelectedAimNativeHitScore(candidate, viewAngle, camera, aimPoint))
+    if (NativeHitboxSampleUsable(candidate.entitySnapshot, GetTickCount())) {
+        const auto score = SelectedAimNativeHitScore(candidate, viewAngle, camera, aimPoint);
+        if (!score)
+            return false;
         return *score <= 1.0f;
+    }
     return HitWindowAngleInside(viewAngle, targetAngle, camera, aimPoint,
         candidate.effectiveHitWindow);
 }

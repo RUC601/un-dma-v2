@@ -3,8 +3,10 @@
 #include "Game/AimArchitecture.hpp"
 #include "Game/HostInteractionState.hpp"
 #include "Game/CalibrationPolicy.hpp"
+#include "Utils/Diagnostics.hpp"
 #include "output/OutputScheduler.hpp"
 #include "output/OutputRuntime.hpp"
+#include "output/OutputServices.hpp"
 #include "Utils/Config.hpp"
 
 #include <atomic>
@@ -105,10 +107,22 @@ inline int DispatchOutputAggregateOutput(const OutputAggregateUpdate& update)
     bool keyboardChanged = false;
     for (const OutputChange& change : update.changes) {
         if (change.control.kind == OutputControlKind::MouseButton) {
+            const bool down = change.transition == OutputTransition::Press;
             const int result = V2::Output::DispatchMouseButtonForGeneration(
                 update.backendGeneration,
                 static_cast<int>(change.control.code),
-                change.transition == OutputTransition::Press);
+                down);
+            if (change.control.code == 0 && V2::Output::OutputVerboseLog()) {
+                const auto physical = V2::Output::ActivePhysicalInput();
+                Diagnostics::Info(
+                    "[LEFT-OUTPUT] down=%d status=%d generation=%llu owner_source=%d owner_id=%llu physical_available=%d physical_left=%d physical_mouse4=%d sampled_at_ms=%llu",
+                    down, result, static_cast<unsigned long long>(update.backendGeneration),
+                    update.owner ? static_cast<int>(update.owner->source) : -1,
+                    static_cast<unsigned long long>(update.owner ? update.owner->id : 0),
+                    physical.available, physical.available && (physical.buttons & 0x01u) != 0,
+                    physical.available && (physical.buttons & 0x08u) != 0,
+                    static_cast<unsigned long long>(physical.sampledAtMs));
+            }
             if (status == success && result != success)
                 status = result;
         } else {
