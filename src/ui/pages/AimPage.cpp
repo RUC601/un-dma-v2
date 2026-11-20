@@ -33,7 +33,6 @@ using namespace UI::ValueFormat;
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -52,54 +51,6 @@ using namespace UI::ValueFormat;
 #include "ui/AimPlanEditor.hpp"
 #include "ui/BehaviorTuningEditor.hpp"
 using namespace UI::Theme;
-
-namespace {
-
-enum class AimFireMode : int {
-    Tracking = 0,
-    KeepFiring = 1,
-    Legacy = 2,
-};
-
-constexpr const char* kAimFireModes[] = {
-    "Tracking",
-    "Keep Firing",
-    "Legacy policy (choose a new behavior)",
-};
-
-constexpr const char* kAimFireModesZh[] = {
-    "只跟踪",
-    "持续开火",
-    "旧版策略（请选择新行为）",
-};
-
-AimFireMode AimFireModeFromPolicy(int policy)
-{
-    switch (OW::ClampFirePolicy(policy)) {
-    case OW::FirePolicyType::ManualOnly:
-    case OW::FirePolicyType::SingleShot:
-        return AimFireMode::Tracking;
-    case OW::FirePolicyType::KeepFiring:
-    case OW::FirePolicyType::TrackingWithHold:
-        return AimFireMode::KeepFiring;
-    default:
-        return AimFireMode::Legacy;
-    }
-}
-
-int AimFirePolicyFromMode(AimFireMode mode)
-{
-    switch (mode) {
-    case AimFireMode::Tracking:
-        return static_cast<int>(OW::FirePolicyType::ManualOnly);
-    case AimFireMode::KeepFiring:
-        return static_cast<int>(OW::FirePolicyType::KeepFiring);
-    default:
-        return static_cast<int>(OW::FirePolicyType::ManualOnly);
-    }
-}
-
-}
 
 void UI::AimbotPage() {
     state.selectedTypeIndex = ClampHeroSelectionIndex(state.selectedTypeIndex);
@@ -276,7 +227,7 @@ void UI::AimbotPage() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("0 means unlimited. Faster targets stay out of the Basic candidate set.");
         presetChanged |= UI::AimPlanEditor::HealthLimits(activePreset);
-    }, "Behavior & Fire", [&]() {
+    }, "Behavior", [&]() {
         SettingRow(L("Behavior mode"));PushControlWidth();
         int chosenMode=activePreset.aimBehaviorPresetId;
         if(UISelectAimBehaviorPreset("##aimBehaviorMode",&chosenMode,-1,nullptr)) {
@@ -286,49 +237,6 @@ void UI::AimbotPage() {
         }
         ImGui::PopItemWidth();
         if(ImGui::IsItemHovered())ImGui::SetTooltip("%s: %s + %s",L("Mode structure"),L(kAimBehavior[activePreset.aimBehavior]),L(kAimMethod[activePreset.aimMethod]));
-
-        SettingRow(L("Fire behavior"));
-        PushControlWidth();
-        const int storedFirePolicy = activePreset.firePolicy;
-        const AimFireMode currentFireMode = AimFireModeFromPolicy(storedFirePolicy);
-        const char* const* fireModeLabels = OW::Config::uiLanguage == 1
-            ? kAimFireModesZh : kAimFireModes;
-        const int action = activePreset.trigger.action;
-        const auto* weapon = OW::ResolveWeaponSpec(selectedHero->heroId, action);
-        std::array<AimFireMode, 4> choices{};
-        std::array<const char*, 4> labels{};
-        int fireChoiceCount = 0;
-        int selectedFireChoice = -1;
-        const auto addFireChoice = [&](AimFireMode mode) {
-            if (mode == currentFireMode) selectedFireChoice = fireChoiceCount;
-            labels[fireChoiceCount] = fireModeLabels[static_cast<int>(mode)];
-            choices[fireChoiceCount++] = mode;
-        };
-        addFireChoice(AimFireMode::Tracking);
-        if (OW::ResolveGeneratedFireMouseButton(weapon, action) >= 0)
-            addFireChoice(AimFireMode::KeepFiring);
-        if (selectedFireChoice < 0)
-            addFireChoice(currentFireMode);
-        if (UISelect("##aimFireMode", &selectedFireChoice, labels.data(), fireChoiceCount) &&
-            choices[selectedFireChoice] != AimFireMode::Legacy) {
-            const AimFireMode fireMode = choices[selectedFireChoice];
-            activePreset.firePolicy = AimFirePolicyFromMode(fireMode);
-            activePreset.keepFiring = fireMode == AimFireMode::KeepFiring;
-            activePreset.autoshot = false;
-            activePreset.requireActionHeld = false;
-            presetChanged = true;
-        }
-        ImGui::PopItemWidth();
-        if (ImGui::IsItemHovered()) {
-            if (choices[selectedFireChoice] == AimFireMode::Legacy) {
-                ImGui::SetTooltip(L("Legacy internal policy %s is still loaded. Select one of the three user-facing Fire behaviors to migrate this Slot."),
-                                  OW::FirePolicyName(OW::ClampFirePolicy(storedFirePolicy)));
-            } else {
-                ImGui::SetTooltip("%s", OW::Config::uiLanguage == 1
-                    ? "只跟踪只移动准星；持续开火在激活键按住期间持续持有攻击键。"
-                    : "Tracking only moves the aim. Keep Firing holds the selected attack button while the activation key is down.");
-            }
-        }
 
         SettingRow(L("Skeleton"));
         PushControlWidth();

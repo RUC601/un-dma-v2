@@ -337,7 +337,7 @@ namespace OW { namespace Config {
     inline int   aimBehavior = kAimBehaviorTracking;
     inline decltype(aimBehavior)& View_aimBehavior(); // 0=Tracking, 1=Flick, 2=Flick2nd, 3=Reacquire, 4=MagneticTrigger
     inline int   aimbotFirePolicy = 0;
-    inline decltype(aimbotFirePolicy)& View_aimbotFirePolicy();     // 0=Manual, 1=Hold, 2=Tap, 3=ReleaseDelay, 4=Burst, 5=ChargeRelease
+    inline decltype(aimbotFirePolicy)& View_aimbotFirePolicy();     // 0=Manual, 1=TrackingHold, 2=SingleShot, 3=ReleaseDelay, 4=TimedBurst, 5=ChargeRelease, 6=KeepFiring
     inline float aimbotTriggerDelay = 0.0f; // triggerbot delay in ms (scaled)
     inline float aimbotMaxHead = 100.0f;
     inline decltype(aimbotMaxHead)& View_aimbotMaxHead();
@@ -1630,14 +1630,35 @@ namespace OW { namespace Config {
         if(legacy && legacyDefinition && p.aimPlan.overrideMotion && p.aimPlan.motion.method!=legacyDefinition->method) {
             p.aimBehavior=legacyDefinition->behavior;p.aimBehaviorPresetId=-1;
         }
-        StoreHeroBehaviorMode(p);
         const auto* def=FindAimBehaviorPreset(p.aimBehaviorPresetId);
         const int id=def?def->id:-1;
         const int behavior=ClampAimBehaviorIndex(def?def->behavior:p.aimBehavior);
         AimPlan::Motion defaults=def?def->motion:CaptureBehaviorMotion(behavior);
         defaults.method=ClampAimMethodIndex(def?def->method:(p.aimPlan.overrideMotion?p.aimPlan.motion.method:defaults.method));
         if(legacy && p.aimPlan.overrideMotion) defaults=p.aimPlan.motion;
-        AimBehaviorTuning tuning=def?static_cast<const AimBehaviorTuning&>(*def):static_cast<const AimBehaviorTuning&>(p);
+        auto& initialConfig=EnsureSlotBehaviorConfig(p,id);
+        auto initialBehavior=std::find_if(initialConfig.behaviors.begin(),initialConfig.behaviors.end(),
+            [&](const auto& v){return v.behavior==behavior;});
+        const bool hasStoredBehavior = initialBehavior != initialConfig.behaviors.end();
+        const int storedFirePolicy = hasStoredBehavior
+            ? initialBehavior->tuning.firePolicy
+            : p.firePolicy;
+        // Keep the existing synchronization path for every behavior tuning
+        // field. Fire Policy is owned by the behavior entry, so protect an
+        // already stored value from the Slot-level compatibility projection.
+        StoreHeroBehaviorMode(p);
+        auto& c=EnsureSlotBehaviorConfig(p,id);
+        auto b=std::find_if(c.behaviors.begin(),c.behaviors.end(),[&](const auto& v){return v.behavior==behavior;});
+        if(hasStoredBehavior && !reset && b!=c.behaviors.end())
+            b->tuning.firePolicy=storedFirePolicy;
+        // A saved behavior configuration owns its Fire Policy and tuning.
+        // Slot-level fields are only a migration source for files that have
+        // no matching behavior entry yet.
+        AimBehaviorTuning tuning = hasStoredBehavior && !reset
+            ? b->tuning
+            : def
+                ? static_cast<const AimBehaviorTuning&>(*def)
+                : static_cast<const AimBehaviorTuning&>(p);
         if(legacy) {
             tuning=p;
             tuning.baseSpeed=def?def->baseSpeed:aimBehaviorBaseSpeed[behavior];
@@ -1646,8 +1667,6 @@ namespace OW { namespace Config {
             tuning.moveSplitMaxPixels=def?def->moveSplitMaxPixels:aimBehaviorMoveSplitMaxPixels[behavior];
             tuning.moveSplitDelayUs=def?def->moveSplitDelayUs:aimBehaviorMoveSplitDelayUs[behavior];
         }
-        auto& c=EnsureSlotBehaviorConfig(p,id);
-        auto b=std::find_if(c.behaviors.begin(),c.behaviors.end(),[&](const auto& v){return v.behavior==behavior;});
         if(b==c.behaviors.end()) {c.behaviors.push_back({behavior,tuning});b=std::prev(c.behaviors.end());}
         if(reset) b->tuning=tuning;
         auto m=std::find_if(c.motions.begin(),c.motions.end(),[&](const auto& v){return v.method==defaults.method;});

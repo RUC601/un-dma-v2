@@ -1742,7 +1742,9 @@ namespace OW { namespace Config {
             const OW::FirePolicyType policy = OW::ClampFirePolicy(firePolicy);
             keepFiring = policy == OW::FirePolicyType::TrackingWithHold ||
                 policy == OW::FirePolicyType::KeepFiring;
-            autoshot = false;
+            autoshot = policy != OW::FirePolicyType::ManualOnly &&
+                policy != OW::FirePolicyType::TrackingWithHold &&
+                policy != OW::FirePolicyType::KeepFiring;
         }
 
         int ResolveFirePolicyWithLegacyFallback(int currentPolicy,
@@ -1754,14 +1756,12 @@ namespace OW { namespace Config {
                                                 bool autoshot)
         {
             if (hasFirePolicy)
-                return currentPolicy == static_cast<int>(OW::FirePolicyType::SingleShot)
-                    ? static_cast<int>(OW::FirePolicyType::ManualOnly)
-                    : currentPolicy;
+                return currentPolicy;
             if (hasKeepFiring || hasAutoshot) {
                 if (keepFiring)
                     return static_cast<int>(OW::FirePolicyType::KeepFiring);
                 if (autoshot)
-                    return static_cast<int>(OW::FirePolicyType::ManualOnly);
+                    return static_cast<int>(OW::FirePolicyType::SingleShot);
                 return static_cast<int>(OW::DefaultFirePolicyForBehavior(
                     OW::ClampAimBehavior(behavior)));
             }
@@ -1914,8 +1914,6 @@ namespace OW { namespace Config {
             preset.fovEntryPredictionMs = ClampFovEntryPredictionMs(preset.fovEntryPredictionMs);
             preset.fovEntryMaxOutsideDeg = ClampFovEntryMaxOutsideDeg(preset.fovEntryMaxOutsideDeg);
             preset.firePolicy = std::clamp(preset.firePolicy, 0, 6);
-            if (preset.firePolicy == static_cast<int>(OW::FirePolicyType::SingleShot))
-                preset.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
             DeriveLegacyFireFlagsFromPolicy(
                 preset.firePolicy,
                 preset.keepFiring,
@@ -3439,8 +3437,6 @@ namespace OW { namespace Config {
             AddJsonInt(value, "aimBehaviorPresetId", preset.aimBehaviorPresetId, allocator);
             AddJsonInt(value,"aimMethod",preset.aimMethod,allocator);
             AddJsonInt(value, "key", preset.key, allocator);
-            AddJsonBool(value, "autoshot", preset.autoshot, allocator);
-            AddJsonBool(value, "keepFiring", preset.keepFiring, allocator);
             AddJsonBool(value, "requireActionHeld", preset.requireActionHeld, allocator);
             AddJsonBool(value, "prediction", preset.prediction, allocator);
             AddJsonInt(value, "predictionMode", preset.predictionMode, allocator);
@@ -3448,7 +3444,6 @@ namespace OW { namespace Config {
             AddJsonBool(value, "predictFovEntry", preset.predictFovEntry, allocator);
             AddJsonFloat(value, "fovEntryPredictionMs", preset.fovEntryPredictionMs, allocator);
             AddJsonFloat(value, "fovEntryMaxOutsideDeg", preset.fovEntryMaxOutsideDeg, allocator);
-            AddJsonInt(value, "firePolicy", preset.firePolicy, allocator);
             AddJsonFloat(value, "maxHeadDistance", preset.maxHeadDistance, allocator);
             AddJsonFloat(value, "stickiness", preset.stickiness, allocator);
             AddJsonFloat(value, "pitchScale", preset.pitchScale, allocator);
@@ -4654,12 +4649,17 @@ namespace OW { namespace Config {
             defaults.behaviorConfigs=value.HasMember("behaviorConfigs")?ModeJson::ReadConfigs(value["behaviorConfigs"]):std::vector<SlotBehaviorConfig>{};
             if(value.HasMember("modeTuning")) {
                 const int slotFirePolicy = defaults.firePolicy;
+                const auto& modeTuning = value["modeTuning"];
+                const bool modeTuningHasFireFields = modeTuning.IsObject() &&
+                    (modeTuning.HasMember("firePolicy") ||
+                     modeTuning.HasMember("keepFiring") ||
+                     modeTuning.HasMember("autoshot"));
                 static_cast<AimBehaviorTuning&>(defaults)=ModeJson::ReadTuning(
-                    value["modeTuning"], defaults, defaults.aimBehavior);
-                // A slot-level Fire Policy is authoritative when present.
-                // The mode tuning object can still migrate its legacy fields
-                // when the slot has no new policy of its own.
-                if (hasFirePolicy)
+                    modeTuning, defaults, defaults.aimBehavior);
+                // New behavior tuning owns Fire Policy. A top-level policy is
+                // only a fallback for old files whose mode tuning has no fire
+                // fields at all.
+                if (hasFirePolicy && !modeTuningHasFireFields)
                     defaults.firePolicy = slotFirePolicy;
             }
             return defaults;
@@ -4984,6 +4984,9 @@ namespace OW { namespace Config {
             preset.bezierCurvature = ReadFixedFloat(ini, section, "aimBezierCurvature", preset.bezierCurvature);
             preset.bezierSpeed = ReadFixedFloat(ini, section, "aimBezierSpeed", preset.bezierSpeed);
             preset.key = ReadInt(ini, section, "aim_key", preset.key);
+            const bool hasAutoshot = KeyExists(ini, section, "aimbotAutoshot");
+            const bool hasKeepFiring = KeyExists(ini, section, "aimbotKeepFiring");
+            const bool hasFirePolicy = KeyExists(ini, section, "aimbotFirePolicy");
             preset.autoshot = ReadBool(ini, section, "aimbotAutoshot", preset.autoshot);
             preset.keepFiring = ReadBool(ini, section, "aimbotKeepFiring", preset.keepFiring);
             preset.requireActionHeld = ReadBool(
@@ -4993,7 +4996,14 @@ namespace OW { namespace Config {
                 preset.requireActionHeld);
             preset.prediction = ReadBool(ini, section, "predictdec", preset.prediction);
             preset.predictionMode = ReadInt(ini, section, "aimbotPredictionMode", preset.prediction ? 1 : 2);
-            preset.firePolicy = ReadInt(ini, section, "aimbotFirePolicy", preset.firePolicy);
+            preset.firePolicy = ResolveFirePolicyWithLegacyFallback(
+                ReadInt(ini, section, "aimbotFirePolicy", preset.firePolicy),
+                preset.aimBehavior,
+                hasFirePolicy,
+                hasKeepFiring,
+                preset.keepFiring,
+                hasAutoshot,
+                preset.autoshot);
             preset.maxHeadDistance = ReadFixedFloat(ini, section, "aimbotMaxHead", preset.maxHeadDistance);
             preset.stickiness = ReadFixedFloat(ini, section, "aimbotStickiness", preset.stickiness);
             preset.pitchScale = ReadFixedFloat(ini, section, "aimbotPitchScale", preset.pitchScale);
@@ -5105,6 +5115,9 @@ namespace OW { namespace Config {
                 slot.preset.key = ReadInt(ini, section, "key", slot.preset.key);
             else
                 slot.preset.key = ReadInt(ini, section, "aim_key", slot.preset.key);
+            const bool hasAutoshot = KeyExists(ini, section, "aimbotAutoshot");
+            const bool hasKeepFiring = KeyExists(ini, section, "aimbotKeepFiring");
+            const bool hasFirePolicy = KeyExists(ini, section, "aimbotFirePolicy");
             slot.preset.autoshot = ReadBool(ini, section, "aimbotAutoshot", slot.preset.autoshot);
             slot.preset.keepFiring = ReadBool(ini, section, "aimbotKeepFiring", slot.preset.keepFiring);
             slot.preset.requireActionHeld = ReadBool(
@@ -5122,7 +5135,14 @@ namespace OW { namespace Config {
             slot.preset.predictFovEntry = ReadBool(ini, section, "predictFovEntry", slot.preset.predictFovEntry);
             slot.preset.fovEntryPredictionMs = ReadFixedFloat(ini, section, "fovEntryPredictionMs", slot.preset.fovEntryPredictionMs);
             slot.preset.fovEntryMaxOutsideDeg = ReadFixedFloat(ini, section, "fovEntryMaxOutsideDeg", slot.preset.fovEntryMaxOutsideDeg);
-            slot.preset.firePolicy = ReadInt(ini, section, "aimbotFirePolicy", slot.preset.firePolicy);
+            slot.preset.firePolicy = ResolveFirePolicyWithLegacyFallback(
+                ReadInt(ini, section, "aimbotFirePolicy", slot.preset.firePolicy),
+                slot.preset.aimBehavior,
+                hasFirePolicy,
+                hasKeepFiring,
+                slot.preset.keepFiring,
+                hasAutoshot,
+                slot.preset.autoshot);
             slot.preset.maxHeadDistance = ReadFixedFloat(ini, section, "aimbotMaxHead", slot.preset.maxHeadDistance);
             slot.preset.stickiness = ReadFixedFloat(ini, section, "aimbotStickiness", slot.preset.stickiness);
             slot.preset.pitchScale = ReadFixedFloat(ini, section, "aimbotPitchScale", slot.preset.pitchScale);

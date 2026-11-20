@@ -57,13 +57,11 @@ inline AimBehaviorTuning ReadTuning(const Value& v,
     Read(v,"autoshot",t.autoshot);
     Read(v,"keepFiring",t.keepFiring);
     Read(v,"firePolicy",t.firePolicy);
-    if (t.firePolicy == static_cast<int>(OW::FirePolicyType::SingleShot))
-        t.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
     if (!hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
         t.firePolicy = t.keepFiring
             ? static_cast<int>(OW::FirePolicyType::KeepFiring)
             : t.autoshot
-                ? static_cast<int>(OW::FirePolicyType::ManualOnly)
+                ? static_cast<int>(OW::FirePolicyType::SingleShot)
                 : static_cast<int>(OW::DefaultFirePolicyForBehavior(
                     OW::ClampAimBehavior(behavior)));
     } else if (!hasFirePolicy && !hasKeepFiring && !hasAutoshot &&
