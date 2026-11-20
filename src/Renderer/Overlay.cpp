@@ -293,7 +293,24 @@ bool IsMenuTogglePressed() {
     const int key = OW::Config::MenuToggleKey;
     static int previousKey = 0;
     static bool wasDown = false;
-    const bool down = key > 0 && key < 256 && (GetAsyncKeyState(key) & 0x8000) != 0;
+    if (key <= 0 || key >= 256) {
+        previousKey = key;
+        wasDown = false;
+        return false;
+    }
+
+    bool down = false;
+    if (KeyState::IsDmaKeyStateReady()) {
+        const auto sample = KeyState::SampleVk(key);
+        // A stale or missing DMA sample is not a release. Keep the previous
+        // edge state until the target machine provides a fresh sample.
+        if (!sample.available)
+            return false;
+        down = sample.down;
+    } else {
+        down = (GetAsyncKeyState(key) & 0x8000) != 0;
+    }
+
     const bool pressed = down && (!wasDown || key != previousKey);
     previousKey = key;
     wasDown = down;
@@ -560,7 +577,8 @@ void Overlay::Run(std::function<void()> renderCallback) {
         static OW::ProcessConnection::CacheRefreshHotkey cacheRefreshHotkey;
         const int refreshKey = OW::Config::CacheRefreshKey;
         const auto remoteKey = KeyState::SampleVk(refreshKey);
-        const bool localKeyDown = refreshKey > 0 && refreshKey < 256 &&
+        const bool localKeyDown = !KeyState::IsDmaKeyStateReady() &&
+            refreshKey > 0 && refreshKey < 256 &&
             (GetAsyncKeyState(refreshKey) & 0x8000) != 0;
         if (cacheRefreshHotkey.Update(refreshKey, localKeyDown, remoteKey.available,
                 remoteKey.down, OW::ProcessConnection::IsRecoveryBusy()))

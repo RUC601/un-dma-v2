@@ -14,6 +14,8 @@ using namespace Detail;
         for (const HeroSlotPreset& slot : item->second) {
             if (slot.present && slot.enabled) {
                 outPreset = ValidateHeroPresetValueForHero(heroId, slot.preset);
+                if (kind == HeroPresetSlotKind::Trigger)
+                    outPreset.trigger.enabled = true;
                 return true;
             }
         }
@@ -81,8 +83,13 @@ using namespace Detail;
         const auto item = store.find(heroId);
         const int clampedSlotIndex = ClampHeroPresetSlotIndex(slotIndex);
         if (item != store.end() &&
-            item->second[static_cast<size_t>(clampedSlotIndex)].present)
-            return ValidateHeroPresetValueForHero(heroId, item->second[static_cast<size_t>(clampedSlotIndex)].preset);
+            item->second[static_cast<size_t>(clampedSlotIndex)].present) {
+            HeroPreset preset = ValidateHeroPresetValueForHero(
+                heroId, item->second[static_cast<size_t>(clampedSlotIndex)].preset);
+            if (kind == HeroPresetSlotKind::Trigger)
+                preset.trigger.enabled = item->second[static_cast<size_t>(clampedSlotIndex)].enabled;
+            return preset;
+        }
         return kind == HeroPresetSlotKind::Aim
             ? MakeHeroAimPresetFromCurrentUnlocked()
             : MakeHeroTriggerPresetFromCurrentUnlocked();
@@ -225,6 +232,8 @@ using namespace Detail;
         outSlot = slot;
         outSlot.name = NormalizeHeroSlotName(outSlot.name, clampedSlotIndex);
         outSlot.preset = ValidateHeroPresetValueForHero(heroId, outSlot.preset);
+        if (kind == HeroPresetSlotKind::Trigger)
+            outSlot.preset.trigger.enabled = outSlot.enabled;
         outSlot.scopeRequirement = kind == HeroPresetSlotKind::Aim
             ? DefaultAimScopeRequirementForHeroAction(
                 heroId,
@@ -290,6 +299,7 @@ using namespace Detail;
                 return false;
             outSlot.name = NormalizeHeroSlotName(outSlot.name, ClampHeroPresetSlotIndex(slotIndex));
             outSlot.preset = ValidateHeroPresetValueForHero(heroId, outSlot.preset);
+            outSlot.preset.trigger.enabled = outSlot.enabled;
             outSlot.scopeRequirement = AimScopeRequirement::All;
             return true;
         }

@@ -25,8 +25,8 @@ struct LeadTimingEstimate {
     float estimatedSettleMs = 0.0f;
     int inputDelayMs = 0;
     float preFireDelayMs = 0.0f;
-    // Aim settling is a control estimate, not a reason to move the target by
-    // the whole settle interval before launch.
+    // Target motion during the complete pre-fire interval.  Launch-origin
+    // sample-age correction is kept separately in ExtrapolateLaunchPoint.
     float targetExtrapolationMs = 0.0f;
 };
 
@@ -88,7 +88,7 @@ inline constexpr float kLeadMaxFrameSeconds = 0.1f;
 inline constexpr float kLeadSettleEpsilonRad = 0.0005f;
 inline constexpr float kLeadMaxSettleMs = 250.0f;
 inline constexpr float kLeadMaxPreFireDelayMs = 300.0f;
-inline constexpr float kLeadMaxTargetExtrapolationMs = 10.0f;
+inline constexpr float kLeadMaxLaunchOriginExtrapolationMs = 10.0f;
 
 inline constexpr float kLeadMaxTargetSpeed = 250.0f;
 inline constexpr float kLeadRadToDeg = 57.29577951308232f;
@@ -105,7 +105,7 @@ inline Vector3 ExtrapolateLaunchPoint(const Vector3& sampledPoint,
     if (!IsFiniteLeadVector(sampledPoint) || !IsFiniteLeadVector(localVelocity) ||
         !std::isfinite(sampleAgeMs) || sampleAgeMs <= 0.0f)
         return sampledPoint;
-    const float ageSeconds = (std::min)(sampleAgeMs, kLeadMaxTargetExtrapolationMs) / 1000.0f;
+    const float ageSeconds = (std::min)(sampleAgeMs, kLeadMaxLaunchOriginExtrapolationMs) / 1000.0f;
     return sampledPoint + localVelocity * ageSeconds;
 }
 inline Vector3 CompensateProjectileLaunchBias(const Vector3& camera,
@@ -204,8 +204,10 @@ inline LeadTimingEstimate BuildLeadTiming(float estimatedSettleMs, int inputDela
     timing.preFireDelayMs = ClampLeadDelayMs(
         timing.estimatedSettleMs + static_cast<float>(timing.inputDelayMs),
         kLeadMaxPreFireDelayMs);
-    timing.targetExtrapolationMs = (std::min)(
-        timing.preFireDelayMs, kLeadMaxTargetExtrapolationMs);
+    // This is the target motion during the complete pre-fire interval.  The
+    // separate 10 ms bound belongs to ExtrapolateLaunchPoint, which corrects
+    // the local launch origin for sample age.
+    timing.targetExtrapolationMs = timing.preFireDelayMs;
     return timing;
 }
 

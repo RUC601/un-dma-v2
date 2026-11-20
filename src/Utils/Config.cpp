@@ -1742,9 +1742,7 @@ namespace OW { namespace Config {
             const OW::FirePolicyType policy = OW::ClampFirePolicy(firePolicy);
             keepFiring = policy == OW::FirePolicyType::TrackingWithHold ||
                 policy == OW::FirePolicyType::KeepFiring;
-            autoshot = policy != OW::FirePolicyType::ManualOnly &&
-                policy != OW::FirePolicyType::TrackingWithHold &&
-                policy != OW::FirePolicyType::KeepFiring;
+            autoshot = false;
         }
 
         int ResolveFirePolicyWithLegacyFallback(int currentPolicy,
@@ -1756,12 +1754,14 @@ namespace OW { namespace Config {
                                                 bool autoshot)
         {
             if (hasFirePolicy)
-                return currentPolicy;
+                return currentPolicy == static_cast<int>(OW::FirePolicyType::SingleShot)
+                    ? static_cast<int>(OW::FirePolicyType::ManualOnly)
+                    : currentPolicy;
             if (hasKeepFiring || hasAutoshot) {
                 if (keepFiring)
                     return static_cast<int>(OW::FirePolicyType::KeepFiring);
                 if (autoshot)
-                    return static_cast<int>(OW::FirePolicyType::SingleShot);
+                    return static_cast<int>(OW::FirePolicyType::ManualOnly);
                 return static_cast<int>(OW::DefaultFirePolicyForBehavior(
                     OW::ClampAimBehavior(behavior)));
             }
@@ -1914,6 +1914,8 @@ namespace OW { namespace Config {
             preset.fovEntryPredictionMs = ClampFovEntryPredictionMs(preset.fovEntryPredictionMs);
             preset.fovEntryMaxOutsideDeg = ClampFovEntryMaxOutsideDeg(preset.fovEntryMaxOutsideDeg);
             preset.firePolicy = std::clamp(preset.firePolicy, 0, 6);
+            if (preset.firePolicy == static_cast<int>(OW::FirePolicyType::SingleShot))
+                preset.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
             DeriveLegacyFireFlagsFromPolicy(
                 preset.firePolicy,
                 preset.keepFiring,
@@ -3514,6 +3516,12 @@ namespace OW { namespace Config {
             AddJsonInt(value, "scopeRequirement", static_cast<int>(
                 NormalizeAimScopeRequirement(static_cast<int>(slot.scopeRequirement))), allocator);
             rapidjson::Value preset = HeroPresetToJson(slot.preset, allocator);
+            if (auto trigger = preset.FindMember("trigger");
+                trigger != preset.MemberEnd() && trigger->value.IsObject()) {
+                // Hero slots use the outer `enabled` member. Do not persist a
+                // second trigger enable switch inside the preset.
+                trigger->value.RemoveMember("enabled");
+            }
             rapidjson::Value presetKey;
             presetKey.SetString("preset", allocator);
             value.AddMember(presetKey, preset, allocator);
@@ -4683,6 +4691,9 @@ namespace OW { namespace Config {
                     defaults.preset,
                     legacyFovApertureValues,
                     legacyAimBehaviorValues);
+            // Hero Trigger Slots have one enable switch: the slot itself.
+            // Ignore stale nested trigger.enabled values from old profiles.
+            defaults.preset.trigger.enabled = defaults.enabled;
             defaults.preset = ValidateHeroPresetValue(defaults.preset);
             return defaults;
         }
@@ -5155,7 +5166,6 @@ namespace OW { namespace Config {
                 IsFlickBehavior(slot.preset.aimBehavior)) {
                 slot.preset.aimBehavior = kAimBehaviorFlick2nd;
             }
-            slot.preset.trigger.enabled = ReadBool(ini, section, "triggerEnabled", slot.preset.trigger.enabled);
             slot.preset.trigger.action = ReadInt(ini, section, "triggerAction", slot.preset.trigger.action);
             slot.preset.trigger.mode = ReadInt(ini, section, "triggerMode", slot.preset.trigger.mode);
             slot.preset.trigger.key = ReadInt(ini, section, "triggerKey", slot.preset.trigger.key);
@@ -5172,6 +5182,8 @@ namespace OW { namespace Config {
             slot.preset.trigger.boneMask = static_cast<TriggerBoneMask>(
                 ReadInt(ini, section, "triggerBoneMask", static_cast<int>(slot.preset.trigger.boneMask)));
             slot.preset.trigger.drawHitbox = ReadBool(ini, section, "triggerDrawHitbox", slot.preset.trigger.drawHitbox);
+            // Legacy INI triggerEnabled is a stale nested copy.
+            slot.preset.trigger.enabled = slot.enabled;
             slot.preset = ValidateHeroPresetValue(slot.preset);
             return slot;
         }

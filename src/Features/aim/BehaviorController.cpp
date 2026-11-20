@@ -640,18 +640,22 @@ namespace AimbotDetail {
 
             if (!hasFallback) {
                 fallback.preset = slot.preset;
+                // For a Trigger Slot, the outer slot switch is the sole
+                // runtime enable.  The nested field is legacy compatibility
+                // data and may be stale in older hero JSON.
+                fallback.preset.trigger.enabled = true;
                 fallback.slotIndex = slotIndex;
                 fallback.matchedInput = false;
                 hasFallback = true;
             }
 
             const OW::Config::TriggerPreset& trigger = slot.preset.trigger;
-            if (!trigger.enabled)
-                continue;
             if (slot.preset.targetTeam != 0 &&
                 slot.preset.allyKey != OW::Labels::kAimActivationKeyNoneIndex &&
                 IsConfiguredActivationKeyPressedForSelection(slot.preset.allyKey)) {
-                selection={};selection.preset=slot.preset;selection.preset.targetTeam=1;
+                selection={};selection.preset=slot.preset;
+                selection.preset.trigger.enabled=true;
+                selection.preset.targetTeam=1;
                 selection.preset.trigger.mode=0;selection.preset.trigger.key=slot.preset.allyKey;
                 selection.slotIndex=slotIndex;selection.matchedInput=true;return true;
             }
@@ -661,6 +665,7 @@ namespace AimbotDetail {
                 stickyToggleSlotIndex = trigger.mode == 1 ? slotIndex : -1;
                 stickyToggleSlotId = trigger.mode == 1 ? slot.stableId : 0;
                 selection.preset = slot.preset;
+                selection.preset.trigger.enabled = true;
                 selection.slotIndex = slotIndex;
                 selection.matchedInput = true;
                 return true;
@@ -668,6 +673,7 @@ namespace AimbotDetail {
 
             if (trigger.mode == 2 && !hasAlwaysCandidate) {
                 alwaysCandidate.preset = slot.preset;
+                alwaysCandidate.preset.trigger.enabled = true;
                 alwaysCandidate.slotIndex = slotIndex;
                 alwaysCandidate.matchedInput = true;
                 hasAlwaysCandidate = true;
@@ -679,9 +685,9 @@ namespace AimbotDetail {
             if (OW::Config::TryGetHeroTriggerSlot(heroId, stickyToggleSlotIndex, stickySlot) &&
                 stickySlot.stableId == stickyToggleSlotId &&
                 stickySlot.enabled &&
-                stickySlot.preset.trigger.enabled &&
                 stickySlot.preset.trigger.mode == 1) {
                 selection.preset = stickySlot.preset;
+                selection.preset.trigger.enabled = true;
                 selection.slotIndex = stickyToggleSlotIndex;
                 selection.matchedInput = true;
                 return true;
@@ -857,8 +863,9 @@ namespace AimbotDetail {
 
     inline bool ReadDmaKeyStateVk(int vk, int keySetting) {
         if (!KeyState::IsDmaKeyStateReady()) {
-            LogAimKeyState(keySetting, vk, KeyState::HotkeyInputSource::DmaKeyState, false);
-            return false;
+            const bool pressed = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            LogAimKeyState(keySetting, vk, KeyState::HotkeyInputSource::LocalAsyncFallback, pressed);
+            return pressed;
         }
 
         const bool pressed = KeyState::IsKeyDown(static_cast<uint32_t>(vk));
@@ -881,7 +888,7 @@ namespace AimbotDetail {
 
     inline bool ReadDmaKeyStateVkQuiet(int vk) {
         if (!KeyState::IsDmaKeyStateReady())
-            return false;
+            return (GetAsyncKeyState(vk) & 0x8000) != 0;
         return KeyState::IsKeyDown(static_cast<uint32_t>(vk));
     }
 
@@ -922,17 +929,6 @@ namespace AimbotDetail {
         return IsInputVkDown(vk, keySetting);
     }
 
-    inline uint32_t PhysicalMouseMaskForActivationVk(int vk) {
-        switch (vk) {
-        case VK_LBUTTON:  return 0x01u;
-        case VK_RBUTTON:  return 0x02u;
-        case VK_MBUTTON:  return 0x04u;
-        case VK_XBUTTON1: return 0x08u;
-        case VK_XBUTTON2: return 0x10u;
-        default:          return 0u;
-        }
-    }
-
     inline bool IsAimActivationKeyDown() {
         if (!OW::RuntimeWorkersRunning() || !OW::HasFreshViewMatrices())
             return false;
@@ -941,20 +937,6 @@ namespace AimbotDetail {
         // establishes the slot cycle.  The old field remains loadable and is
         // normalized to false for persistence compatibility.
         const int keySetting = OW::Config::View_aim_key();
-        const int vk = OW::get_bind_id(keySetting);
-        const uint32_t physicalMask = PhysicalMouseMaskForActivationVk(vk);
-        if (physicalMask != 0) {
-            // The output device can inject the same mouse button used as the
-            // activation key. Prefer its physical monitor here so our own
-            // held output cannot re-arm the Aim Slot after the user releases
-            // the mouse button.
-            const auto runtime = V2::Output::ActiveRuntimeSnapshot();
-            const auto capabilities = V2::Output::CapabilitiesFor(runtime.descriptor);
-            if (capabilities.physicalMonitor) {
-                const auto physical = V2::Output::ActivePhysicalInput();
-                return physical.available && (physical.buttons & physicalMask) != 0;
-            }
-        }
         return IsConfiguredAimKeyPressed(keySetting);
     }
 
@@ -1583,7 +1565,8 @@ namespace AimbotDetail {
                 CancelConfiguredAimShot(state);
             state.releaseShotLatched=false;
         }
-        const bool keySampleAvailable=KeyState::SampleVk(OW::get_bind_id(OW::Config::View_aim_key())).available;
+        const bool keySampleAvailable = !KeyState::IsDmaKeyStateReady() ||
+            KeyState::SampleVk(OW::get_bind_id(OW::Config::View_aim_key())).available;
         if(!keySampleAvailable) {
             CancelConfiguredAimShot(state);
         } else if(!rawDown && !state.releasePending) {

@@ -1481,6 +1481,9 @@ namespace OW { namespace Config {
 
     // ---- Per-hero aim/trigger presets ----
     struct TriggerPreset {
+        // This flag belongs to the global trigger preset. Hero trigger slots
+        // use HeroSlotPreset::enabled; their nested copy is ignored on load
+        // and omitted on save.
         bool enabled = false;
         int action = 0;          // 0=Primary, 1=Secondary, 2=Scoped, 3=Unscoped, 4-6=Abilities, 7=Ultimate
         int mode = 0;            // 0=Hold, 1=Toggle, 2=Always

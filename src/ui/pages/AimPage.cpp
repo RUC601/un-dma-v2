@@ -56,35 +56,32 @@ using namespace UI::Theme;
 namespace {
 
 enum class AimFireMode : int {
-    KeepFiring = 0,
-    SingleShot = 1,
-    TrackingWithHold = 2,
-    Legacy = 3,
+    Tracking = 0,
+    KeepFiring = 1,
+    Legacy = 2,
 };
 
 constexpr const char* kAimFireModes[] = {
+    "Tracking",
     "Keep Firing",
-    "Single Shot",
-    "Tracking With Hold",
     "Legacy policy (choose a new behavior)",
 };
 
 constexpr const char* kAimFireModesZh[] = {
-    "持续按住",
-    "单发",
-    "跟踪并持续按住",
+    "只跟踪",
+    "持续开火",
     "旧版策略（请选择新行为）",
 };
 
 AimFireMode AimFireModeFromPolicy(int policy)
 {
     switch (OW::ClampFirePolicy(policy)) {
-    case OW::FirePolicyType::KeepFiring:
-        return AimFireMode::KeepFiring;
+    case OW::FirePolicyType::ManualOnly:
     case OW::FirePolicyType::SingleShot:
-        return AimFireMode::SingleShot;
+        return AimFireMode::Tracking;
+    case OW::FirePolicyType::KeepFiring:
     case OW::FirePolicyType::TrackingWithHold:
-        return AimFireMode::TrackingWithHold;
+        return AimFireMode::KeepFiring;
     default:
         return AimFireMode::Legacy;
     }
@@ -93,13 +90,12 @@ AimFireMode AimFireModeFromPolicy(int policy)
 int AimFirePolicyFromMode(AimFireMode mode)
 {
     switch (mode) {
+    case AimFireMode::Tracking:
+        return static_cast<int>(OW::FirePolicyType::ManualOnly);
     case AimFireMode::KeepFiring:
         return static_cast<int>(OW::FirePolicyType::KeepFiring);
-    case AimFireMode::SingleShot:
-        return static_cast<int>(OW::FirePolicyType::SingleShot);
-    case AimFireMode::TrackingWithHold:
     default:
-        return static_cast<int>(OW::FirePolicyType::TrackingWithHold);
+        return static_cast<int>(OW::FirePolicyType::ManualOnly);
     }
 }
 
@@ -308,21 +304,17 @@ void UI::AimbotPage() {
             labels[fireChoiceCount] = fireModeLabels[static_cast<int>(mode)];
             choices[fireChoiceCount++] = mode;
         };
-        if (OW::ResolveGeneratedFireMouseButton(weapon, action) >= 0) {
+        addFireChoice(AimFireMode::Tracking);
+        if (OW::ResolveGeneratedFireMouseButton(weapon, action) >= 0)
             addFireChoice(AimFireMode::KeepFiring);
-            addFireChoice(AimFireMode::SingleShot);
-        }
-        if (activePreset.aimBehavior == OW::Config::kAimBehaviorTracking &&
-            OW::ResolveTrackingHoldMouseButton(weapon, action) >= 0)
-            addFireChoice(AimFireMode::TrackingWithHold);
         if (selectedFireChoice < 0)
             addFireChoice(currentFireMode);
         if (UISelect("##aimFireMode", &selectedFireChoice, labels.data(), fireChoiceCount) &&
             choices[selectedFireChoice] != AimFireMode::Legacy) {
             const AimFireMode fireMode = choices[selectedFireChoice];
             activePreset.firePolicy = AimFirePolicyFromMode(fireMode);
-            activePreset.keepFiring = fireMode != AimFireMode::SingleShot;
-            activePreset.autoshot = fireMode == AimFireMode::SingleShot;
+            activePreset.keepFiring = fireMode == AimFireMode::KeepFiring;
+            activePreset.autoshot = false;
             activePreset.requireActionHeld = false;
             presetChanged = true;
         }
@@ -333,8 +325,8 @@ void UI::AimbotPage() {
                                   OW::FirePolicyName(OW::ClampFirePolicy(storedFirePolicy)));
             } else {
                 ImGui::SetTooltip("%s", OW::Config::uiLanguage == 1
-                    ? "持续按住随激活键生效。单发每次按下最多提交一次。跟踪并持续按住随跟踪会话生效。"
-                    : "Keep Firing follows the activation key. Single Shot submits at most one shot per press. Tracking With Hold follows the tracking session.");
+                    ? "只跟踪只移动准星；持续开火在激活键按住期间持续持有攻击键。"
+                    : "Tracking only moves the aim. Keep Firing holds the selected attack button while the activation key is down.");
             }
         }
 

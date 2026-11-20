@@ -222,11 +222,9 @@
             result.timing.preFireDelayMs = ClampLeadDelayMs(
                 result.timing.preFireDelayMs + extraPreFireDelayMs + projectile.castDelayMs,
                 preFireMaxMs);
-            const float controlExtrapolationMs = (std::min)(
-                result.timing.targetExtrapolationMs + (std::max)(0.0f, extraPreFireDelayMs),
-                kLeadMaxTargetExtrapolationMs);
             result.timing.targetExtrapolationMs = ClampLeadDelayMs(
-                controlExtrapolationMs + (std::max)(0.0f, projectile.castDelayMs),
+                result.timing.targetExtrapolationMs + (std::max)(0.0f, extraPreFireDelayMs) +
+                    (std::max)(0.0f, projectile.castDelayMs),
                 preFireMaxMs);
             result.preFireAimPoint = IsBallisticPredictionAlgorithm(algorithm)
                 ? ApplyTargetMotionPreFireDelay(rawAimPoint, result.targetVelocity,
@@ -235,8 +233,10 @@
                                               projectile, result.timing.targetExtrapolationMs);
             result.finalAimPoint = result.preFireAimPoint;
 
-            if (IsBallisticPredictionAlgorithm(algorithm) &&
-                projectile.projectileSpeed > 0.0f) {
+            // Both modes account for projectile flight.  Legacy Linear uses
+            // the directly observed constant velocity, while Ballistic
+            // Intercept supplies the acceleration-aware velocity above.
+            if (projectile.projectileSpeed > 0.0f) {
                 const BallisticIntercept intercept = SolveBallisticIntercept(
                     camera, result.preFireAimPoint, result.targetVelocity, projectile.projectileSpeed,
                     projectile.gravity ? projectile.gravityAcceleration : 0.0f);

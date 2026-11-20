@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "schema_version": 1,
+  "timestamp_ms": 1795174803710,
+  "warnings": [
+    "selected target snapshot is unavailable"
+  ],
+  "target": {
+    "selected_index": null,
+    "selected_key": null,
+    "lock_active": false,
+    "health": null,
+    "distance_m": null,
+    "aim_point": null,
+    "angular_error_deg": null,
+    "raw_aim_point": null,
+    "predicted_aim_point": null,
+    "final_aim_point": null,
+    "prediction_enabled": null,
+    "projectile_speed": null,
+    "gravity": null,
+    "motion_source": null,
+    "motion_confidence": null,
+    "target_velocity": null,
+    "lead_timing_ms": null
+  }
+}

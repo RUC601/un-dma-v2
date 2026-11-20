@@ -32,10 +32,9 @@ struct EntityMotionEstimate {
 };
 
 inline constexpr float kMinSampleSeconds = 0.004f;
-inline constexpr float kMaxSampleSeconds = 0.250f;
+inline constexpr float kMaxSampleSeconds = 0.010f;
 inline constexpr float kMaxReasonableSpeed = 250.0f;
-inline constexpr float kReportedStillSpeed = 0.75f;
-inline constexpr float kWorldDeltaFallbackMinSpeed = 1.0f;
+inline constexpr float kMinReportedSpeed = 1.0f;
 
 inline bool IsFiniteVector(const Vector3& value)
 {
@@ -115,9 +114,7 @@ inline EntityMotionEstimate EstimateEntityMotion(const EntityLike& entity)
     }
 
     if (estimate.hasWorldDeltaVelocity &&
-        (!estimate.hasReportedVelocity ||
-         (estimate.reportedSpeed <= kReportedStillSpeed &&
-          estimate.worldDeltaSpeed >= kWorldDeltaFallbackMinSpeed))) {
+        (!estimate.hasReportedVelocity || estimate.reportedSpeed < kMinReportedSpeed)) {
         estimate.effectiveVelocity = estimate.worldDeltaVelocity;
         estimate.effectiveSpeed = estimate.worldDeltaSpeed;
         estimate.velocitySource = VelocitySource::WorldDeltaFallback;

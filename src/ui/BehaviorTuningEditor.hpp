@@ -13,31 +13,19 @@ inline bool BehaviorTuningEditor(OW::Config::AimBehaviorTuning& t,int behavior,
     changed|=Float("Pitch Scale","##pitch",t.pitchScale,.1f,3);
     if (showFirePolicy) {
         static const char* const userFireModes[] = {
-            "Keep Firing", "Single Shot", "Tracking With Hold"
+            "Tracking", "Keep Firing"
         };
         const auto policy = OW::ClampFirePolicy(t.firePolicy);
-        int mode = policy == OW::FirePolicyType::KeepFiring ? 0
-            : policy == OW::FirePolicyType::SingleShot ? 1
-            : policy == OW::FirePolicyType::TrackingWithHold ? 2 : -1;
-        if (mode < 0) {
-            SettingRow("Fire Policy");
-            ImGui::TextDisabled("Legacy: %s", OW::FirePolicyName(policy));
-            ImGui::SetItemTooltip("Select a new Fire Behavior to migrate this mode.");
-            SettingRow("Migrate to");
-            mode = 2;
-        } else {
-            SettingRow("Fire Policy");
-        }
+        int mode = policy == OW::FirePolicyType::KeepFiring ||
+            policy == OW::FirePolicyType::TrackingWithHold ? 1 : 0;
+        SettingRow("Fire Policy");
         PushControlWidth();
         if(UISelect("##policy",&mode,userFireModes,IM_ARRAYSIZE(userFireModes))) {
             t.firePolicy = mode == 0
-                ? static_cast<int>(OW::FirePolicyType::KeepFiring)
-                : mode == 1
-                    ? static_cast<int>(OW::FirePolicyType::SingleShot)
-                    : static_cast<int>(OW::FirePolicyType::TrackingWithHold);
-            t.keepFiring=t.firePolicy==static_cast<int>(OW::FirePolicyType::KeepFiring) ||
-                t.firePolicy==static_cast<int>(OW::FirePolicyType::TrackingWithHold);
-            t.autoshot=t.firePolicy==static_cast<int>(OW::FirePolicyType::SingleShot);
+                ? static_cast<int>(OW::FirePolicyType::ManualOnly)
+                : static_cast<int>(OW::FirePolicyType::KeepFiring);
+            t.keepFiring = mode == 1;
+            t.autoshot = false;
             changed=true;
         }
         ImGui::PopItemWidth();

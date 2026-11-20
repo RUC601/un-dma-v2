@@ -78,9 +78,10 @@ void UI::TriggerPage() {
     PushHeroActionSlotControlId(slotKind, selectedHero->heroId, state.triggerHeroSegActive);
 
     UIGroupPair("Trigger Slot", [&]() {
-        // One UI switch controls both legacy gates; merely viewing an old slot never changes it.
-        bool triggerEnabled = activePreset.trigger.enabled && (selectedHero->heroId == 0 ||
-            IsHeroActionSlotEnabled(slotKind, selectedHero->heroId, state.triggerHeroSegActive));
+        // The outer Trigger Slot switch is the only enable state for hero slots.
+        bool triggerEnabled = selectedHero->heroId == 0
+            ? activePreset.trigger.enabled
+            : IsHeroActionSlotEnabled(slotKind, selectedHero->heroId, state.triggerHeroSegActive);
         SettingRow("Enable Trigger");
         if (UICheckbox("##triggerEnabled", &triggerEnabled)) {
             activePreset.trigger.enabled = triggerEnabled;

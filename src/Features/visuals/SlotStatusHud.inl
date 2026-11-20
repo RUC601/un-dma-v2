@@ -28,7 +28,7 @@
             }
             if (OW::Config::TryGetHeroTriggerSlot(heroId, i, slot)) {
                 append("Trigger", slot.preset.trigger.key, i,
-                    slot.enabled && slot.preset.trigger.enabled, slot.preset.trigger.mode == 2);
+                    slot.enabled, slot.preset.trigger.mode == 2);
             }
         }
         if (OW::Config::secondaim) append(OW::Config::Flick2 ? "Flick" : "Tracking", OW::Config::aim_key2, 1, true);
