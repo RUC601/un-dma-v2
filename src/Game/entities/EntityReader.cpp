@@ -27,6 +27,11 @@ namespace {
 bool NativeHitboxRuntimeEnabled() {
     return true;
 }
+
+bool ModelHitboxRuntimeEnabled() {
+    const auto settings = V2::HeroSettings::Snapshot();
+    return OW::Config::draw_hitbox || settings->display.hitboxContour || settings->display.hitboxFill;
+}
 }
 
 void entity_thread() {
@@ -1090,7 +1095,7 @@ void entity_thread() {
                     cached.skeletonCache.valid=false;
                 }
                 const auto& skeleton=cached.skeletonCache;
-                const bool nativeGeometry=NativeHitboxRuntimeEnabled() && offset::IsCnProfile() && item.skeletonPrepared;
+                const bool nativeGeometry=NativeHitboxRuntimeEnabled() && offset::UsesNativeModelGeometry() && item.skeletonPrepared;
                 if(nativeGeometry && !cached.nativeHitboxLayout.Matches(cached.velocity,skeleton.revision)) {
                     ++pipelineStats.hotGeometryLayoutLoads;
                     OW::NativeHitboxes::LoadLayout(cached.nativeHitboxLayout,cached.velocity,skeleton.revision,skeleton.boneCount,
@@ -1156,7 +1161,7 @@ void entity_thread() {
                         request(capture.layout.capsules,capture.capsules.data(),capture.capsules.size(),capture.capsuleBytes);
                         pipelineStats.hotGeometryShapeBytes+=capture.spheres.size()+capture.capsules.size();
                     }
-                } else if(item.skeletonPrepared && OW::Config::draw_hitbox && OW::ModelShapes::Supported(cached.heroId) &&
+                } else if(item.skeletonPrepared && ModelHitboxRuntimeEnabled() && OW::ModelShapes::Supported(cached.heroId) &&
                    skeleton.valid && skeleton.shapeModelIndex>=0 && skeleton.shapeMaxIndex>=0 && skeleton.shapeMaxIndex<skeleton.boneCount) {
                     item.shapeBoneData.resize(size_t(skeleton.shapeMaxIndex+1)*0x30);
                     if(!extraRequest(item,skeleton.bonesBase,item.shapeBoneData.data(),
@@ -1273,7 +1278,7 @@ void entity_thread() {
             }
             item.readCompletedTick = skeletonCompleted;
             std::fill(next.model_shapes.valid.begin(),next.model_shapes.valid.end(),false);
-            if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
+            if(offset::UsesNativeModelGeometry()) {
                 if(skeletonConfirmed && next.HasCurrentModelWorldTransform() && NativeHitboxRuntimeEnabled()) {
                     const auto* nativeModel = cached.skeletonCache.shapeModelIndex >= 0
                         ? &OW::ModelShapes::kModels[cached.skeletonCache.shapeModelIndex] : nullptr;
@@ -1289,7 +1294,7 @@ void entity_thread() {
                 if(item.nativeHitboxes.prepared && !item.nativeHitboxes.Complete())cached.nativeHitboxLayout={};
                 cached.cachedNativeHitboxes=next.native_hitboxes;
             }
-            if(skeletonConfirmed && OW::Config::draw_hitbox && OW::ModelShapes::Supported(next.HeroID) &&
+            if(skeletonConfirmed && ModelHitboxRuntimeEnabled() && OW::ModelShapes::Supported(next.HeroID) &&
                !item.shapeBoneData.empty() && item.shapeBoneBytes==item.shapeBoneData.size() &&
                item.reads.velocity.bonedata==cached.skeletonCache.velocityBoneData &&
                cached.skeletonCache.heroId==next.HeroID) {
@@ -2217,7 +2222,7 @@ void entity_thread() {
                     skeletonSlowCache.skeletonCache.identity!=entity.SkeletonIdentity();
                 const bool refreshSkeleton = rebuildSkeleton &&
                     (forceLocalSkeletonRefresh || consumeCycleBudget(skeletonRefreshBudget));
-                if (offset::IsCnProfile() && refreshSkeleton) {
+                if (offset::UsesNativeModelGeometry() && refreshSkeleton) {
                     // Rebuild only the binding here. The next hot batch supplies
                     // the model transform and joint poses from one observation.
                     entity.ClearSkeletonObservation();

@@ -571,7 +571,7 @@ namespace OW {
 
         // Consumers read the published snapshot. Raw address diagnostics use ProbeBone.
         Vector3 GetBonePos(int boneId) const {
-            if (offset::IsCnProfile() && !HasCurrentModelWorldTransform()) return {};
+            if (offset::UsesNativeModelGeometry() && !HasCurrentModelWorldTransform()) return {};
             if (boneId == 83 && cached_bot_chest_bone_valid)
                 return cached_bot_chest_bone;
             for (size_t slot = 0; slot < skeleton_requested_ids.size(); ++slot) {
@@ -586,7 +586,7 @@ namespace OW {
 
         bool TrySkeletonPoint(size_t slot, Vector3& point) const {
             point = {};
-            if (!(offset::IsCnProfile() ? HasCurrentModelWorldTransform() : rotation_valid) ||
+            if (!(offset::UsesNativeModelGeometry() ? HasCurrentModelWorldTransform() : rotation_valid) ||
                 skeleton_form == SkeletonSemantics::Form::Unknown || !skeleton_revision ||
                 slot >= skeleton_bones.size() || !skeleton_bone_valid[slot] ||
                 skeleton_requested_ids[slot] < 0 || !IsFiniteVectorValue(skeleton_bones[slot]) ||
@@ -610,7 +610,7 @@ namespace OW {
             const ModelWorld::QstRecord captured = record;
             ClearModelWorldTransform();
             const auto identity = SkeletonIdentity();
-            if (!offset::IsCnProfile() || !identity.alive || modelBase != VelocityBase ||
+            if (!offset::UsesNativeModelGeometry() || !identity.alive || modelBase != VelocityBase ||
                 !model_world.Set(modelBase, captured)) return false;
             model_world.sampleAnchor = pos;
             model_world_identity = identity;
@@ -623,14 +623,14 @@ namespace OW {
         }
 
         bool HasBoneWorldTransform() const {
-            return offset::IsCnProfile() ? HasCurrentModelWorldTransform() :
+            return offset::UsesNativeModelGeometry() ? HasCurrentModelWorldTransform() :
                 rotation_valid && IsPlausibleSpatialAnchor(pos) && IsFiniteVectorValue(Rot);
         }
 
         bool TransformBoneWorld(const XMFLOAT3& local, Vector3& point, bool legacyBallBias = true) const {
             point = {};
             if (!IsFiniteBoneValue(local) || !HasBoneWorldTransform()) return false;
-            if (offset::IsCnProfile()) {
+            if (offset::UsesNativeModelGeometry()) {
                 point = model_world.TransformPoint({local.x, local.y, local.z}) + (pos - model_world.sampleAnchor);
             } else {
                 XMFLOAT3 rotated{};
@@ -696,7 +696,7 @@ namespace OW {
 
         void ApplySkeletonCoreAnchors() {
             Vector3* anchors[] = {&head_pos, &neck_pos, &chest_pos};
-            const bool observedTransformValid = !offset::IsCnProfile() || HasCurrentModelWorldTransform();
+            const bool observedTransformValid = !offset::UsesNativeModelGeometry() || HasCurrentModelWorldTransform();
             if (!observedTransformValid) {
                 for (size_t slot = 0; slot < 3; ++slot) {
                     if (core_anchor_source[slot] == SkeletonSemantics::CoreAnchorSource::ObservedBone) {
@@ -873,7 +873,7 @@ namespace OW {
             ApplySkeletonMapping(mapping);
             // CN uses the model transform sampled beside these poses; no
             // velocity-origin or Wrecking Ball height correction is added.
-            const bool useModelWorld = offset::IsCnProfile();
+            const bool useModelWorld = offset::UsesNativeModelGeometry();
             const auto rotation = useModelWorld ? XMMatrixIdentity() : XMMatrixRotationY(Rot.X);
             const auto world = [&](int index, Vector3& point) {
                 if (index < 0 || index >= mapping.boneCount) return false;

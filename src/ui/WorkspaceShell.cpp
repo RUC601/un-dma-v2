@@ -6,6 +6,7 @@
 #include "Utils/Config.hpp"
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace UI::Workspace {
@@ -74,11 +75,41 @@ void Icon(ImDrawList* draw, ImVec2 p, int index, ImU32 color) {
         draw->AddRect(ImVec2(x-8,y-5),ImVec2(x+8,y+5),color,5,0,1.3f);draw->AddCircle(ImVec2(x,y),3,color,16,1.3f);
     } else if(index==6) {
         draw->AddCircle(ImVec2(x,y),8,color,24,1.3f);draw->AddCircleFilled(ImVec2(x-3,y-3),1.5f,color);draw->AddCircleFilled(ImVec2(x+3,y-3),1.5f,color);draw->AddCircleFilled(ImVec2(x-4,y+2),1.5f,color);
-    } else if(index==7||index==10) {
+    } else if(index==7) {
         draw->AddCircle(ImVec2(x,y),8,color,24,1.3f);draw->AddCircle(ImVec2(x,y),4,color,20,1.3f);
+    } else if(index==8) {
+        draw->AddCircle(ImVec2(x-5,y-6),2.2f,color,12,1.3f);draw->AddCircle(ImVec2(x-5,y+6),2.2f,color,12,1.3f);draw->AddCircle(ImVec2(x+5,y-3),2.2f,color,12,1.3f);
+        draw->AddLine(ImVec2(x-5,y-3.8f),ImVec2(x-5,y+3.8f),color,1.3f);
+        draw->AddBezierCubic(ImVec2(x+5,y-.8f),ImVec2(x+5,y+3),ImVec2(x-5,y+1),ImVec2(x-5,y+3.8f),color,1.3f);
+    } else if(index==10) {
+        draw->PathArcTo(ImVec2(x,y+3),8,IM_PI,2*IM_PI,20);draw->PathStroke(color,0,1.3f);
+        draw->AddLine(ImVec2(x-8,y+3),ImVec2(x-5.5f,y+3),color,1.3f);draw->AddLine(ImVec2(x+5.5f,y+3),ImVec2(x+8,y+3),color,1.3f);
+        draw->AddLine(ImVec2(x,y+3),ImVec2(x+4,y-2.5f),color,1.5f);draw->AddCircleFilled(ImVec2(x,y+3),1.8f,color);
+    } else if(index==11) {
+        draw->AddRect(ImVec2(x-5,y-4),ImVec2(x+5,y+3),color,1.5f,0,1.3f);
+        draw->AddLine(ImVec2(x-2.5f,y-8),ImVec2(x-2.5f,y-4),color,1.3f);draw->AddLine(ImVec2(x+2.5f,y-8),ImVec2(x+2.5f,y-4),color,1.3f);
+        draw->AddLine(ImVec2(x,y+3),ImVec2(x,y+6),color,1.3f);draw->AddBezierCubic(ImVec2(x,y+6),ImVec2(x,y+9),ImVec2(x+5,y+9),ImVec2(x+6,y+9),color,1.3f);
+    } else if(index==12) {
+        draw->AddRect(ImVec2(x-9,y-7),ImVec2(x+9,y+4),color,2,0,1.3f);
+        draw->AddLine(ImVec2(x,y+4),ImVec2(x,y+8),color,1.3f);draw->AddLine(ImVec2(x-4,y+8),ImVec2(x+4,y+8),color,1.3f);
+        draw->AddLine(ImVec2(x-3,y-4),ImVec2(x+3,y-4),color,1.3f);draw->AddLine(ImVec2(x,y-4),ImVec2(x,y+1.5f),color,1.3f);
+    } else if(index==13) {
+        for(int sx=-1;sx<=1;sx+=2)for(int sy=-1;sy<=1;sy+=2){
+            draw->AddLine(ImVec2(x+sx*8,y+sy*8),ImVec2(x+sx*4,y+sy*8),color,1.3f);draw->AddLine(ImVec2(x+sx*8,y+sy*8),ImVec2(x+sx*8,y+sy*4),color,1.3f);
+        }
+        draw->AddCircle(ImVec2(x,y-2.5f),2,color,12,1.3f);
+        draw->AddBezierCubic(ImVec2(x-4,y+4.5f),ImVec2(x-3.5f,y+.5f),ImVec2(x+3.5f,y+.5f),ImVec2(x+4,y+4.5f),color,1.3f);
+    } else if(index==14) {
+        for(int i=0;i<8;++i){const float angle=i*IM_PI/4,dx=std::cos(angle),dy=std::sin(angle);draw->AddLine(ImVec2(x+dx*5.5f,y+dy*5.5f),ImVec2(x+dx*8.5f,y+dy*8.5f),color,2.6f);}
+        draw->AddCircle(ImVec2(x,y),6,color,24,1.3f);draw->AddCircle(ImVec2(x,y),2.5f,color,16,1.3f);
     } else if(index==15) {
+        const ImVec2 points[]={{x-9,y},{x-5,y},{x-3,y-6},{x+1,y+7},{x+3.5f,y-2},{x+5,y},{x+9,y}};draw->AddPolyline(points,7,color,ImDrawFlags_None,1.5f);
+    } else if(index==16) {
         draw->AddRect(ImVec2(x-9,y-6),ImVec2(x+9,y+6),color,2,0,1.3f);
         for(int row=0;row<2;++row)for(int col=0;col<4;++col)draw->AddCircleFilled(ImVec2(x-6+col*4,y-3+row*5),.8f,color);
+    } else if(index==17) {
+        for(int i=0;i<5;++i){const float t=i*.2f,u=1-t;draw->AddCircleFilled(ImVec2(u*u*(x-8)+2*u*t*(x-1)+t*t*(x+5),u*u*(y+7)+2*u*t*(y-11)+t*t*(y+1)),1.1f,color);}
+        draw->AddCircle(ImVec2(x+5,y+1),3,color,16,1.3f);draw->AddCircleFilled(ImVec2(x+5,y+1),1,color);
     } else {
         for(int row=0;row<3;++row){const float yy=y-6+row*6;draw->AddLine(ImVec2(x-8,yy),ImVec2(x+8,yy),color,1.3f);draw->AddCircleFilled(ImVec2(x+(row==1?4:-3),yy),2.5f,color);}
     }

@@ -1485,29 +1485,31 @@ namespace OW {
             return running && contextCurrent();
         }, incoming, offsets.Address_entity_base - 24, offsets.registryLockRva, offsets.imageSize);
         // V2 恢复定位只运行在串行 reader lane；正式扫描仍消费原有代次快照。
-        if(offset::IsCnProfile() && error!=EntityRegistry::Error::None && error!=EntityRegistry::Error::Busy &&
+        if(offset::UsesEntityRegistryRecovery() && error!=EntityRegistry::Error::None && error!=EntityRegistry::Error::Busy &&
            error!=EntityRegistry::Error::Unstable && contextCurrent()) {
             static EntityRegistry::RegistryResolver resolver;
             static uint64_t resetAt=0;
+            static uint32_t resolverImageSize=0;
             static bool rangesReady=false;
             const bool terminal=resolver.status==EntityRegistry::ResolveStatus::NoMatch ||
                 resolver.status==EntityRegistry::ResolveStatus::Incomplete ||
                 resolver.status==EntityRegistry::ResolveStatus::Ambiguous ||
                 resolver.status==EntityRegistry::ResolveStatus::EmptyUnconfirmed;
-            if(!resolver.Matches(epoch,module) || (terminal && now-resetAt>5000)) {
-                const auto ranges=V2::Memory::WritableSections(module,Cn155284::imageSize,
+            if(!resolver.Matches(epoch,module) || resolverImageSize!=offsets.imageSize || (terminal && now-resetAt>5000)) {
+                const auto ranges=V2::Memory::WritableSections(module,offsets.imageSize,
                     [&](uint64_t at,void* dst,size_t n){return contextCurrent() && mem.ReadFreshExact(at,dst,n);});
                 std::vector<EntityRegistry::SearchRange> input;
                 for(auto r:ranges)input.push_back({r.begin,r.end});
                 rangesReady=!input.empty();
                 resolver.Reset(epoch,module,std::move(input));resetAt=now;
+                resolverImageSize=offsets.imageSize;
                 if(!rangesReady)resolver.status=EntityRegistry::ResolveStatus::Incomplete;
             }
             if(rangesReady) {
                 error=resolver.Step([&](uint64_t at,void* dst,size_t n){return mem.ReadFreshExact(at,dst,n);},
                     contextCurrent,[&](uint64_t parent,const EntityRegistry::Snapshot& table) {
-                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,Cn155284::imageSize))return false;
-                        // 候选必须具有当前 CN parent 的实读身份及组件位图，非零地址不算语义通过。
+                        if(!IsLikelyCnEntityParent(parent,table.root,table.Bytes(),module,offsets.imageSize))return false;
+                        // 候选必须具有当前地区 parent 的实读身份及组件位图，非零地址不算语义通过。
                         uint32_t match=0;std::array<uint64_t,2> components{};
                         return contextCurrent() && mem.ReadFreshExact(parent+offset::Entity_MatchId,&match,sizeof(match)) &&
                             IsLikelyEntityMatchId(match) &&

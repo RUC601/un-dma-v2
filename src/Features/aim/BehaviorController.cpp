@@ -755,6 +755,36 @@ namespace AimbotDetail {
             const auto local = LocalEntity();
             RuntimePresetSelection selection{};
             if(!SelectAimPresetForActivation(state,local.HeroID,selection)) {
+                bool hasConfiguredAimSlot = false;
+                for (int slotIndex = 0;
+                     slotIndex < OW::Config::kMaxHeroPresetSlots;
+                     ++slotIndex) {
+                    OW::Config::HeroSlotPreset slot{};
+                    if (OW::Config::TryGetHeroAimSlot(local.HeroID, slotIndex, slot)) {
+                        hasConfiguredAimSlot = true;
+                        break;
+                    }
+                }
+                if (!hasConfiguredAimSlot) {
+                    // A missing sidecar still uses the legacy global path.
+                    // An existing sidecar with only disabled Slots is the
+                    // explicit no-op configuration handled below.
+                    OW::Config::targetAimPlanEnabled=true;
+                    return;
+                }
+                // Keep Trigger and other independent consumers alive, but make
+                // the Aim consumer observe an explicit no-op Slot instead of
+                // falling through to the legacy global Aim configuration.
+                OW::Config::HeroPreset disabled{};
+                disabled.key = OW::Labels::kAimActivationKeyNoneIndex;
+                disabled.aimBehavior = OW::Config::kAimBehaviorTracking;
+                disabled.aimMode = 0;
+                disabled.aimBehaviorPresetId = -1;
+                disabled.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
+                disabled.keepFiring = false;
+                disabled.autoshot = false;
+                OW::Config::ApplyLocalHeroAimPreset(disabled);
+                originalDraw.active = false;
                 OW::Config::targetAimPlanEnabled=true;return;
             }
             OW::Config::ApplyLocalHeroAimPreset(selection.preset);

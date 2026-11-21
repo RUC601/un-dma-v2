@@ -1061,7 +1061,7 @@ namespace OverlayRenderDetail {
                              float opacity, float thickness=1,Vector2 offset={},bool contour=false,bool filled=false,
                              const ImVec4& contourColor={1,1,.2f,1},float contourThickness=1,Vector2 contourOffset={},
                              const ImVec4& fill={1,0,0,.18f},float fillThickness=1,Vector2 fillOffset={}) {
-        if(OW::offset::IsCnProfile()) {
+        if(OW::offset::UsesNativeModelGeometry()) {
             const auto& native=entity.native_hitboxes;
             if(!entity.HasCurrentModelWorldTransform() || !native.Matches(entity.VelocityBase,entity.skeleton_revision) ||
                GetTickCount()-native.tick>100)return false;
@@ -1098,7 +1098,6 @@ namespace OverlayRenderDetail {
             }
             return drew;
         }
-        if((contour || filled) && !OW::Config::draw_hitbox)return false;
         // Original model shapes use their own size; never apply the aim window scale.
         if(OW::ModelShapes::Supported(entity.HeroID) && entity.model_shapes.modelIndex>=0) {
             if (!entity.model_shapes.MatchesSkeleton(entity.skeleton_revision) ||
@@ -1106,6 +1105,13 @@ namespace OverlayRenderDetail {
             const Render::Color shapeColor(color.R,color.G,color.B,ToByte(opacity*.7f));
             const auto yaw=DirectX::XMMatrixRotationY(entity.Rot.X);
             bool drew=false;
+            if (contour)
+                drew |= DrawModelHitboxContour(entity, view,
+                    ImGui::ColorConvertFloat4ToU32(contourColor), contourColor,
+                    contourThickness, contourOffset, true, false);
+            if (filled)
+                drew |= DrawModelHitboxContour(entity, view, 0, fill,
+                    fillThickness, fillOffset, false, true);
             const auto& model=OW::ModelShapes::kModels[entity.model_shapes.modelIndex];
             if(model.heroId!=entity.HeroID || entity.model_shapes.valid.size()!=model.shapes.size())return false;
             for(size_t s=0;s<model.shapes.size();++s) {
@@ -1116,9 +1122,10 @@ namespace OverlayRenderDetail {
                     DirectX::XMStoreFloat3(&out,DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&value),yaw));
                     return Vector3(out.x,out.y,out.z)+entity.pos;
                 };
-                drew=OW::ModelShapes::DrawCachedWire(model.shapes[s],world,
-                    [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
-                    [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
+                if (OW::Config::draw_hitbox)
+                    drew=OW::ModelShapes::DrawCachedWire(model.shapes[s],world,
+                        [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
+                        [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
             }
             return drew;
         }

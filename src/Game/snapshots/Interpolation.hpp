@@ -95,7 +95,7 @@ namespace OverlayRenderDetail {
     }
 
     inline bool UsesRawNativeGeometry(const OW::c_entity& entity) {
-        return OW::offset::IsCnProfile() && entity.HasCurrentModelWorldTransform() &&
+        return OW::offset::UsesNativeModelGeometry() && entity.HasCurrentModelWorldTransform() &&
             entity.native_hitboxes.Matches(entity.VelocityBase, entity.skeleton_revision);
     }
 

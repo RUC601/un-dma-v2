@@ -528,6 +528,22 @@ namespace OW {
             return ActiveProfile() == RuntimeProfile::Cn;
         }
 
+        inline bool UsesNativeModelGeometry()
+        {
+            const auto profile = ActiveProfile();
+            return profile == RuntimeProfile::Cn ||
+                profile == RuntimeProfile::World155284 ||
+                profile == RuntimeProfile::Nexon155284;
+        }
+
+        inline bool UsesEntityRegistryRecovery()
+        {
+            const auto profile = ActiveProfile();
+            return profile == RuntimeProfile::Cn ||
+                profile == RuntimeProfile::World155284 ||
+                profile == RuntimeProfile::Nexon155284;
+        }
+
         inline bool UsesProtectedEntityLayout()
         {
             return Active().componentTransform == ComponentTransformMode::Cn155284;

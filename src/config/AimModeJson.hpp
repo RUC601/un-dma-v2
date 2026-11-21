@@ -57,6 +57,32 @@ inline AimBehaviorTuning ReadTuning(const Value& v,
     Read(v,"autoshot",t.autoshot);
     Read(v,"keepFiring",t.keepFiring);
     Read(v,"firePolicy",t.firePolicy);
+    if (hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
+        const auto policy = static_cast<OW::FirePolicyType>(
+            std::clamp(t.firePolicy, 0, 6));
+        const bool policyKeepsFiring =
+            policy == OW::FirePolicyType::TrackingWithHold ||
+            policy == OW::FirePolicyType::KeepFiring;
+        const bool policyAutoShots =
+            policy != OW::FirePolicyType::ManualOnly && !policyKeepsFiring;
+        const bool legacyFlagsDisagree =
+            (hasKeepFiring && t.keepFiring != policyKeepsFiring) ||
+            (hasAutoshot && t.autoshot != policyAutoShots);
+        if (legacyFlagsDisagree) {
+            // Files written before Fire Policy became authoritative could
+            // contain firePolicy=ManualOnly with autoshot=true. Preserve the
+            // legacy intent once, then publish synchronized fields.
+            if (t.keepFiring)
+                t.firePolicy = static_cast<int>(OW::FirePolicyType::KeepFiring);
+            else if (t.autoshot)
+                t.firePolicy = static_cast<int>(OW::FirePolicyType::SingleShot);
+        }
+        const auto normalized = static_cast<OW::FirePolicyType>(
+            std::clamp(t.firePolicy, 0, 6));
+        t.keepFiring = normalized == OW::FirePolicyType::TrackingWithHold ||
+            normalized == OW::FirePolicyType::KeepFiring;
+        t.autoshot = normalized != OW::FirePolicyType::ManualOnly && !t.keepFiring;
+    }
     if (!hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
         t.firePolicy = t.keepFiring
             ? static_cast<int>(OW::FirePolicyType::KeepFiring)

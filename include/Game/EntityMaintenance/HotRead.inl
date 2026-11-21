@@ -27,7 +27,7 @@
                 request(velocityBase + 0x50, &reads.velocity.velocity, 12, reads.velocityBytes[0]);
                 request(velocityBase + 0x200, &reads.velocity.location, 12, reads.velocityBytes[1]);
                 request(velocityBase + 0x8B0, &reads.velocity.bonedata, 8, reads.velocityBytes[2]);
-                if(offset::ActiveProfile()==offset::RuntimeProfile::Cn) {
+                if(offset::UsesNativeModelGeometry()) {
                     reads.modelWorldRequested=true;
                     request(velocityBase+0x3B0,&reads.modelWorld,sizeof(reads.modelWorld),reads.modelWorldBytes);
                 }
