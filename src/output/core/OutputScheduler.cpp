@@ -972,7 +972,11 @@ namespace OW
                            actionIt->second.id == actionId) {
                     actionIt->second.retryControls = std::move(desired);
                     actionIt->second.releaseOnly = true;
-                    QueueReleaseRetryLocked(key, actionIt->second);
+                    // Manual taps normally have no worker. Start one before
+                    // queuing a failed release so a lost safety-up is retried
+                    // even when the caller immediately stops producing input.
+                    if (EnsureWorkerStartedWhileOperationLocked(lock))
+                        QueueReleaseRetryLocked(key, actionIt->second);
                 } else if (valid && !releaseOnlyUpdate && dispatchClaimed) {
                     OutputOwnership tracked;
                     OutputOwnership released;

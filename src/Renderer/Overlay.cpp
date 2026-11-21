@@ -292,29 +292,26 @@ LRESULT HitTestBorderlessMenu(HWND hWnd, LPARAM lParam) {
 bool IsMenuTogglePressed() {
     const int key = OW::Config::MenuToggleKey;
     static int previousKey = 0;
-    static bool wasDown = false;
-    if (key <= 0 || key >= 256) {
+    static bool localWasDown = false;
+    static bool remoteWasDown = false;
+    const bool bindingChanged = key != previousKey;
+    if (bindingChanged) {
         previousKey = key;
-        wasDown = false;
+        localWasDown = false;
+        remoteWasDown = false;
+    }
+    if (key <= 0 || key >= 256)
         return false;
-    }
 
-    bool down = false;
-    if (KeyState::IsDmaKeyStateReady()) {
-        const auto sample = KeyState::SampleVk(key);
-        // A stale or missing DMA sample is not a release. Keep the previous
-        // edge state until the target machine provides a fresh sample.
-        if (!sample.available)
-            return false;
-        down = sample.down;
-    } else {
-        down = (GetAsyncKeyState(key) & 0x8000) != 0;
-    }
-
-    const bool pressed = down && (!wasDown || key != previousKey);
-    previousKey = key;
-    wasDown = down;
-    return pressed;
+    const bool localDown = (GetAsyncKeyState(key) & 0x8000) != 0;
+    const auto remote = KeyState::SampleVk(key);
+    const bool wasDown = localWasDown || (remote.available && remoteWasDown);
+    localWasDown = localDown;
+    // Missing remote samples preserve its edge state without blocking local input.
+    if (remote.available)
+        remoteWasDown = remote.down;
+    const bool down = localDown || (remote.available && remote.down);
+    return !bindingChanged && down && !wasDown;
 }
 
 bool IsWindowVisibleAndRestored(HWND hWnd) {

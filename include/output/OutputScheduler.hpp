@@ -112,9 +112,10 @@ namespace OW
             std::chrono::milliseconds duration);
 
         // Manual owners share the same aggregate ownership model as timed
-        // actions, but never create a worker or deadline. SetManualControls
-        // replaces the complete control set held by key; SetManualControl
-        // changes one member of that set. An empty set releases the owner.
+        // actions. They normally have no worker or deadline, but a failed
+        // release starts a retry worker. SetManualControls replaces
+        // the complete control set held by key; SetManualControl changes one
+        // member of that set. An empty set releases the owner.
         bool SetManualControls(
             std::string key,
             OutputOwnerSource ownerSource,
