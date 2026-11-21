@@ -71,6 +71,7 @@ namespace AimbotDetail {
     inline bool IsConfiguredActivationKeyPressedForSelection(int keySetting,
                                                              int* matchedKeySetting = nullptr);
     inline bool IsInputVkDownQuiet(int vk);
+    inline bool IsSlotKeyDownQuiet(int vk);
 
     inline int PhysicalMouseVkForAction(int action) {
         using A=V2::HeroSettings::Action;
@@ -479,7 +480,7 @@ namespace AimbotDetail {
 
     inline bool TrySelectRuntimeAimPreset(uint64_t heroId, RuntimePresetSelection& selection) {
         OW::Config::ScopedConfigRead configRead;
-        const bool rmbHeld = IsInputVkDownQuiet(V2::HeroSettings::Key(LocalEntity().HeroID,V2::HeroSettings::Action::Secondary));
+        const bool rmbHeld = IsSlotKeyDownQuiet(V2::HeroSettings::Key(LocalEntity().HeroID,V2::HeroSettings::Action::Secondary));
         struct IndexedAimSlot {
             OW::Config::HeroSlotPreset slot{};
             int slotIndex = -1;
@@ -899,12 +900,44 @@ namespace AimbotDetail {
         return ReadDmaKeyStateVkQuiet(vk);
     }
 
+    inline std::optional<bool> ResolveSlotKeyDown(int vk, bool reportedDown) {
+        if (!reportedDown) return false;
+        unsigned button;
+        switch (vk) {
+        case VK_LBUTTON: button = 0; break;
+        case VK_RBUTTON: button = 1; break;
+        case VK_MBUTTON: button = 2; break;
+        case VK_XBUTTON1: button = 3; break;
+        case VK_XBUTTON2: button = 4; break;
+        default: return true;
+        }
+        if (!OW::MouseOutputMayAppearInSample(button, KeyState::kSampleMaxAgeMs))
+            return true;
+        const auto physical = V2::Output::ActivePhysicalInput();
+        if (!physical.available) return std::nullopt;
+        return (physical.buttons & (1u << button)) != 0;
+    }
+
+    inline bool IsSlotKeyDownQuiet(int vk) {
+        return ResolveSlotKeyDown(vk, IsInputVkDownQuiet(vk)).value_or(false);
+    }
+
+    inline KeyState::KeyStateVkSample SampleSlotKey(int vk) {
+        auto sample = KeyState::SampleVk(vk);
+        if (sample.available) {
+            const auto down = ResolveSlotKeyDown(vk, sample.down);
+            sample.available = down.has_value();
+            sample.down = down.value_or(false);
+        }
+        return sample;
+    }
+
     inline bool IsConfiguredActivationKeyPressedForSelection(int keySetting,
                                                              int* matchedKeySetting) {
         return OW::Labels::TryMatchAimActivationKey(
             keySetting,
             [](int vk) {
-                return IsInputVkDownQuiet(vk);
+                return IsSlotKeyDownQuiet(vk);
             },
             matchedKeySetting);
     }
@@ -926,7 +959,7 @@ namespace AimbotDetail {
             return false;
         }
 
-        return IsInputVkDown(vk, keySetting);
+        return ResolveSlotKeyDown(vk, IsInputVkDown(vk, keySetting)).value_or(false);
     }
 
     inline bool IsAimActivationKeyDown() {
@@ -1170,13 +1203,17 @@ namespace AimbotDetail {
         return V2::HeroSettings::Key(LocalEntity().HeroID,button==0?V2::HeroSettings::Action::Primary:button==1?V2::HeroSettings::Action::Secondary:V2::HeroSettings::Action::Middle);
     }
 
+    inline bool AimActivationAlreadyHoldsAction(int outputButton) {
+        const int activationVk = OW::get_bind_id(OW::Config::View_aim_key());
+        return activationVk > 0 && activationVk == VkForMouseButton(outputButton);
+    }
+
     inline bool ShouldHoldFireWhileTracking(int outputButton) {
         const FirePolicyType policy =
             ClampFirePolicy(OW::Config::View_aimbotFirePolicy());
         // Keep Firing is owned by the slot-wide lease. Tracking owns the
         // button only for the Tracking With Hold policy.
-        (void)outputButton;
-        return IsTrackingWithHoldPolicy(policy);
+        return IsTrackingWithHoldPolicy(policy) && !AimActivationAlreadyHoldsAction(outputButton);
     }
 
     inline bool GlobalAimFirePolicyAllowsGeneratedFire() {
@@ -1237,7 +1274,7 @@ namespace AimbotDetail {
                 OW::Config::View_aimbotAttack());
         }
 
-        if (!shouldHold || button < 0 || runtime.generation == 0) {
+        if (!shouldHold || button < 0 || runtime.generation == 0 || AimActivationAlreadyHoldsAction(button)) {
             ReleaseKeepFiringOutput(state, !shouldHold ? "activation_or_runtime" : "invalid_output");
             return;
         }
@@ -2915,7 +2952,7 @@ namespace AimbotDetail {
         case 1: { // Toggle
             const int bindingVk = OW::get_bind_id(keySetting);
             const KeyState::KeyStateVkSample sample =
-                KeyState::SampleVk(bindingVk);
+                SampleSlotKey(bindingVk);
             static OW::SampledToggleState primaryToggleState{};
             static OW::SampledToggleState secondaryToggleState{};
             OW::SampledToggleState& toggleState =
@@ -3080,7 +3117,7 @@ namespace AimbotDetail {
             if (!state.aimHoldWindows[key].active &&
                 !(timedBehavior && selectedKey == static_cast<int>(key)))
                 continue;
-            const auto sample = KeyState::SampleVk(OW::get_bind_id(static_cast<int>(key)));
+            const auto sample = SampleSlotKey(OW::get_bind_id(static_cast<int>(key)));
             OW::AimHoldWindow::Observe(state.aimHoldWindows[key], sample.available,
                 sample.down, now, timeoutMs, timedBehavior && selectedKey == static_cast<int>(key));
         }

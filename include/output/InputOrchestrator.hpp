@@ -9,6 +9,7 @@
 #include "output/OutputServices.hpp"
 #include "Utils/Config.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -50,6 +51,7 @@ namespace InputOrchestratorDetail {
 inline std::atomic<bool> runtimeOutputSessionEnabled{ true };
 inline std::atomic<std::uint64_t> runtimeOutputTransitionEpoch{ 1 };
 inline std::mutex runtimeOutputProducerTransitionMutex;
+inline std::array<std::atomic<std::uint64_t>, 5> lastMouseOutputMs{};
 }
 
 inline void SetRuntimeOutputSessionEnabled(bool enabled) noexcept
@@ -108,10 +110,13 @@ inline int DispatchOutputAggregateOutput(const OutputAggregateUpdate& update)
     for (const OutputChange& change : update.changes) {
         if (change.control.kind == OutputControlKind::MouseButton) {
             const bool down = change.transition == OutputTransition::Press;
+            auto& lastOutput = InputOrchestratorDetail::lastMouseOutputMs.at(change.control.code);
+            if (down) lastOutput.store(GetTickCount64(), std::memory_order_release);
             const int result = V2::Output::DispatchMouseButtonForGeneration(
                 update.backendGeneration,
                 static_cast<int>(change.control.code),
                 down);
+            if (!down) lastOutput.store(GetTickCount64(), std::memory_order_release);
             if (change.control.code == 0 && V2::Output::OutputVerboseLog()) {
                 const auto physical = V2::Output::ActivePhysicalInput();
                 Diagnostics::Info(
@@ -187,6 +192,15 @@ inline OutputScheduler& RuntimeOutputScheduler()
 
     static RuntimeSchedulerHolder holder;
     return holder.scheduler;
+}
+
+// An input sample can include a program press even after its matching up was sent.
+inline bool MouseOutputMayAppearInSample(unsigned button, std::uint64_t maxSampleAgeMs)
+{
+    const auto last = InputOrchestratorDetail::lastMouseOutputMs.at(button).load(std::memory_order_acquire);
+    if (!last) return false;
+    return GetTickCount64() - last <= maxSampleAgeMs ||
+        RuntimeOutputScheduler().IsControlHeld({OutputControlKind::MouseButton, static_cast<std::uint16_t>(button)});
 }
 
 } // namespace OW
