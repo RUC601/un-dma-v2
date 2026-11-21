@@ -18,10 +18,15 @@ struct CameraState {
     OW::ViewMatrixPublishState publication{};
     ~CameraState() { if(scatter) mem.CloseScatterHandle(scatter); }
 };
+
+CameraState& ThreadCameraState() {
+    thread_local CameraState state;
+    return state;
+}
 }
 
-bool SampleAcquisitionCamera() {
-    thread_local CameraState state;
+bool PrepareAcquisitionCameraPointers(uint64_t& cameraAddr, uint64_t& projectionAddr) {
+    auto& state = ThreadCameraState();
     Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::ViewMatrix);
     const auto epoch=OW::ProcessConnection::ConnectionEpoch();
     const auto scene=OW::EntitySceneGeneration();
@@ -43,28 +48,47 @@ bool SampleAcquisitionCamera() {
         if(epoch!=state.epoch || scene!=state.scene) state.publication={};
         state.epoch=epoch; state.scene=scene;
     }
-    if(!state.camera || !state.projection || !state.scatter) return false;
-    OW::Matrix camera{}, projection{};
-    DWORD cameraBytes=0, projectionBytes=0;
-    const uint64_t started=GetTickCount64();
-    const bool cameraPrepared=mem.AddScatterReadRequest(state.scatter,state.camera,&camera,sizeof(camera),&cameraBytes);
-    const bool projectionPrepared=mem.AddScatterReadRequest(state.scatter,state.projection,&projection,sizeof(projection),&projectionBytes);
-    const bool executed=mem.ExecuteReadScatter(state.scatter);
-    const uint64_t completed=GetTickCount64();
-    if(!cameraPrepared || !projectionPrepared || !executed || cameraBytes!=sizeof(camera) || projectionBytes!=sizeof(projection)) {
-        state.camera=0; return false;
+    cameraAddr = state.camera;
+    projectionAddr = state.projection;
+    return state.camera != 0 && state.projection != 0;
+}
+
+bool CommitAcquisitionCameraSample(const OW::Matrix& camera, const OW::Matrix& projection,
+                                   uint64_t startedMs, uint64_t completedMs, bool readOk) {
+    auto& state = ThreadCameraState();
+    Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::ViewMatrix);
+    if(!readOk) {
+        state.camera=0;
+        return false;
     }
+    const auto epoch=OW::ProcessConnection::ConnectionEpoch();
     const auto combined=OW::ComposeCameraProjection(camera,projection);
     OW::Matrix publishedCamera{};
     const char* reason=nullptr;
     const bool published=OW::TryPublishViewMatrices(combined,camera,true,true,epoch,
-        state.publication,publishedCamera,reason,started,completed);
+        state.publication,publishedCamera,reason,startedMs,completedMs);
     if(!published) {
         state.camera=0;
         OW::RecordViewMatrixRejected(reason,state.camera,state.projection,state.hasStatus,state.lastValid,state.lastLog);
         return false;
     }
-    RuntimeTrace::Emit(RuntimeTrace::CameraRead,started,completed,1,epoch,&camera.m11,16);
+    RuntimeTrace::Emit(RuntimeTrace::CameraRead,startedMs,completedMs,1,epoch,&camera.m11,16);
     OW::RecordViewMatrixResolved(state.projection,state.camera,true,state.hasStatus,state.lastValid,state.lastLog);
     return true;
+}
+
+bool SampleAcquisitionCamera() {
+    auto& state = ThreadCameraState();
+    uint64_t cameraAddr = 0, projectionAddr = 0;
+    if(!PrepareAcquisitionCameraPointers(cameraAddr, projectionAddr) || !state.scatter) return false;
+    Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::ViewMatrix);
+    OW::Matrix camera{}, projection{};
+    DWORD cameraBytes=0, projectionBytes=0;
+    const uint64_t started=GetTickCount64();
+    const bool cameraPrepared=mem.AddScatterReadRequest(state.scatter,cameraAddr,&camera,sizeof(camera),&cameraBytes);
+    const bool projectionPrepared=mem.AddScatterReadRequest(state.scatter,projectionAddr,&projection,sizeof(projection),&projectionBytes);
+    const bool executed=mem.ExecuteReadScatter(state.scatter);
+    const uint64_t completed=GetTickCount64();
+    return CommitAcquisitionCameraSample(camera, projection, started, completed,
+        cameraPrepared && projectionPrepared && executed && cameraBytes==sizeof(camera) && projectionBytes==sizeof(projection));
 }

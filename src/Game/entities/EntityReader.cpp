@@ -524,12 +524,40 @@ void entity_thread() {
 
         V2::Acquisition::Wait(nextProcessTick, entityProcessPeriod);
 
+    auto sampleTargetViewport = [&]() {
+        static DWORD lastViewportSampleTick = 0;
+        const DWORD now = GetTickCount();
+        if (lastViewportSampleTick != 0 && now - lastViewportSampleTick < 2000)
+            return;
+        lastViewportSampleTick = now;
+
+        const uint64_t epoch = OW::ProcessConnection::ConnectionEpoch();
+        if (!epoch || !OW::ProcessConnection::IsConnected() ||
+            !OW::SDK || !OW::SDK->IsInitialized() || OW::SDK->dwGameBase == 0)
+            return;
+
+        const auto& activeOffsets = OW::offset::Active();
+        if (!activeOffsets.ViewportWidth_RVA || !activeOffsets.ViewportHeight_RVA)
+            return;
+
+        const uint64_t base = OW::SDK->dwGameBase;
+        const uint32_t width = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportWidth_RVA);
+        const uint32_t height = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportHeight_RVA);
+        if (width < 800 || width > 7680 || height < 600 || height > 4320)
+            return;
+        const float aspectRatio = static_cast<float>(width) / static_cast<float>(height);
+        if (aspectRatio < 1.0f || aspectRatio > 3.0f)
+            return;
+        if (!OW::ProcessConnection::IsConnected() || OW::ProcessConnection::ConnectionEpoch() != epoch)
+            return;
+
+        OW::SetDetectedScreenDimensions(static_cast<int>(width), static_cast<int>(height));
+    };
+
 #include "Game/EntityMaintenance/NativeOutlineBrightness.inl"
 
         const auto pipelineCycleStartedAt = std::chrono::steady_clock::now();
         const Diagnostics::DmaReadStats pipelineDmaStart = Diagnostics::SnapshotDmaReadStats();
-        SampleAcquisitionCamera();
-        V2::Maps::Sample();
         Diagnostics::EntityPipelineProcessStats pipelineStats{};
         Diagnostics::EntityLifecycleStats& lifecycleStats = pipelineStats.lifecycle;
 
@@ -569,7 +597,8 @@ void entity_thread() {
         }
 
         std::vector<std::pair<uint64_t, uint64_t>> raw_entities;
-        std::vector<OW::c_entity> previous_entities;
+        const auto previousFrame = OW::SnapshotFrame();
+        const auto& previous_entities = previousFrame->entities;
         {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.previousSnapshotCopyMs);
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -580,7 +609,6 @@ void entity_thread() {
                 OW::ow_entities_registry=processRegistry;
             }
             if(OW::AcceptEntityRegistry(OW::ow_entities_registry))raw_entities = OW::ow_entities;
-            previous_entities = OW::SnapshotFrame()->entities;
         }
         const DWORD processLoopTick = GetTickCount();
         if(!scanLatestWinsEnabled && consumedCompleteScan) {
@@ -685,6 +713,9 @@ void entity_thread() {
 
         // No entities available
         if (raw_entities.empty()) {
+            SampleAcquisitionCamera();
+            V2::Maps::Sample();
+            sampleTargetViewport();
             Diagnostics::EntityProcessStats stats{};
             Diagnostics::LocalEntityStats localStats{};
             std::vector<OW::c_entity> published_entities{};
@@ -1395,18 +1426,39 @@ void entity_thread() {
             hotFramePublished=OW::TargetingDetail::TryPublishEntitySnapshots(std::move(hotSnapshot),std::move(dynamicSnapshot),connectionEpoch,hotPublishedCount,&processRegistry,processSceneGeneration);
         }
         };
-        if (!hotFieldBatchItems.empty()) {
+        const bool hasActiveHotBatch = !hotFieldBatchItems.empty();
+        if (hasActiveHotBatch) {
             for(auto& item:hotFieldBatchItems)
                 item.bodyObservation=OW::CaptureEntityBodyObservation(item.componentParent);
+            uint64_t fusedCameraAddr = 0, fusedProjectionAddr = 0;
+            OW::Matrix fusedCamera{}, fusedProjection{};
+            DWORD fusedCameraBytes = 0, fusedProjectionBytes = 0;
+            bool fusedCameraPrepared = false, fusedProjectionPrepared = false;
+            if (hotFieldScatter && PrepareAcquisitionCameraPointers(fusedCameraAddr, fusedProjectionAddr)) {
+                fusedCameraPrepared = mem.AddScatterReadRequest(
+                    hotFieldScatter, fusedCameraAddr, &fusedCamera, sizeof(fusedCamera), &fusedCameraBytes);
+                fusedProjectionPrepared = mem.AddScatterReadRequest(
+                    hotFieldScatter, fusedProjectionAddr, &fusedProjection, sizeof(fusedProjection), &fusedProjectionBytes);
+            }
             const auto hotStarted=std::chrono::steady_clock::now();
             const DWORD started=GetTickCount();
+            const uint64_t hotCameraStartedMs = GetTickCount64();
             bool ok=false;
             {
                 ScopedPipelinePhaseTimer timer(pipelineStats.phase.hotScatterExecuteMs);
                 Diagnostics::ScopedDmaCallsite tag(Diagnostics::DmaCallsite::EntityHotScatter);
                 ok=mem.ExecuteReadScatter(hotFieldScatter);
             }
+            const uint64_t hotCameraCompletedMs = GetTickCount64();
             const DWORD hotFieldsCompleted=GetTickCount();
+            const bool fusedCameraOk =
+                fusedCameraPrepared && fusedProjectionPrepared &&
+                CommitAcquisitionCameraSample(
+                    fusedCamera,
+                    fusedProjection,
+                    hotCameraStartedMs,
+                    hotCameraCompletedMs,
+                    ok && fusedCameraBytes == sizeof(fusedCamera) && fusedProjectionBytes == sizeof(fusedProjection));
             bool guardQueued=false;
             if(ok && hotGuardScatter)for(auto& item:hotFieldBatchItems) {
                 const auto found=componentBaseCache.find(item.componentParent);
@@ -1435,6 +1487,8 @@ void entity_thread() {
                 ++pipelineStats.hotScatterExecuteCount; ++dmaFieldWindow.hotScatterExecute;
                 if(!guardOk){++pipelineStats.hotScatterExecuteFailCount; ++dmaFieldWindow.hotScatterExecuteFail;}
             }
+            if (!fusedCameraOk)
+                SampleAcquisitionCamera();
             const DWORD completed=GetTickCount();
             ++pipelineStats.hotScatterExecuteCount; ++dmaFieldWindow.hotScatterExecute;
             if(!ok){++pipelineStats.hotScatterExecuteFailCount; ++dmaFieldWindow.hotScatterExecuteFail;}
@@ -1478,14 +1532,25 @@ void entity_thread() {
                 successfulSamples.clear(); measuredCycles=0; hotTotalMs=0; hotMaxMs=0;
                 measurementStart=std::chrono::steady_clock::now();
             }
+        } else {
+            SampleAcquisitionCamera();
         }
+        const uint64_t coldStartedUs=RuntimeTrace::NowUs();
         StepAcquisitionDiscovery();
 #include "Game/EntityMaintenance/LiveBinding.inl"
         const uint64_t maintenanceStartedUs=RuntimeTrace::NowUs();
-        const OW::EntityMaintenance::Budget maintenanceBudget{maintenanceStartedUs,1000};
+        const uint64_t discoverySpentUs=maintenanceStartedUs>=coldStartedUs?(maintenanceStartedUs-coldStartedUs):0;
+        const uint64_t maintenanceBudgetUs = hasActiveHotBatch
+            ? (discoverySpentUs < 1200 ? (1200 - discoverySpentUs) : 0)
+            : 1000;
+        if (!hasActiveHotBatch || discoverySpentUs < 1000) {
+            V2::Maps::Sample();
+            sampleTargetViewport();
+        }
+        const OW::EntityMaintenance::Budget maintenanceBudget{maintenanceStartedUs,maintenanceBudgetUs};
         size_t maintenanceVisited=0;
 #include "Game/EntityMaintenance/Bootstrap.inl"
-        if(bootstrapFirst)runBootstrapBatch();
+        if(bootstrapFirst && (!hasActiveHotBatch || maintenanceBudgetUs > 0))runBootstrapBatch();
         std::vector<uint8_t> needsReconciliation(raw_entities.size(),0);
         for(size_t n=0;n<raw_entities.size();++n) {
             const auto [address,link]=raw_entities[n];
@@ -3043,11 +3108,18 @@ void entity_thread() {
             continue;
         }
 
+        if (!hasActiveHotBatch || RuntimeTrace::NowUs() - coldStartedUs < 1500) {
 #include "Game/EntityMaintenance/Outlines.inl"
 
         // Swap processed entities
         if(!bootstrapFirst)runBootstrapBatch();
         bootstrapFirst=!bootstrapFirst;
+        } else {
+            bootstrapFirst=!bootstrapFirst;
+        }
+        if (hasActiveHotBatch && RuntimeTrace::NowUs() - coldStartedUs >= 1500) {
+            SampleAcquisitionCamera();
+        }
         RuntimeTrace::Emit(RuntimeTrace::SlowWork,RuntimeTrace::NowUs()-maintenanceStartedUs,tmp_entities.size());
         if(missingTransitionNeedsScan) {
             requestTopologyRescan(GetTickCount());missingTransitionNeedsScan=false;
