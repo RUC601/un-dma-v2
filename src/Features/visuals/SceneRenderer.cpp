@@ -723,7 +723,7 @@ namespace {
 
         const OW::Vector2 center(width * 0.5f, height * 0.5f);
         OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
-        OW::GetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
+        OW::GetLiveViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
         const FovProjectionContext projection = BuildFovProjectionContext(renderViewMatrix);
         const OW::TargetingDetail::FovRuntimeContext fovContext =
             BuildFovRuntimeContext(renderViewMatrixXor);
@@ -852,7 +852,7 @@ namespace {
         Render::DrawFilledCircle(center, 3.0f, Render::Color(120, 255, 120, 220), 20);
 
         OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
-        OW::GetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
+        OW::GetLiveViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
         DirectX::XMFLOAT3 forward = renderViewMatrixXor.get_rotation();
         const float yaw = static_cast<float>(radar.rotate?std::atan2(forward.x,forward.z):0.f);
         const float cosYaw = std::cos(yaw);
@@ -920,7 +920,7 @@ namespace {
     static void DrawHealthPacks(const std::vector<OW::hpanddy>& objects) {
         const auto settings=V2::HeroSettings::Snapshot();const auto& world=settings->display.world;
         if(!world.enabled)return;
-        OW::Matrix view{},camera{};OW::GetViewMatricesSnapshot(view,camera);
+        OW::Matrix view{},camera{};OW::GetLiveViewMatricesSnapshot(view,camera);
         const auto local=OW::SnapshotLocalEntity();const uint32_t now=GetTickCount();
         for(const auto& object:objects) {
             const int type=V2::VisualSettings::ObjectIndex(object.entityid);
@@ -995,7 +995,7 @@ void V2::Visuals::DrawFrame()
         return;
     }
 
-    const bool viewMatricesFresh = OW::HasFreshViewMatrices();
+    const bool viewMatricesFresh = OW::HasFreshLiveViewMatrices();
     if (!entityListEmpty && viewMatricesFresh && OW::Config::radar)
         DrawRadar(frameEntitySnapshot(), frameLocalSnapshot());
 
