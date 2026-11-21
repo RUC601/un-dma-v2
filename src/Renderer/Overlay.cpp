@@ -17,6 +17,7 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <dxgi1_5.h>
 #include <windowsx.h>
 
 #pragma comment(lib, "d3d11.lib")
@@ -117,35 +118,17 @@ bool TryMakeCanvasBounds(const RECT& rect, CanvasBounds& bounds) {
     return true;
 }
 
-bool IsPlausibleViewport(UINT width, UINT height) {
-    if (width < 800 || width > 7680 || height < 600 || height > 4320)
+bool QueryAllowTearingSupport(IDXGIFactory* factory) {
+    if (!factory)
         return false;
-
-    const float aspectRatio = static_cast<float>(width) / static_cast<float>(height);
-    return aspectRatio >= 1.0f && aspectRatio <= 3.0f;
-}
-
-bool TryReadViewportFromTarget(UINT& width, UINT& height) {
-    const uint64_t epoch = OW::ProcessConnection::ConnectionEpoch();
-    if (!epoch || !OW::ProcessConnection::IsConnected())
+    IDXGIFactory5* factory5 = nullptr;
+    if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&factory5))) || !factory5)
         return false;
-    if (!OW::SDK || !OW::SDK->IsInitialized() || OW::SDK->dwGameBase == 0)
-        return false;
-
-    const auto& activeOffsets = OW::offset::Active();
-    if (!activeOffsets.ViewportWidth_RVA || !activeOffsets.ViewportHeight_RVA)
-        return false;
-
-    const uint64_t base = OW::SDK->dwGameBase;
-    const UINT detectedWidth = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportWidth_RVA);
-    const UINT detectedHeight = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportHeight_RVA);
-    if (!IsPlausibleViewport(detectedWidth, detectedHeight) ||
-        !OW::ProcessConnection::IsConnected() || OW::ProcessConnection::ConnectionEpoch() != epoch)
-        return false;
-
-    width = detectedWidth;
-    height = detectedHeight;
-    return true;
+    BOOL allowTearing = FALSE;
+    const HRESULT hr = factory5->CheckFeatureSupport(
+        DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing));
+    factory5->Release();
+    return SUCCEEDED(hr) && allowTearing != FALSE;
 }
 
 bool TryGetMonitorBounds(HMONITOR monitor, CanvasBounds& bounds) {
@@ -210,31 +193,6 @@ CanvasBounds ResolveCanvasBounds() {
     bounds.width = static_cast<UINT>(MaxInt(1, GetSystemMetrics(SM_CXSCREEN)));
     bounds.height = static_cast<UINT>(MaxInt(1, GetSystemMetrics(SM_CYSCREEN)));
     return bounds;
-}
-
-void RefreshTargetScreenSize() {
-    static DWORD lastViewportFailureLogTick = 0;
-
-    UINT width = 0;
-    UINT height = 0;
-    if (TryReadViewportFromTarget(width, height)) {
-        OW::SetDetectedScreenSize(static_cast<int>(width), static_cast<int>(height));
-        return;
-    }
-
-    if (OW::detectedScreenWidth > 0 && OW::detectedScreenHeight > 0) {
-        const DWORD now = GetTickCount();
-        if (lastViewportFailureLogTick == 0 || now - lastViewportFailureLogTick >= 5000) {
-            Diagnostics::Info(
-                "Target viewport read failed; keeping last detected size %dx%d.",
-                OW::detectedScreenWidth,
-                OW::detectedScreenHeight);
-            lastViewportFailureLogTick = now;
-        }
-        return;
-    }
-
-    OW::ClearDetectedScreenSize();
 }
 
 void ApplyMinimumMenuTrackSize(HWND window, LPARAM lParam) {
@@ -346,7 +304,7 @@ void ConfigureCanvasFont(ImGuiIO& io) {
 
 }
 
-DXGI_SWAP_CHAIN_DESC MakeSwapChainDesc(HWND hWnd, UINT width, UINT height) {
+DXGI_SWAP_CHAIN_DESC MakeSwapChainDesc(HWND hWnd, UINT width, UINT height, bool flipModel, bool allowTearing) {
     DXGI_SWAP_CHAIN_DESC desc = {};
     desc.BufferCount = 2;
     desc.BufferDesc.Width = width;
@@ -359,7 +317,8 @@ DXGI_SWAP_CHAIN_DESC MakeSwapChainDesc(HWND hWnd, UINT width, UINT height) {
     desc.SampleDesc.Count = 1;
     desc.SampleDesc.Quality = 0;
     desc.Windowed = TRUE;
-    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    desc.SwapEffect = flipModel ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
+    desc.Flags = (flipModel && allowTearing) ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
     return desc;
 }
 
@@ -690,7 +649,7 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
     m_canvasY = initialBounds.y;
     m_canvasWidth = initialBounds.width;
     m_canvasHeight = initialBounds.height;
-    RefreshTargetScreenSize();
+    OW::RefreshScreenSizeFromConfig();
 
     m_canvasHWnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -765,8 +724,6 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
 }
 
 bool Overlay::CreateDX11() {
-    DXGI_SWAP_CHAIN_DESC canvasDesc = MakeSwapChainDesc(m_canvasHWnd, m_canvasWidth, m_canvasHeight);
-
     UINT createDeviceFlags = 0;
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
     D3D_FEATURE_LEVEL featureLevelArray[] = {
@@ -774,7 +731,7 @@ bool Overlay::CreateDX11() {
         D3D_FEATURE_LEVEL_10_0,
     };
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    HRESULT hr = D3D11CreateDevice(
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
@@ -782,19 +739,29 @@ bool Overlay::CreateDX11() {
         featureLevelArray,
         ARRAYSIZE(featureLevelArray),
         D3D11_SDK_VERSION,
-        &canvasDesc,
-        &m_canvasSwapChain,
         &m_pDevice,
         &featureLevel,
         &m_pContext
     );
-    if (FAILED(hr))
+    if (FAILED(hr) || !m_pDevice || !m_pContext)
+        return false;
+
+    IDXGIDevice1* dxgiDevice1 = nullptr;
+    if (SUCCEEDED(m_pDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice1))) && dxgiDevice1) {
+        dxgiDevice1->SetMaximumFrameLatency(1);
+        dxgiDevice1->Release();
+    }
+
+    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight, true,
+            &m_canvasSwapChain, &m_canvasSwapChainFlags, &m_canvasAllowTearing))
         return false;
 
     if (!CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView))
         return false;
 
-    if (!CreateSwapChainForWindow(m_menuHWnd, m_menuWidth, m_menuHeight, &m_menuSwapChain))
+    bool menuAllowTearing = false;
+    if (!CreateSwapChainForWindow(m_menuHWnd, m_menuWidth, m_menuHeight, false,
+            &m_menuSwapChain, &m_menuSwapChainFlags, &menuAllowTearing))
         return false;
 
     return CreateRenderTarget(m_menuSwapChain, &m_menuRenderTargetView);
@@ -812,6 +779,9 @@ void Overlay::CleanupDX11() {
         m_canvasSwapChain->Release();
         m_canvasSwapChain = nullptr;
     }
+    m_canvasSwapChainFlags = 0;
+    m_menuSwapChainFlags = 0;
+    m_canvasAllowTearing = false;
     if (m_pContext) {
         m_pContext->Release();
         m_pContext = nullptr;
@@ -822,7 +792,10 @@ void Overlay::CleanupDX11() {
     }
 }
 
-bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, IDXGISwapChain** swapChain) {
+bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
+                                       IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut) {
+    if (flagsOut) *flagsOut = 0;
+    if (allowTearingOut) *allowTearingOut = false;
     if (!m_pDevice || !hWnd || !swapChain || width == 0 || height == 0)
         return false;
 
@@ -846,14 +819,34 @@ bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, IDXGI
         return false;
     }
 
-    DXGI_SWAP_CHAIN_DESC desc = MakeSwapChainDesc(hWnd, width, height);
-    hr = factory->CreateSwapChain(m_pDevice, &desc, swapChain);
+    factory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+    const bool tearingSupported = allowTearingPreferred && QueryAllowTearingSupport(factory);
+
+    auto tryCreate = [&](bool flipModel, bool allowTearing) {
+        DXGI_SWAP_CHAIN_DESC desc = MakeSwapChainDesc(hWnd, width, height, flipModel, allowTearing);
+        const HRESULT createHr = factory->CreateSwapChain(m_pDevice, &desc, swapChain);
+        if (SUCCEEDED(createHr) && *swapChain) {
+            if (flagsOut) *flagsOut = desc.Flags;
+            if (allowTearingOut) *allowTearingOut = flipModel && allowTearing;
+            return true;
+        }
+        *swapChain = nullptr;
+        return false;
+    };
+
+    bool created = false;
+    if (tearingSupported)
+        created = tryCreate(true, true);
+    if (!created)
+        created = tryCreate(true, false);
+    if (!created)
+        created = tryCreate(false, false);
 
     factory->Release();
     adapter->Release();
     dxgiDevice->Release();
 
-    return SUCCEEDED(hr) && *swapChain;
+    return created && *swapChain;
 }
 
 bool Overlay::CreateRenderTarget(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView) {
@@ -881,7 +874,7 @@ void Overlay::ReleaseRenderTarget(ID3D11RenderTargetView** renderTargetView) {
 }
 
 bool Overlay::ResizeSwapChain(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView,
-                              UINT width, UINT height) {
+                              UINT width, UINT height, UINT swapChainFlags) {
     if (!swapChain || !renderTargetView || width == 0 || height == 0)
         return false;
 
@@ -890,7 +883,7 @@ bool Overlay::ResizeSwapChain(IDXGISwapChain* swapChain, ID3D11RenderTargetView*
 
     ReleaseRenderTarget(renderTargetView);
 
-    HRESULT hr = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    HRESULT hr = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags);
     if (FAILED(hr))
         return false;
 
@@ -948,7 +941,7 @@ void Overlay::UpdateCanvasBounds(bool force) {
     m_lastCanvasBoundsRefreshMs = now;
 
     const CanvasBounds bounds = ResolveCanvasBounds();
-    RefreshTargetScreenSize();
+    OW::RefreshScreenSizeFromConfig();
 
     RECT currentRect = {};
     if (!GetWindowRect(m_canvasHWnd, &currentRect))
@@ -1049,7 +1042,7 @@ void Overlay::UpdateSwapChainSizes() {
         const UINT width = static_cast<UINT>(canvasRect.right - canvasRect.left);
         const UINT height = static_cast<UINT>(canvasRect.bottom - canvasRect.top);
         if (width > 0 && height > 0 && (width != m_canvasWidth || height != m_canvasHeight)) {
-            if (ResizeSwapChain(m_canvasSwapChain, &m_canvasRenderTargetView, width, height)) {
+            if (ResizeSwapChain(m_canvasSwapChain, &m_canvasRenderTargetView, width, height, m_canvasSwapChainFlags)) {
                 m_canvasWidth = width;
                 m_canvasHeight = height;
                 Diagnostics::RecordOverlayCanvasFrame(m_canvasWidth, m_canvasHeight, 0.0f, 0.0f, true);
@@ -1064,7 +1057,7 @@ void Overlay::UpdateSwapChainSizes() {
         const UINT width = static_cast<UINT>(menuRect.right - menuRect.left);
         const UINT height = static_cast<UINT>(menuRect.bottom - menuRect.top);
         if (width > 0 && height > 0 && (width != m_menuWidth || height != m_menuHeight)) {
-            if (ResizeSwapChain(m_menuSwapChain, &m_menuRenderTargetView, width, height)) {
+            if (ResizeSwapChain(m_menuSwapChain, &m_menuRenderTargetView, width, height, m_menuSwapChainFlags)) {
                 m_menuWidth = width;
                 m_menuHeight = height;
             }
@@ -1105,7 +1098,10 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     m_pContext->OMSetRenderTargets(1, &m_canvasRenderTargetView, nullptr);
     m_pContext->ClearRenderTargetView(m_canvasRenderTargetView, clearColor);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    m_canvasSwapChain->Present(0, 0);
+    const UINT presentFlags = m_canvasAllowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    const HRESULT presentHr = m_canvasSwapChain->Present(0, presentFlags);
+    if (presentHr == DXGI_ERROR_INVALID_CALL && presentFlags != 0)
+        m_canvasSwapChain->Present(0, 0);
 
     const auto t2 = std::chrono::steady_clock::now();
 

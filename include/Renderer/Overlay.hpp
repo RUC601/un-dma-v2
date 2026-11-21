@@ -53,6 +53,9 @@ private:
     UINT                    m_canvasHeight = 0;
     UINT                    m_menuWidth = 0;
     UINT                    m_menuHeight = 0;
+    UINT                    m_canvasSwapChainFlags = 0;
+    UINT                    m_menuSwapChainFlags = 0;
+    bool                    m_canvasAllowTearing = false;
     int                     m_menuAnchorX = 0;
     int                     m_menuAnchorY = 0;
     unsigned long long      m_lastCanvasBoundsRefreshMs = 0;
@@ -68,11 +71,12 @@ private:
     bool CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance);
     bool CreateDX11();
     void CleanupDX11();
-    bool CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, IDXGISwapChain** swapChain);
+    bool CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
+                                  IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut);
     bool CreateRenderTarget(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView);
     void ReleaseRenderTarget(ID3D11RenderTargetView** renderTargetView);
     bool ResizeSwapChain(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView,
-                         UINT width, UINT height);
+                         UINT width, UINT height, UINT swapChainFlags);
     bool InitializeImGuiContext(ImGuiContext** context, HWND hWnd);
     void ShutdownImGuiContext(ImGuiContext*& context);
     void UpdateWindowVisibility();

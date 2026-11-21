@@ -1238,14 +1238,13 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
     renderStats.fastBoxPath = boxPerfMode && OW::Config::boxPerfFastRect;
     renderStats.input = entity_snapshot.size();
     static DWORD lastPlayerInfoLogTick = 0;
-    static std::unordered_map<uint64_t, OverlayRenderDetail::ProjectedBoundsState> projectedBoundsStates;
     static std::unordered_map<uint64_t,uint64_t> renderedActorGenerations;
     static std::unordered_map<uint64_t, OverlayRenderDetail::ProjectionJumpTrack> projectionJumpTracks;
     static std::unordered_map<uint64_t, OverlayRenderDetail::TrainingBotPredictionTrack> trainingBotPredictionTracks;
     static uint64_t renderedScene=0;
     const auto scene=OW::EntitySceneGeneration();
     if(renderedScene!=scene) {
-        projectedBoundsStates.clear();renderedActorGenerations.clear();projectionJumpTracks.clear();trainingBotPredictionTracks.clear();
+        renderedActorGenerations.clear();projectionJumpTracks.clear();trainingBotPredictionTracks.clear();
         renderedScene=scene;
     }
     static size_t trainingBotPredictionLeadDropTotal = 0;
@@ -1265,9 +1264,8 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
 
     OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
     uint64_t renderCameraSequence=0;
-    if (!OW::TryGetViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor,&renderCameraSequence)) {
+    if (!OW::TryGetLiveViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor,&renderCameraSequence)) {
         RuntimeTrace::Emit(RuntimeTrace::RenderSkip, 1, entity_snapshot.size());
-        projectedBoundsStates.clear();
         projectionJumpTracks.clear();
         trainingBotPredictionTracks.clear();
         Diagnostics::SetPlayerInfoStats(renderStats);
@@ -1326,7 +1324,6 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
 
     if (entity_snapshot.empty()) {
         RuntimeTrace::Emit(RuntimeTrace::RenderSkip,4);
-        projectedBoundsStates.clear();
         projectionJumpTracks.clear();
         trainingBotPredictionTracks.clear();
         publishStats();
@@ -1476,32 +1473,35 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         OW::PresentUseForRenderEnabled() &&
         !entity_snapshot.empty() &&
         entity_snapshot.front().present_tick_ms != 0;
+    const auto offscreenForward = renderViewMatrixXor.get_rotation();
+    const float offscreenYaw = std::atan2(offscreenForward.x, offscreenForward.z);
+    const float offscreenCosYaw = std::cos(offscreenYaw);
+    const float offscreenSinYaw = std::sin(offscreenYaw);
 
     for (size_t index = 0; index < entity_snapshot.size(); ++index) {
         OverlayRenderDetail::RenderPredictionInfo predictionInfo{};
-        OW::c_entity entity = entity_snapshot[index];
-        auto [generationIt,inserted]=renderedActorGenerations.try_emplace(entity.address,entity.actor_generation);
-        if(!inserted && generationIt->second!=entity.actor_generation) {
-            projectedBoundsStates.erase(entity.address);projectionJumpTracks.erase(entity.address);
-            trainingBotPredictionTracks.erase(entity.address);generationIt->second=entity.actor_generation;
+        OW::c_entity presentedEntityStorage{};
+        const OW::c_entity* entityPtr = &entity_snapshot[index];
+        auto [generationIt,inserted]=renderedActorGenerations.try_emplace(entityPtr->address,entityPtr->actor_generation);
+        if(!inserted && generationIt->second!=entityPtr->actor_generation) {
+            projectionJumpTracks.erase(entityPtr->address);
+            trainingBotPredictionTracks.erase(entityPtr->address);generationIt->second=entityPtr->actor_generation;
         }
         if(renderedActorGenerations.size()>1024)renderedActorGenerations.clear();
         if (usingPresentEntitySnapshot) {
-            if (entity.present_source == OW::PresentSnapshotSource::Extrap) {
+            presentedEntityStorage = entity_snapshot[index];
+            if (presentedEntityStorage.present_source == OW::PresentSnapshotSource::Extrap) {
                 predictionInfo.shortExtrapolationCandidate = true;
                 predictionInfo.applied = true;
-                predictionInfo.leadMs = static_cast<int>(std::lround(entity.present_prediction_ms));
+                predictionInfo.leadMs = static_cast<int>(std::lround(presentedEntityStorage.present_prediction_ms));
             }
             OverlayRenderDetail::ApplyPresentRenderMicroExtrapolation(
-                entity,
+                presentedEntityStorage,
                 renderTickUs,
                 &predictionInfo);
-        } else {
-            entity = OverlayRenderDetail::InterpolateEntityForRender(
-                entity_snapshot[index],
-                renderTick,
-                &predictionInfo);
+            entityPtr = &presentedEntityStorage;
         }
+        const OW::c_entity& entity = *entityPtr;
         trackRenderPrediction(entity.address, predictionInfo);
         trackTrainingBotPrediction(entity.address, predictionInfo);
         if (!entity.team_known || !entity.HasUsableBody(renderTick,OW::EntitySceneGeneration()) ||
@@ -1550,10 +1550,8 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         auto elementStyle=[&](VisualElement element)->const V2::VisualSettings::Style& {return display.elements[int(element)];};
         auto arrow=[&] {
             if(!display.offscreen || !local_snapshot.HasUsableBody(renderTick,OW::EntitySceneGeneration()) || !OverlayRenderDetail::IsFiniteVector(local_snapshot.pos))return;
-            Matrix view{},camera{};OW::GetViewMatricesSnapshot(view,camera);
-            const auto forward=camera.get_rotation();const float yaw=std::atan2(forward.x,forward.z);
             const float dx=entity.pos.X-local_snapshot.pos.X,dz=entity.pos.Z-local_snapshot.pos.Z;
-            float x=dx*std::cos(yaw)-dz*std::sin(yaw),y=-(dx*std::sin(yaw)+dz*std::cos(yaw));
+            float x=dx*offscreenCosYaw-dz*offscreenSinYaw,y=-(dx*offscreenSinYaw+dz*offscreenCosYaw);
             const float length=std::sqrt(x*x+y*y);if(length<.001f)return;x/=length;y/=length;
             const auto& style=elementStyle(VisualElement::Offscreen);
             const float cx=OW::WX*.5f,cy=OW::WY*.5f;
@@ -1582,7 +1580,6 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
 
         const float traceBounds[] = {bounds.centerX,bounds.top,bounds.bottom,bounds.width,bounds.height};
         RuntimeTrace::Emit(RuntimeTrace::Bounds,entity.address,entity.actor_generation,entity.publish_sequence,renderCameraSequence,traceBounds,5);
-        OverlayRenderDetail::StabilizeProjectedBounds(entity.address, bounds, renderTick, projectedBoundsStates);
         float height = bounds.height;
         float width  = bounds.width;
         if (height <= 2.0f || width <= 2.0f || !std::isfinite(height) || !std::isfinite(width)) {
@@ -1775,7 +1772,6 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             renderStats.drawn++;
         }
     }
-    OverlayRenderDetail::PruneProjectedBoundsStates(projectedBoundsStates, renderTick);
     OverlayRenderDetail::PruneProjectionJumpTracks(projectionJumpTracks, renderTick);
     OverlayRenderDetail::PruneTrainingBotPredictionTracks(trainingBotPredictionTracks, renderTick);
     renderStats.trainingBotPredictionLeadDrops = trainingBotPredictionLeadDropTotal;

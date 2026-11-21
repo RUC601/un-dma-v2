@@ -79,6 +79,22 @@ namespace OW {
         TrySnapshotViewMatrices(view, viewXor);
     }
 
+    inline bool TrySnapshotLiveViewMatrices(Matrix& view, Matrix& viewXor, uint64_t* sequence=nullptr) {
+        {
+            std::lock_guard<std::mutex> lock(g_viewMatrixMutex);
+            if (RuntimeWorkersRunning() &&
+                IsViewMatrixSampleFresh(viewMatrixSampleState, GetTickCount64(),
+                                        ProcessConnection::ConnectionEpoch(),
+                                        ProcessConnection::IsConnected())) {
+                if (sequence) *sequence = viewMatrixSampleState.publishSequence;
+                view = viewMatrix;
+                viewXor = viewMatrix_xor;
+                return true;
+            }
+        }
+        return TrySnapshotViewMatrices(view, viewXor, sequence);
+    }
+
     inline bool HasFreshViewMatrices() {
         if(consumerFrame)return RuntimeWorkersRunning() && IsViewMatrixSampleFresh(consumerFrame->cameraSample,
             GetTickCount64(),ProcessConnection::ConnectionEpoch(),ProcessConnection::IsConnected());
@@ -87,6 +103,18 @@ namespace OW {
             IsViewMatrixSampleFresh(viewMatrixSampleState, GetTickCount64(),
                                       ProcessConnection::ConnectionEpoch(),
                                       ProcessConnection::IsConnected());
+    }
+
+    inline bool HasFreshLiveViewMatrices() {
+        {
+            std::lock_guard<std::mutex> lock(g_viewMatrixMutex);
+            if (RuntimeWorkersRunning() &&
+                IsViewMatrixSampleFresh(viewMatrixSampleState, GetTickCount64(),
+                                        ProcessConnection::ConnectionEpoch(),
+                                        ProcessConnection::IsConnected()))
+                return true;
+        }
+        return HasFreshViewMatrices();
     }
 
     inline Matrix SnapshotViewMatrix() {

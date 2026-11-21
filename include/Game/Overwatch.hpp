@@ -194,6 +194,14 @@ namespace OW {
         return TrySnapshotViewMatrices(vm, vmx,sequence);
     }
 
+    inline void GetLiveViewMatricesSnapshot(Matrix& vm, Matrix& vmx) {
+        TrySnapshotLiveViewMatrices(vm, vmx);
+    }
+
+    inline bool TryGetLiveViewMatricesSnapshot(Matrix& vm, Matrix& vmx, uint64_t* sequence=nullptr) {
+        return TrySnapshotLiveViewMatrices(vm, vmx, sequence);
+    }
+
     // ---- Entity containers ----
     inline std::vector<c_entity> entities{};
     inline std::vector<hpanddy> hp_dy_entities{};
@@ -343,8 +351,8 @@ namespace OW {
 
     // ---- Target/source screen used for projection ----
     inline float WX = 0.f, WY = 0.f;
-    inline int detectedScreenWidth = 0;
-    inline int detectedScreenHeight = 0;
+    inline std::atomic<int> detectedScreenWidth{ 0 };
+    inline std::atomic<int> detectedScreenHeight{ 0 };
 
     // ---- Scan coordination ----
     inline int abletotread = 0;
@@ -442,10 +450,12 @@ namespace OW {
 
     inline Vector2 ResolveScreenSize()
     {
-        if (detectedScreenWidth > 0 && detectedScreenHeight > 0) {
+        const int width = detectedScreenWidth.load(std::memory_order_acquire);
+        const int height = detectedScreenHeight.load(std::memory_order_acquire);
+        if (width > 0 && height > 0) {
             return Vector2(
-                static_cast<float>(detectedScreenWidth),
-                static_cast<float>(detectedScreenHeight));
+                static_cast<float>(width),
+                static_cast<float>(height));
         }
 
         if (Config::manualScreenWidth > 0 && Config::manualScreenHeight > 0) {
@@ -476,17 +486,27 @@ namespace OW {
         WY = screenSize.Y;
     }
 
+    inline void SetDetectedScreenDimensions(int width, int height)
+    {
+        detectedScreenWidth.store(width > 0 ? width : 0, std::memory_order_release);
+        detectedScreenHeight.store(height > 0 ? height : 0, std::memory_order_release);
+    }
+
+    inline void ClearDetectedScreenDimensions()
+    {
+        detectedScreenWidth.store(0, std::memory_order_release);
+        detectedScreenHeight.store(0, std::memory_order_release);
+    }
+
     inline void SetDetectedScreenSize(int width, int height)
     {
-        detectedScreenWidth = width > 0 ? width : 0;
-        detectedScreenHeight = height > 0 ? height : 0;
+        SetDetectedScreenDimensions(width, height);
         RefreshScreenSizeFromConfig();
     }
 
     inline void ClearDetectedScreenSize()
     {
-        detectedScreenWidth = 0;
-        detectedScreenHeight = 0;
+        ClearDetectedScreenDimensions();
         RefreshScreenSizeFromConfig();
     }
 

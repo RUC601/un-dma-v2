@@ -95,7 +95,7 @@ static void AdvancePositiveDiscovery(DiscoveryState& state,DWORD now) {
         if(!state.positiveTableReading) {
             state.positiveTable.clear();state.positiveTableOffset=0;state.positiveTableReading=true;
         }
-        std::array<uint8_t,0x10000> bytes{};
+        std::array<uint8_t,0x4000> bytes{};
         const size_t count=OW::EntityRegistry::ChunkBytes(state.registry,state.positiveTableOffset,bytes.size());
         const bool exact=count && mem.ReadFreshExact(state.registry.root+state.positiveTableOffset,bytes.data(),count);
         if(!exact || !OW::AcceptEntityRegistry(state.registry)) {
@@ -147,7 +147,7 @@ static void AdvancePositiveDiscovery(DiscoveryState& state,DWORD now) {
         return;
     }
     discoveryOperation="positive_headers";state.positiveHeaderTick=now;
-    constexpr size_t headerBatch=128;
+    constexpr size_t headerBatch=32;
     const auto parents=state.positive.NextHeaders(headerBatch);
     struct Header {std::array<uint8_t,44> bytes{};DWORD actual=0;bool prepared=false;};
     std::array<Header,headerBatch> headers{};
