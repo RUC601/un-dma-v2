@@ -1332,6 +1332,9 @@ void entity_thread() {
                 next.model_shapes.modelIndex=cached.skeletonCache.shapeModelIndex;
                 next.model_shapes.poses.resize(cached.skeletonCache.shapeMapped.size());
                 next.model_shapes.valid.resize(cached.skeletonCache.shapeMapped.size());
+                next.model_shapes.shapeMapped = cached.skeletonCache.shapeMapped;
+                next.model_shapes.critical.assign(next.model_shapes.shapeMapped.size(),
+                    OW::ModelShapes::CriticalState::Unknown);
                 for(size_t s=0;s<next.model_shapes.poses.size();++s) {
                     int mapped=cached.skeletonCache.shapeMapped[s];
                     if(mapped<0 || size_t(mapped+1)*0x30>item.shapeBoneData.size())continue;

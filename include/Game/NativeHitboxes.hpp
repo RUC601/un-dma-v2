@@ -55,10 +55,14 @@ template<class Read> bool LoadLayout(Layout& out,uint64_t model,uint64_t revisio
 }
 struct Sample {
     uint64_t modelBase=0,root=0,skeletonRevision=0;
+    uint64_t hitboxSet=0;
     uint32_t tick=0;
+    uint32_t sphereCount=0,capsuleCount=0;
     ModelWorld::Sample world{};
     std::vector<ModelShapes::Shape> shapes;
     std::vector<ModelShapes::Pose> poses;
+    std::vector<int> shapeMapped;
+    std::vector<uint64_t> criticalRaw;
     bool Matches(uint64_t model,uint64_t revision) const {
         return tick && world.valid && model==modelBase && revision && revision==skeletonRevision && !shapes.empty() && shapes.size()==poses.size();
     }
@@ -90,10 +94,14 @@ struct Capture {
                   std::span<const int> shapeMapped = {}) const {
         Sample out{};
         if(!Complete() || revision!=layout.revision || !world.valid || world.modelBase!=layout.modelBase)return out;
-        out.modelBase=layout.modelBase;out.root=layout.root;out.skeletonRevision=revision;out.tick=tick;
+        out.modelBase=layout.modelBase;out.root=layout.root;out.hitboxSet=layout.root;
+        out.skeletonRevision=revision;out.tick=tick;
+        out.sphereCount=layout.sphereCount;out.capsuleCount=layout.capsuleCount;
         out.world=world;
         out.shapes.reserve(layout.sphereCount+layout.capsuleCount);
         out.poses.reserve(layout.sphereCount+layout.capsuleCount);
+        out.shapeMapped.reserve(layout.sphereCount+layout.capsuleCount);
+        out.criticalRaw.reserve(layout.sphereCount+layout.capsuleCount);
         std::vector<bool> modelShapeUsed(model ? model->shapes.size() : 0, false);
         const auto append=[&](const std::vector<uint8_t>& data,size_t stride,size_t indexAt,size_t radiusAt,bool sphere) {
             for(size_t at=0;at<data.size();at+=stride) {
@@ -117,9 +125,14 @@ struct Capture {
                 }
                 shape.a=Field<Vector3>(data.data()+at,0);shape.b=sphere?shape.a:Field<Vector3>(data.data()+at,16);
                 shape.radius=Field<float>(data.data()+at,radiusAt);
+                const size_t criticalAt = sphere ? 40 : 56;
+                shape.criticalRaw=Field<uint64_t>(data.data()+at,criticalAt);
+                shape.critical=ModelShapes::CriticalStateFromRaw(shape.criticalRaw);
                 if(!std::isfinite(shape.radius) || shape.radius<=0 || shape.radius>10)return false;
                 for(auto p:{shape.a,shape.b})if(!std::isfinite(p.X)||!std::isfinite(p.Y)||!std::isfinite(p.Z)||p.Size()>20)return false;
                 out.shapes.push_back(shape);out.poses.push_back(pose);
+                out.shapeMapped.push_back(static_cast<int>(index));
+                out.criticalRaw.push_back(shape.criticalRaw);
             }
             return true;
         };

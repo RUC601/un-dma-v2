@@ -212,6 +212,14 @@ namespace Render {
         d->AddCircleFilled(ToCanvas(center), radius * ScaleUniform(), color.ToImU32(), segments);
     }
 
+    bool DrawFilledConvexPolygon(std::span<const Vector2> clockwise, const Color& color) {
+        auto* draw = DL();
+        if (!draw || color.A == 0 || clockwise.size() < 3) return false;
+        for (const Vector2& point : clockwise) draw->PathLineTo(ToCanvas(point));
+        draw->PathFillConvex(color.ToImU32());
+        return true;
+    }
+
     // ---- DrawStrokeText ----
     // Legacy name kept for callers; draws crisp text without multipass outline.
 

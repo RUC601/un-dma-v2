@@ -23,6 +23,16 @@ template<class Allocator> inline rapidjson::Value Encode(const Settings& setting
         out.AddMember("offsetX",value.offsetX,allocator);out.AddMember("offsetY",value.offsetY,allocator);return out;};
     out.AddMember("hitboxContour",settings.hitboxContour,allocator);
     out.AddMember("hitboxFill",settings.hitboxFill,allocator);
+    auto palette = [&](const HitboxPalette& colors) {
+        rapidjson::Value value(rapidjson::kObjectType);
+        value.AddMember("critical", color(colors.critical), allocator);
+        value.AddMember("ordinary", color(colors.ordinary), allocator);
+        value.AddMember("unknown", color(colors.unknown), allocator);
+        return value;
+    };
+    boolean("hitboxFillByClass", settings.hitboxFillByClass);
+    out.AddMember("hitboxWireColors", palette(settings.hitboxWireColors), allocator);
+    out.AddMember("hitboxFillColors", palette(settings.hitboxFillColors), allocator);
     out.AddMember("hitboxContourStyle",style(settings.hitboxContourStyle),allocator);
     out.AddMember("hitboxFillStyle",style(settings.hitboxFillStyle),allocator);
     rapidjson::Value crosshair(rapidjson::kObjectType);
@@ -72,6 +82,16 @@ inline Settings Decode(const rapidjson::Value& root,Settings settings={}) {
     const bool hasHitboxFill=root.HasMember("hitboxFill")&&root["hitboxFill"].IsBool();
     boolean(root,"hitboxContour",settings.hitboxContour);
     boolean(root,"hitboxFill",settings.hitboxFill);
+    auto palette = [&](const char* key, HitboxPalette& colors) {
+        if (!root.HasMember(key) || !root[key].IsObject()) return;
+        const auto& value = root[key];
+        color(value, "critical", colors.critical);
+        color(value, "ordinary", colors.ordinary);
+        color(value, "unknown", colors.unknown);
+    };
+    boolean(root, "hitboxFillByClass", settings.hitboxFillByClass);
+    palette("hitboxWireColors", settings.hitboxWireColors);
+    palette("hitboxFillColors", settings.hitboxFillColors);
     if(!hasHitboxContour)settings.hitboxContour=legacyHitboxMode>=1;
     if(!hasHitboxFill)settings.hitboxFill=legacyHitboxMode>=2;
     if(!style(root,"hitboxContourStyle",settings.hitboxContourStyle))

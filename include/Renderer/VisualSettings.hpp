@@ -14,6 +14,13 @@ struct Style {
     ImVec4 visible{1,1,1,1},hidden{1,.25f,.3f,1},target{1,.85f,.2f,1},ally{.3f,1,.6f,1};
     float size=14,thickness=1.5f,radius=160,offsetX=0,offsetY=0;
 };
+struct HitboxPalette {
+    explicit HitboxPalette(float alpha)
+        : critical(1.f, 64.f/255.f, 32.f/255.f, alpha),
+          ordinary(1.f, 1.f, 0.f, alpha),
+          unknown(165.f/255.f, 175.f/255.f, 186.f/255.f, alpha) {}
+    ImVec4 critical, ordinary, unknown;
+};
 using WorldObjects::ObjectType;
 using WorldObjects::kObjects;
 using WorldObjects::ObjectIndex;
@@ -46,6 +53,9 @@ struct Settings {
     // Independent native hitbox layers. Legacy hitboxMode is read only during migration.
     bool hitboxContour=false;
     bool hitboxFill=false;
+    bool hitboxFillByClass=false;
+    HitboxPalette hitboxWireColors{.70f};
+    HitboxPalette hitboxFillColors{.20f};
     Style hitboxContourStyle=[] { Style value; value.visible=ImVec4(1.f,.85f,.2f,1.f); value.hidden=ImVec4(1.f,.25f,.3f,1.f); return value; }();
     Style hitboxFillStyle=[] { Style value; value.visible=ImVec4(1.f,.15f,.2f,.18f); value.hidden=ImVec4(.65f,.1f,.2f,.18f); return value; }();
     CrosshairSettings crosshair;

@@ -128,26 +128,65 @@ bool ElementRow(Settings& settings,Element element,bool& enabled) {
     }
     ImGui::PopID();return changed;
 }
-bool CustomStyleRow(const char* label,const char* id,Style& style,bool& enabled) {
+bool CustomStyleRow(const char* label,const char* id,Style& style,bool& enabled,
+                    bool stateColors=true, bool showThickness=true) {
     ImGui::PushID(id);
     EspSettingRow(label);
     bool changed=UICheckbox("##enabled",&enabled);
-    ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
-    ImGui::SetItemTooltip("%s",L("Enemy"));
-    ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
-    ImGui::SetItemTooltip("%s",L("Invisible Enemy"));
-    ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
-    ImGui::SetItemTooltip("%s",L("Target"));
-    ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
-    ImGui::SetItemTooltip("%s",L("Ally"));
+    if (stateColors) {
+        ImGui::SameLine();changed|=UI::ColorPicker("visible",style.visible);
+        ImGui::SetItemTooltip("%s",L("Enemy"));
+        ImGui::SameLine();changed|=UI::ColorPicker("hidden",style.hidden);
+        ImGui::SetItemTooltip("%s",L("Invisible Enemy"));
+        ImGui::SameLine();changed|=UI::ColorPicker("target",style.target);
+        ImGui::SetItemTooltip("%s",L("Target"));
+        ImGui::SameLine();changed|=UI::ColorPicker("ally",style.ally);
+        ImGui::SetItemTooltip("%s",L("Ally"));
+    }
     ImGui::SameLine();if(ImGui::Button("...##details",ImVec2(kEspDetailsWidth,ControlHeight())))ImGui::OpenPopup("##details");
     ImGui::SetItemTooltip("%s",OW::Config::uiLanguage==1?"更多设置":"More settings");
     if(ImGui::BeginPopup("##details")) {
         ImGui::TextUnformatted(L(label));ImGui::Spacing();
-        changed|=StyleDetails(style,Element::Hitbox);
+        changed|=StyleDetails(style,showThickness ? Element::Hitbox : Element::Count);
         ImGui::EndPopup();
     }
     ImGui::PopID();return changed;
+}
+void HitboxControls(Settings& settings, bool& changed) {
+    const bool zh = OW::Config::uiLanguage == 1;
+    auto& wireStyle = settings.elements[int(Element::Hitbox)];
+    changed |= CustomStyleRow("Hitbox wireframe", "hitboxWire", wireStyle, OW::Config::draw_hitbox, false);
+    changed |= CustomStyleRow(zh ? "碰撞体轮廓" : "Hitbox contour", "hitboxContour",
+                              settings.hitboxContourStyle, settings.hitboxContour);
+    SettingRow(zh ? "按分类填色" : "Fill by class");
+    changed |= UICheckbox("##fillByClass", &settings.hitboxFillByClass);
+    changed |= CustomStyleRow(zh ? "碰撞体填色" : "Hitbox fill", "hitboxFill",
+                              settings.hitboxFillStyle, settings.hitboxFill,
+                              !settings.hitboxFillByClass, false);
+    if (ImGui::BeginTable("##hitboxClassColors", 3, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(zh ? "碰撞体分类" : "Shape class");
+        ImGui::TableSetupColumn(zh ? "线框" : "Wire");
+        ImGui::TableSetupColumn(zh ? "填充" : "Fill");
+        ImGui::TableHeadersRow();
+        const auto row = [&](const char* name, ImVec4& wire, ImVec4& fill) {
+            ImGui::PushID(name);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(name);
+            ImGui::TableSetColumnIndex(1);
+            changed |= UI::ColorPicker("wire", wire);
+            ImGui::TableSetColumnIndex(2);
+            changed |= UI::ColorPicker("fill", fill);
+            ImGui::PopID();
+        };
+        auto& wires = settings.hitboxWireColors;
+        auto& fills = settings.hitboxFillColors;
+        row("Critical", wires.critical, fills.critical);
+        row("Ordinary", wires.ordinary, fills.ordinary);
+        row("Unknown", wires.unknown, fills.unknown);
+        ImGui::EndTable();
+    }
 }
 bool CrosshairRow(Settings& settings,bool& enabled) {
     auto& crosshair=settings.crosshair;
@@ -343,7 +382,22 @@ void Preview(const Settings& settings) {
     if(OW::Config::skillinfo){const float size=style(Element::Skills).size;for(int i=0;i<2;++i){const auto a=position(Element::Skills,right+8+i*(size+3),top+20);draw->AddRect(a,ImVec2(a.x+size,a.y+size),color(Element::Skills),3,0,style(Element::Skills).thickness);draw->AddText(ImGui::GetFont(),size*.67f,ImVec2(a.x+2,a.y+2),color(Element::Skills),i?"--":"4");}}
     if(OW::Config::dist)text(Element::Distance,cx,bottom+4,"14 m");
     if(settings.prediction)draw->AddCircle(position(Element::Prediction,cx+25,top+75),style(Element::Prediction).size*.25f,color(Element::Prediction),20,style(Element::Prediction).thickness);
-    if(OW::Config::draw_hitbox)draw->AddCircle(position(Element::Hitbox,cx,top+30),16,color(Element::Hitbox),24,style(Element::Hitbox).thickness);
+    const auto sampleShape = [&](float y, float radius, const ImVec4& wire, const ImVec4& fill) {
+        const auto center = position(Element::Hitbox, cx, y);
+        if (settings.hitboxFill) {
+            const auto& fillStyle = settings.hitboxFillStyle;
+            const ImVec4& rgba = settings.hitboxFillByClass
+                ? fill : V2::VisualSettings::Color(fillStyle, true, visible);
+            draw->AddCircleFilled(ImVec2(center.x + fillStyle.offsetX, center.y + fillStyle.offsetY),
+                                  radius, ImGui::ColorConvertFloat4ToU32(rgba));
+        }
+        if (OW::Config::draw_hitbox)
+            draw->AddCircle(center, radius, ImGui::ColorConvertFloat4ToU32(wire),
+                            24, style(Element::Hitbox).thickness);
+    };
+    sampleShape(top + 30, 16, settings.hitboxWireColors.critical, settings.hitboxFillColors.critical);
+    sampleShape(top + 66, 18, settings.hitboxWireColors.ordinary, settings.hitboxFillColors.ordinary);
+    sampleShape(top + 100, 14, settings.hitboxWireColors.unknown, settings.hitboxFillColors.unknown);
     if(OW::Config::drawline)draw->AddLine(ImVec2(cx,p.y+315),position(Element::Snapline,cx,bottom),color(Element::Snapline),style(Element::Snapline).thickness);
     if(OW::Config::eyeray)draw->AddLine(position(Element::EyeRay,cx,top+30),position(Element::EyeRay,right+30,top+40),color(Element::EyeRay),style(Element::EyeRay).thickness);
     if(settings.offscreen){const auto tip=position(Element::Offscreen,p.x+width-18,top+110);const float size=style(Element::Offscreen).size;draw->AddTriangleFilled(tip,ImVec2(tip.x-size,tip.y-size*.5f),ImVec2(tip.x-size,tip.y+size*.5f),color(Element::Offscreen));}
@@ -385,15 +439,13 @@ void UI::VisualsPage() {
         changed|=ElementRow(settings,Element::Skeleton,OW::Config::draw_skel);
         changed|=ElementRow(settings,Element::Skills,OW::Config::skillinfo);
         changed|=ElementRow(settings,Element::Prediction,settings.prediction);
-        changed|=ElementRow(settings,Element::Hitbox,OW::Config::draw_hitbox);
-        changed|=CustomStyleRow(OW::Config::uiLanguage==1?"碰撞体轮廓":"Hitbox contour","hitboxContour",settings.hitboxContourStyle,settings.hitboxContour);
-        changed|=CustomStyleRow(OW::Config::uiLanguage==1?"碰撞体填色":"Hitbox fill","hitboxFill",settings.hitboxFillStyle,settings.hitboxFill);
         changed|=ElementRow(settings,Element::Offscreen,settings.offscreen);
         changed|=ElementRow(settings,Element::CenterArrow,settings.centerArrow);
         changed|=ElementRow(settings,Element::Snapline,OW::Config::drawline);
         changed|=ElementRow(settings,Element::EyeRay,OW::Config::eyeray);
         changed|=CrosshairRow(settings,OW::Config::crosscircle);
     });
+    Card(OW::Config::uiLanguage==1 ? "碰撞体" : "Hitboxes",[&]{HitboxControls(settings, changed);});
     Card("Game Outlines",[]{OutlineControls();});
     Card("World",[&]{
         auto& world=settings.world;

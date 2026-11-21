@@ -7,7 +7,32 @@
 #include <vector>
 
 namespace OW::ModelShapes {
-struct Shape { int boneId; Vector3 a, b; float radius; };
+enum class CriticalState : uint8_t {
+    Unknown = 0,
+    Ordinary,
+    Critical,
+};
+
+inline const char* CriticalStateName(CriticalState state) {
+    switch (state) {
+        case CriticalState::Ordinary: return "ordinary";
+        case CriticalState::Critical: return "critical";
+        case CriticalState::Unknown: break;
+    }
+    return "unknown";
+}
+
+struct Shape {
+    int boneId = -1;
+    Vector3 a{}, b{};
+    float radius = 0.0f;
+    CriticalState critical = CriticalState::Unknown;
+    uint64_t criticalRaw = 0;
+};
+
+inline CriticalState CriticalStateFromRaw(uint64_t raw) {
+    return raw == 0 ? CriticalState::Ordinary : CriticalState::Critical;
+}
 #include "Game/TracerModelShapes.inl"
 struct Model { uint64_t heroId, modelId; std::span<const Shape> shapes; std::span<const uint32_t> boneIds; };
 #include "Game/HeroModelShapes.inl"
@@ -58,6 +83,8 @@ static_assert(sizeof(Pose)==0x30);
 struct Sample {
     std::vector<Pose> poses;
     std::vector<uint8_t> valid;
+    std::vector<int> shapeMapped;
+    std::vector<CriticalState> critical;
     int modelIndex=-1;
     uint32_t tick=0;
     uint64_t boneData=0;

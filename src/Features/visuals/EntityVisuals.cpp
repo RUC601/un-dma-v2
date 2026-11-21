@@ -3,6 +3,7 @@
 #include "Game/HeroSettings.hpp"
 #include "Game/TrainingBotDisplay.hpp"
 #include "Game/ModelWireMesh.hpp"
+#include "ShapeWire.hpp"
 #include "Features/visuals/HitboxContour.hpp"
 #include "Game/snapshots/Interpolation.hpp"
 #include <cfloat>
@@ -1057,77 +1058,110 @@ namespace OverlayRenderDetail {
 
     inline bool DrawHitboxes(const OW::c_entity& entity,
                              const OW::Matrix& view,
-                             const Render::Color& color,
-                             float opacity, float thickness=1,Vector2 offset={},bool contour=false,bool filled=false,
-                             const ImVec4& contourColor={1,1,.2f,1},float contourThickness=1,Vector2 contourOffset={},
-                             const ImVec4& fill={1,0,0,.18f},float fillThickness=1,Vector2 fillOffset={}) {
+                             const V2::VisualSettings::Settings& display,
+                             float opacity,
+                             const ImVec4& contourColor,
+                             const ImVec4& fillColor) {
+        using OW::ModelShapes::CriticalState;
+        const auto& wire = display.elements[int(V2::VisualSettings::Element::Hitbox)];
+        const auto& fill = display.hitboxFillStyle;
+        const auto& contour = display.hitboxContourStyle;
+        const Vector2 offset{wire.offsetX, wire.offsetY};
+        const float thickness = wire.thickness;
+        const Vector2 fillOffset{fill.offsetX, fill.offsetY};
+        const Vector2 contourOffset{contour.offsetX, contour.offsetY};
+        const bool classifiedFill = display.hitboxFill && display.hitboxFillByClass;
+        const bool uniformFill = display.hitboxFill && !display.hitboxFillByClass;
+        const bool drawWire = OW::Config::draw_hitbox;
+        const auto project = [&](Vector3 point, Vector2& screen) {
+            return view.WorldToScreen(point, &screen, Vector2(OW::WX, OW::WY));
+        };
+        const auto drawLayers = [&](const auto& shapes, auto worldPoint, auto classify, auto valid,
+                                    auto drawUnion, auto record) {
+            bool drew = false;
+            if (uniformFill)
+                drew |= drawUnion(false, fillColor, fill.thickness, fillOffset);
+            auto drawClassLayer = [&](bool isFill) {
+                const auto& palette = isFill ? display.hitboxFillColors : display.hitboxWireColors;
+                for (size_t i = 0; i < shapes.size(); ++i) {
+                    if (!valid(i)) continue;
+                    const auto selected = V2::Visuals::ClassColor(palette, classify(i), opacity);
+                    const auto world = [&](Vector3 point) { return worldPoint(i, point); };
+                    const bool submitted = isFill
+                        ? V2::Visuals::DrawShapeFill(shapes[i], world, project, selected, fillOffset)
+                        : V2::Visuals::DrawShapeWire(shapes[i], world, project, selected, thickness, offset);
+                    drew |= submitted;
+                    record(i, isFill, submitted, selected);
+                }
+            };
+            if (classifiedFill) drawClassLayer(true);
+            if (drawWire) drawClassLayer(false);
+            if (display.hitboxContour)
+                drew |= drawUnion(true, contourColor, contour.thickness, contourOffset);
+            return drew;
+        };
         if(OW::offset::UsesNativeModelGeometry()) {
             const auto& native=entity.native_hitboxes;
             if(!entity.HasCurrentModelWorldTransform() || !native.Matches(entity.VelocityBase,entity.skeleton_revision) ||
                GetTickCount()-native.tick>100)return false;
-            const auto delta=entity.pos-native.world.sampleAnchor;
-            const Render::Color shapeColor(color.R,color.G,color.B,ToByte(opacity*.7f));
-            bool drewLayers=false;
-            if(contour) {
-                auto color=contourColor;
-                drewLayers|=DrawNativeHitboxContour(entity,view,ImGui::ColorConvertFloat4ToU32(color),color,contourThickness,contourOffset,true,false);
-            }
-            if(filled) {
-                auto color=fill;
-                drewLayers|=DrawNativeHitboxContour(entity,view,0,color,fillThickness,fillOffset,false,true);
-            }
-            if(OW::Config::draw_hitbox) {
-                bool drewWire=false;
-                for(size_t i=0;i<native.shapes.size();++i) {
-                    const auto world=[&](Vector3 p) { return native.world.TransformPoint(OW::ModelShapes::Transform(p,native.poses[i]))+delta; };
-                    drewWire=OW::ModelShapes::DrawCachedWire(native.shapes[i],world,
-                        [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
-                        [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drewWire;
-                }
-                drewLayers|=drewWire;
-            }
-            if(contour || filled || OW::Config::draw_hitbox)return drewLayers;
-            bool drew=false;
-            for(size_t i=0;i<native.shapes.size();++i) {
-                const auto world=[&](Vector3 p) {
-                    return native.world.TransformPoint(OW::ModelShapes::Transform(p,native.poses[i]))+delta;
-                };
-                drew=OW::ModelShapes::DrawCachedWire(native.shapes[i],world,
-                    [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
-                    [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
-            }
-            return drew;
+            const auto delta = entity.pos - native.world.sampleAnchor;
+            const auto world = [&](size_t i, Vector3 point) {
+                return native.world.TransformPoint(OW::ModelShapes::Transform(point, native.poses[i])) + delta;
+            };
+            const auto drawUnion = [&](bool outline, const ImVec4& fillValue, float width, Vector2 shift) {
+                return DrawNativeHitboxContour(entity, view, ImGui::ColorConvertFloat4ToU32(fillValue),
+                                               fillValue, width, shift, outline, !outline);
+            };
+            static std::unordered_map<uint64_t, DWORD> lastLog;
+            const DWORD now = GetTickCount();
+            auto& previous = lastLog[entity.address];
+            const bool log = (drawWire || classifiedFill) && now - previous >= 1000;
+            if (log) previous = now;
+            const auto record = [&](size_t i, bool isFill, bool submitted, Render::Color selected) {
+                if (!log) return;
+                const auto& shape = native.shapes[i];
+                const int mapped = i < native.shapeMapped.size() ? native.shapeMapped[i] : -1;
+                Diagnostics::Info(
+                    "[RAY-DRAW] entity=0x%llX model=0x%llX hitbox=0x%llX index=%zu "
+                    "shapeMapped=%d bone=%d criticalRaw=0x%llX critical=%s "
+                    "submitted=%d color=(%d,%d,%d,%d) pose_tick_ms=%u draw_tick_ms=%u "
+                    "layer=%s fill_mode=%s frame=%d",
+                    static_cast<unsigned long long>(entity.address),
+                    static_cast<unsigned long long>(native.modelBase),
+                    static_cast<unsigned long long>(native.hitboxSet), i, mapped, shape.boneId,
+                    static_cast<unsigned long long>(shape.criticalRaw), OW::ModelShapes::CriticalStateName(shape.critical),
+                    int(submitted), selected.R, selected.G, selected.B, selected.A, native.tick, now,
+                    isFill ? "fill" : "wire", classifiedFill ? "class" : uniformFill ? "uniform" : "off",
+                    ImGui::GetFrameCount());
+            };
+            return drawLayers(native.shapes, world, [&](size_t i) { return native.shapes[i].critical; },
+                              [](size_t) { return true; }, drawUnion, record);
         }
         // Original model shapes use their own size; never apply the aim window scale.
         if(OW::ModelShapes::Supported(entity.HeroID) && entity.model_shapes.modelIndex>=0) {
             if (!entity.model_shapes.MatchesSkeleton(entity.skeleton_revision) ||
                 !entity.model_shapes.tick || GetTickCount()-entity.model_shapes.tick>100) return false;
-            const Render::Color shapeColor(color.R,color.G,color.B,ToByte(opacity*.7f));
             const auto yaw=DirectX::XMMatrixRotationY(entity.Rot.X);
-            bool drew=false;
-            if (contour)
-                drew |= DrawModelHitboxContour(entity, view,
-                    ImGui::ColorConvertFloat4ToU32(contourColor), contourColor,
-                    contourThickness, contourOffset, true, false);
-            if (filled)
-                drew |= DrawModelHitboxContour(entity, view, 0, fill,
-                    fillThickness, fillOffset, false, true);
             const auto& model=OW::ModelShapes::kModels[entity.model_shapes.modelIndex];
-            if(model.heroId!=entity.HeroID || entity.model_shapes.valid.size()!=model.shapes.size())return false;
-            for(size_t s=0;s<model.shapes.size();++s) {
-                if(!entity.model_shapes.valid[s])continue;
-                auto world=[&](const Vector3& point) {
-                    const Vector3 local=OW::ModelShapes::Transform(point,entity.model_shapes.poses[s]);
+            if(model.heroId!=entity.HeroID || entity.model_shapes.valid.size()!=model.shapes.size() ||
+               entity.model_shapes.poses.size()!=model.shapes.size())return false;
+            const auto world = [&](size_t i, const Vector3& point) {
+                    const Vector3 local=OW::ModelShapes::Transform(point,entity.model_shapes.poses[i]);
                     DirectX::XMFLOAT3 value{local.X,local.Y,local.Z},out{};
                     DirectX::XMStoreFloat3(&out,DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&value),yaw));
                     return Vector3(out.x,out.y,out.z)+entity.pos;
                 };
-                if (OW::Config::draw_hitbox)
-                    drew=OW::ModelShapes::DrawCachedWire(model.shapes[s],world,
-                        [&](Vector3 p,Vector2& screen){return view.WorldToScreen(p,&screen,Vector2(OW::WX,OW::WY));},
-                        [&](Vector2 a,Vector2 b){Render::DrawLine(a+offset,b+offset,shapeColor,thickness);}) || drew;
-            }
-            return drew;
+            const auto classify = [&](size_t i) {
+                return i < entity.model_shapes.critical.size()
+                    ? entity.model_shapes.critical[i] : CriticalState::Unknown;
+            };
+            const auto drawUnion = [&](bool outline, const ImVec4& fillValue, float width, Vector2 shift) {
+                return DrawModelHitboxContour(entity, view, ImGui::ColorConvertFloat4ToU32(fillValue),
+                                              fillValue, width, shift, outline, !outline);
+            };
+            return drawLayers(model.shapes, world, classify,
+                              [&](size_t i) { return bool(entity.model_shapes.valid[i]); },
+                              drawUnion, [](size_t, bool, bool, Render::Color) {});
         }
         bool drewAny = false;
         const std::array<int, 18> renderBoneIds = entity.GetRenderSkel();
@@ -1148,7 +1182,8 @@ namespace OverlayRenderDetail {
                 entity, view, slotIndex, point, ellipses[slotIndex]);
         }
 
-        const Render::Color hitboxColor(color.R, color.G, color.B, ToByte(opacity * 0.70f));
+        const Render::Color hitboxColor = V2::Visuals::ClassColor(
+            display.hitboxWireColors, CriticalState::Unknown, opacity);
         const float capsuleThickness=thickness;
         for(auto& ellipse:ellipses)ellipse.center=ellipse.center+offset;
         static constexpr std::pair<int, int> kBoneConnections[] = {
@@ -1718,7 +1753,9 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         }
 
         if ((OW::Config::draw_hitbox || display.hitboxContour || display.hitboxFill) && !specialEntity)
-            drewAny |= OverlayRenderDetail::DrawHitboxes(entity,renderViewMatrix,OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Hitbox))),visualOpacity,elementStyle(VisualElement::Hitbox).thickness,Vector2(elementStyle(VisualElement::Hitbox).offsetX,elementStyle(VisualElement::Hitbox).offsetY),display.hitboxContour,display.hitboxFill,ImGui::ColorConvertU32ToFloat4(customElementColor(display.hitboxContourStyle)),display.hitboxContourStyle.thickness,Vector2(display.hitboxContourStyle.offsetX,display.hitboxContourStyle.offsetY),ImGui::ColorConvertU32ToFloat4(customElementColor(display.hitboxFillStyle)),display.hitboxFillStyle.thickness,Vector2(display.hitboxFillStyle.offsetX,display.hitboxFillStyle.offsetY));
+            drewAny |= OverlayRenderDetail::DrawHitboxes(entity, renderViewMatrix, display, visualOpacity,
+                ImGui::ColorConvertU32ToFloat4(customElementColor(display.hitboxContourStyle)),
+                ImGui::ColorConvertU32ToFloat4(customElementColor(display.hitboxFillStyle)));
 
         if (entity.Vis) {
             OverlayRenderDetail::DrawVisibleEyeIndicator(
