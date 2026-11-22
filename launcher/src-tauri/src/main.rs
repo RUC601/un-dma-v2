@@ -15,6 +15,15 @@ use std::{
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
+#[cfg(windows)]
+use windows::Win32::{
+    Foundation::HWND,
+    Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR,
+        DWMWA_COLOR_NONE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        DWMWINDOWATTRIBUTE,
+    },
+};
 
 #[derive(Clone, Default, Serialize)]
 struct Status {
@@ -133,22 +142,44 @@ fn publish(app: &tauri::AppHandle, status: Status) {
         }
     };
 }
-fn glass(app: &tauri::AppHandle, value: &Value) {
-    if let Some(w) = app.get_webview_window("main") {
-        if value["loginGlass"].as_bool().unwrap_or(true) {
-            let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            if window_vibrancy::apply_acrylic(&w, Some((21, 22, 28, 190))).is_err() {
-                let _ = w.set_background_color(Some(tauri::window::Color(21, 22, 28, 255)));
-            }
-        } else {
-            let _ = window_vibrancy::clear_acrylic(&w);
-            let _ = w.set_background_color(Some(tauri::window::Color(21, 22, 28, 255)));
-        }
+#[cfg(windows)]
+fn set_dwm_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: T) -> bool {
+    // DWM reads the value synchronously using the supplied byte count.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            std::ptr::from_ref(&value).cast(),
+            std::mem::size_of::<T>() as u32,
+        )
+        .is_ok()
     }
 }
+
+fn appearance_preferences(_app: &tauri::AppHandle, mut value: Value) -> Value {
+    #[cfg(windows)]
+    let native_acrylic = _app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .is_some_and(|hwnd| {
+            let enabled = value["loginGlass"].as_bool().unwrap_or(true);
+            let backdrop = if enabled {
+                DWMSBT_TRANSIENTWINDOW
+            } else {
+                DWMSBT_NONE
+            };
+            // The documented desktop Acrylic attribute is unavailable on Windows 10.
+            set_dwm_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop) && enabled
+        });
+    #[cfg(not(windows))]
+    let native_acrylic = false;
+
+    value["nativeAcrylic"] = json!(native_acrylic);
+    value
+}
 #[tauri::command]
-fn preferences() -> Result<Value, String> {
-    prefs()
+fn preferences(app: tauri::AppHandle) -> Result<Value, String> {
+    prefs().map(|p| appearance_preferences(&app, p))
 }
 #[tauri::command]
 fn set_language(language: u8, app: tauri::AppHandle, state: State<Runtime>) -> Result<(), String> {
@@ -167,7 +198,8 @@ fn set_language(language: u8, app: tauri::AppHandle, state: State<Runtime>) -> R
     let mut p = prefs()?;
     p["language"] = json!(language);
     save_preferences(&p)?;
-    app.emit("preferences", p).map_err(|e| e.to_string())
+    app.emit("preferences", appearance_preferences(&app, p))
+        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn close_launcher(app: tauri::AppHandle, state: State<Runtime>) -> Result<(), String> {
@@ -256,8 +288,8 @@ async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String
                             read_native.save_failed.store(true, Ordering::Release);
                         }
                         Some("preferences") => {
-                            let _ = read_app.emit("preferences", &v);
-                            glass(&read_app, &v);
+                            let preferences = appearance_preferences(&read_app, v);
+                            let _ = read_app.emit("preferences", preferences);
                         }
                         Some("download") => {
                             let a = read_app.clone();
@@ -552,8 +584,13 @@ fn main() {
             install_update
         ])
         .setup(|app| {
-            if let Ok(p) = prefs() {
-                glass(app.handle(), &p);
+            #[cfg(windows)]
+            if let Some(hwnd) = app
+                .get_webview_window("main")
+                .and_then(|window| window.hwnd().ok())
+            {
+                set_dwm_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
+                set_dwm_attribute(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
             }
             if let Some(path) = std::env::args().skip_while(|a| a != "--update-ack").nth(1) {
                 let _ = fs::write(path, b"ready");

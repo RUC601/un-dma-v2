@@ -39,5 +39,17 @@ function renderUpdate(s){
 $('update-action').onclick=()=>invoke(update.phase==='ready'?'install_update':update.phase==='error'?'check_update':'download_update').catch(e=>renderUpdate({...update,phase:'error',error:String(e)}));
 await listen('runtime-error',e=>error(e.payload));
 await listen('update-state',e=>renderUpdate(e.payload));
-await listen('preferences',e=>{language=e.payload.language??language;document.body.classList.toggle('glass',e.payload.loginGlass!==false);labels();});
-try{const p=await invoke('preferences');language=p.language??1;document.body.classList.toggle('glass',p.loginGlass!==false);labels();await invoke('check_update');}catch(e){renderUpdate({phase:'error',error:String(e)});}
+function applyPreferences(preferences) {
+ const glass = preferences.loginGlass !== false;
+ language = preferences.language ?? language;
+ document.body.classList.toggle('glass', glass);
+ document.body.classList.toggle('native-acrylic', glass && preferences.nativeAcrylic === true);
+ labels();
+}
+await listen('preferences', e => applyPreferences(e.payload));
+try {
+ applyPreferences(await invoke('preferences'));
+ await invoke('check_update');
+} catch (e) {
+ renderUpdate({phase:'error',error:String(e)});
+}
