@@ -7,11 +7,11 @@ inline constexpr int kMaximumCommandPort = 65535;
 
 // Public configuration model. Transport and monitor state stay in the backend.
 struct Settings {
-    char ip[32] = "192.168.2.188";
+    char ip[32] = "";
     int commandPort = 8808;
     int monitorPort = 8809;
     bool manualMonitorPort = false;
-    char mac[32] = "12525C53";
+    char mac[32] = "";
 };
 
 inline Settings current;

@@ -5,7 +5,7 @@ namespace V2::Output::SerialConfig {
 // Compatibility projection for the selected device. OutputProfiles owns each
 // family's saved port and identity; the legacy INI key remains readable.
 struct Settings {
-    char port[16] = "COM3";
+    char port[16] = "";
     char instanceId[256] = {};
 };
 
