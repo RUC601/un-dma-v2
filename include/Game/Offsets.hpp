@@ -74,8 +74,8 @@ namespace OW {
             uint64_t Address_entity_base = 0;
             uint64_t InputMouseScaleX_RVA = 0;
             uint64_t InputMouseScaleY_RVA = 0;
-            uint64_t ViewportWidth_RVA = 0;
-            uint64_t ViewportHeight_RVA = 0;
+            uint64_t GameResolutionWidth_RVA = 0;
+            uint64_t GameResolutionHeight_RVA = 0;
             uint64_t VisibilityValueOffset = 0;
 
             uint64_t Address_viewmatrix_base = 0;
@@ -328,12 +328,14 @@ namespace OW {
         static constexpr auto World150818_DirectViewProjectionMatrix = 0x1C0;
         static constexpr auto World151177_DirectViewProjectionMatrix = 0xF70; // legacy dynamic-context seed; unused by World 151177 chain mode
 
-        // Viewport dimensions (2026-05-27, dump_SCY.exe).
-        // IDA: FullScreenWidth/FullScreenHeight option objects at
-        // 0x7FF7C1137C00 / 0x7FF7C1137C70; current uint32 value is at +0x38.
-        // sub_7FF7BEBA3330 returns these as the resolved output width/height.
-        static constexpr auto ViewportWidth_RVA  = 0x0;
-        static constexpr auto ViewportHeight_RVA = 0x0;
+        // FullScreenWidth/FullScreenHeight settings records. The current
+        // value is at record +0x28 and the limit is at record +0x2C.
+        // These are game-resolution settings records, not a vtable viewport
+        // or a backbuffer-size field.
+        static constexpr auto GameResolutionCurrentValue_Offset = 0x28;
+        static constexpr auto GameResolutionLimitValue_Offset = 0x2C;
+        static constexpr auto LegacyGameResolutionWidth_RVA = 0x0;
+        static constexpr auto LegacyGameResolutionHeight_RVA = 0x0;
 
         // Input globals.
         static constexpr auto InputMouseScaleX_RVA      = 0x3776BDC; // IDA + live reverified World 151722 input.MouseScaleX
@@ -353,8 +355,8 @@ namespace OW {
             Address_entity_base,
             InputMouseScaleX_RVA,
             InputMouseScaleY_RVA,
-            ViewportWidth_RVA,
-            ViewportHeight_RVA,
+            LegacyGameResolutionWidth_RVA,
+            LegacyGameResolutionHeight_RVA,
             VisibilityValueOffset,
             Address_viewmatrix_base,
             offset_viewmatrix_xor_key,
@@ -386,6 +388,8 @@ namespace OW {
             .Address_entity_base = Cn155284::entityRoot,
             .InputMouseScaleX_RVA = Cn155284::mouseScaleX,
             .InputMouseScaleY_RVA = Cn155284::mouseScaleY,
+            .GameResolutionWidth_RVA = 0x5396570,
+            .GameResolutionHeight_RVA = 0x53965E0,
             .VisibilityValueOffset = 0x98,
             .Address_viewmatrix_base = Cn155284::viewRoot,
             .offset_viewmatrix_xor_key = Cn155284::pointerXor,
@@ -424,6 +428,8 @@ namespace OW {
             .Address_entity_base = 0x3A4E998,
             .InputMouseScaleX_RVA = 0x3884C0C,
             .InputMouseScaleY_RVA = 0x3884C24,
+            .GameResolutionWidth_RVA = 0x4175E40,
+            .GameResolutionHeight_RVA = 0x4175EB0,
             .VisibilityValueOffset = 0x98,
             .Address_viewmatrix_base = 0x39E60D8,
             .offset_viewmatrix_xor_key = 0xCA296338AF46F0EEULL,
@@ -459,6 +465,8 @@ namespace OW {
             profile.Address_entity_base = 0x3F37FF8;
             profile.InputMouseScaleX_RVA = 0x3D6DBCC;
             profile.InputMouseScaleY_RVA = 0x3D6DBE4;
+            profile.GameResolutionWidth_RVA = 0x465B4B0;
+            profile.GameResolutionHeight_RVA = 0x465B520;
             profile.Address_viewmatrix_base = 0x3ECF728;
             profile.GlobalAdmin_RVA = 0x409D740;
             profile.componentKeyByteRva = 0x3D67455;

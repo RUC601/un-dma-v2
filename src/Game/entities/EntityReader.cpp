@@ -27,7 +27,6 @@ namespace {
 bool NativeHitboxRuntimeEnabled() {
     return true;
 }
-
 bool ModelHitboxRuntimeEnabled() {
     const auto settings = V2::HeroSettings::Snapshot();
     return OW::Config::draw_hitbox || settings->display.hitboxContour || settings->display.hitboxFill;
@@ -524,34 +523,53 @@ void entity_thread() {
 
         V2::Acquisition::Wait(nextProcessTick, entityProcessPeriod);
 
-    auto sampleTargetViewport = [&]() {
-        static DWORD lastViewportSampleTick = 0;
+    auto sampleGameResolution = [&]() {
+        static DWORD lastGameResolutionSampleTick = 0;
         const DWORD now = GetTickCount();
-        if (lastViewportSampleTick != 0 && now - lastViewportSampleTick < 2000)
+        if (lastGameResolutionSampleTick != 0 && now - lastGameResolutionSampleTick < 2000)
             return;
-        lastViewportSampleTick = now;
+        lastGameResolutionSampleTick = now;
 
         const uint64_t epoch = OW::ProcessConnection::ConnectionEpoch();
         if (!epoch || !OW::ProcessConnection::IsConnected() ||
-            !OW::SDK || !OW::SDK->IsInitialized() || OW::SDK->dwGameBase == 0)
+            !OW::SDK || !OW::SDK->IsInitialized() || OW::SDK->dwGameBase == 0) {
+            OW::ClearDetectedScreenSize();
             return;
+        }
 
         const auto& activeOffsets = OW::offset::Active();
-        if (!activeOffsets.ViewportWidth_RVA || !activeOffsets.ViewportHeight_RVA)
+        if (!activeOffsets.GameResolutionWidth_RVA ||
+            !activeOffsets.GameResolutionHeight_RVA) {
+            OW::ClearDetectedScreenSize();
             return;
+        }
 
         const uint64_t base = OW::SDK->dwGameBase;
-        const uint32_t width = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportWidth_RVA);
-        const uint32_t height = OW::SDK->RPM<uint32_t>(base + activeOffsets.ViewportHeight_RVA);
-        if (width < 800 || width > 7680 || height < 600 || height > 4320)
+        const uint32_t width = OW::SDK->RPM<uint32_t>(
+            base + activeOffsets.GameResolutionWidth_RVA +
+            OW::offset::GameResolutionCurrentValue_Offset);
+        const uint32_t height = OW::SDK->RPM<uint32_t>(
+            base + activeOffsets.GameResolutionHeight_RVA +
+            OW::offset::GameResolutionCurrentValue_Offset);
+        if (width < 800 || width > 7680 || height < 600 || height > 4320) {
+            OW::ClearDetectedScreenSize();
             return;
-        const float aspectRatio = static_cast<float>(width) / static_cast<float>(height);
-        if (aspectRatio < 1.0f || aspectRatio > 3.0f)
-            return;
-        if (!OW::ProcessConnection::IsConnected() || OW::ProcessConnection::ConnectionEpoch() != epoch)
-            return;
+        }
 
-        OW::SetDetectedScreenDimensions(static_cast<int>(width), static_cast<int>(height));
+        const float aspectRatio = static_cast<float>(width) /
+            static_cast<float>(height);
+        if (aspectRatio < 1.0f || aspectRatio > 3.0f) {
+            OW::ClearDetectedScreenSize();
+            return;
+        }
+
+        if (!OW::ProcessConnection::IsConnected() ||
+            OW::ProcessConnection::ConnectionEpoch() != epoch) {
+            OW::ClearDetectedScreenSize();
+            return;
+        }
+
+        OW::SetDetectedScreenSize(static_cast<int>(width), static_cast<int>(height));
     };
 
 #include "Game/EntityMaintenance/NativeOutlineBrightness.inl"
@@ -715,7 +733,7 @@ void entity_thread() {
         if (raw_entities.empty()) {
             SampleAcquisitionCamera();
             V2::Maps::Sample();
-            sampleTargetViewport();
+            sampleGameResolution();
             Diagnostics::EntityProcessStats stats{};
             Diagnostics::LocalEntityStats localStats{};
             std::vector<OW::c_entity> published_entities{};
@@ -1548,7 +1566,7 @@ void entity_thread() {
             : 1000;
         if (!hasActiveHotBatch || discoverySpentUs < 1000) {
             V2::Maps::Sample();
-            sampleTargetViewport();
+            sampleGameResolution();
         }
         const OW::EntityMaintenance::Budget maintenanceBudget{maintenanceStartedUs,maintenanceBudgetUs};
         size_t maintenanceVisited=0;

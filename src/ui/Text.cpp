@@ -159,8 +159,8 @@ static constexpr UiTextPair kUiText[] = {
     { "Target Screen", "目标屏幕" },
     { "Local Width", "本机宽度" },
     { "Local Height", "本机高度" },
-    { "DMA Width", "DMA 宽度" },
-    { "DMA Height", "DMA 高度" },
+    { "Game Width", "游戏宽度" },
+    { "Game Height", "游戏高度" },
     { "Fallback Width", "后备宽度" },
     { "Fallback Height", "后备高度" },
 };
