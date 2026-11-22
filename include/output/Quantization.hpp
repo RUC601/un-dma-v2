@@ -13,6 +13,37 @@
 
 // 每个 Behavior 会话持有自己的余量；数学换算不连接设备。
 namespace OW {
+    enum class MouseMoveConversionModel : std::uint8_t {
+        AngleRadians = 0,
+        PurePixels = 1
+    };
+
+    // Screen error uses target-minus-crosshair coordinates. Positive X is to
+    // the right and positive Y is downward. The returned values already use
+    // the device correction sign used by SendMouseMove.
+    inline bool ConvertPurePixelErrorToCounts(
+        const Vector2& screenErrorPixels,
+        const Vector2& countsPerPixel,
+        float effectiveSensitivity,
+        Vector2& counts) noexcept {
+        if (!std::isfinite(screenErrorPixels.X) ||
+            !std::isfinite(screenErrorPixels.Y) ||
+            !std::isfinite(countsPerPixel.X) ||
+            !std::isfinite(countsPerPixel.Y) ||
+            !std::isfinite(effectiveSensitivity) ||
+            countsPerPixel.X <= 0.0f || countsPerPixel.Y <= 0.0f ||
+            effectiveSensitivity <= 0.0f) {
+            counts = {};
+            return false;
+        }
+        const float scale = 5.0f / effectiveSensitivity;
+        counts = {
+            -screenErrorPixels.X * countsPerPixel.X * scale,
+            -screenErrorPixels.Y * countsPerPixel.Y * scale
+        };
+        return std::isfinite(counts.X) && std::isfinite(counts.Y);
+    }
+
     struct MouseMoveQuantizationState {
         float residualX = 0.0f;
         float residualY = 0.0f;
@@ -26,6 +57,9 @@ namespace OW {
     struct MouseMoveQuantizationOptions {
         MouseMoveQuantizationState* state = nullptr;
         Vector3 fallbackDirectionDelta{};
+        MouseMoveConversionModel conversionModel = MouseMoveConversionModel::AngleRadians;
+        Vector2 screenErrorPixels{};
+        Vector2 pureCountsPerPixel{};
         bool forceNonZero = false;
     };
 

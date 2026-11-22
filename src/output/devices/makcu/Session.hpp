@@ -15,6 +15,8 @@ class MakcuSession final : public KmTextSession {
     std::atomic<MakcuProtocol::ButtonDialect> makcuButtonDialect{MakcuProtocol::ButtonDialect::Side};
 
     bool Identity(std::string_view response) const override;
+    const char* IdentityTag() const override { return "MAKCU"; }
+    const char* CapabilitySource() const override { return "runtime-version-and-monitor"; }
     void OnBinaryFrame(const SerialEvent& event) override;
     bool DrainTextPollForIdentity() const override { return makcuTextNeedsSync; }
     bool ConfigureMakcuMonitorLocked(SerialChannel& channel, bool v4Route);

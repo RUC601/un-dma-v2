@@ -1,6 +1,7 @@
 #include "output/OutputRuntime.hpp"
 #include "output/OutputDevice.hpp"
 #include "output/DeviceRegistry.hpp"
+#include "output/DeviceCompatibility.hpp"
 #include "output/OutputServices.hpp"
 #include "output/KeyboardReport.hpp"
 #include "output/TimerResolution.hpp"
@@ -130,10 +131,28 @@ namespace V2::Output {
         return device && device->ConnectionState() == OutputConnectionState::Connected;
     }
     int OutputProductionBackendOps::Initialize(const OutputRuntimeDescriptor& descriptor) {
+        for (const auto& plan : PureDevicePlans()) {
+            Diagnostics::Info("[OUTPUT-PLAN] key=%s stage=%s transport=%s pure_identity=%d current_un_backend=%d",
+                plan.key, ToString(plan.stage), plan.transport,
+                plan.hasPureIdentityBranch ? 1 : 0,
+                plan.hasCurrentUnBackend ? 1 : 0);
+        }
         auto* device = ResolveOutputDevice(descriptor);
         activeDevice_.store(device);
         if (descriptor.backend == OutputRuntimeBackend::None) return success;
-        return device ? device->Initialize(descriptor) : err_net_cmd;
+        const int status = device ? device->Initialize(descriptor) : err_net_cmd;
+        if (device) {
+            const auto capabilities = device->Capabilities();
+            Diagnostics::Info(
+                "[OUTPUT] identity tag=%s confirmed=%d capability_source=%s move=%d buttons=%d keyboard=%d monitor=%d release=%d timed_move=%d",
+                capabilities.identityTag ? capabilities.identityTag : "unknown",
+                capabilities.identityConfirmed ? 1 : 0,
+                capabilities.capabilitySource ? capabilities.capabilitySource : "unknown",
+                capabilities.move ? 1 : 0, capabilities.buttons ? 1 : 0,
+                capabilities.keyboard ? 1 : 0, capabilities.physicalMonitor ? 1 : 0,
+                capabilities.release ? 1 : 0, capabilities.timedMove ? 1 : 0);
+        }
+        return status;
     }
     OutputRuntimeController::OutputRuntimeController(IOutputRuntimeBackendOps& backendOps)
         : backendOps_(backendOps)

@@ -14,6 +14,8 @@ class FerrumSession final : public KmTextSession {
     uint8_t buttonPollBits = 0;
 
     bool Identity(std::string_view response) const override;
+    const char* IdentityTag() const override { return "Ferrum"; }
+    const char* CapabilitySource() const override { return "runtime-version-and-mouse-presence"; }
     bool DrainTextPollForIdentity() const override { return buttonPollNeedsSync; }
     bool ConfirmMousePresence(SerialChannel& channel);
     bool ReadButtonReplies(SerialChannel& channel);

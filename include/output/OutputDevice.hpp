@@ -19,6 +19,9 @@ struct OutputDeviceCapabilities {
     bool timedMove = false;
     bool callerMoveSplit = true;
     bool maskTimeoutClosesGate = true;
+    bool identityConfirmed = false;
+    const char* identityTag = "unconfirmed";
+    const char* capabilitySource = "unknown";
     int maxDelta = 32767;
     int verifiedRateHz = 0;
 };

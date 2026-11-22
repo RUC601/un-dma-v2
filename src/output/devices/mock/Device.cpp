@@ -20,6 +20,9 @@ public:
     }
     OutputDeviceCapabilities Capabilities() const override {
         OutputDeviceCapabilities value;
+        value.identityConfirmed = MockHardwareMgr.IsInitialized();
+        value.identityTag = "Mock offline device";
+        value.capabilitySource = "offline-mock";
         value.keyboard = value.mouseMask = value.timedMove = true;
         return value;
     }

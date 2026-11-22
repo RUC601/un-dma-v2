@@ -653,6 +653,8 @@ namespace {
             const bool found = OW::Config::TryGetHeroAimSlot(heroId, slotIndex, slot);
             if (!found || !slot.enabled)
                 continue;
+            if (OW::Config::ClampFovMode(slot.preset.fovMode) != OW::Config::kFovModeFixed)
+                continue;
 
             const OW::Config::FovRingSlotStyle style = OW::Config::ClampFovRingStyle(
                 OW::Config::FovRingStyleFor(OW::Config::FovRingSlotKind::Aim, slotIndex),
@@ -744,7 +746,7 @@ namespace {
             DrawStyledFovRing(center, width, height, settings.tracking.fov, projection, fovContext,
                              style, false, skillDiagnosticKey, nullptr);
         }
-        if (!OW::Config::draw_fov) return;
+        // Aim ring visibility is controlled per fixed-FOV slot in Theme.FovRings.
         const OW::Config::RuntimeDrawFovState activeState = OW::Config::SnapshotRuntimeDrawFov();
         bool drewAny = false;
         if (localSnapshot.HeroID != 0) {
@@ -759,12 +761,17 @@ namespace {
         if (drewAny)
             return;
 
-        OW::Config::FovRingSlotStyle fallbackStyle{};
-        fallbackStyle.visible = true;
-        fallbackStyle.color = OW::Config::fovcol;
-        fallbackStyle.thickness = 1.5f;
-        fallbackStyle.lineStyle = 0;
-        fallbackStyle.showLabel = false;
+        if (localSnapshot.HeroID != 0)
+            return;
+
+        if (OW::Config::ClampFovMode(OW::Config::View_aimbotFovMode()) ==
+            OW::Config::kFovModeDynamicPreset)
+            return;
+
+        const OW::Config::FovRingSlotStyle fallbackStyle = OW::Config::ClampFovRingStyle(
+            OW::Config::FovRingStyleFor(OW::Config::FovRingSlotKind::Aim, 0),
+            OW::Config::FovRingSlotKind::Aim,
+            0);
         DrawStyledFovRing(center,
                           width,
                           height,

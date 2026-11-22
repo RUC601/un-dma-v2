@@ -75,6 +75,10 @@ void DrawMiscOutputPage() {
             ImGui::TextWrapped("%s · 移动 %s / 鼠标 %s / 键盘 %s / 物理监测 %s",
                 device.name,device.move?"可用":"不支持",device.buttons?"可用":"不支持",
                 device.keyboard?"可用":"不支持",device.physicalMonitor?"可用":"不支持");
+            ImGui::TextWrapped("身份 %s · %s · 能力来源 %s",
+                device.identityConfirmed ? "已确认" : "未确认",
+                device.identityTag ? device.identityTag : "unknown",
+                device.capabilitySource ? device.capabilitySource : "unknown");
             ImGui::TextWrapped("%s", L("Device rate is not measured in this build."));
             ImGui::TextWrapped("%s", L("MAKCU Controller / Medius: unavailable until their action mapping and protocol are established."));
             UI::OutputSettings::DrawDeviceNotes(OW::Config::outputDeviceType,

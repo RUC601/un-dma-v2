@@ -168,9 +168,29 @@ namespace OW {
 
             // delta.X = pitch (vertical), delta.Y = yaw (horizontal).
             // Positive KMBox X drives the measured yaw negative, so yaw correction is inverted here.
-            const float scaledYaw   = -delta.Y * sensitivity;         // yaw -> horizontal X
+            float scaledYaw   = -delta.Y * sensitivity;         // yaw -> horizontal X
             const float pitchScale = std::clamp(Config::View_aimbotPitchScale(), 0.1f, 3.0f);
-            const float scaledPitch = delta.X * pitchSensitivity * pitchScale; // pitch -> vertical Y
+            float scaledPitch = delta.X * pitchSensitivity * pitchScale; // pitch -> vertical Y
+            const char* conversionModel = "angle-radians";
+            if (quantization.conversionModel == MouseMoveConversionModel::PurePixels) {
+                Vector2 pixelCounts{};
+                if (ConvertPurePixelErrorToCounts(
+                        quantization.screenErrorPixels,
+                        quantization.pureCountsPerPixel,
+                        Config::EffectiveGameMouseSensitivity(),
+                        pixelCounts)) {
+                    scaledYaw = pixelCounts.X;
+                    scaledPitch = pixelCounts.Y * pitchScale;
+                    conversionModel = "pure-pixels";
+                } else {
+                    Diagnostics::Aim("mouse.convert pure_pixels_invalid_input fallback=angle-radians screen=(%.3f,%.3f) countsPerPixel=(%.6f,%.6f) effectiveSens=%.6f",
+                        quantization.screenErrorPixels.X,
+                        quantization.screenErrorPixels.Y,
+                        quantization.pureCountsPerPixel.X,
+                        quantization.pureCountsPerPixel.Y,
+                        Config::EffectiveGameMouseSensitivity());
+                }
+            }
             const float fallbackScaledYaw =
                 -quantization.fallbackDirectionDelta.Y * sensitivity;
             const float fallbackScaledPitch =
@@ -188,8 +208,9 @@ namespace OW {
             const int countY = result.countY;
 
             const int callCount = calls.fetch_add(1, std::memory_order_relaxed) + 1;
-            Diagnostics::Aim("mouse.convert call=%d delta_rad_pitch=%.9f delta_rad_yaw=%.9f baseCountsPerRad=%.6f yawCountsPerRad=%.6f pitchCountsPerRad=%.6f autoScale=%d syncScale=%.6f pitchScale=%.6f scaled_counts=(yaw=%.9f,pitch=%.9f) fallback_counts=(yaw=%.9f,pitch=%.9f) accum_before=(%.9f,%.9f) counts=(%d,%d) accum_after=(%.9f,%.9f) forced_min_step=%d",
+            Diagnostics::Aim("mouse.convert call=%d model=%s delta_rad_pitch=%.9f delta_rad_yaw=%.9f baseCountsPerRad=%.6f yawCountsPerRad=%.6f pitchCountsPerRad=%.6f autoScale=%d syncScale=%.6f pitchScale=%.6f scaled_counts=(yaw=%.9f,pitch=%.9f) fallback_counts=(yaw=%.9f,pitch=%.9f) accum_before=(%.9f,%.9f) counts=(%d,%d) accum_after=(%.9f,%.9f) forced_min_step=%d",
                 callCount,
+                conversionModel,
                 delta.X,
                 delta.Y,
                 baseCountsPerRadian,

@@ -19,6 +19,7 @@ protected:
     std::deque<std::string> responses;
     std::atomic<bool> keyboardReady{false};
     std::atomic<bool> maskReady{false};
+    std::atomic<bool> identityConfirmed{false};
     mutable std::mutex snapshotMutex;
     PhysicalInputSnapshot physical;
 
@@ -31,6 +32,7 @@ protected:
     std::string QueryLocked(SerialChannel& channel, const std::string& command,
         bool expectIdentity = false);
     void PublishPhysicalButtons(uint8_t buttons, uint64_t sampledAtMs);
+    void MarkIdentityConfirmed() noexcept { identityConfirmed.store(true, std::memory_order_release); }
 
 public:
     friend class ::OutputProtocolSelfTestAccess;
@@ -41,6 +43,9 @@ public:
     bool SupportsKeyboard() const override { return keyboardReady.load(); }
     bool SupportsMask() const override { return maskReady.load(); }
     bool SupportsTimedMove() const override { return false; }
+    bool IdentityConfirmed() const override { return identityConfirmed.load(std::memory_order_acquire); }
+    const char* IdentityTag() const override { return "km-text"; }
+    const char* CapabilitySource() const override { return "runtime-identity"; }
     PhysicalInputSnapshot PhysicalInput() const override;
     void ClearPhysicalInput() override;
     bool EncodeMove(int x, int y, int duration, std::string& command) const override;

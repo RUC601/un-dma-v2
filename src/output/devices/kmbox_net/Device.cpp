@@ -31,6 +31,9 @@ public:
     OutputDeviceCapabilities Capabilities() const override {
         OutputDeviceCapabilities value;
         value.keyboard = value.physicalMonitor = value.mouseMask = value.timedMove = true;
+        value.identityConfirmed = ConnectionState() == OutputConnectionState::Connected;
+        value.identityTag = "KMBox Net endpoint echo";
+        value.capabilitySource = "runtime-command-and-monitor";
         value.callerMoveSplit = false;
         value.maskTimeoutClosesGate = false;
         return value;

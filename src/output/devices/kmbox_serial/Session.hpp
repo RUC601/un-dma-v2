@@ -8,6 +8,8 @@ public:
     std::string ResolvePort(const std::string& requested) const override;
     void Reset() override {}
     bool OnConnected(SerialChannel&) override { return true; }
+    const char* IdentityTag() const override { return "KMBox Serial open-only"; }
+    const char* CapabilitySource() const override { return "static-transport-unconfirmed"; }
     bool AfterWrite(SerialChannel&) override { return true; }
     bool Poll(SerialChannel&, bool) override { return true; }
     bool Heartbeat(SerialChannel&, bool) override { return true; }

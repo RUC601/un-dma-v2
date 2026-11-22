@@ -44,7 +44,9 @@ bool MakcuSession::OnConnected(SerialChannel& channel) {
     maskReady = begin != std::string::npos;
     keyboardReady = begin != std::string::npos &&
         route.substr(begin, end - begin).find('K') != std::string::npos;
-    return ConfigureMakcuMonitorLocked(channel, begin != std::string::npos);
+    const bool configured = ConfigureMakcuMonitorLocked(channel, begin != std::string::npos);
+    if (configured) MarkIdentityConfirmed();
+    return configured;
 }
 
 void MakcuSession::OnBinaryFrame(const SerialEvent& event) {

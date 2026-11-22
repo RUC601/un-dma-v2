@@ -10,6 +10,7 @@ void KmTextSession::Reset() {
     responses.clear();
     keyboardReady = false;
     maskReady = false;
+    identityConfirmed = false;
     ClearPhysicalInput();
 }
 

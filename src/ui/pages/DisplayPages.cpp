@@ -516,7 +516,8 @@ void UI::VisualsPage() {
 static void DrawFovRingCard(OW::Config::FovRingSlotKind kind,
                               int slotIndex,
                               bool slotEnabled,
-                              float slotFovDeg) {
+                              float slotFovDeg,
+                              bool dynamicFov) {
     OW::Config::FovRingSlotStyle& style = OW::Config::FovRingStyleFor(kind, slotIndex);
     style = OW::Config::ClampFovRingStyle(style, kind, slotIndex);
 
@@ -533,15 +534,25 @@ static void DrawFovRingCard(OW::Config::FovRingSlotKind kind,
         ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted(slotLabel);
     ImGui::SameLine();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(slotEnabled ? kColTextMuted : kColTextDim),
-                       "· %s %.0f deg",
-                       slotEnabled ? L("On") : L("Off"),
-                       OW::Config::ClampFovDeg(slotFovDeg));
+    const ImVec4 stateColor = ImGui::ColorConvertU32ToFloat4(slotEnabled ? kColTextMuted : kColTextDim);
+    if (!slotEnabled) {
+        ImGui::TextColored(stateColor, "· %s", L("Off"));
+    } else if (dynamicFov) {
+        ImGui::TextColored(stateColor, "· %s", L("Dynamic FOV"));
+    } else {
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextMuted),
+                           "· %s %.0f deg", L("Fixed"), OW::Config::ClampFovDeg(slotFovDeg));
+    }
 
     ImGui::Spacing();
     constexpr float kRingLabelWidth = 72.0f;
-    SettingRow(L("Show"), kRingLabelWidth);
-    changed |= UICheckbox(L("Show"), &style.visible);
+    if (dynamicFov) {
+        SettingRow(L("Draw FOV"), kRingLabelWidth);
+        ImGui::TextDisabled("%s", L("Dynamic FOV is not drawn"));
+    } else {
+        SettingRow(L("Draw FOV"), kRingLabelWidth);
+        changed |= UICheckbox("##draw", &style.visible);
+    }
     ImGui::SameLine(0, 8);
     changed |= UI::ColorPicker("##color",style.color);
     ImGui::SetItemTooltip("%s",L("Color"));
@@ -588,9 +599,12 @@ static void DrawFovRingStyleGroup(OW::Config::FovRingSlotKind kind,
                 OW::Config::TryGetHeroAimSlot(selectedHero.heroId, slotIndex, slot);
             const bool slotEnabled = hasSlot && slot.enabled;
             const float fovDeg = hasSlot ? slot.preset.fov : OW::Config::kDefaultFovDeg;
+            const bool dynamicFov = selectedHero.heroId == 0
+                ? OW::Config::ClampFovMode(OW::Config::View_aimbotFovMode()) == OW::Config::kFovModeDynamicPreset
+                : OW::Config::ClampFovMode(slot.preset.fovMode) == OW::Config::kFovModeDynamicPreset;
 
             ImGui::TableNextColumn();
-            DrawFovRingCard(kind, slotIndex, selectedHero.heroId == 0 || slotEnabled, fovDeg);
+            DrawFovRingCard(kind, slotIndex, selectedHero.heroId == 0 || slotEnabled, fovDeg, dynamicFov);
         }
         ImGui::EndTable();
     }

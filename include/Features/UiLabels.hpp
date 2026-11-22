@@ -359,6 +359,7 @@ inline constexpr UiLabelPair kUiLabels[] = {
     { "Aim Slot Rings", "瞄准范围圈" },
     { "Dynamic FOV Presets", "动态范围预设" },
     { "Dynamic FOV", "动态范围" },
+    { "Dynamic FOV is not drawn", "动态范围圈不绘制" },
     { "Skill Aim", "技能瞄准" },
     { "Sequence Steps  (L=Left  R=Right)", "连招步骤（L 左键 / R 右键）" },
     { "Pitch Down", "压低视角" },

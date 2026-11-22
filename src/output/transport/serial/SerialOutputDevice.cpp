@@ -33,6 +33,10 @@ OutputDeviceCapabilities SerialOutputDevice::Capabilities() const {
     capabilities.mouseMask = transport_.SupportsMask();
     capabilities.timedMove = protocol_->SupportsTimedMove();
     capabilities.physicalMonitor = physicalMonitor_;
+    capabilities.identityConfirmed = protocol_->IdentityConfirmed() &&
+        ConnectionState() == OutputConnectionState::Connected;
+    capabilities.identityTag = protocol_->IdentityTag();
+    capabilities.capabilitySource = protocol_->CapabilitySource();
     return capabilities;
 }
 

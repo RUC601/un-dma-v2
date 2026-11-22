@@ -29,7 +29,9 @@ bool FerrumSession::OnConnected(SerialChannel& channel) {
     if (!ConfirmMousePresence(channel)) return false;
     keyboardReady = true;
     maskReady = true;
-    return channel.Write("km.buttons(1)\r\n");
+    const bool configured = channel.Write("km.buttons(1)\r\n");
+    if (configured) MarkIdentityConfirmed();
+    return configured;
 }
 
 bool FerrumSession::ConfirmMousePresence(SerialChannel& channel) {
