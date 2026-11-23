@@ -8,6 +8,7 @@ namespace OW::OutputMotionTelemetry {
     struct Sample {
         uint64_t sequence = 0;
         uint64_t capturedAtMs = 0;
+        uint64_t capturedAtNs = 0;
         float deltaPitchRad = 0.0f;
         float deltaYawRad = 0.0f;
         int countX = 0;

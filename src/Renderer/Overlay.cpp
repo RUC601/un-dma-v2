@@ -332,7 +332,7 @@ bool RegisterClassIfNeeded(const WNDCLASSEXW& windowClass) {
 LRESULT WINAPI CanvasWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_NCHITTEST:
-            return HTCLIENT;
+            return g_Overlay.IsCanvasTransparentBackground() ? HTTRANSPARENT : HTCLIENT;
         case WM_ACTIVATE:
             if (LOWORD(wParam) != WA_INACTIVE && HIWORD(wParam) == 0)
                 g_Overlay.OnMenuActivated();
@@ -473,6 +473,7 @@ bool Overlay::Initialize(const wchar_t* overlayTitle) {
         return false;
     const auto fail = [this]() { Shutdown(); return false; };
     ImGui_ImplWin32_EnableDpiAwareness();
+    m_canvasTransparentBackground = OW::Config::overlayTransparentBackground;
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     if (!RegisterWindowClasses(instance))
         return fail();
@@ -668,7 +669,7 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
     if (!m_canvasHWnd)
         return false;
 
-    // The canvas has an opaque black backdrop; layered color-key composition only adds overhead.
+    ApplyCanvasWindowStyle();
 
     ShowWindow(m_canvasHWnd, SW_SHOW);
     SetWindowPos(m_canvasHWnd, HWND_TOPMOST, m_canvasX, m_canvasY,
@@ -752,8 +753,9 @@ bool Overlay::CreateDX11() {
         dxgiDevice1->Release();
     }
 
-    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight, true,
-            &m_canvasSwapChain, &m_canvasSwapChainFlags, &m_canvasAllowTearing))
+    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
+            !m_canvasTransparentBackground, &m_canvasSwapChain, &m_canvasSwapChainFlags,
+            &m_canvasAllowTearing, m_canvasTransparentBackground))
         return false;
 
     if (!CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView))
@@ -761,7 +763,7 @@ bool Overlay::CreateDX11() {
 
     bool menuAllowTearing = false;
     if (!CreateSwapChainForWindow(m_menuHWnd, m_menuWidth, m_menuHeight, false,
-            &m_menuSwapChain, &m_menuSwapChainFlags, &menuAllowTearing))
+            &m_menuSwapChain, &m_menuSwapChainFlags, &menuAllowTearing, false))
         return false;
 
     return CreateRenderTarget(m_menuSwapChain, &m_menuRenderTargetView);
@@ -792,8 +794,62 @@ void Overlay::CleanupDX11() {
     }
 }
 
+void Overlay::ApplyCanvasWindowStyle() {
+    if (!m_canvasHWnd)
+        return;
+
+    constexpr LONG_PTR kTransparentStyle = WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE;
+    LONG_PTR exStyle = GetWindowLongPtrW(m_canvasHWnd, GWL_EXSTYLE);
+    if (m_canvasTransparentBackground)
+        exStyle |= kTransparentStyle;
+    else
+        exStyle &= ~kTransparentStyle;
+    SetWindowLongPtrW(m_canvasHWnd, GWL_EXSTYLE, exStyle);
+    SetWindowPos(m_canvasHWnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (m_canvasTransparentBackground)
+        SetLayeredWindowAttributes(m_canvasHWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+}
+
+bool Overlay::RecreateCanvasSwapChain() {
+    if (!m_canvasHWnd || !m_pDevice || !m_pContext)
+        return false;
+
+    m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
+    ReleaseRenderTarget(&m_canvasRenderTargetView);
+    if (m_canvasSwapChain) {
+        m_canvasSwapChain->Release();
+        m_canvasSwapChain = nullptr;
+    }
+    m_canvasSwapChainFlags = 0;
+    m_canvasAllowTearing = false;
+    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
+            !m_canvasTransparentBackground, &m_canvasSwapChain, &m_canvasSwapChainFlags,
+            &m_canvasAllowTearing, m_canvasTransparentBackground))
+        return false;
+    return CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView);
+}
+
+bool Overlay::SetCanvasTransparentBackground(bool enabled) {
+    if (m_canvasTransparentBackground == enabled)
+        return true;
+
+    const bool previous = m_canvasTransparentBackground;
+    m_canvasTransparentBackground = enabled;
+    ApplyCanvasWindowStyle();
+    if (RecreateCanvasSwapChain())
+        return true;
+
+    m_canvasTransparentBackground = previous;
+    ApplyCanvasWindowStyle();
+    RecreateCanvasSwapChain();
+    Diagnostics::Error("Overlay background mode change failed; keeping the previous mode.");
+    return false;
+}
+
 bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
-                                       IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut) {
+                                       IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut,
+                                       bool forceDiscard) {
     if (flagsOut) *flagsOut = 0;
     if (allowTearingOut) *allowTearingOut = false;
     if (!m_pDevice || !hWnd || !swapChain || width == 0 || height == 0)
@@ -835,9 +891,9 @@ bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool 
     };
 
     bool created = false;
-    if (tearingSupported)
+    if (!forceDiscard && tearingSupported)
         created = tryCreate(true, true);
-    if (!created)
+    if (!forceDiscard && !created)
         created = tryCreate(true, false);
     if (!created)
         created = tryCreate(false, false);
@@ -1069,6 +1125,7 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     if (m_minimizedToTaskbar || !m_canvasContext || !m_canvasRenderTargetView || !m_canvasSwapChain)
         return;
 
+    OW::BeginScreenSizeFrame();
     const auto t0 = std::chrono::steady_clock::now();
 
     ImGui::SetCurrentContext(m_canvasContext);
@@ -1094,7 +1151,12 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
 
     const auto t1 = std::chrono::steady_clock::now();
 
-    const float clearColor[4] = { 1.0f / 255, 1.0f / 255, 1.0f / 255, 1.0f };
+    const float clearColor[4] = {
+        m_canvasTransparentBackground ? 0.0f : 1.0f / 255,
+        m_canvasTransparentBackground ? 0.0f : 1.0f / 255,
+        m_canvasTransparentBackground ? 0.0f : 1.0f / 255,
+        m_canvasTransparentBackground ? 0.0f : 1.0f,
+    };
     m_pContext->OMSetRenderTargets(1, &m_canvasRenderTargetView, nullptr);
     m_pContext->ClearRenderTargetView(m_canvasRenderTargetView, clearColor);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -1110,6 +1172,7 @@ void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     timing.presentMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
     timing.totalMs = std::chrono::duration<double, std::milli>(t2 - t0).count();
     Diagnostics::RecordFrameTiming(timing);
+    OW::EndScreenSizeFrame();
 }
 
 void Overlay::RenderMenu() {

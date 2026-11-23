@@ -263,8 +263,8 @@ static void LoadRuntimeConfigForDiagnostics()
     OW::RefreshScreenSizeFromConfig();
     Diagnostics::Aim("main.config_loaded configPath=%s screen=%.0fx%.0f outputEnabled=%d deviceType=%d ip=%s commandPort=%d effectiveMonitorPort=%d monitorPortSetting=%d manualOverride=%d countsPerRadian=%.6f calibratedCountsPerRadian=%.6f gameMouseSensitivity=%.6f referenceGameSensitivity=%.6f autoScaleByGameSensitivity=%d hostMouseDpi=%.6f hostDpiDetected=%d",
         configPathForLog.c_str(),
-        OW::WX,
-        OW::WY,
+        OW::ScreenWidth(),
+        OW::ScreenHeight(),
         OW::Config::outputEnabled ? 1 : 0,
         OW::Config::outputDeviceType,
         OW::Config::outputIp,
@@ -580,8 +580,8 @@ int main(int argc, char** argv)
     OW::RefreshScreenSizeFromConfig();
     Diagnostics::Aim("main.config_loaded configPath=%s screen=%.0fx%.0f outputEnabled=%d deviceType=%d ip=%s commandPort=%d effectiveMonitorPort=%d monitorPortSetting=%d manualOverride=%d countsPerRadian=%.6f calibratedCountsPerRadian=%.6f gameMouseSensitivity=%.6f referenceGameSensitivity=%.6f autoScaleByGameSensitivity=%d hostMouseDpi=%.6f hostDpiDetected=%d",
         configPathForLog.c_str(),
-        OW::WX,
-        OW::WY,
+        OW::ScreenWidth(),
+        OW::ScreenHeight(),
         OW::Config::outputEnabled ? 1 : 0,
         OW::Config::outputDeviceType,
         OW::Config::outputIp,
@@ -596,7 +596,7 @@ int main(int argc, char** argv)
         OW::Config::autoScaleByGameSensitivity ? 1 : 0,
         OW::Config::hostMouseDpi,
         OW::Config::hostMouseDpiAutoDetected ? 1 : 0);
-    std::printf("[MAIN] Screen size: %.0fx%.0f\n", OW::WX, OW::WY);
+    std::printf("[MAIN] Screen size: %.0fx%.0f\n", OW::ScreenWidth(), OW::ScreenHeight());
     if (OW::Config::boxPerfMode) {
         std::printf("[MAIN] Box performance mode enabled (%s box path).\n",
             OW::Config::boxPerfFastRect ? "fast rect" : "corner");

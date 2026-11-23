@@ -10,6 +10,11 @@ namespace OW::OutputMotionTelemetry {
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
     }
+    uint64_t MonotonicTimestampNs() {
+        const auto now = std::chrono::steady_clock::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
+    }
 
     std::mutex& Mutex() {
         static std::mutex mutex;
@@ -38,6 +43,7 @@ namespace OW::OutputMotionTelemetry {
         int steps) {
         constexpr float kRadToDeg = 57.29577951308232f;
         const uint64_t nowMs = TimestampMs();
+        const uint64_t nowNs = MonotonicTimestampNs();
         const float deltaMagnitudeDeg = std::sqrt(delta.X * delta.X + delta.Y * delta.Y) * kRadToDeg;
 
         std::lock_guard<std::mutex> lock(Mutex());
@@ -45,6 +51,7 @@ namespace OW::OutputMotionTelemetry {
         Sample sample{};
         sample.sequence = ++Sequence();
         sample.capturedAtMs = nowMs;
+        sample.capturedAtNs = nowNs;
         sample.deltaPitchRad = delta.X;
         sample.deltaYawRad = delta.Y;
         sample.countX = countX;
@@ -56,10 +63,11 @@ namespace OW::OutputMotionTelemetry {
 
         if (!samples.empty()) {
             const Sample& previous = samples.back();
-            constexpr float kMinTelemetryDtS = 0.008f;
+            constexpr float kMinTelemetryDtS = 0.000001f;
             float dt = kMinTelemetryDtS;
-            if (nowMs > previous.capturedAtMs)
-                dt = (std::max)(kMinTelemetryDtS, static_cast<float>(nowMs - previous.capturedAtMs) / 1000.0f);
+            if (nowNs > previous.capturedAtNs)
+                dt = (std::max)(kMinTelemetryDtS,
+                    static_cast<float>(nowNs - previous.capturedAtNs) / 1000000000.0f);
             sample.speedDegS = deltaMagnitudeDeg / dt;
             sample.accelDegS2 = (sample.speedDegS - previous.speedDegS) / dt;
             sample.jerkDegS3 = (sample.accelDegS2 - previous.accelDegS2) / dt;

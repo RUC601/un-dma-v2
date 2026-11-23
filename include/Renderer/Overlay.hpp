@@ -12,7 +12,7 @@
 
 // -----------------------------------------------------------------------
 // Overlay -- two-layer DX11 overlay:
-// 1) a full-screen black canvas for ESP draw lists and background clicks
+// 1) a full-screen canvas for ESP draw lists and background clicks
 // 2) a separate topmost borderless app window for the interactive ImGui menu
 // -----------------------------------------------------------------------
 
@@ -26,6 +26,8 @@ public:
     void HideMenu();
     void OnMenuActivated();
     void OnMenuDeactivated(HWND activatedWindow);
+    bool SetCanvasTransparentBackground(bool enabled);
+    bool IsCanvasTransparentBackground() const { return m_canvasTransparentBackground; }
     void RequestExit();
     void Shutdown();
 
@@ -62,6 +64,7 @@ private:
     unsigned long long      m_lastMenuRenderMs = 0;
     bool                    m_menuAnchorValid = false;
     bool                    m_minimizedToTaskbar = false;
+    bool                    m_canvasTransparentBackground = false;
     bool                    m_uiResourcesInitialized = false;
     DWORD                   m_windowServicesThread = 0;
 
@@ -71,8 +74,11 @@ private:
     bool CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance);
     bool CreateDX11();
     void CleanupDX11();
+    void ApplyCanvasWindowStyle();
+    bool RecreateCanvasSwapChain();
     bool CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
-                                  IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut);
+                                  IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut,
+                                  bool forceDiscard);
     bool CreateRenderTarget(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView);
     void ReleaseRenderTarget(ID3D11RenderTargetView** renderTargetView);
     bool ResizeSwapChain(IDXGISwapChain* swapChain, ID3D11RenderTargetView** renderTargetView,

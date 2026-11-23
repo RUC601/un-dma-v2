@@ -235,14 +235,14 @@ namespace OverlayRenderDetail {
 
     inline bool IsValidScreenPoint(const Vector2& point) {
         return point.X > 0.0f && point.Y > 0.0f &&
-               point.X < OW::WX && point.Y < OW::WY &&
+               point.X < OW::ScreenWidth() && point.Y < OW::ScreenHeight() &&
                std::isfinite(point.X) && std::isfinite(point.Y);
     }
 
     inline bool IsReasonableProjectedPoint(const Vector2& point) {
         return std::isfinite(point.X) && std::isfinite(point.Y) &&
-               point.X > -OW::WX && point.X < OW::WX * 2.0f &&
-               point.Y > -OW::WY && point.Y < OW::WY * 2.0f;
+               point.X > -OW::ScreenWidth() && point.X < OW::ScreenWidth() * 2.0f &&
+               point.Y > -OW::ScreenHeight() && point.Y < OW::ScreenHeight() * 2.0f;
     }
 
     struct ProjectedEntityBounds {
@@ -285,7 +285,7 @@ namespace OverlayRenderDetail {
         if (!vm && !OW::TryGetViewMatricesSnapshot(snapshot, camera))
             return false;
         const OW::Matrix& proj = vm ? *vm : snapshot;
-        if (!proj.WorldToScreen(world, &screen, Vector2(OW::WX, OW::WY)))
+        if (!proj.WorldToScreen(world, &screen, OW::ScreenSizeSnapshot()))
             return false;
         return IsReasonableProjectedPoint(screen);
     }
@@ -898,7 +898,7 @@ namespace OverlayRenderDetail {
     inline void DrawSkeleton(const OW::c_entity& entity, const OW::Matrix& view, const Render::Color& color, float thickness, Vector2 offset={}) {
         Vector2 points[18]{};
         bool projected[18]{};
-        const Vector2 windowSize(OW::WX, OW::WY);
+        const Vector2 windowSize(OW::ScreenWidth(), OW::ScreenHeight());
         constexpr int kRenderSkeletonSlots =
             static_cast<int>(OW::Plexies20260609::kSkeletonSlotCount);
 
@@ -940,7 +940,7 @@ namespace OverlayRenderDetail {
                                              float& radiusX,
                                              float& radiusY) {
         bool accepted = false;
-        const Vector2 windowSize(OW::WX, OW::WY);
+        const Vector2 windowSize(OW::ScreenWidth(), OW::ScreenHeight());
         for (float sign : { -1.0f, 1.0f }) {
             Vector2 point{};
             const Vector3 worldPoint = centerWorld + axis * (radiusWorld * sign);
@@ -978,7 +978,7 @@ namespace OverlayRenderDetail {
             return false;
 
         Vector2 centerScreen{};
-        if (!view.WorldToScreen(centerWorld, &centerScreen, Vector2(OW::WX, OW::WY)) ||
+        if (!view.WorldToScreen(centerWorld, &centerScreen, OW::ScreenSizeSnapshot()) ||
             !IsReasonableProjectedPoint(centerScreen)) {
             return false;
         }
@@ -995,8 +995,8 @@ namespace OverlayRenderDetail {
         if (!accepted)
             return false;
 
-        radiusX = std::clamp(radiusX, 1.5f, OW::WX * 0.25f);
-        radiusY = std::clamp(radiusY, 1.5f, OW::WY * 0.25f);
+        radiusX = std::clamp(radiusX, 1.5f, OW::ScreenWidth() * 0.25f);
+        radiusY = std::clamp(radiusY, 1.5f, OW::ScreenHeight() * 0.25f);
         if (!std::isfinite(radiusX) || !std::isfinite(radiusY))
             return false;
 
@@ -1074,7 +1074,7 @@ namespace OverlayRenderDetail {
         const bool uniformFill = display.hitboxFill && !display.hitboxFillByClass;
         const bool drawWire = OW::Config::draw_hitbox;
         const auto project = [&](Vector3 point, Vector2& screen) {
-            return view.WorldToScreen(point, &screen, Vector2(OW::WX, OW::WY));
+            return view.WorldToScreen(point, &screen, OW::ScreenSizeSnapshot());
         };
         const auto drawLayers = [&](const auto& shapes, auto worldPoint, auto classify, auto valid,
                                     auto drawUnion, auto record) {
@@ -1364,7 +1364,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         publishStats();
         return;
     }
-    if (OW::WX <= 0.0f || OW::WY <= 0.0f) {
+    if (OW::ScreenWidth() <= 0.0f || OW::ScreenHeight() <= 0.0f) {
         RuntimeTrace::Emit(RuntimeTrace::RenderSkip,5,entity_snapshot.size());
         renderStats.skippedWindow = entity_snapshot.size();
         publishStats();
@@ -1589,7 +1589,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
             float x=dx*offscreenCosYaw-dz*offscreenSinYaw,y=-(dx*offscreenSinYaw+dz*offscreenCosYaw);
             const float length=std::sqrt(x*x+y*y);if(length<.001f)return;x/=length;y/=length;
             const auto& style=elementStyle(VisualElement::Offscreen);
-            const float cx=OW::WX*.5f,cy=OW::WY*.5f;
+            const float cx=OW::ScreenWidth()*.5f,cy=OW::ScreenHeight()*.5f;
             const float reach=(std::min)((cx-30)/(std::max)(.001f,std::abs(x)),(cy-30)/(std::max)(.001f,std::abs(y)));
             const ImVec2 tip(cx+x*reach+style.offsetX,cy+y*reach+style.offsetY);
             const float size=style.size;
@@ -1598,9 +1598,9 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         auto centerArrow=[&](float screenX,float screenY)->bool {
             if(!display.centerArrow || !std::isfinite(screenX) || !std::isfinite(screenY))return false;
             const auto& style=elementStyle(VisualElement::CenterArrow);
-            const float centerX=OW::WX*.5f+style.offsetX,centerY=OW::WY*.5f+style.offsetY;
+            const float centerX=OW::ScreenWidth()*.5f+style.offsetX,centerY=OW::ScreenHeight()*.5f+style.offsetY;
             float x=screenX-centerX,y=screenY-centerY;const float length=std::sqrt(x*x+y*y);if(length<1.f)return false;x/=length;y/=length;
-            const float maxRadius=(std::min)(OW::WX,OW::WY)*.5f-(std::max)(8.f,style.size);const float radius=(std::max)(0.f,(std::min)(style.radius,maxRadius));
+            const float maxRadius=(std::min)(OW::ScreenWidth(),OW::ScreenHeight())*.5f-(std::max)(8.f,style.size);const float radius=(std::max)(0.f,(std::min)(style.radius,maxRadius));
             const float size=style.size;const ImVec2 tip(centerX+x*radius,centerY+y*radius);const ImVec2 back(tip.x-x*size,tip.y-y*size);const ImVec2 side(-y*size*.5f,x*size*.5f);
             ImGui::GetForegroundDrawList()->AddTriangleFilled(tip,ImVec2(back.x+side.x,back.y+side.y),ImVec2(back.x-side.x,back.y-side.y),elementColor(VisualElement::CenterArrow));
             return true;
@@ -1624,7 +1624,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         }
         renderStats.projected++;
 
-        if(bounds.centerX+bounds.width*.5f<0||bounds.centerX-bounds.width*.5f>OW::WX||bounds.bottom<0||bounds.top>OW::WY){arrow();continue;}
+        if(bounds.centerX+bounds.width*.5f<0||bounds.centerX-bounds.width*.5f>OW::ScreenWidth()||bounds.bottom<0||bounds.top>OW::ScreenHeight()){arrow();continue;}
         float top = bounds.top;
         float bottom = bounds.bottom;
         float centerX = bounds.centerX;
@@ -1743,7 +1743,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         }
 
         if (OW::Config::drawline) {
-            Render::DrawLine(Vector2(OW::WX*.5f,OW::WY),Vector2(centerX+elementStyle(VisualElement::Snapline).offsetX,bottom+elementStyle(VisualElement::Snapline).offsetY),OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Snapline))),elementStyle(VisualElement::Snapline).thickness);
+            Render::DrawLine(Vector2(OW::ScreenWidth()*.5f,OW::ScreenHeight()),Vector2(centerX+elementStyle(VisualElement::Snapline).offsetX,bottom+elementStyle(VisualElement::Snapline).offsetY),OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::Snapline))),elementStyle(VisualElement::Snapline).thickness);
             drewAny = true;
         }
 
@@ -1766,8 +1766,8 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         if (OW::Config::eyeray) {
             Vector2 eyeStart{}, eyeEnd{};
             Vector3 rayEnd(Vec3.X + sinf(entity.Rot.X) * 5.0f, Vec3.Y, Vec3.Z + cosf(entity.Rot.X) * 5.0f);
-            if (renderViewMatrix.WorldToScreen(Vec3, &eyeStart, Vector2(OW::WX, OW::WY)) &&
-                renderViewMatrix.WorldToScreen(rayEnd, &eyeEnd, Vector2(OW::WX, OW::WY))) {
+            if (renderViewMatrix.WorldToScreen(Vec3, &eyeStart, OW::ScreenSizeSnapshot()) &&
+                renderViewMatrix.WorldToScreen(rayEnd, &eyeEnd, OW::ScreenSizeSnapshot())) {
                 const Vector2 offset(elementStyle(VisualElement::EyeRay).offsetX,elementStyle(VisualElement::EyeRay).offsetY);
                 Render::DrawLine(eyeStart+offset,eyeEnd+offset,OverlayRenderDetail::ToRenderColor(ImGui::ColorConvertU32ToFloat4(elementColor(VisualElement::EyeRay))),elementStyle(VisualElement::EyeRay).thickness);
                 drewAny = true;
@@ -1794,7 +1794,7 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         if(display.prediction) {
             Vector2 predicted{};
             const Vector3 end=OW::TargetingDetail::ApplyPrediction(entity,entity.chest_pos,true,false);
-            if(renderViewMatrix.WorldToScreen(end,&predicted,Vector2(OW::WX,OW::WY))) {
+            if(renderViewMatrix.WorldToScreen(end,&predicted,OW::ScreenSizeSnapshot())) {
                 const auto& style=elementStyle(VisualElement::Prediction);
                 ImGui::GetForegroundDrawList()->AddCircle(ImVec2(predicted.X+style.offsetX,predicted.Y+style.offsetY),style.size*.25f,elementColor(VisualElement::Prediction),24,style.thickness);
             }

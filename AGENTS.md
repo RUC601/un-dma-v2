@@ -26,3 +26,7 @@ V2 产品文档统一放在 `../docs/un-dma-v2/`，跨产品共用的文档放�
 构建 `./build-release.ps1`，程序 `build/Release/UNDMA_V2.exe`，入口 `./start-v2.ps1`，显式 TestServer 端口 19560。build/config/logs/产物必须工作区自有，禁止链接到 V1；不能并发竞争硬件。Scenario 仅继承现有代码，不承诺后续兼容。离线编译和配置检查不证明现场运行。
 
 后续按模块实际需要沿用自测，不要求搬运整套旧测试框架。不得删除 V1 测试或把不可用能力标成已验收。offset/大证据归 03_DOWNP，遥测和视觉归 04_SCENARIO；Pure 等其他进行中的研究保持独立。
+
+## 版本切换 profile 清单
+
+更新 V2 或其支线的版本、地区、offset 或 profile 前，先读 `../docs/VERSION_PROFILE_UPDATE_CHECKLIST.zh-CN.md`。除 `GameResolutionWidth_RVA` / `GameResolutionHeight_RVA` 与记录 `+0x28` / `+0x2C` 外，还要单独核对直接 Viewport、Overlay Canvas、相机投影链、输入缩放、实体发现、context-map/UID 桶和身份守卫。CN、World、Nexon 不跨区推定，静态、离线和现场证据分开登记。

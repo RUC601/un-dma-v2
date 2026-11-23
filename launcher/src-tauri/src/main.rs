@@ -36,6 +36,7 @@ struct Status {
 struct Native {
     input: Mutex<ChildStdin>,
     running: AtomicBool,
+    reader_done: AtomicBool,
     saved: AtomicBool,
     save_failed: AtomicBool,
 }
@@ -251,6 +252,7 @@ async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String
     let native = Arc::new(Native {
         input: Mutex::new(child.stdin.take().ok_or("Missing runtime input")?),
         running: AtomicBool::new(true),
+        reader_done: AtomicBool::new(false),
         saved: AtomicBool::new(false),
         save_failed: AtomicBool::new(false),
     });
@@ -316,6 +318,7 @@ async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String
                 let _ = writeln!(f, "{}", line);
             }
         }
+        read_native.reader_done.store(true, Ordering::Release);
     });
     std::thread::spawn(move || {
         let result = child.wait();
@@ -507,7 +510,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
                 n.save_failed.store(false, Ordering::Release);
                 send(&n, json!({"command":"save_exit"}))?;
                 let deadline = Instant::now() + Duration::from_secs(30);
-                while n.running.load(Ordering::Acquire) {
+                while n.running.load(Ordering::Acquire) || !n.reader_done.load(Ordering::Acquire) {
                     if n.save_failed.load(Ordering::Acquire) {
                         return Err("Saving failed; update was stopped".into());
                     }

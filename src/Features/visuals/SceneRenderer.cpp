@@ -20,12 +20,12 @@
 namespace {
     static float CanvasWidth()
     {
-        return OW::WX > 0.0f ? OW::WX : OW::ResolveScreenWidth();
+        return OW::ScreenWidth() > 0.0f ? OW::ScreenWidth() : OW::ResolveScreenWidth();
     }
 
     static float CanvasHeight()
     {
-        return OW::WY > 0.0f ? OW::WY : OW::ResolveScreenHeight();
+        return OW::ScreenHeight() > 0.0f ? OW::ScreenHeight() : OW::ResolveScreenHeight();
     }
 
     static Render::Color ToRenderColor(const ImVec4& color)
@@ -140,8 +140,8 @@ namespace {
 
         const ImGuiIO& io = ImGui::GetIO();
         std::snprintf(line, sizeof(line), "Scale: src %.0fx%.0f canvas %.0fx%.0f fps %.0f",
-            OW::WX,
-            OW::WY,
+            OW::ScreenWidth(),
+            OW::ScreenHeight(),
             io.DisplaySize.x,
             io.DisplaySize.y,
             io.Framerate);

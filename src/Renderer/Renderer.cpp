@@ -1,12 +1,12 @@
 #include "Renderer/Renderer.hpp"
 #include "Renderer/IconManager.hpp"
+#include "Game/Overwatch.hpp"
 #include "Utils/Diagnostics.hpp"
 
 #include <memory>
 
 namespace OW {
-    extern float WX;
-    extern float WY;
+
 }
 
 // =====================================================================
@@ -57,15 +57,15 @@ namespace Render {
         const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
         if (displaySize.x > 0.0f && displaySize.y > 0.0f)
             return displaySize;
-        return ImVec2(OW::WX > 0.0f ? OW::WX : 1.0f, OW::WY > 0.0f ? OW::WY : 1.0f);
+        return ImVec2(OW::ScreenWidth() > 0.0f ? OW::ScreenWidth() : 1.0f, OW::ScreenHeight() > 0.0f ? OW::ScreenHeight() : 1.0f);
     }
 
     static float SourceWidth() {
-        return OW::WX > 0.0f ? OW::WX : CanvasSize().x;
+        return OW::ScreenWidth() > 0.0f ? OW::ScreenWidth() : CanvasSize().x;
     }
 
     static float SourceHeight() {
-        return OW::WY > 0.0f ? OW::WY : CanvasSize().y;
+        return OW::ScreenHeight() > 0.0f ? OW::ScreenHeight() : CanvasSize().y;
     }
 
     static float ScaleX() {

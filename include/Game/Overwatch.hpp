@@ -350,7 +350,10 @@ namespace OW {
     }
 
     // ---- Target/source screen used for projection ----
-    inline float WX = 0.f, WY = 0.f;
+    inline std::atomic<float> WX{ 0.f }, WY{ 0.f };
+    inline std::atomic<uint64_t> publishedScreenSize{ 0 };
+    inline thread_local bool screenSizeFrameActive = false;
+    inline thread_local Vector2 screenSizeFrameSnapshot{};
     inline std::atomic<int> detectedScreenWidth{ 0 };
     inline std::atomic<int> detectedScreenHeight{ 0 };
 
@@ -482,9 +485,37 @@ namespace OW {
     inline void RefreshScreenSizeFromConfig()
     {
         const Vector2 screenSize = ResolveScreenSize();
-        WX = screenSize.X;
-        WY = screenSize.Y;
+        const auto width = static_cast<uint32_t>((std::max)(0.0f, screenSize.X));
+        const auto height = static_cast<uint32_t>((std::max)(0.0f, screenSize.Y));
+        publishedScreenSize.store(
+            static_cast<uint64_t>(width) | (static_cast<uint64_t>(height) << 32),
+            std::memory_order_release);
+        WX.store(screenSize.X, std::memory_order_release);
+        WY.store(screenSize.Y, std::memory_order_release);
     }
+
+    inline Vector2 PublishedScreenSizeSnapshot()
+    {
+        const uint64_t packed = publishedScreenSize.load(std::memory_order_acquire);
+        return Vector2(
+            static_cast<float>(static_cast<uint32_t>(packed)),
+            static_cast<float>(static_cast<uint32_t>(packed >> 32)));
+    }
+    inline void BeginScreenSizeFrame()
+    {
+        screenSizeFrameSnapshot = PublishedScreenSizeSnapshot();
+        screenSizeFrameActive = true;
+    }
+    inline void EndScreenSizeFrame()
+    {
+        screenSizeFrameActive = false;
+    }
+    inline Vector2 ScreenSizeSnapshot()
+    {
+        return screenSizeFrameActive ? screenSizeFrameSnapshot : PublishedScreenSizeSnapshot();
+    }
+    inline float ScreenWidth() { return ScreenSizeSnapshot().X; }
+    inline float ScreenHeight() { return ScreenSizeSnapshot().Y; }
 
     inline void SetDetectedScreenDimensions(int width, int height)
     {
@@ -1095,11 +1126,12 @@ namespace OW {
         if (entities.empty())
             return reuseLastSelection();
 
-        const float width = WX > 0.0f
-            ? WX
+        const Vector2 screen = ScreenSizeSnapshot();
+        const float width = screen.X > 0.0f
+            ? screen.X
             : (Config::manualScreenWidth > 0 ? static_cast<float>(Config::manualScreenWidth) : 1920.0f);
-        const float height = WY > 0.0f
-            ? WY
+        const float height = screen.Y > 0.0f
+            ? screen.Y
             : (Config::manualScreenHeight > 0 ? static_cast<float>(Config::manualScreenHeight) : 1080.0f);
         const Vector2 window(width, height);
 

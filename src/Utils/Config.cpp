@@ -1757,6 +1757,8 @@ namespace OW { namespace Config {
         {
             if (hasFirePolicy)
                 return currentPolicy;
+            if (hasKeepFiring && hasAutoshot && !keepFiring && !autoshot)
+                return static_cast<int>(OW::FirePolicyType::ManualOnly);
             if (hasKeepFiring || hasAutoshot) {
                 if (keepFiring)
                     return static_cast<int>(OW::FirePolicyType::KeepFiring);
@@ -3086,6 +3088,7 @@ namespace OW { namespace Config {
             manualScreenWidth = 1920;      // default: 1920 px
             manualScreenHeight = 1080;     // default: 1080 px
             overlayFrameLimit = 0;
+            overlayTransparentBackground = false;
 
             locx = 0;                     // default: 0
             locy = 0;                     // default: 0
@@ -3756,6 +3759,19 @@ namespace OW { namespace Config {
                 AddUniquePath(failedHeroLoads, path);
                 return PersistenceFailure(path, "Load hero config; original file preserved",
                     error == ERROR_SUCCESS ? ERROR_INVALID_DATA : error);
+            }
+            if (document.IsObject()) {
+                const auto version = document.FindMember("version");
+                if (version != document.MemberEnd() && version->value.IsInt() &&
+                    version->value.GetInt() > kCurrentHeroConfigVersion) {
+                    AddUniquePath(failedHeroLoads, path);
+                    LogConfig(
+                        Diagnostics::LogLevel::Warn,
+                        "Rejected newer hero config schema %d in %s. Supported version is %d. Original file preserved.",
+                        version->value.GetInt(), path.c_str(), kCurrentHeroConfigVersion);
+                    return PersistenceFailure(
+                        path, "Load hero config; newer schema preserved", ERROR_REVISION_MISMATCH);
+                }
             }
             if(document.IsObject()&&document.HasMember("heroSettings")) {
                 rapidjson::StringBuffer buffer;rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);document["heroSettings"].Accept(writer);
@@ -6406,6 +6422,7 @@ namespace OW { namespace Config {
             CacheRefreshKey = ReadInt(ini, section, "CacheRefreshKey", CacheRefreshKey);
             uiLanguage = ReadInt(ini, section, "uiLanguage", uiLanguage);
             overlayFrameLimit = ReadInt(ini, section, "overlayFrameLimit", overlayFrameLimit);
+            overlayTransparentBackground = ReadBool(ini, section, "overlayTransparentBackground", overlayTransparentBackground);
             manualScreenWidth = ReadInt(ini, section, "manualScreenWidth", manualScreenWidth);
             manualScreenHeight = ReadInt(ini, section, "manualScreenHeight", manualScreenHeight);
 
@@ -7243,6 +7260,7 @@ namespace OW { namespace Config {
             DeleteValue(path, "Global", "lastConfigProfile");
             WriteIntValue(path, "Global", "uiLanguage", ClampUiLanguage(uiLanguage));
             WriteIntValue(path, "Global", "overlayFrameLimit", std::clamp(overlayFrameLimit, 0, 2000));
+            WriteBoolValue(path, "Global", "overlayTransparentBackground", overlayTransparentBackground);
             WriteIntValue(path, "Global", "manualScreenWidth", manualScreenWidth);
             WriteIntValue(path, "Global", "manualScreenHeight", manualScreenHeight);
             WriteColor(path, "Global", "EnemyCol", EnemyCol);

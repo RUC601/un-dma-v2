@@ -2036,7 +2036,7 @@ namespace AimbotDetail {
         if (IsZeroVector(world))
             return false;
         const OW::Matrix view = OW::SnapshotViewMatrix();
-        return view.WorldToScreen(world, &screen, Vector2(OW::WX, OW::WY), false);
+        return view.WorldToScreen(world, &screen, OW::ScreenSizeSnapshot(), false);
     }
 
     inline void ExpandTwoStageBox(TwoStageScreenBox& box, const Vector2& point) {

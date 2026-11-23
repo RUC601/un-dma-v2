@@ -11,8 +11,6 @@ namespace OW {
     extern Matrix viewMatrix_xor;
     extern std::mutex g_viewMatrixMutex;
     extern ViewMatrixSampleState viewMatrixSampleState;
-    extern float WX;
-    extern float WY;
     extern std::vector<c_entity> entities;
     extern c_entity local_entity;
     extern std::vector<hpanddy> hp_dy_entities;

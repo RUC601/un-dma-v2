@@ -2380,9 +2380,9 @@ std::string BuildDiagnosticsJson()
         << ",\"detected_width\":" << OW::detectedScreenWidth
         << ",\"detected_height\":" << OW::detectedScreenHeight
         << ",\"resolved_wx\":";
-    AppendNumberOrNull(out, OW::WX);
+    AppendNumberOrNull(out, OW::ScreenWidth());
     out << ",\"resolved_wy\":";
-    AppendNumberOrNull(out, OW::WY);
+    AppendNumberOrNull(out, OW::ScreenHeight());
     out << "}"
         << ",\"overlay_canvas\":{\"x\":" << snapshot.overlayCanvas.x
         << ",\"y\":" << snapshot.overlayCanvas.y
@@ -3386,8 +3386,8 @@ std::string BuildProjectionDebugJson(const std::unordered_map<std::string, std::
     const float fallbackHeight = OW::Config::manualScreenHeight > 0
         ? static_cast<float>(OW::Config::manualScreenHeight)
         : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-    const OW::Vector2 window(OW::WX > 0.0f ? OW::WX : fallbackWidth,
-        OW::WY > 0.0f ? OW::WY : fallbackHeight);
+    const OW::Vector2 window(OW::ScreenWidth() > 0.0f ? OW::ScreenWidth() : fallbackWidth,
+        OW::ScreenHeight() > 0.0f ? OW::ScreenHeight() : fallbackHeight);
 
     OW::Matrix published{}, publishedCamera{};
     OW::SnapshotViewMatrices(published, publishedCamera);

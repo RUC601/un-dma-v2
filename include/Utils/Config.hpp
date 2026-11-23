@@ -154,6 +154,7 @@ namespace OW { namespace Config {
     inline constexpr int kUiLanguageCount = 2;
     inline int uiLanguage = kUiLanguageEnglish;
     inline int overlayFrameLimit = 0; // 0 = unlimited; canvas only, menu stays at ~60 Hz.
+    inline bool overlayTransparentBackground = false;
     inline int ClampUiLanguage(int value)
     {
         return std::clamp(value, 0, kUiLanguageCount - 1);

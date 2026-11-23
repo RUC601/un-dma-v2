@@ -12,8 +12,8 @@ namespace {
 
 bool Reasonable(Vector2 p) {
     return std::isfinite(p.X) && std::isfinite(p.Y) &&
-        p.X >= -OW::WX * 4.0f && p.X <= OW::WX * 4.0f &&
-        p.Y >= -OW::WY * 4.0f && p.Y <= OW::WY * 4.0f;
+        p.X >= -OW::ScreenWidth() * 4.0f && p.X <= OW::ScreenWidth() * 4.0f &&
+        p.Y >= -OW::ScreenHeight() * 4.0f && p.Y <= OW::ScreenHeight() * 4.0f;
 }
 
 template <class WorldTransform>
@@ -41,19 +41,19 @@ bool DrawProjectedHitboxContour(std::span<const OW::ModelShapes::Shape> shapes,
             const float t = count == 1 ? 0.0f : float(n) / float(count - 1);
             const Vector3 p = shape.a + (shape.b - shape.a) * t;
             Vector2 center{};
-            if (!view.WorldToScreen(world(i, p), &center, Vector2(OW::WX, OW::WY)) ||
+            if (!view.WorldToScreen(world(i, p), &center, OW::ScreenSizeSnapshot()) ||
                 !Reasonable(center))
                 continue;
             float radius = 0.0f;
             for (const Vector3 axis : {Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1)}) {
                 Vector2 edge{};
                 if (view.WorldToScreen(world(i, p + axis * shape.radius), &edge,
-                                        Vector2(OW::WX, OW::WY))) {
+                                        OW::ScreenSizeSnapshot())) {
                     radius = (std::max)(radius, std::fabs(edge.X - center.X));
                     radius = (std::max)(radius, std::fabs(edge.Y - center.Y));
                 }
                 if (view.WorldToScreen(world(i, p - axis * shape.radius), &edge,
-                                        Vector2(OW::WX, OW::WY))) {
+                                        OW::ScreenSizeSnapshot())) {
                     radius = (std::max)(radius, std::fabs(edge.X - center.X));
                     radius = (std::max)(radius, std::fabs(edge.Y - center.Y));
                 }

@@ -49,8 +49,8 @@
         float width = 0;
         for (const auto& row : rows) width = (std::max)(width,
             ImGui::GetFont()->CalcTextSizeA(row.fontSize,FLT_MAX,0,row.text.c_str()).x);
-        const float x = OW::OverlayStatus::Position(OW::Config::slotPosX, OW::WX, width);
-        float y = OW::OverlayStatus::Position(OW::Config::slotPosY, OW::WY, AimTriggerStatusPanelHeight(rows));
+        const float x = OW::OverlayStatus::Position(OW::Config::slotPosX, OW::ScreenWidth(), width);
+        float y = OW::OverlayStatus::Position(OW::Config::slotPosY, OW::ScreenHeight(), AimTriggerStatusPanelHeight(rows));
         for (const auto& row : rows) {
             Render::DrawText(ImVec2(x,y), row.color, row.text.c_str(), row.fontSize);
             y += row.fontSize + 3;

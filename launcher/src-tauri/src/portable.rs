@@ -43,7 +43,7 @@ pub fn replace_file(old: &Path, new: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn safe_path(s: &str) -> Result<PathBuf, String> {
+fn validate_relative_path(s: &str) -> Result<PathBuf, String> {
     if s.is_empty()
         || s.len() > 220
         || s.contains('\\')
@@ -69,6 +69,10 @@ fn safe_path(s: &str) -> Result<PathBuf, String> {
             return Err(format!("Reserved package path: {s}"));
         }
     }
+    Ok(PathBuf::from(s))
+}
+fn safe_path(s: &str) -> Result<PathBuf, String> {
+    let path = validate_relative_path(s)?;
     let low = s.to_ascii_lowercase();
     let root_file = !s.contains('/')
         && (low == "unleashed-launcher.exe"
@@ -88,7 +92,20 @@ fn safe_path(s: &str) -> Result<PathBuf, String> {
     if !root_file && !low.starts_with("assets/") && !voice {
         return Err(format!("Package cannot manage user data: {s}"));
     }
-    Ok(PathBuf::from(s))
+    Ok(path)
+}
+fn legacy_managed_path(s: &str) -> Result<Option<PathBuf>, String> {
+    let low = s.to_ascii_lowercase();
+    let _ = validate_relative_path(s)?;
+    if low.starts_with("config/") || low.starts_with("licenses/") ||
+        matches!(low.as_str(),
+            "readme-release.txt" |
+            "third_party_notices.txt" |
+            "alert-voice/kokoro-int8-multi-lang-v1_1.tar.bz2" |
+            "alert-voice/sherpa-onnx-v2.0.1-win-x64-shared-md-release.tar.bz2") {
+        return Ok(None);
+    }
+    Ok(Some(safe_path(s)?))
 }
 fn digest(path: &Path) -> Result<String, String> {
     let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -308,7 +325,11 @@ fn apply(plan: &Plan) -> Result<(), String> {
     if let Ok(old) = fs::read(root.join("portable-manifest.json")) {
         let old: Manifest = serde_json::from_slice(&old).map_err(|e| e.to_string())?;
         for f in old.files {
-            safe_path(&f.path)?;
+            let Some(relative) = legacy_managed_path(&f.path)? else { continue };
+            let source = root.join(relative);
+            if source.is_file() && digest(&source)? != f.sha256.to_ascii_lowercase() {
+                return Err(format!("Installed manifest hash mismatch: {}", f.path));
+            }
             if !files.contains(&f.path) {
                 files.push(f.path);
             }

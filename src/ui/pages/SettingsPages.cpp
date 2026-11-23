@@ -267,6 +267,16 @@ void DrawMiscGeneralPage() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", T(UiText::TooltipMinimizeOverlay));
 
+        SettingRow(L("Transparent background"));
+        bool transparentBackground = OW::Config::overlayTransparentBackground;
+        if (UICheckbox("##overlayTransparentBackground", &transparentBackground)) {
+            if (!g_Overlay.SetCanvasTransparentBackground(transparentBackground))
+                transparentBackground = g_Overlay.IsCanvasTransparentBackground();
+            OW::Config::overlayTransparentBackground = transparentBackground;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", L("Transparent mode shows the game through empty canvas pixels and may reduce canvas throughput."));
+
         SettingRow(L("Overlay frame limit"));
         PushControlWidth();
         UISlider("##overlayFrameLimit", &OW::Config::overlayFrameLimit, 0, 2000,

@@ -83,7 +83,13 @@ inline AimBehaviorTuning ReadTuning(const Value& v,
             normalized == OW::FirePolicyType::KeepFiring;
         t.autoshot = normalized != OW::FirePolicyType::ManualOnly && !t.keepFiring;
     }
-    if (!hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
+    if (!hasFirePolicy && hasKeepFiring && hasAutoshot &&
+        !t.keepFiring && !t.autoshot) {
+        // Both legacy switches are explicit and disabled. Preserve that
+        // deliberate manual-only choice instead of applying the behavior
+        // default for files written before firePolicy existed.
+        t.firePolicy = static_cast<int>(OW::FirePolicyType::ManualOnly);
+    } else if (!hasFirePolicy && (hasKeepFiring || hasAutoshot)) {
         t.firePolicy = t.keepFiring
             ? static_cast<int>(OW::FirePolicyType::KeepFiring)
             : t.autoshot

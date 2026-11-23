@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 namespace OverlayRenderDetail {
+    struct HudTransform;
     struct AimTriggerStatusRow {
         std::string text;
         ImU32 color = IM_COL32_WHITE;
@@ -15,7 +16,8 @@ std::string CurrentLocalHeroName(uint64_t heroId);
 std::vector<AimTriggerStatusRow> BuildAimTriggerStatusRowsForHero(uint64_t heroId);
 float AimTriggerStatusPanelHeight(const std::vector<AimTriggerStatusRow>& rows);
 // Caller resolves body freshness; drawing never reads the target process.
-float DrawHeroStatus(const OW::c_entity& entity, float x, float y, int style, bool live);
+float DrawHeroStatus(const OW::c_entity& entity, float x, float y, int style, bool live,
+                     const HudTransform& transform);
 }
 // 渲染线程独占投影平滑与图标缓存。调用者传入本帧快照，不持有采集锁绘制。
 float DrawAimTriggerStatusPanel();

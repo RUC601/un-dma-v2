@@ -414,9 +414,9 @@ namespace OW {
         inline Vector2 CrosshairCenter() {
             float width = static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
             float height = static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-            if (WX > 0.0f && WY > 0.0f) {
-                width = WX;
-                height = WY;
+            if (ScreenWidth() > 0.0f && ScreenHeight() > 0.0f) {
+                width = ScreenWidth();
+                height = ScreenHeight();
             } else if (Config::manualScreenWidth > 0 && Config::manualScreenHeight > 0) {
                 width = static_cast<float>(Config::manualScreenWidth);
                 height = static_cast<float>(Config::manualScreenHeight);
@@ -1758,7 +1758,7 @@ namespace OW {
                             activeLockCandidateSelectable = true;
 
                         Vector2 Vec2 = CrossHair;
-                        aimViewMatrix.WorldToScreen(fovEvaluation.acceptedAimPoint, &Vec2, Vector2(OW::WX, OW::WY));
+                        aimViewMatrix.WorldToScreen(fovEvaluation.acceptedAimPoint, &Vec2, OW::ScreenSizeSnapshot());
                         float score=AimPlan::Score(Config::View_aimbotPriority(),Config::View_aimPlan().selection,
                             fovScoreDeg,distance,entities[i].PlayerHealth,entities[i].PlayerHealthMax,commonFov,commonDistance);
                         score = TargetingDetail::ApplyRetargetHysteresis(score, lockPolicy, activeLock, candidateKey);
@@ -2037,7 +2037,7 @@ namespace OW {
                     view.WorldToScreen(
                         aimPoint,
                         &best.screenPoint,
-                        Vector2(OW::WX, OW::WY));
+                        OW::ScreenSizeSnapshot());
                     best.distance = distance;
                     best.fovScore = angularScoreDeg;
                     best.effectiveFovDeg = secondary

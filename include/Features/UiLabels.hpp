@@ -14,6 +14,8 @@ struct UiLabelPair {
 };
 
 inline constexpr UiLabelPair kUiLabels[] = {
+    { "Transparent background", "透明背景" },
+    { "Transparent mode shows the game through empty canvas pixels and may reduce canvas throughput.", "透明模式让空白画布透出游戏画面，可能降低画布绘制吞吐。" },
     { "Healing / Damage Boost", "治疗／增伤切换" },
     { "Automatic Crossfade", "自动切歌" },
     { "Use toggle Crossfade in the game; hold-to-crossfade is not supported.", "游戏内请使用切换歌曲模式；不支持按住切歌模式。" },

@@ -2,7 +2,7 @@ param([switch]$SkipNative)
 $ErrorActionPreference='Stop'
 if (-not $SkipNative) { & (Join-Path $PSScriptRoot 'build-release.ps1'); if ($LASTEXITCODE) { exit $LASTEXITCODE } }
 $env:CARGO_HOME='D:\DevCache\unleashed-cargo'
-$env:CARGO_TARGET_DIR='D:\DevCache\unleashed-cargo-target'
+$env:CARGO_TARGET_DIR='D:\DevCache\unleashed-v2-cargo-target'
 $env:npm_config_cache='D:\DevCache\npm-unleashed'
 Push-Location (Join-Path $PSScriptRoot 'launcher')
 try {

@@ -88,7 +88,7 @@ bool Matrix::WorldToScreen(const Vector3& worldPos, Vector2* out, const Vector2&
 Vector2 Matrix::WorldToScreen(const Vector3& worldPos) const
 {
     Vector2 result;
-    WorldToScreen(worldPos, &result, Vector2(OW::WX, OW::WY));
+    WorldToScreen(worldPos, &result, OW::ScreenSizeSnapshot());
     return result;
 }
 

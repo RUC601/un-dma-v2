@@ -942,7 +942,7 @@ namespace {
                     continue;
 
                 Vector2 projected{};
-                if (!view.WorldToScreen(position, &projected, Vector2(WX, WY), false))
+                if (!view.WorldToScreen(position, &projected, ScreenSizeSnapshot(), false))
                     continue;
 
                 if (!std::isfinite(projected.X) || !std::isfinite(projected.Y))
@@ -2817,7 +2817,7 @@ namespace {
         Matrix view{}, viewXor{};
         GetViewMatricesSnapshot(view, viewXor);
         (void)viewXor;
-        return view.WorldToScreen(position, &projected, Vector2(WX, WY), false);
+        return view.WorldToScreen(position, &projected, ScreenSizeSnapshot(), false);
     }
 
     GenjiDashPositionClass ClassifyGenjiDashPosition(const SkillAimCandidate& candidate,
@@ -2844,8 +2844,8 @@ namespace {
         Vector2 projected{};
         const bool onScreen = ProjectToScreen(candidate.aimPoint, projected);
         const Vector2 crosshair = TargetingDetail::CrosshairCenter();
-        const float screenHeight = WY > 0.0f
-            ? WY
+        const float screenHeight = ScreenHeight() > 0.0f
+            ? ScreenHeight()
             : static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
         const bool highOnScreen = onScreen &&
             projected.Y < crosshair.Y - (std::max)(120.0f, screenHeight * 0.12f);

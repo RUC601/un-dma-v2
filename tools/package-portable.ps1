@@ -11,6 +11,8 @@ if ($npmVersion -ne $version -or $cargoVersion -ne $version) { throw 'Launcher p
 $runtime=Join-Path $repo 'build\Release'
 $native=Get-Item -LiteralPath (Join-Path $runtime 'UNDMA_V2.exe')
 if ($native.VersionInfo.ProductVersion -ne $version) { throw 'Native and launcher versions differ' }
+$launcher=Get-Item -LiteralPath (Join-Path $runtime 'unleashed-launcher.exe')
+if ($launcher.VersionInfo.ProductVersion -ne $version -or $launcher.VersionInfo.ProductName -ne $config.productName) { throw 'Launcher and package identity differ' }
 if (-not $OutputDirectory) { $OutputDirectory=Join-Path $repo ('dist\'+$version) }
 $output=[IO.Path]::GetFullPath($OutputDirectory)
 if ((Test-Path -LiteralPath $output) -and @(Get-ChildItem -LiteralPath $output -Force).Count) { throw 'Package output must be empty; choose a new directory' }
