@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="980" viewBox="0 0 1120 980" role="img" aria-labelledby="title desc">
+  <title id="title">Unleashed data pipeline</title>
+  <desc id="desc">Entity discovery maintains the roster. The shared acquisition loop targets 300 Hz. Camera composition publishes a timestamped view-projection sample. Entity publication combines the latest camera sample with entity data in an immutable frame. Runtime readers, optional entity interpolation, and the overlay consume the frame. The overlay can also read fresh camera matrices directly.</desc>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1120" y2="980" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17161f"/>
+      <stop offset=".56" stop-color="#101319"/>
+      <stop offset="1" stop-color="#181118"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="44" y1="534" x2="754" y2="656" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#192f37"/>
+      <stop offset="1" stop-color="#151e27"/>
+    </linearGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M28 0H0V28" fill="none" stroke="#fff" stroke-opacity=".034"/>
+    </pattern>
+    <marker id="cyan-arrow" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0 11 6 0 12Z" fill="#65dcea"/>
+    </marker>
+    <marker id="red-arrow" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0 11 6 0 12Z" fill="#ff6b8d"/>
+    </marker>
+    <marker id="muted-arrow" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0 11 6 0 12Z" fill="#9eabc0"/>
+    </marker>
+    <style>
+      text { font-family: "Segoe UI", system-ui, sans-serif; fill: #f2f4f8; }
+      .title { font-size: 46px; font-weight: 700; }
+      .heading { font-size: 28px; font-weight: 700; }
+      .detail { font-size: 21px; fill: #bec8d7; }
+      .label { font-size: 17px; font-weight: 700; letter-spacing: 1.5px; }
+      .annotation { font-size: 18px; fill: #bec8d7; }
+      .cyan { fill: #79e6f1; }
+      .red { fill: #ff87a1; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1118" height="978" rx="26" fill="url(#surface)" stroke="#35323f" stroke-width="2"/>
+  <rect x="2" y="2" width="1116" height="976" rx="25" fill="url(#grid)"/>
+  <path d="M46 34H110" stroke="#ec2152" stroke-width="4" stroke-linecap="round"/>
+  <text class="title" x="44" y="91">Unleashed data pipeline</text>
+  <text class="detail" x="46" y="126">Read cadence, matrix composition and snapshot consumers</text>
+  <path d="M44 150H1076" stroke="#35414c"/>
+
+  <g fill="none" stroke="#65dcea" stroke-width="3" stroke-linejoin="round">
+    <path d="M376 238H418" marker-end="url(#cyan-arrow)"/>
+    <path d="M748 298V330H240V374" marker-end="url(#cyan-arrow)"/>
+    <path d="M748 330H786V374" marker-end="url(#cyan-arrow)"/>
+    <path d="M240 474V534" marker-end="url(#cyan-arrow)"/>
+    <path d="M644 474V534" marker-end="url(#cyan-arrow)"/>
+    <path d="M196 656V786" marker-end="url(#cyan-arrow)"/>
+    <path d="M711 656V729H850V786" marker-end="url(#cyan-arrow)"/>
+  </g>
+  <path d="M1012 474V786" fill="none" stroke="#ff6b8d" stroke-width="3" marker-end="url(#red-arrow)"/>
+  <g fill="none" stroke="#9eabc0" stroke-width="3" stroke-dasharray="7 6">
+    <path d="M558 656V786" marker-end="url(#muted-arrow)"/>
+    <path d="M727 851H780" marker-end="url(#muted-arrow)"/>
+  </g>
+
+  <text class="label cyan" x="44" y="184">PRODUCERS</text>
+  <rect x="44" y="202" width="332" height="96" rx="14" fill="#171f28" stroke="#3a5966"/>
+  <text class="heading" x="66" y="240">Entity discovery</text>
+  <text class="detail" x="66" y="274">250 ms regular · 50 ms fast</text>
+
+  <rect x="418" y="202" width="658" height="96" rx="14" fill="#17242b" stroke="#4c98a4"/>
+  <text class="heading" x="440" y="240">Acquisition loop</text>
+  <text class="detail" x="440" y="274">Entity and camera reads share this loop</text>
+  <rect x="870" y="219" width="184" height="35" rx="17" fill="#203a43" stroke="#41828b"/>
+  <text class="label cyan" x="962" y="243" text-anchor="middle">300 Hz TARGET</text>
+
+  <rect x="44" y="374" width="392" height="100" rx="14" fill="#171f28" stroke="#3a5966"/>
+  <text class="heading" x="66" y="414">Entity updates</text>
+  <text class="detail" x="66" y="451">Local, tracked and dynamic entities</text>
+
+  <rect x="496" y="374" width="580" height="100" rx="14" fill="#171f28" stroke="#3a5966"/>
+  <text class="heading" x="518" y="414">Camera matrix composition</text>
+  <text class="detail" x="518" y="451">View × normalized projection → view-projection</text>
+
+  <text class="annotation" x="658" y="508">Latest camera sample</text>
+  <text class="annotation red" x="996" y="561" text-anchor="end">Fresh camera</text>
+  <text class="annotation red" x="996" y="586" text-anchor="end">direct to overlay</text>
+
+  <rect x="44" y="534" width="710" height="122" rx="15" fill="url(#frame)" stroke="#65dcea" stroke-width="1.5"/>
+  <rect x="44" y="551" width="4" height="88" rx="2" fill="#65dcea"/>
+  <text class="label cyan" x="72" y="564">PUBLISHED BY THE ENTITY PIPELINE</text>
+  <text class="heading" x="72" y="602">Immutable consumption frame</text>
+  <text class="detail" x="72" y="633">Entities, camera matrices and sample timestamps</text>
+
+  <text class="label cyan" x="44" y="751">CONSUMERS</text>
+
+  <rect x="44" y="786" width="304" height="130" rx="14" fill="#171f28" stroke="#3a5966"/>
+  <text class="heading" x="66" y="829">Runtime readers</text>
+  <text class="detail" x="66" y="865">Published frame</text>
+  <text class="detail" x="66" y="894">Runtime logic and alerts</text>
+
+  <rect x="389" y="786" width="338" height="130" rx="14" fill="#1a1e29" stroke="#617089"/>
+  <text class="heading" x="411" y="829">Entity interpolation</text>
+  <text class="detail" x="411" y="865">120 Hz when enabled¹</text>
+  <text class="detail" x="411" y="894">Interpolated entities</text>
+
+  <rect x="780" y="786" width="296" height="130" rx="14" fill="#261822" stroke="#b74d68"/>
+  <text class="heading" x="802" y="829">DX11 overlay</text>
+  <text class="detail" x="802" y="865">Independent frame limit</text>
+  <text class="detail" x="802" y="894">Prefers fresh matrices</text>
+
+  <path d="M44 940H1076" stroke="#35414c"/>
+  <text class="annotation" x="44" y="963">¹ Default interpolation rate. Interpolation is off by default.</text>
+  <path d="M830 957h36" stroke="#9eabc0" stroke-width="3" stroke-dasharray="7 6"/>
+  <text class="annotation" x="878" y="963">Optional path</text>
+</svg>
