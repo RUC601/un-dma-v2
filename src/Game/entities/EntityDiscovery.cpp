@@ -82,7 +82,7 @@ static void AdvancePositiveDiscovery(DiscoveryState& state,DWORD now) {
     // One bounded table block, 128 small header fingerprints, or one validated
     // current binding per visit. No scan-index mutation or deletion authority.
     const std::array<bool,3> due{state.positiveTableReading || !state.positiveTableTick || now-state.positiveTableTick>=250,
-        !state.positive.members.empty() && (!state.positiveHeaderTick || now-state.positiveHeaderTick>=8),
+        !state.positive.members.empty() && (!state.positive.urgent.empty() || !state.positiveHeaderTick || now-state.positiveHeaderTick>=8),
         !state.positive.probes.empty()};
     uint8_t work=3;
     for(uint8_t offset=0;offset<due.size();++offset) {
@@ -147,7 +147,7 @@ static void AdvancePositiveDiscovery(DiscoveryState& state,DWORD now) {
         return;
     }
     discoveryOperation="positive_headers";state.positiveHeaderTick=now;
-    constexpr size_t headerBatch=32;
+    constexpr size_t headerBatch=128;
     const auto parents=state.positive.NextHeaders(headerBatch);
     struct Header {std::array<uint8_t,44> bytes{};DWORD actual=0;bool prepared=false;};
     std::array<Header,headerBatch> headers{};
@@ -189,7 +189,8 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         state.scan || state.pairCursor<state.pendingPairs.size() || !state.lastScan || now-state.lastScan>=250,
         currentMapProfile && OW::DynamicEntityRegistryEnabled() &&
             (state.positiveTableReading || !state.positiveTableTick || now-state.positiveTableTick>=250 ||
-             !state.positive.probes.empty() || (!state.positive.members.empty() && now-state.positiveHeaderTick>=8)));
+             !state.positive.probes.empty() ||
+             (!state.positive.members.empty() && (!state.positive.urgent.empty() || now-state.positiveHeaderTick>=8))));
     if(work==OW::EntityDiscovery::Work::None)return;
     if(work==OW::EntityDiscovery::Work::PositiveBinding){AdvancePositiveDiscovery(state,now);return;}
     if(work==OW::EntityDiscovery::Work::LocalBinding) {
@@ -282,7 +283,9 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     discoveryOperation="scan_slice";
     const auto sliceStarted=std::chrono::steady_clock::now();
     const auto previousPairCount=state.scan->Pairs().size();
-    for(int step=0;step<32 && !state.scan->Done();++step) {
+    // Keep the 650us time budget, but allow pure in-memory pairing yields to
+    // drain without wasting hundreds of discovery visits on empty slices.
+    for(int step=0;step<512 && !state.scan->Done();++step) {
         const auto phase=state.scan->handle.promise().progress.phase;
         discoveryOperation=phase==OW::EntityScanPhase::Slots?"scan_slots":phase==OW::EntityScanPhase::Headers?"scan_headers":"scan_pairing";
         state.scan->Resume();

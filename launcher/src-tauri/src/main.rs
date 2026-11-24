@@ -25,6 +25,73 @@ use windows::Win32::{
     },
 };
 
+const RUNTIME_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+struct RuntimeLogWriter {
+    path: PathBuf,
+    max_bytes: u64,
+    bytes_written: u64,
+    file: Option<fs::File>,
+}
+
+impl RuntimeLogWriter {
+    fn open(path: PathBuf, max_bytes: u64) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let max_bytes = max_bytes.max(1);
+        let existing_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if existing_len >= max_bytes {
+            Self::rotate_file(&path);
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self {
+            path,
+            max_bytes,
+            bytes_written,
+            file: Some(file),
+        })
+    }
+
+    fn rotated_path(path: &PathBuf) -> PathBuf {
+        let mut rotated = path.as_os_str().to_os_string();
+        rotated.push(".1");
+        PathBuf::from(rotated)
+    }
+
+    fn rotate_file(path: &PathBuf) {
+        let backup = Self::rotated_path(path);
+        let _ = fs::remove_file(&backup);
+        let _ = fs::rename(path, &backup);
+    }
+
+    fn write_line(&mut self, line: &str) {
+        let line_bytes = line.len() as u64 + 1;
+        if self.bytes_written > 0 && self.bytes_written.saturating_add(line_bytes) > self.max_bytes {
+            if let Some(mut f) = self.file.take() {
+                let _ = f.flush();
+            }
+            Self::rotate_file(&self.path);
+            self.file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&self.path)
+                .ok();
+            self.bytes_written = 0;
+        }
+        if let Some(f) = self.file.as_mut() {
+            if writeln!(f, "{}", line).is_ok() {
+                self.bytes_written = self.bytes_written.saturating_add(line_bytes);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize)]
 struct Status {
     phase: String,
@@ -261,16 +328,9 @@ async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String
     let read_app = app.clone();
     let read_native = native.clone();
     std::thread::spawn(move || {
-        let log = root().ok().and_then(|p| {
-            let d = p.join("logs");
-            fs::create_dir_all(&d).ok()?;
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(d.join("launcher-runtime.log"))
-                .ok()
-        });
-        let mut log = log;
+        let mut log = root()
+            .ok()
+            .and_then(|p| RuntimeLogWriter::open(p.join("logs").join("launcher-runtime.log"), RUNTIME_LOG_MAX_BYTES).ok());
         for line in BufReader::new(output).lines().map_while(Result::ok) {
             if let Some(raw) = line.strip_prefix("UNIPC ") {
                 if let Ok(v) = serde_json::from_str::<Value>(raw) {
@@ -314,8 +374,8 @@ async fn authorize(app: tauri::AppHandle, username: String) -> Result<(), String
                         _ => {}
                     }
                 }
-            } else if let Some(f) = log.as_mut() {
-                let _ = writeln!(f, "{}", line);
+            } else if let Some(writer) = log.as_mut() {
+                writer.write_line(&line);
             }
         }
         read_native.reader_done.store(true, Ordering::Release);
@@ -602,4 +662,50 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("UNLEASHED launcher failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeLogWriter;
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn runtime_log_rotates_on_size_limit_and_startup() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("undma_log_rotate_test_{}", nanos));
+        let log_path = dir.join("launcher-runtime.log");
+        let backup_path = dir.join("launcher-runtime.log.1");
+
+        {
+            let mut writer = RuntimeLogWriter::open(log_path.clone(), 32).unwrap();
+            writer.write_line("first-line-1234567890");
+            writer.write_line("second-line-1234567890");
+            writer.write_line("third-line-1234567890");
+        }
+
+        assert!(log_path.is_file());
+        assert!(backup_path.is_file());
+        let current = fs::read_to_string(&log_path).unwrap();
+        let backup = fs::read_to_string(&backup_path).unwrap();
+        assert!(current.contains("third-line-1234567890"));
+        assert!(!current.contains("first-line-1234567890"));
+        assert!(backup.contains("second-line-1234567890"));
+        assert!(fs::metadata(&log_path).unwrap().len() <= 32);
+
+        // Oversized file on startup rotates before appending new lines.
+        fs::write(&log_path, "0123456789012345678901234567890123456789").unwrap();
+        {
+            let mut writer = RuntimeLogWriter::open(log_path.clone(), 32).unwrap();
+            writer.write_line("fresh-session");
+        }
+        let after_restart = fs::read_to_string(&log_path).unwrap();
+        let rotated_after_restart = fs::read_to_string(&backup_path).unwrap();
+        assert_eq!(after_restart.trim(), "fresh-session");
+        assert!(rotated_after_restart.starts_with("0123456789"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

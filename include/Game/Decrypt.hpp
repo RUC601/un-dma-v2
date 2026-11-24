@@ -2858,7 +2858,8 @@ namespace OW {
             uint64_t poolId=0;
             DWORD bytes=0,wrapperBytes=0,poolBytes=0;
         };
-        std::array<HeaderRead,16> headers{};
+        // Match PURE's 64-entity header batch to cut full-scan DMA scatter round trips by 4x.
+        std::array<HeaderRead,64> headers{};
         bool recordReadsComplete=true;
         for(size_t first=0;first<candidateParents.size();first+=headers.size()) {
             co_yield EntityScanProgress{EntityScanPhase::Headers, &result};
