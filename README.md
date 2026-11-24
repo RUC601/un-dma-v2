@@ -20,7 +20,7 @@
 ## Preview
 
 <p align="center">
-  <img src="./assets/readme/undma-box.png" alt="Unleashed 盒装图" width="320" />
+  <img src="./assets/readme/undma-box.webp" alt="Unleashed 盒装图" width="346" />
 </p>
 
 ![UNDMA V2 running aim page](./assets/readme/ui-runtime-aim.png)![UNDMA V2 running display page](./assets/readme/ui-runtime-display.png)

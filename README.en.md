@@ -27,7 +27,7 @@ The latest builds are `2.25.1.0.155284N`, `2.25.1.0.155284KB`, and `2.25.1.0.155
 ## Preview
 
 <p align="center">
-  <img src="./assets/readme/undma-box.png" alt="Unleashed packaging visual" width="320" />
+  <img src="./assets/readme/undma-box.webp" alt="Unleashed packaging visual" width="346" />
 </p>
 
 <p align="center">
