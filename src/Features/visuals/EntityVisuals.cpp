@@ -566,6 +566,18 @@ namespace OverlayRenderDetail {
         Render::DrawStrokeText(ImVec2(center.x - size.x * 0.5f, center.y), color, text.c_str(), fontSize);
     }
 
+    inline void DrawCenteredCanvasText(const ImVec2& canvasCenter, ImU32 color,
+                                       const std::string& text, float canvasFontSize) {
+        if (text.empty()) return;
+        const ImVec2 size = ImGui::GetFont()->CalcTextSizeA(
+            canvasFontSize, FLT_MAX, 0.0f, text.c_str());
+        Render::DrawCanvasText(
+            ImVec2(canvasCenter.x - size.x * 0.5f, canvasCenter.y),
+            color,
+            text.c_str(),
+            canvasFontSize);
+    }
+
     inline ImColor ImColorWithAlpha(int r, int g, int b, float opacity) {
         return ImColor(r, g, b, ToByte(opacity));
     }
@@ -1670,7 +1682,15 @@ void PlayerInfoFromSnapshot(const std::vector<OW::c_entity>& entity_snapshot,
         const float fontScale = display.dynamicFont ? std::clamp(30.f/(std::max)(1.f,dist),.7f,1.6f) : 1.f;
         auto text=[&](VisualElement element,float x,float y,const std::string& label) {
             const auto& style=elementStyle(element);
-            OverlayRenderDetail::DrawCenteredText(ImVec2(x+style.offsetX*uiScale,y+style.offsetY*uiScale),elementColor(element),label,style.size*fontScale*uiScale);
+            const ImVec2 canvasAnchor = Render::ToCanvas(ImVec2(x, y));
+            const ImVec2 canvasCenter(
+                canvasAnchor.x + style.offsetX * canvasScale,
+                canvasAnchor.y + style.offsetY * canvasScale);
+            OverlayRenderDetail::DrawCenteredCanvasText(
+                canvasCenter,
+                elementColor(element),
+                label,
+                style.size * fontScale * canvasScale);
         };
         const bool specialEntity = OverlayRenderDetail::IsSpecialEntity(entity);
         bool drewAny = centerArrowDrawn;

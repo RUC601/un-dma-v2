@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -42,12 +42,9 @@ impl RuntimeLogWriter {
         let max_bytes = max_bytes.max(1);
         let existing_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if existing_len >= max_bytes {
-            Self::rotate_file(&path);
+            let _ = fs::rename(&path, Self::rotated_path(&path));
         }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = Self::open_append(&path)?;
         let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Self {
             path,
@@ -57,32 +54,32 @@ impl RuntimeLogWriter {
         })
     }
 
-    fn rotated_path(path: &PathBuf) -> PathBuf {
+    fn rotated_path(path: &Path) -> PathBuf {
         let mut rotated = path.as_os_str().to_os_string();
         rotated.push(".1");
         PathBuf::from(rotated)
     }
 
-    fn rotate_file(path: &PathBuf) {
-        let backup = Self::rotated_path(path);
-        let _ = fs::remove_file(&backup);
-        let _ = fs::rename(path, &backup);
+    fn open_append(path: &Path) -> std::io::Result<fs::File> {
+        fs::OpenOptions::new().create(true).append(true).open(path)
     }
 
     fn write_line(&mut self, line: &str) {
         let line_bytes = line.len() as u64 + 1;
-        if self.bytes_written > 0 && self.bytes_written.saturating_add(line_bytes) > self.max_bytes {
-            if let Some(mut f) = self.file.take() {
-                let _ = f.flush();
-            }
-            Self::rotate_file(&self.path);
-            self.file = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&self.path)
-                .ok();
-            self.bytes_written = 0;
+        if self.bytes_written > 0
+            && self.bytes_written.saturating_add(line_bytes) > self.max_bytes
+            && fs::rename(&self.path, Self::rotated_path(&self.path)).is_ok()
+        {
+            self.file = None;
+        }
+        // A failed rename leaves the current file open for appending.
+        if self.file.is_none() {
+            self.file = Self::open_append(&self.path).ok();
+            self.bytes_written = self
+                .file
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .map_or(0, |meta| meta.len());
         }
         if let Some(f) = self.file.as_mut() {
             if writeln!(f, "{}", line).is_ok() {
@@ -669,13 +666,19 @@ mod tests {
     use super::RuntimeLogWriter;
     use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
-    #[test]
-    fn runtime_log_rotates_on_size_limit_and_startup() {
+    fn test_log_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("undma_log_rotate_test_{}", nanos));
+        fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn runtime_log_rotates_on_size_limit_and_startup() {
+        let dir = test_log_dir();
         let log_path = dir.join("launcher-runtime.log");
         let backup_path = dir.join("launcher-runtime.log.1");
 
@@ -706,6 +709,41 @@ mod tests {
         assert_eq!(after_restart.trim(), "fresh-session");
         assert!(rotated_after_restart.starts_with("0123456789"));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_log_preserves_both_files_when_backup_is_locked() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = test_log_dir();
+        let log_path = dir.join("launcher-runtime.log");
+        let backup_path = dir.join("launcher-runtime.log.1");
+        fs::write(&backup_path, "previous rotation").unwrap();
+        let backup_lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002) // Allow reads and writes, deny deletion.
+            .open(&backup_path)
+            .unwrap();
+
+        let mut writer = RuntimeLogWriter::open(log_path.clone(), 12).unwrap();
+        writer.write_line("first");
+        writer.write_line("second");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "first\nsecond\n");
+        assert_eq!(fs::read_to_string(&backup_path).unwrap(), "previous rotation");
+
+        drop(writer);
+        let mut writer = RuntimeLogWriter::open(log_path.clone(), 12).unwrap();
+        writer.write_line("restart");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "first\nsecond\nrestart\n");
+        assert_eq!(fs::read_to_string(&backup_path).unwrap(), "previous rotation");
+
+        drop(backup_lock);
+        writer.write_line("recovered");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "recovered\n");
+        assert_eq!(fs::read_to_string(&backup_path).unwrap(), "first\nsecond\nrestart\n");
+        drop(writer);
         let _ = fs::remove_dir_all(&dir);
     }
 }

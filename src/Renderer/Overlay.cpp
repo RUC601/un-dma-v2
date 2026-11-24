@@ -986,7 +986,10 @@ bool Overlay::CreateCanvasCompositionSurface(HWND hWnd, UINT width, UINT height,
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2;
         desc.Scaling = DXGI_SCALING_STRETCH;
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        // CreateSwapChainForComposition only guarantees the sequential flip
+        // model. Keep the transparent path on the documented contract so
+        // older WDDM/driver combinations do not fall back to an opaque canvas.
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
         desc.Flags = 0;
 
@@ -1050,7 +1053,12 @@ bool Overlay::CreateCanvasCompositionSurface(HWND hWnd, UINT width, UINT height,
     m_pContext->OMSetRenderTargets(1, renderTargetView, nullptr);
     m_pContext->ClearRenderTargetView(*renderTargetView, clearColor);
     m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
-    swapChain1->Present(0, 0);
+    hr = swapChain1->Present(0, 0);
+    if (FAILED(hr)) {
+        Diagnostics::Error("Overlay DirectComposition first Present failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
 
     hr = m_dcompDevice->Commit();
     if (FAILED(hr)) {
@@ -1117,7 +1125,11 @@ bool Overlay::ApplyPendingCanvasModeChange() {
             m_pContext->OMSetRenderTargets(1, &newRtv, nullptr);
             m_pContext->ClearRenderTargetView(newRtv, clearColor);
             m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
-            newSwapChain->Present(0, 0);
+            const HRESULT presentHr = newSwapChain->Present(0, 0);
+            if (FAILED(presentHr)) {
+                Diagnostics::Error("Overlay opaque canvas first Present failed: hr=0x%08lx.", presentHr);
+                created = false;
+            }
         }
     }
 
