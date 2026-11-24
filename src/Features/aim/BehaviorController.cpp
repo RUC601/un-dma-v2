@@ -338,8 +338,15 @@ namespace AimbotDetail {
 
             const float effectiveFovDeg =
                 effective.overrideLimits?effective.limits.fov:OW::Config::ResolveRuntimeHeroPresetFovForDistance(preset, aimDistance);
-            if (OW::TargetingDetail::IsWithinFovDeg(fovContext, aimPoint, effectiveFovDeg))
-                return true;
+            const float aimAngleDeg = OW::TargetingDetail::FovScoreDeg(fovContext, aimPoint);
+            if (!OW::TargetingDetail::IsWithinFovDeg(fovContext, aimPoint, effectiveFovDeg))
+                continue;
+            const OW::AimPlan::RuleObservation postGeoObs{
+                entity.HeroID, entity.PlayerHealth, entity.PlayerHealthMax,
+                selectionVisible, aimDistance, aimAngleDeg};
+            if (!OW::AimPlan::Eligible(preset.aimPlan.selection, effective, postGeoObs))
+                continue;
+            return true;
         }
 
         return false;
@@ -1883,6 +1890,7 @@ namespace AimbotDetail {
         state.trackingTargetActorKey = 0;
         state.trackingTargetMissingSinceTick = 0;
         state.trackingInDeadzone = false;
+        state.hitboxMotionAssist.Reset();
         OW::ResetAimSmoothingState();
         OW::ResetMouseMoveQuantizationState(
             OW::DefaultMouseMoveQuantizationState());
@@ -2703,6 +2711,50 @@ namespace AimbotDetail {
         return OW::Config::TrackingDeadzoneDampingScale(distance, radius);
     }
 
+    inline OW::HitboxMotionAssist::Params ResolveHitboxMotionAssistParams() {
+        OW::HitboxMotionAssist::Params params{};
+        if (const auto* preset = OW::Config::ActiveAimMethodPreset(6, true)) {
+            params.motionGain = preset->hybridTargetMotionGain;
+            params.suddenBoost = preset->hybridSuddenMotionBoost;
+        } else {
+            params.motionGain = OW::Config::selectedAimMethod.hybridTargetMotionGain;
+            params.suddenBoost = OW::Config::selectedAimMethod.hybridSuddenMotionBoost;
+        }
+        return params;
+    }
+
+    inline OW::SkeletonBoneMask ResolveAllowedBoneMaskForCandidate(const c_entity& target, float distance) {
+        const OW::SkeletonBoneMask rawMask =
+            OW::Config::slotTargetRules.active && !target.Team
+                ? OW::Config::slotTargetRules.allyBoneMask
+                : OW::Config::View_aimbotBoneMask();
+        const int boneSelectionMode = OW::Config::slotTargetRules.active
+            ? OW::Config::slotTargetRules.boneSelectionMode
+            : OW::Config::aimBoneSelectionMode;
+        return OW::AimMaskForDistance(
+            rawMask, distance, OW::Config::View_aimbotMaxHead(), boneSelectionMode == 0);
+    }
+
+    inline OW::HitboxMotionAssist::Response AdvanceHitboxMotionAssist(
+        RuntimeState& state,
+        const OW::TargetCandidate& candidate,
+        const c_entity& target) {
+        OW::HitboxMotionAssist::Sample sample{};
+        sample.actorKey = TwoStageEntityKey(target);
+        sample.actorGeneration = target.actor_generation;
+        sample.sampleTimeUs = target.sample_time_us
+            ? target.sample_time_us
+            : static_cast<uint64_t>(target.anchor_sample_tick_ms) * 1000ULL;
+        sample.bodyPosition = !IsZeroVector(target.pos) ? target.pos : target.chest_pos;
+        const bool candidateVelFinite =
+            std::isfinite(candidate.motion.worldVelocity.X) &&
+            std::isfinite(candidate.motion.worldVelocity.Y) &&
+            std::isfinite(candidate.motion.worldVelocity.Z);
+        sample.bodyVelocity = candidateVelFinite ? candidate.motion.worldVelocity : target.velocity;
+        return OW::HitboxMotionAssist::Advance(
+            state.hitboxMotionAssist, sample, ResolveHitboxMotionAssistParams());
+    }
+
     inline bool FlickTrajectoryWaitReady(RuntimeState& state, const c_entity& target) {
         if (!OW::Config::View_aimbotFlickTrajectoryWait())
             return true;
@@ -3392,9 +3444,11 @@ namespace AimbotDetail {
                     trackingTargetActorKey);
                 state.trackingTargetMissingSinceTick = 0;
                 const Vector3 aimTarget = vec;
+                const OW::HitboxMotionAssist::Response motionAssist =
+                    AdvanceHitboxMotionAssist(state, candidate, target);
                 float deadzoneDistance = 0.0f;
                 const float deadzoneDampingScale = TrackingDeadzoneDampingScale(aimTarget, &deadzoneDistance);
-                if (deadzoneDampingScale <= 0.0f) {
+                if (deadzoneDampingScale <= 0.0f && !motionAssist.HasFollowDisplacement()) {
                     OW::HoldAimSmoothingState();
                     state.trackingInDeadzone = true;
                     holdThisTick = OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices() &&
@@ -3419,10 +3473,13 @@ namespace AimbotDetail {
                     OW::HoldAimSmoothingState();
                     state.trackingInDeadzone = false;
                 }
+                const float effectiveDeadzoneScale = deadzoneDampingScale > 0.0f
+                    ? deadzoneDampingScale
+                    : (std::max)(motionAssist.assistScale, 0.001f);
                 const float smoothInput = OW::Config::AimBehaviorSmoothInput(
                     behavior,
                     OW::Config::View_Tracking_smooth(),
-                    deadzoneDampingScale);
+                    effectiveDeadzoneScale);
                 if (OW::Config::aimVerboseLog && deadzoneDampingScale < 1.0f) {
                     Diagnostics::Aim("tracking.deadzone_damping distancePx=%.3f radiusPx=%.3f scale=%.6f smoothInput=%.6f",
                         deadzoneDistance,
@@ -3438,14 +3495,31 @@ namespace AimbotDetail {
                     -1,
                     -1.0f,
                     !startLimiterProfile.enabled);
-                const auto nativeScore = OW::SelectedAimNativeHitScore(candidate, aim.local_angle,
-                    aim.local_pos, aimTarget, aimTarget - candidate.aimPoint);
-                const bool preserveStationaryContact = aim.valid && nativeScore && *nativeScore <= 1.0f &&
-                    candidate.motion.worldVelocity.Size() <= 0.10f;
-                if (preserveStationaryContact)
+                const float contactDistance = aim.valid ? aim.local_pos.DistTo(aimTarget) : 0.0f;
+                const OW::SkeletonBoneMask allowedMask =
+                    ResolveAllowedBoneMaskForCandidate(target, contactDistance);
+                const bool insideEffectiveHitbox = aim.valid && OW::InAllowedAimHitWindow(
+                    candidate, aim.local_angle, aim.target_angle, aim.local_pos, aimTarget,
+                    allowedMask, aimTarget - candidate.aimPoint);
+                const Vector3 inHitboxTargetAngle = insideEffectiveHitbox
+                    ? OW::HitboxMotionAssist::ComputeInHitboxTargetAngle(
+                        aim.local_angle, contactDistance, motionAssist)
+                    : aim.smoothed_angle;
+                const bool zeroAssistInsideHitbox = insideEffectiveHitbox &&
+                    !motionAssist.HasFollowDisplacement();
+                if (insideEffectiveHitbox) {
                     OW::HoldAimSmoothingState();
-                else
+                    aim.smoothed_angle = inHitboxTargetAngle;
+                    if (OW::Config::aimVerboseLog) {
+                        Diagnostics::Aim("tracking.hitbox_motion regime=%s accel=%.3f speed=%.3f assistScale=%.3f",
+                            OW::HitboxMotionAssist::RegimeName(motionAssist.regime),
+                            motionAssist.accelerationMps2,
+                            motionAssist.speedMps,
+                            motionAssist.assistScale);
+                    }
+                } else {
                     ApplyAiAimNoise(aim.smoothed_angle, 500.f, true);
+                }
                 holdThisTick = OW::RuntimeWorkersRunning() && OW::HasFreshViewMatrices() &&
                     ShouldHoldFireWhileTracking(holdFireButton);
                 if (holdThisTick && !fireHeld && holdFireButton >= 0) {
@@ -3458,11 +3532,11 @@ namespace AimbotDetail {
                             kGlobalAimTrackingFireOwnerKey));
                 }
 
-                if (preserveStationaryContact || !IsZeroVector(aim.smoothed_angle)) {
+                if (insideEffectiveHitbox || !IsZeroVector(aim.smoothed_angle)) {
                     if (!TargetDelayReady(nullptr, false, false)) continue;
-                    Vector3 outputAngle = preserveStationaryContact ? aim.local_angle : aim.smoothed_angle;
+                    Vector3 outputAngle = zeroAssistInsideHitbox ? aim.local_angle : aim.smoothed_angle;
                     OW::AimStartLimiterResult limiterResult{};
-                    if (startLimiterProfile.enabled && !preserveStationaryContact) {
+                    if (startLimiterProfile.enabled && !insideEffectiveHitbox) {
                         limiterResult = OW::ApplyAimStartLimiter(
                             startLimiterProfile,
                             state.trackingStartLimiter,
@@ -3489,8 +3563,9 @@ namespace AimbotDetail {
                     }
 
                     const Vector3 outputDelta = outputAngle - aim.local_angle;
-                    const bool moved = !preserveStationaryContact &&
-                        (!startLimiterProfile.enabled || outputDelta.Size() > 0.000001f);
+                    const bool moved = !zeroAssistInsideHitbox &&
+                        ((!startLimiterProfile.enabled && !insideEffectiveHitbox) ||
+                         outputDelta.Size() > 0.000001f);
                     if (moved) {
                         MoveAimDelta(aim.local_angle, outputAngle);
                         g_trackingMoves++;
@@ -3513,9 +3588,7 @@ namespace AimbotDetail {
                     // fresh sample that is already inside the effective
                     // native hit window, submit once, then leave the held
                     // activation cycle through the guard at function entry.
-                    if (IsSingleShotFirePolicy() && (nativeScore ? *nativeScore <= 1.0f :
-                        OW::in_range(aim.local_angle, aim.target_angle, aim.local_pos, aimTarget,
-                            candidate.effectiveHitWindow))) {
+                    if (IsSingleShotFirePolicy() && insideEffectiveHitbox) {
                         const bool submitted = FirePrimaryNormal(
                             OW::OutputOwnerSource::GlobalAim,
                             kGlobalAimGeneratedFireOwnerKey);
@@ -3761,6 +3834,8 @@ namespace AimbotDetail {
                 PrimeDelayedShot(state);
 
             const Vector3 aimTarget = vec;
+            const OW::HitboxMotionAssist::Response motionAssist =
+                AdvanceHitboxMotionAssist(state, candidate, target);
             float deadzoneDistance = 0.0f;
             const float deadzoneDampingScale = TrackingDeadzoneDampingScale(aimTarget, &deadzoneDistance);
             const float smoothInput = OW::Config::AimBehaviorSmoothInput(
@@ -3781,8 +3856,11 @@ namespace AimbotDetail {
                 aim.smoothed_angle = aim.local_angle + phasedDelta;
             }
             const float hitWindow = OW::Config::aimbotEffectiveHitWindow;
-            const bool hitBeforeMove = OW::InSelectedAimHitWindow(
-                candidate, aim.local_angle, aim.target_angle, aim.local_pos, aimTarget);
+            const float contactDistance = aim.valid ? aim.local_pos.DistTo(aimTarget) : 0.0f;
+            const OW::SkeletonBoneMask allowedMask =
+                ResolveAllowedBoneMaskForCandidate(target, contactDistance);
+            const bool hitBeforeMove = OW::InAllowedAimHitWindow(
+                candidate, aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, allowedMask);
             ReportReleasedAimProgress(state,aim,aimTarget,hitWindow,hitBeforeMove);
             bool hitAfterMove = hitBeforeMove;
 
@@ -3802,7 +3880,25 @@ namespace AimbotDetail {
 
             if (hitBeforeMove) {
                 ResetMagneticTriggerQuantization(state, "inside_hit_window");
-                Diagnostics::Aim("magnetic_trigger.tick inside_hit_window=1 forced_min_step=0 mouse_enqueue=0 hitbox=%.4f",
+                const bool willFireNow = !FireCycleShotIssued(state) &&
+                    GlobalAimFirePolicyAllowsGeneratedFire() &&
+                    firePhase.readyToFire;
+                if (!willFireNow && !firePhase.paused && motionAssist.HasFollowDisplacement()) {
+                    const Vector3 inHitboxAngle =
+                        OW::HitboxMotionAssist::ComputeInHitboxTargetAngle(
+                            aim.local_angle, contactDistance, motionAssist);
+                    Vector3 followDelta = inHitboxAngle - aim.local_angle;
+                    followDelta.X *= firePhase.pitchScale;
+                    followDelta.Y *= firePhase.yawScale;
+                    if (std::isfinite(followDelta.X) && std::isfinite(followDelta.Y) &&
+                        followDelta.Size() > 0.000001f) {
+                        OW::HoldAimSmoothingState();
+                        MoveAimDelta(aim.local_angle, aim.local_angle + followDelta);
+                        g_trackingMoves++;
+                    }
+                }
+                Diagnostics::Aim("magnetic_trigger.tick inside_hit_window=1 forced_min_step=0 regime=%s hitbox=%.4f",
+                    OW::HitboxMotionAssist::RegimeName(motionAssist.regime),
                     hitWindow);
             } else {
                 Vector3 outputAngle = aim.smoothed_angle;
@@ -4174,6 +4270,8 @@ namespace AimbotDetail {
                 const TwoStageAimPlan twoStagePlan =
                     ResolveTwoStageAimPlan(vec, target, OW::Config::View_Prediction());
                 const Vector3 aimTarget = twoStagePlan.active ? twoStagePlan.target : vec;
+                const OW::HitboxMotionAssist::Response motionAssist =
+                    AdvanceHitboxMotionAssist(state, candidate, target);
                 const float smoothInput = OW::Config::AimBehaviorSmoothInput(
                     behavior,
                     OW::Config::View_Flick_smooth(),
@@ -4196,14 +4294,32 @@ namespace AimbotDetail {
                     PauseOrdinaryFlickMovement(state);
                     break;
                 }
-                const bool hitBeforeMove = OW::InSelectedAimHitWindow(
-                    candidate, aim.local_angle, aim.target_angle, aim.local_pos, aimTarget);
+                const float contactDistance = aim.valid ? aim.local_pos.DistTo(aimTarget) : 0.0f;
+                const OW::SkeletonBoneMask allowedMask =
+                    ResolveAllowedBoneMaskForCandidate(target, contactDistance);
+                const bool hitBeforeMove = OW::InAllowedAimHitWindow(
+                    candidate, aim.local_angle, aim.target_angle, aim.local_pos, aimTarget, allowedMask);
                 const bool contactBeforeMove = hitBeforeMove;
-                if (ordinaryFlick && contactBeforeMove) {
-                    // Once the measured crosshair is in the hit window, fire
-                    // from that sample. Moving toward the centre first can
-                    // pull a valid first shot out of its own firing window.
-                    aim.smoothed_angle = aim.local_angle;
+                const auto flickFireEvidencePreview = OW::Config::reloading
+                    ? FlickRepeat::FireStateEvidence::KnownProhibited
+                    : FlickRepeat::FireStateEvidence::Missing;
+                const bool willFireFromContact = contactBeforeMove &&
+                    GlobalAimFirePolicyAllowsGeneratedFire() &&
+                    (!twoStagePlan.active || twoStagePlan.triggerOpen) &&
+                    (!ordinaryFlick || FlickRepeat::AllowsFire(
+                        OrdinaryFlickPhase(state), flickFireEvidencePreview, true, true));
+                if (contactBeforeMove) {
+                    // Once the measured crosshair is inside an allowed hitbox:
+                    // - If firing immediately, fire from this measured contact.
+                    // - Otherwise apply motion-segmented follow (stationary=0,
+                    //   steady=light follow, sudden=boosted follow).
+                    if (willFireFromContact || !motionAssist.HasFollowDisplacement() ||
+                        (ordinaryFlick && !OrdinaryFlickPhase(state).movementAllowed)) {
+                        aim.smoothed_angle = aim.local_angle;
+                    } else {
+                        aim.smoothed_angle = OW::HitboxMotionAssist::ComputeInHitboxTargetAngle(
+                            aim.local_angle, contactDistance, motionAssist);
+                    }
                 } else if (repeatPhase.repeat) {
                     aim.smoothed_angle = FlickRepeat::Step(aim.local_angle, aim.target_angle,
                         OrdinaryFlickPhase(state).remainingMs,

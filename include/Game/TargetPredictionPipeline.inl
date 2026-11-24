@@ -186,6 +186,8 @@
                 return "reported";
             case Motion::VelocitySource::WorldDeltaFallback:
                 return "world_delta";
+            case Motion::VelocitySource::PreviousStableFallback:
+                return "previous_stable";
             case Motion::VelocitySource::None:
             default:
                 return "none";

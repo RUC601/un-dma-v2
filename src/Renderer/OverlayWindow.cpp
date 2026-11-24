@@ -140,6 +140,10 @@ void Overlay::SetWindowsTopmost(bool topmost) {
     for (HWND window : windows) {
         if (!IsWindow(window))
             continue;
+        // Transparent click-through canvas never blocks other apps; keep it topmost
+        // so ESP/HUD stays visible over the desktop and underlying windows.
+        if (!topmost && window == m_canvasHWnd && m_canvasTransparentBackground)
+            continue;
         const bool isTopmost = (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
         if (!topmost && !isTopmost)
             continue;
@@ -149,7 +153,7 @@ void Overlay::SetWindowsTopmost(bool topmost) {
         changed = true;
     }
     if (changed)
-        MarkFullscreen(m_canvasHWnd, m_menuHWnd, topmost);
+        MarkFullscreen(m_canvasHWnd, m_menuHWnd, topmost && !m_canvasTransparentBackground);
 }
 
 void Overlay::UpdateWindowVisibility() {
@@ -163,8 +167,9 @@ void Overlay::UpdateWindowVisibility() {
         SetForegroundWindow(m_menuHWnd);
         OnMenuActivated();
     } else if (!shouldShowMenu && isVisible) {
-        // Closing settings keeps focus on the full-screen canvas, not the desktop.
-        if (GetForegroundWindow() == m_menuHWnd)
+        // Closing settings keeps focus on the opaque full-screen canvas, not the desktop.
+        // In transparent mode the canvas is non-activating click-through.
+        if (!m_canvasTransparentBackground && GetForegroundWindow() == m_menuHWnd)
             SetForegroundWindow(m_canvasHWnd);
         ShowWindow(m_menuHWnd, SW_HIDE);
     }

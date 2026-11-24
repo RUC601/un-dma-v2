@@ -497,6 +497,23 @@ void UI::VisualsPage() {
         slider("Horizontal position","##radarX",OW::Config::radarPosX,0,1,"");slider("Vertical position","##radarY",OW::Config::radarPosY,0,1,"");
     });
     Card("HUD",[&]{
+        const bool zh = OW::Config::uiLanguage == 1;
+        int canvasW = GetSystemMetrics(SM_CXSCREEN);
+        int canvasH = GetSystemMetrics(SM_CYSCREEN);
+        RECT canvasRect{};
+        if (HWND canvasWindow = g_Overlay.GetOverlayWindow();
+            canvasWindow && GetWindowRect(canvasWindow, &canvasRect)) {
+            if (canvasRect.right > canvasRect.left && canvasRect.bottom > canvasRect.top) {
+                canvasW = canvasRect.right - canvasRect.left;
+                canvasH = canvasRect.bottom - canvasRect.top;
+            }
+        }
+        const float autoScale = OW::OverlayStatus::ResolutionScale(static_cast<float>(canvasW), static_cast<float>(canvasH));
+        SettingRow(zh ? "分辨率自适应" : "Resolution scale");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%.2fx (%dx%d · 1080p)", autoScale, canvasW, canvasH);
+        SettingTooltip(zh ? "HUD 与视觉元素按当前画布分辨率相对 1920x1080 自动缩放，下方缩放滑条在此基础上微调。"
+                          : "HUD and overlay elements automatically scale from the 1920x1080 baseline to match the active canvas resolution; sliders below multiply on top.");
         auto placement=[](const char* id,float& x,float& y,float* scale){ImGui::PushID(id);bool edited=false;
             SettingRow("Horizontal position");PushControlWidth();edited|=UISlider("##x",&x,0,1,Number(3,""));ImGui::PopItemWidth();
             SettingRow("Vertical position");PushControlWidth();edited|=UISlider("##y",&y,0,1,Number(3,""));ImGui::PopItemWidth();

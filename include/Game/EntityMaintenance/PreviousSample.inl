@@ -22,18 +22,24 @@
                 entity.skeleton_form, entity.skeleton_revision, entity.skeleton_requested_ids))
                 previousEntity = nullptr;
             if (!previousEntity) {
+                entity.previous_sample_time_us = 0;
                 entity.previous_render_sample_tick_ms = sampleTick;
                 entity.position_sample_tick_ms = sampleTick;
                 entity.has_previous_render_sample = false;
                 entity.previous_head_pos = entity.head_pos;
                 entity.previous_velocity = entity.velocity;
                 entity.previous_pos = entity.pos;
+                entity.previous_stable_velocity = {};
+                entity.previous_stable_velocity_time_us = 0;
+                entity.previous_stable_velocity_tick_ms = 0;
+                entity.has_previous_stable_velocity = false;
                 entity.previous_neck_pos = entity.neck_pos;
                 entity.previous_chest_pos = entity.chest_pos;
                 entity.previous_skeleton_bones = entity.skeleton_bones;
                 entity.previous_skeleton_bone_valid = entity.skeleton_bone_valid;
                 entity.previous_cached_bot_chest_bone = entity.cached_bot_chest_bone;
                 entity.previous_cached_bot_chest_bone_valid = entity.cached_bot_chest_bone_valid;
+                OW::Motion::UpdateEntityStableVelocity(entity);
                 return;
             }
 
@@ -54,12 +60,17 @@
             entity.previous_head_pos = previous.head_pos;
             entity.previous_velocity = previous.velocity;
             entity.previous_pos = previous.pos;
+            entity.previous_stable_velocity = previous.stable_velocity;
+            entity.previous_stable_velocity_time_us = previous.stable_velocity_time_us;
+            entity.previous_stable_velocity_tick_ms = previous.stable_velocity_tick_ms;
+            entity.has_previous_stable_velocity = previous.has_stable_velocity;
             entity.previous_neck_pos = previous.neck_pos;
             entity.previous_chest_pos = previous.chest_pos;
             entity.previous_skeleton_bones = previous.skeleton_bones;
             entity.previous_skeleton_bone_valid = previous.skeleton_bone_valid;
             entity.previous_cached_bot_chest_bone = previous.cached_bot_chest_bone;
             entity.previous_cached_bot_chest_bone_valid = previous.cached_bot_chest_bone_valid;
+            OW::Motion::UpdateEntityStableVelocity(entity);
         };
 
         // Publish established actors before slow component/skeleton/skill maintenance.

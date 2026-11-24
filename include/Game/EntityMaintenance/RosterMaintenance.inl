@@ -58,6 +58,7 @@
     };
 
     auto resetRenderHistory = [](OW::c_entity& entity, DWORD now) {
+        entity.previous_sample_time_us = 0;
         entity.render_sample_tick_ms = now;
         entity.previous_render_sample_tick_ms = now;
         entity.position_sample_tick_ms = now;
@@ -65,12 +66,17 @@
         entity.previous_head_pos = entity.head_pos;
         entity.previous_velocity = entity.velocity;
         entity.previous_pos = entity.pos;
+        entity.previous_stable_velocity = {};
+        entity.previous_stable_velocity_time_us = 0;
+        entity.previous_stable_velocity_tick_ms = 0;
+        entity.has_previous_stable_velocity = false;
         entity.previous_neck_pos = entity.neck_pos;
         entity.previous_chest_pos = entity.chest_pos;
         entity.previous_skeleton_bones = entity.skeleton_bones;
         entity.previous_skeleton_bone_valid = entity.skeleton_bone_valid;
         entity.previous_cached_bot_chest_bone = entity.cached_bot_chest_bone;
         entity.previous_cached_bot_chest_bone_valid = entity.cached_bot_chest_bone_valid;
+        OW::Motion::UpdateEntityStableVelocity(entity);
     };
 
     auto shouldSkipTeleportObservation = [&](const OW::c_entity& current,

@@ -2199,14 +2199,17 @@ namespace {
                 continue;
             }
 
-            float fovScore = 0.0f;
-            if (!TargetingDetail::IsWithinFovDeg(
+            FovGeometry::CandidateFovEvaluation fovEvaluation{};
+            if (!TargetingDetail::EvaluateCandidateFov(
                     fovContext,
+                    rawAimPoint,
                     aimPoint,
                     settings.tracking.fov,
-                    &fovScore)) {
+                    nullptr,
+                    fovEvaluation)) {
                 continue;
             }
+            const float fovScore = fovEvaluation.scoreDeg;
 
             const float hitWindow=ResolveSkillHitWindow(entity,selectedBoneId,projectile,settings.tracking.hitbox);
             if (reticleOnly && !SkillAimWindowContains(observedAngles,source,aimPoint,hitWindow))
@@ -4080,7 +4083,8 @@ namespace {
                 !entity.Vis || !IsUsablePosition(entity.pos) ||
                 VitalityPercent(entity) > settings.enemyHealthThreshold)
                 continue;
-            Vector3 point = entity.pos;
+            Vector3 rawPoint = entity.pos;
+            Vector3 point = rawPoint;
             float distance = DoomfistPunch::HorizontalDistance(point.X-local.pos.X, point.Z-local.pos.Z);
             if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
                     settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
@@ -4095,11 +4099,19 @@ namespace {
             if (!DoomfistPunch::InReach(distance, point.Y-local.pos.Y, reach,
                     settings.punchMaxHeightAbove, settings.punchMaxHeightBelow))
                 continue;
+            rawPoint.Y = source.Y;
             point.Y = source.Y;
-            float score = 0.0f;
-            if (!TargetingDetail::IsWithinFovDeg(fov, point, settings.tracking.fov, &score) ||
-                score >= bestScore)
+            FovGeometry::CandidateFovEvaluation fovEvaluation{};
+            if (!TargetingDetail::EvaluateCandidateFov(
+                    fov,
+                    rawPoint,
+                    point,
+                    settings.tracking.fov,
+                    nullptr,
+                    fovEvaluation) ||
+                fovEvaluation.scoreDeg >= bestScore)
                 continue;
+            const float score = fovEvaluation.scoreDeg;
             best = {};
             best.valid = true;
             best.entity = entity;

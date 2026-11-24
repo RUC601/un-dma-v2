@@ -7,8 +7,13 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 #include <functional>
+#include <string>
 
 #include "Renderer.hpp"
+
+struct IDCompositionDevice;
+struct IDCompositionTarget;
+struct IDCompositionVisual;
 
 // -----------------------------------------------------------------------
 // Overlay -- two-layer DX11 overlay:
@@ -28,6 +33,7 @@ public:
     void OnMenuDeactivated(HWND activatedWindow);
     bool SetCanvasTransparentBackground(bool enabled);
     bool IsCanvasTransparentBackground() const { return m_canvasTransparentBackground; }
+    bool IsRecreatingCanvasWindow() const { return m_recreatingCanvasWindow; }
     void RequestExit();
     void Shutdown();
 
@@ -47,8 +53,12 @@ private:
     IDXGISwapChain*         m_menuSwapChain = nullptr;
     ID3D11RenderTargetView* m_canvasRenderTargetView = nullptr;
     ID3D11RenderTargetView* m_menuRenderTargetView = nullptr;
+    IDCompositionDevice*    m_dcompDevice = nullptr;
+    IDCompositionTarget*    m_dcompTarget = nullptr;
+    IDCompositionVisual*    m_dcompVisual = nullptr;
     ImGuiContext*           m_canvasContext = nullptr;
     ImGuiContext*           m_menuContext = nullptr;
+    std::wstring            m_overlayTitle;
     int                     m_canvasX = 0;
     int                     m_canvasY = 0;
     UINT                    m_canvasWidth = 0;
@@ -65,17 +75,31 @@ private:
     bool                    m_menuAnchorValid = false;
     bool                    m_minimizedToTaskbar = false;
     bool                    m_canvasTransparentBackground = false;
+    bool                    m_desiredCanvasTransparentBackground = false;
+    bool                    m_canvasModeChangePending = false;
+    bool                    m_inFrame = false;
+    bool                    m_recreatingCanvasWindow = false;
+    bool                    m_forceCanvasRender = false;
     bool                    m_uiResourcesInitialized = false;
     DWORD                   m_windowServicesThread = 0;
 
     bool InitializeWindowServices();
     void ShutdownWindowServices();
     bool RegisterWindowClasses(HINSTANCE instance);
+    HWND CreateCanvasWindow(bool transparentBackground, HINSTANCE instance) const;
     bool CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance);
     bool CreateDX11();
     void CleanupDX11();
-    void ApplyCanvasWindowStyle();
-    bool RecreateCanvasSwapChain();
+    bool EnsureDCompDevice();
+    bool CreateCanvasCompositionSurface(HWND hWnd, UINT width, UINT height,
+                                        IDXGISwapChain** swapChain,
+                                        ID3D11RenderTargetView** renderTargetView,
+                                        IDCompositionTarget** dcompTarget,
+                                        IDCompositionVisual** dcompVisual);
+    void ReleaseCanvasCompositionResources(IDCompositionTarget** dcompTarget,
+                                           IDCompositionVisual** dcompVisual);
+    bool RebindCanvasImGuiWindow(HWND hWnd);
+    bool ApplyPendingCanvasModeChange();
     bool CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
                                   IDXGISwapChain** swapChain, UINT* flagsOut, bool* allowTearingOut,
                                   bool forceDiscard);

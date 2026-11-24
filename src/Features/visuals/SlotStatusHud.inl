@@ -46,14 +46,19 @@
     float DrawAimTriggerStatusPanel() {
         if (!OW::Config::showSlotStatus) return 0;
         const auto rows = BuildAimTriggerStatusRowsForHero(OW::SnapshotLocalHeroIdForStatus());
+        const ImVec2 canvasSize = Render::CanvasSize();
+        const float canvasWidth = canvasSize.x > 0.0f ? canvasSize.x : OW::ResolveScreenWidth();
+        const float canvasHeight = canvasSize.y > 0.0f ? canvasSize.y : OW::ResolveScreenHeight();
+        const float uiScale = OW::OverlayStatus::ResolutionScale(canvasWidth, canvasHeight);
         float width = 0;
         for (const auto& row : rows) width = (std::max)(width,
-            ImGui::GetFont()->CalcTextSizeA(row.fontSize,FLT_MAX,0,row.text.c_str()).x);
-        const float x = OW::OverlayStatus::Position(OW::Config::slotPosX, OW::ScreenWidth(), width);
-        float y = OW::OverlayStatus::Position(OW::Config::slotPosY, OW::ScreenHeight(), AimTriggerStatusPanelHeight(rows));
+            ImGui::GetFont()->CalcTextSizeA(row.fontSize * uiScale, FLT_MAX, 0, row.text.c_str()).x);
+        const float x = OW::OverlayStatus::Position(OW::Config::slotPosX, canvasWidth, width);
+        float y = OW::OverlayStatus::Position(OW::Config::slotPosY, canvasHeight, AimTriggerStatusPanelHeight(rows) * uiScale);
         for (const auto& row : rows) {
-            Render::DrawText(ImVec2(x,y), row.color, row.text.c_str(), row.fontSize);
-            y += row.fontSize + 3;
+            const float fontSize = row.fontSize * uiScale;
+            Render::DrawCanvasText(ImVec2(x, y), row.color, row.text.c_str(), fontSize);
+            y += (row.fontSize + 3.0f) * uiScale;
         }
         return y;
     }

@@ -275,6 +275,61 @@ float ResolveBoneHitboxRadius(uint64_t heroId, int boneId, float fallbackRadius)
     return (std::max)(0.0f, fallbackRadius);
 }
 
+float EffectiveExpandedHitboxRadius(float shapeRadius,
+                                    float projectileRadius,
+                                    float hitboxScalePercent)
+{
+    if (!std::isfinite(shapeRadius) || shapeRadius <= 0.0f || !std::isfinite(hitboxScalePercent))
+        return 0.0f;
+    const float safeProjectile = std::isfinite(projectileRadius) ? (std::max)(0.0f, projectileRadius) : 0.0f;
+    return (shapeRadius + safeProjectile) * Config::HitboxScaleMultiplier(hitboxScalePercent);
+}
+
+Vector3 ComputeReverseLateralAimOffset(const Vector3& camera,
+                                       const Vector3& rawAimPoint,
+                                       const Vector3& predictedAimPoint,
+                                       const Vector3& targetVelocity,
+                                       float effectiveHitRadius,
+                                       float projectileRadius,
+                                       float hitboxScalePercent)
+{
+    if (!IsFiniteVector(camera) || !IsFiniteVector(rawAimPoint) ||
+        !IsFiniteVector(predictedAimPoint) || !IsFiniteVector(targetVelocity) ||
+        !std::isfinite(effectiveHitRadius) || effectiveHitRadius <= 0.0f ||
+        !std::isfinite(hitboxScalePercent) || hitboxScalePercent <= 0.0f) {
+        return {};
+    }
+
+    const Vector3 los = predictedAimPoint - camera;
+    const float distance = los.Size();
+    if (!std::isfinite(distance) || distance <= 0.0001f)
+        return {};
+
+    const Vector3 unitLos = los / distance;
+    const Vector3 lateralVelocity = targetVelocity - unitLos * Dot(targetVelocity, unitLos);
+    const float lateralSpeed = lateralVelocity.Size();
+    if (!std::isfinite(lateralSpeed) || lateralSpeed <= 0.10f)
+        return {};
+
+    const Vector3 lateralDir = lateralVelocity / lateralSpeed;
+    const float lateralLeadMeters = Dot(predictedAimPoint - rawAimPoint, lateralDir);
+    if (!std::isfinite(lateralLeadMeters) || lateralLeadMeters <= 0.0001f)
+        return {};
+
+    const float maxSafeOffset = effectiveHitRadius * 0.5f;
+    const float requestedOffset = (std::isfinite(projectileRadius) && projectileRadius > 0.0f)
+        ? projectileRadius
+        : (effectiveHitRadius * 0.25f);
+    const float offsetMeters = std::clamp(
+        requestedOffset,
+        0.0f,
+        (std::min)(maxSafeOffset, lateralLeadMeters));
+    if (!std::isfinite(offsetMeters) || offsetMeters <= 0.00001f)
+        return {};
+
+    return lateralDir * (-offsetMeters);
+}
+
 float ResolveEffectiveHitWindow(uint64_t heroId,
                                 int boneId,
                                 const WeaponSpec* weapon,
@@ -286,8 +341,7 @@ float ResolveEffectiveHitWindow(uint64_t heroId,
     const float projectileRadius = projectileRadiusOverride >= 0.0f
         ? (std::max)(0.0f, projectileRadiusOverride)
         : (weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f);
-    const float resolvedWindow = (std::max)(0.0f, boneRadius + projectileRadius);
-    return resolvedWindow * Config::HitboxScaleMultiplier(hitboxScalePercent);
+    return EffectiveExpandedHitboxRadius(boneRadius, projectileRadius, hitboxScalePercent);
 }
 
 float ResolveEffectiveHitWindow(const c_entity& entity,
@@ -320,8 +374,7 @@ float ResolveEffectiveHitWindow(const c_entity& entity,
     const float projectileRadius = projectileRadiusOverride >= 0.0f
         ? (std::max)(0.0f, projectileRadiusOverride)
         : (weapon ? (std::max)(0.0f, weapon->projectile.projectileRadius) : 0.0f);
-    return (std::max)(0.0f, boneRadius + projectileRadius) *
-        Config::HitboxScaleMultiplier(hitboxScalePercent);
+    return EffectiveExpandedHitboxRadius(boneRadius, projectileRadius, hitboxScalePercent);
 }
 
 int AimBoneToSkeletonBoneId(int aimBone)
@@ -405,7 +458,6 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
     const Vector3 relativeAnchor = entity.pos - sample.world.sampleAnchor + predictedDisplacement - origin;
     const float worldScale = (std::min)({sample.world.record.scale[0], sample.world.record.scale[1],
         sample.world.record.scale[2]});
-    const float hitboxScale = Config::HitboxScaleMultiplier(hitboxScalePercent);
     std::optional<float> score;
     for (size_t i = 0; i < sample.shapes.size(); ++i) {
         const auto& shape = sample.shapes[i];
@@ -416,7 +468,8 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
         const Vector3 b = sample.world.TransformPoint(ModelShapes::Transform(shape.b, pose)) + relativeAnchor;
         // Minimum axis scale gives an inscribed radius for non-uniform transforms.
         const float poseScale = (std::min)({pose.scale[0], pose.scale[1], pose.scale[2]});
-        const float radius = (shape.radius * poseScale * worldScale + (std::max)(0.0f, projectileRadius)) * hitboxScale;
+        const float radius = EffectiveExpandedHitboxRadius(
+            shape.radius * poseScale * worldScale, projectileRadius, hitboxScalePercent);
         if (!IsFiniteVector(a) || !IsFiniteVector(b) || !std::isfinite(radius) || radius <= 0.0f)
             continue;
         const float normalized = std::sqrt(RayAxisDistanceSquared(a, b, unitRay)) / radius;
@@ -473,7 +526,6 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
         input.displacement + extraDisplacement;
     const float worldScale = (std::min)({sample.world.record.scale[0], sample.world.record.scale[1],
         sample.world.record.scale[2]});
-    const float hitboxScale = Config::HitboxScaleMultiplier(input.hitboxScalePercent);
     std::optional<float> bestHitTime;
     std::optional<float> bestHitScore;
     for (size_t i = 0; i < sample.shapes.size(); ++i) {
@@ -484,7 +536,8 @@ std::optional<float> NativeHitWindowScore(const c_entity& entity, int boneId, ui
         const Vector3 a = sample.world.TransformPoint(ModelShapes::Transform(shape.a, pose)) + relativeAnchor;
         const Vector3 b = sample.world.TransformPoint(ModelShapes::Transform(shape.b, pose)) + relativeAnchor;
         const float poseScale = (std::min)({pose.scale[0], pose.scale[1], pose.scale[2]});
-        const float radius = (shape.radius * poseScale * worldScale + input.projectileRadius) * hitboxScale;
+        const float radius = EffectiveExpandedHitboxRadius(
+            shape.radius * poseScale * worldScale, input.projectileRadius, input.hitboxScalePercent);
         if (!IsFiniteVector(a) || !IsFiniteVector(b) || !std::isfinite(radius) || radius <= 0.0f)
             continue;
         float hitTime = 0.0f;

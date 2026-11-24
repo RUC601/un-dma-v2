@@ -1927,6 +1927,8 @@ namespace OW { namespace Config {
             AimPlan::Normalize(preset.aimPlan);
             auto known=[](uint64_t h) { return !GameData::IsKnownHeroId(h); };
             std::erase_if(preset.aimPlan.selection.heroes,known);
+            for(auto& rule:preset.aimPlan.selection.onlyRules) std::erase_if(rule.heroes,known);
+            for(auto& rule:preset.aimPlan.selection.preferRules) std::erase_if(rule.heroes,known);
             for(auto& group:preset.aimPlan.groups) std::erase_if(group.heroes,known);
             preset.allyKey = std::clamp(preset.allyKey,0,OW::Labels::AimActivationKeyCount()-1);
             preset.allyHealthMaxPercent = std::isfinite(preset.allyHealthMaxPercent) ? std::clamp(preset.allyHealthMaxPercent,0.f,100.f) : 100.f;

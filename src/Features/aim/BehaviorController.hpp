@@ -4,6 +4,7 @@
 #include "Game/AimStartLimiter.hpp"
 #include "Game/AimHoldWindow.hpp"
 #include "Game/AimReleaseFire.hpp"
+#include "Game/HitboxMotionAssist.hpp"
 
 // UN Behavior 控制器：worker 独占 RuntimeState；技能只使用下列计算/输出接口。
 // 输入为已发布实体/矩阵和当前配置视图；输出仍经代次、身份和释放门控。
@@ -65,6 +66,7 @@ namespace AimbotDetail {
         bool trackingInDeadzone = false;
         OW::AimStartLimiterState trackingStartLimiter{};
         OW::MouseMoveQuantizationState magneticMoveQuantization{};
+        OW::HitboxMotionAssist::State hitboxMotionAssist{};
     };
     void ResetMagneticTriggerQuantization(
         RuntimeState& state,

@@ -160,24 +160,23 @@ namespace OverlayRenderDetail {
 }
 
 void DrawHeroRadarMarker(const OW::c_entity& entity, float x, float y, ImU32 border, float scale) {
-    const float radius = 9 * scale;
+    const float radius = 9.0f * scale;
+    const float uiScale = Render::CanvasUiScale();
+    auto* draw = ImGui::GetForegroundDrawList();
+    if (!draw) return;
     if (auto* avatar = OverlayRenderDetail::FindEntityHeroIcon(entity)) {
-        auto* draw = ImGui::GetForegroundDrawList();
         draw->AddImageRounded((ImTextureID)avatar, ImVec2(x-radius, y-radius), ImVec2(x+radius, y+radius),
             ImVec2(0,0), ImVec2(1,1), IM_COL32_WHITE, radius);
-        draw->AddCircle(ImVec2(x,y), radius, border, 24, 1.2f);
+        Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Icon);
+        draw->AddCircle(ImVec2(x,y), radius, border, 24, 1.2f * uiScale);
     } else {
-        const ImVec4 c = ImGui::ColorConvertU32ToFloat4(border);
-        Render::DrawFilledCircle(Vector2(x,y), 3.5f,
-            Render::Color(int(c.x*255), int(c.y*255), int(c.z*255), int(c.w*255)), 16);
+        draw->AddCircleFilled(ImVec2(x, y), 3.5f * uiScale, border, 16);
     }
 }
 
 void skillinfo(const std::vector<OW::c_entity>& entities) {
     if (!OW::Config::ult) return;
     const auto layout = OW::OverlayStatus::GetLayout(OW::Config::heroStatusStyle);
-    const float height = OW::ScreenHeight() > 0 ? OW::ScreenHeight() : OW::ResolveScreenHeight();
-    const float width = OW::ScreenWidth() > 0 ? OW::ScreenWidth() : OW::ResolveScreenWidth();
     std::vector<const OW::c_entity*> visible;
     for (const auto& entity : entities) {
         if (!entity.team_known || entity.scene_generation != OW::EntitySceneGeneration() ||
@@ -187,33 +186,32 @@ void skillinfo(const std::vector<OW::c_entity>& entities) {
         visible.push_back(&entity);
     }
     if (visible.empty()) return;
-    const float scale = OW::Config::heroStatusScale;
-    const int rows = (std::max)(1, int(height / (layout.height * scale)));
-    const int columns = (int(visible.size()) + rows - 1) / rows;
-    const float usedHeight = (std::min)(int(visible.size()),rows)*layout.height*scale;
-    const float usedWidth = (columns*(layout.width+16)-16)*scale;
-    const float x = OW::OverlayStatus::Position(OW::Config::heroStatusPosX,width,usedWidth);
-    const float y = OW::OverlayStatus::Position(OW::Config::heroStatusPosY,height,usedHeight);
     auto* draw = ImGui::GetForegroundDrawList();
-    const ImVec2 canvasSize = ImGui::GetIO().DisplaySize;
-    const float canvasWidth = canvasSize.x > 0.0f ? canvasSize.x : width;
-    const float canvasHeight = canvasSize.y > 0.0f ? canvasSize.y : height;
-    const float sourceToCanvasX = canvasWidth / width;
-    const float sourceToCanvasY = canvasHeight / height;
+    const ImVec2 canvasSize = Render::CanvasSize();
+    const float canvasWidth = canvasSize.x > 0.0f ? canvasSize.x : OW::ResolveScreenWidth();
+    const float canvasHeight = canvasSize.y > 0.0f ? canvasSize.y : OW::ResolveScreenHeight();
+    const auto placement = OW::OverlayStatus::ComputeHeroRosterPlacement(
+        OW::Config::heroStatusStyle,
+        static_cast<int>(visible.size()),
+        canvasWidth,
+        canvasHeight,
+        OW::Config::heroStatusScale,
+        OW::Config::heroStatusPosX,
+        OW::Config::heroStatusPosY);
     const OverlayRenderDetail::HudTransform transform{
-        x * sourceToCanvasX,
-        y * sourceToCanvasY,
-        sourceToCanvasX,
-        sourceToCanvasY,
-        (sourceToCanvasX + sourceToCanvasY) * .5f,
-        scale};
+        placement.originX,
+        placement.originY,
+        1.0f,
+        1.0f,
+        1.0f,
+        placement.effectiveScale};
     draw->PushClipRect(ImVec2(0, 0), ImVec2(canvasWidth, canvasHeight), false);
     for (int i=0; i<int(visible.size()); ++i) {
         const auto& entity = *visible[i];
         const bool live = entity.roster_state == OW::EntityRosterState::Fresh &&
             entity.HasUsableBody(GetTickCount(), OW::EntitySceneGeneration());
-        OverlayRenderDetail::DrawHeroStatus(entity, (i/rows)*(layout.width+16),
-            (i%rows)*layout.height, OW::Config::heroStatusStyle, live, transform);
+        OverlayRenderDetail::DrawHeroStatus(entity, (i/placement.rows)*(layout.width+16),
+            (i%placement.rows)*layout.height, OW::Config::heroStatusStyle, live, transform);
     }
     draw->PopClipRect();
 }

@@ -1539,11 +1539,25 @@ namespace OW {
         bool Passes(const c_entity& e) const {
             if(!active) return true;
             const auto& p=Config::View_aimPlan().selection;
-            return AimPlan::Eligible(p,value,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,TargetingDetail::SelectionVisible(e));
+            return AimPlan::EligiblePreGeometry(p,value,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,TargetingDetail::SelectionVisible(e));
         }
-        bool Preferred(const c_entity& e) const {
+        bool Passes(const c_entity& e, float distance, float angleDeg) const {
+            if(!active) return true;
             const auto& p=Config::View_aimPlan().selection;
-            return active && p.mode==1 && AimPlan::PredicateMatches(p,e.HeroID,e.PlayerHealth,e.PlayerHealthMax,TargetingDetail::SelectionVisible(e));
+            const AimPlan::RuleObservation obs{
+                e.HeroID, e.PlayerHealth, e.PlayerHealthMax,
+                TargetingDetail::SelectionVisible(e), distance, angleDeg};
+            return AimPlan::Eligible(p, value, obs);
+        }
+        bool Preferred(const c_entity& e,
+                       float distance = std::numeric_limits<float>::quiet_NaN(),
+                       float angleDeg = std::numeric_limits<float>::quiet_NaN()) const {
+            if (!active) return false;
+            const auto& p=Config::View_aimPlan().selection;
+            const AimPlan::RuleObservation obs{
+                e.HeroID, e.PlayerHealth, e.PlayerHealthMax,
+                TargetingDetail::SelectionVisible(e), distance, angleDeg};
+            return AimPlan::Preferred(p, obs);
         }
     };
     inline void PublishSelectedAimPlan(const TargetCandidate& candidate) {
@@ -1661,7 +1675,6 @@ namespace OW {
                 // projectile hero must not lose the candidate merely because
                 // its normal weapon path enables prediction.
                 if(!candidateConfig.Passes(entities[i])) continue;
-                const bool preferred=candidateConfig.Preferred(entities[i]);
                 const bool teamPass = TargetingDetail::TargetTeamMatches(
                     entities[i], Config::View_aimbotTeam(), local_entity);
                 if (TargetingDetail::IsRuntimeTargetValid(entities[i], false) && teamPass) {
@@ -1753,6 +1766,9 @@ namespace OW {
                                 distance,
                                 applyTrackingExitMargin))
                             continue;
+                        if (!candidateConfig.Passes(entities[i], distance, fovScoreDeg))
+                            continue;
+                        const bool preferred = candidateConfig.Preferred(entities[i], distance, fovScoreDeg);
 
                         if (currentLockedCandidate)
                             activeLockCandidateSelectable = true;
@@ -1785,7 +1801,27 @@ namespace OW {
                             next.boneId = candidateBoneId;
                             next.rawAimPoint = rootPosition;
                             next.predictedAimPoint = resolvedAimPoint;
-                            next.aimPoint = fovEvaluation.acceptedAimPoint;
+                            next.effectiveHitWindow = ResolveEffectiveHitWindow(
+                                entities[i],
+                                next.boneId,
+                                weaponSpec,
+                                Config::View_hitbox(),
+                                Config::kLegacyDefaultHitboxRadius,
+                                projectileSpec.projectileRadius);
+                            const Vector3 reverseLateralOffset =
+                                (!contourFallback && !fovEvaluation.acceptedByPrediction && lead.predictionEnabled)
+                                    ? ComputeReverseLateralAimOffset(
+                                          fovContext.camera,
+                                          rootPosition,
+                                          resolvedAimPoint,
+                                          lead.targetVelocity,
+                                          next.effectiveHitWindow,
+                                          projectileSpec.projectileRadius,
+                                          Config::View_hitbox())
+                                    : Vector3{};
+                            next.aimPoint = fovEvaluation.acceptedAimPoint + reverseLateralOffset;
+                            if (reverseLateralOffset.Size() > 0.00001f)
+                                aimViewMatrix.WorldToScreen(next.aimPoint, &Vec2, OW::ScreenSizeSnapshot());
                             next.screenPoint = Vec2;
                             next.distance = distance;
                             next.fovScore = fovScoreDeg;
@@ -1802,13 +1838,6 @@ namespace OW {
                             if (!contourFallback && weaponSpec)
                                 next.nativeHitWindow = MakeNativeHitWindowInput(lead, weaponSpec->aimClass,
                                     Config::View_hitbox());
-                            next.effectiveHitWindow = ResolveEffectiveHitWindow(
-                                entities[i],
-                                next.boneId,
-                                weaponSpec,
-                                Config::View_hitbox(),
-                                Config::kLegacyDefaultHitboxRadius,
-                                projectileSpec.projectileRadius);
                             if(currentLockedCandidate) { lockedCandidate=next; lockedScore=score; }
                             if(select) { best=std::move(next); origin=score; TarGetIndex=int(i); selectedFovScoreDeg=fovScoreDeg; }
                         }
@@ -1827,7 +1856,7 @@ namespace OW {
             best=lockedCandidate; origin=lockedScore; TarGetIndex=best.entityIndex;
         }
         const bool holdAlternateDuringDropout = trackingContinuityEnabled &&
-            (!Config::targetAimPlanEnabled || (planSelection.mode!=2 && planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimPlan().groups.empty())) &&
+            (!Config::targetAimPlanEnabled || (!AimPlan::HasOnlyFilter(planSelection) && planSelection.minHealth==0 && planSelection.maxHealth==0 && Config::View_aimPlan().groups.empty())) &&
             activeLock.active &&
             activeLock.entityKey != 0 &&
             !activeLockCandidateSelectable &&
@@ -2019,7 +2048,9 @@ namespace OW {
                     if (nativeScore ? *nativeScore > 1.0f : angularScoreDeg > angularWindowDeg + 0.0001f)
                         continue;
                     const float normalizedScore = nativeScore.value_or(fallbackScore);
-                    const bool preferred=candidateConfig.Preferred(entity);
+                    if (!candidateConfig.Passes(entity, distance, angularScoreDeg))
+                        continue;
+                    const bool preferred=candidateConfig.Preferred(entity, distance, angularScoreDeg);
                     if (best.valid && !AimPlan::Better(preferred,normalizedScore,entity.address?entity.address:entity.LinkBase,best.planPreferred,bestNormalizedScore,best.entityKey))
                         continue;
 
@@ -2126,12 +2157,16 @@ namespace OW {
                         resolvedPrediction,
                         false);
                     PreditPos = lead.finalAimPoint;
-                    const Vector3 fovPoint = lead.finalAimPoint;
-                    const float distance = TargetingDetail::CameraPosition().DistTo(RootPos);
-                    const float effectiveFovDeg =
-                        Config::ResolveDynamicAimFovForDistance(Config::View_Fov(), distance);
-                    float fovScoreDeg = 0.0f;
-                    if (TargetingDetail::IsWithinFovDeg(fovContext, fovPoint, effectiveFovDeg, &fovScoreDeg)) {
+                    FovGeometry::CandidateFovEvaluation fovEvaluation{};
+                    if (TargetingDetail::EvaluateCandidateFov(
+                            fovContext,
+                            RootPos,
+                            lead.finalAimPoint,
+                            Config::View_Fov(),
+                            &Config::ResolveDynamicAimFovForDistance,
+                            fovEvaluation)) {
+                        const float distance = fovEvaluation.distance;
+                        const float fovScoreDeg = fovEvaluation.scoreDeg;
                         float score;
                         if (Config::View_aimbotPriority() == 0) {
                             score = fovScoreDeg;

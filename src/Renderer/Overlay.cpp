@@ -17,11 +17,17 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <dcomp.h>
 #include <dxgi1_5.h>
 #include <windowsx.h>
 
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dcomp.lib")
 #pragma comment(lib, "dxgi.lib")
+
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
+#endif
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -333,6 +339,10 @@ LRESULT WINAPI CanvasWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     switch (msg) {
         case WM_NCHITTEST:
             return g_Overlay.IsCanvasTransparentBackground() ? HTTRANSPARENT : HTCLIENT;
+        case WM_MOUSEACTIVATE:
+            if (g_Overlay.IsCanvasTransparentBackground())
+                return MA_NOACTIVATE;
+            break;
         case WM_ACTIVATE:
             if (LOWORD(wParam) != WA_INACTIVE && HIWORD(wParam) == 0)
                 g_Overlay.OnMenuActivated();
@@ -346,7 +356,8 @@ LRESULT WINAPI CanvasWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 return 0;
             break;
         case WM_DESTROY:
-            PostQuitMessage(0);
+            if (hWnd == g_Overlay.GetOverlayWindow() && !g_Overlay.IsRecreatingCanvasWindow())
+                PostQuitMessage(0);
             return 0;
         default:
             break;
@@ -473,7 +484,13 @@ bool Overlay::Initialize(const wchar_t* overlayTitle) {
         return false;
     const auto fail = [this]() { Shutdown(); return false; };
     ImGui_ImplWin32_EnableDpiAwareness();
+    m_overlayTitle = overlayTitle ? overlayTitle : L"";
     m_canvasTransparentBackground = OW::Config::overlayTransparentBackground;
+    m_desiredCanvasTransparentBackground = m_canvasTransparentBackground;
+    m_canvasModeChangePending = false;
+    m_inFrame = false;
+    m_recreatingCanvasWindow = false;
+    m_forceCanvasRender = false;
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     if (!RegisterWindowClasses(instance))
         return fail();
@@ -542,6 +559,13 @@ void Overlay::Run(std::function<void()> renderCallback) {
             OW::ProcessConnection::RequestCacheRefresh();
 
         UI::AutoSave();
+        if (!m_canvasModeChangePending &&
+            OW::Config::overlayTransparentBackground != m_canvasTransparentBackground) {
+            m_desiredCanvasTransparentBackground = OW::Config::overlayTransparentBackground;
+            m_canvasModeChangePending = true;
+        }
+        if (m_canvasModeChangePending)
+            ApplyPendingCanvasModeChange();
         UpdateWindowVisibility();
         // The canvas cannot activate, so also yield when Home has hidden the menu.
         OnMenuDeactivated(GetForegroundWindow());
@@ -558,7 +582,8 @@ void Overlay::Run(std::function<void()> renderCallback) {
         using Clock = V2::Rendering::FrameSchedule::Clock;
         const auto now = Clock::now();
         canvasSchedule.SetLimit(OW::Config::overlayFrameLimit, now);
-        if (canvasSchedule.Due(now)) {
+        if (m_forceCanvasRender || canvasSchedule.Due(now)) {
+            m_forceCanvasRender = false;
             canvasSchedule.FrameStarted(now);
             RenderCanvas(renderCallback);
         }
@@ -571,6 +596,10 @@ void Overlay::Run(std::function<void()> renderCallback) {
             }
         } else {
             m_lastMenuRenderMs = 0;
+        }
+        if (m_canvasModeChangePending) {
+            ApplyPendingCanvasModeChange();
+            continue;
         }
         if (OW::Config::overlayFrameLimit > 0) {
             // Keep menu, autosave and Home polling responsive even at a very low canvas FPS.
@@ -597,6 +626,10 @@ void Overlay::RequestExit() {
 }
 
 void Overlay::Shutdown() {
+    m_canvasModeChangePending = false;
+    m_inFrame = false;
+    m_recreatingCanvasWindow = false;
+    m_forceCanvasRender = false;
     UI::Vision::ReleasePreviewResources();
     if (m_uiResourcesInitialized) {
         UI::ShutdownResources();
@@ -644,19 +677,16 @@ bool Overlay::RegisterWindowClasses(HINSTANCE instance) {
     return RegisterClassIfNeeded(canvasClass) && RegisterClassIfNeeded(menuClass);
 }
 
-bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
-    const CanvasBounds initialBounds = ResolveCanvasBounds();
-    m_canvasX = initialBounds.x;
-    m_canvasY = initialBounds.y;
-    m_canvasWidth = initialBounds.width;
-    m_canvasHeight = initialBounds.height;
-    OW::RefreshScreenSizeFromConfig();
+HWND Overlay::CreateCanvasWindow(bool transparentBackground, HINSTANCE instance) const {
+    DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    if (transparentBackground)
+        exStyle |= WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
 
-    m_canvasHWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    return CreateWindowExW(
+        exStyle,
         kCanvasClassName,
-        overlayTitle,
-        WS_POPUP | WS_VISIBLE,
+        m_overlayTitle.c_str(),
+        WS_POPUP,
         m_canvasX,
         m_canvasY,
         static_cast<int>(m_canvasWidth),
@@ -666,15 +696,25 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
         instance,
         nullptr
     );
+}
+
+bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
+    m_overlayTitle = overlayTitle ? overlayTitle : L"";
+    const CanvasBounds initialBounds = ResolveCanvasBounds();
+    m_canvasX = initialBounds.x;
+    m_canvasY = initialBounds.y;
+    m_canvasWidth = initialBounds.width;
+    m_canvasHeight = initialBounds.height;
+    OW::RefreshScreenSizeFromConfig();
+
+    m_canvasHWnd = CreateCanvasWindow(m_canvasTransparentBackground, instance);
     if (!m_canvasHWnd)
         return false;
 
-    ApplyCanvasWindowStyle();
-
-    ShowWindow(m_canvasHWnd, SW_SHOW);
+    ShowWindow(m_canvasHWnd, m_canvasTransparentBackground ? SW_SHOWNOACTIVATE : SW_SHOW);
     SetWindowPos(m_canvasHWnd, HWND_TOPMOST, m_canvasX, m_canvasY,
                  static_cast<int>(m_canvasWidth), static_cast<int>(m_canvasHeight),
-                 SWP_SHOWWINDOW);
+                 SWP_SHOWWINDOW | (m_canvasTransparentBackground ? SWP_NOACTIVATE : 0));
 
     const DWORD menuStyle = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
     const DWORD menuExStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
@@ -725,7 +765,6 @@ bool Overlay::CreateWindows(const wchar_t* overlayTitle, HINSTANCE instance) {
 }
 
 bool Overlay::CreateDX11() {
-    UINT createDeviceFlags = 0;
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
     D3D_FEATURE_LEVEL featureLevelArray[] = {
         D3D_FEATURE_LEVEL_11_0,
@@ -736,7 +775,7 @@ bool Overlay::CreateDX11() {
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
-        createDeviceFlags,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         featureLevelArray,
         ARRAYSIZE(featureLevelArray),
         D3D11_SDK_VERSION,
@@ -744,6 +783,20 @@ bool Overlay::CreateDX11() {
         &featureLevel,
         &m_pContext
     );
+    if (FAILED(hr) || !m_pDevice || !m_pContext) {
+        hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            0,
+            featureLevelArray,
+            ARRAYSIZE(featureLevelArray),
+            D3D11_SDK_VERSION,
+            &m_pDevice,
+            &featureLevel,
+            &m_pContext
+        );
+    }
     if (FAILED(hr) || !m_pDevice || !m_pContext)
         return false;
 
@@ -753,13 +806,44 @@ bool Overlay::CreateDX11() {
         dxgiDevice1->Release();
     }
 
-    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
-            !m_canvasTransparentBackground, &m_canvasSwapChain, &m_canvasSwapChainFlags,
-            &m_canvasAllowTearing, m_canvasTransparentBackground))
-        return false;
+    if (m_canvasTransparentBackground) {
+        if (!CreateCanvasCompositionSurface(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
+                &m_canvasSwapChain, &m_canvasRenderTargetView, &m_dcompTarget, &m_dcompVisual)) {
+            Diagnostics::Error("DirectComposition transparent overlay initialization failed; falling back to opaque black mode.");
+            HWND fallbackCanvas = CreateCanvasWindow(false, GetModuleHandleW(nullptr));
+            if (!fallbackCanvas)
+                return false;
+            HWND failedCanvas = m_canvasHWnd;
+            m_canvasHWnd = fallbackCanvas;
+            m_canvasTransparentBackground = false;
+            m_desiredCanvasTransparentBackground = false;
+            OW::Config::overlayTransparentBackground = false;
+            ShowWindow(m_canvasHWnd, SW_SHOW);
+            SetWindowPos(m_canvasHWnd, HWND_TOPMOST, m_canvasX, m_canvasY,
+                         static_cast<int>(m_canvasWidth), static_cast<int>(m_canvasHeight),
+                         SWP_SHOWWINDOW);
+            if (m_menuHWnd && IsWindow(m_menuHWnd)) {
+                SetWindowPos(m_menuHWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            m_recreatingCanvasWindow = true;
+            DestroyWindow(failedCanvas);
+            m_recreatingCanvasWindow = false;
+        } else {
+            m_canvasSwapChainFlags = 0;
+            m_canvasAllowTearing = false;
+        }
+    }
 
-    if (!CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView))
-        return false;
+    if (!m_canvasTransparentBackground) {
+        if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
+                true, &m_canvasSwapChain, &m_canvasSwapChainFlags,
+                &m_canvasAllowTearing, false))
+            return false;
+
+        if (!CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView))
+            return false;
+    }
 
     bool menuAllowTearing = false;
     if (!CreateSwapChainForWindow(m_menuHWnd, m_menuWidth, m_menuHeight, false,
@@ -770,8 +854,18 @@ bool Overlay::CreateDX11() {
 }
 
 void Overlay::CleanupDX11() {
+    if (m_pContext)
+        m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
+
     ReleaseRenderTarget(&m_menuRenderTargetView);
     ReleaseRenderTarget(&m_canvasRenderTargetView);
+    ReleaseCanvasCompositionResources(&m_dcompTarget, &m_dcompVisual);
+
+    if (m_dcompDevice) {
+        m_dcompDevice->Commit();
+        m_dcompDevice->Release();
+        m_dcompDevice = nullptr;
+    }
 
     if (m_menuSwapChain) {
         m_menuSwapChain->Release();
@@ -794,57 +888,332 @@ void Overlay::CleanupDX11() {
     }
 }
 
-void Overlay::ApplyCanvasWindowStyle() {
-    if (!m_canvasHWnd)
-        return;
+bool Overlay::EnsureDCompDevice() {
+    if (m_dcompDevice)
+        return true;
+    if (!m_pDevice)
+        return false;
 
-    constexpr LONG_PTR kTransparentStyle = WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE;
-    LONG_PTR exStyle = GetWindowLongPtrW(m_canvasHWnd, GWL_EXSTYLE);
-    if (m_canvasTransparentBackground)
-        exStyle |= kTransparentStyle;
-    else
-        exStyle &= ~kTransparentStyle;
-    SetWindowLongPtrW(m_canvasHWnd, GWL_EXSTYLE, exStyle);
-    SetWindowPos(m_canvasHWnd, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    if (m_canvasTransparentBackground)
-        SetLayeredWindowAttributes(m_canvasHWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+    IDXGIDevice* dxgiDevice = nullptr;
+    HRESULT hr = m_pDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+    if (FAILED(hr) || !dxgiDevice) {
+        Diagnostics::Error("Overlay DirectComposition failed to query IDXGIDevice: hr=0x%08lx.", hr);
+        return false;
+    }
+
+    hr = DCompositionCreateDevice(dxgiDevice, IID_PPV_ARGS(&m_dcompDevice));
+    dxgiDevice->Release();
+    if (FAILED(hr) || !m_dcompDevice) {
+        m_dcompDevice = nullptr;
+        Diagnostics::Error("Overlay DCompositionCreateDevice failed: hr=0x%08lx.", hr);
+        return false;
+    }
+    return true;
 }
 
-bool Overlay::RecreateCanvasSwapChain() {
-    if (!m_canvasHWnd || !m_pDevice || !m_pContext)
+void Overlay::ReleaseCanvasCompositionResources(IDCompositionTarget** dcompTarget,
+                                                IDCompositionVisual** dcompVisual) {
+    bool detached = false;
+    if (dcompVisual && *dcompVisual) {
+        (*dcompVisual)->SetContent(nullptr);
+        (*dcompVisual)->Release();
+        *dcompVisual = nullptr;
+        detached = true;
+    }
+    if (dcompTarget && *dcompTarget) {
+        (*dcompTarget)->SetRoot(nullptr);
+        (*dcompTarget)->Release();
+        *dcompTarget = nullptr;
+        detached = true;
+    }
+    if (detached && m_dcompDevice)
+        m_dcompDevice->Commit();
+}
+
+bool Overlay::CreateCanvasCompositionSurface(HWND hWnd, UINT width, UINT height,
+                                             IDXGISwapChain** swapChain,
+                                             ID3D11RenderTargetView** renderTargetView,
+                                             IDCompositionTarget** dcompTarget,
+                                             IDCompositionVisual** dcompVisual) {
+    if (!hWnd || !m_pDevice || !m_pContext || !swapChain || !renderTargetView ||
+        !dcompTarget || !dcompVisual || width == 0 || height == 0)
         return false;
+
+    *swapChain = nullptr;
+    *renderTargetView = nullptr;
+    *dcompTarget = nullptr;
+    *dcompVisual = nullptr;
+
+    if (!EnsureDCompDevice())
+        return false;
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    IDXGIAdapter* adapter = nullptr;
+    IDXGIFactory2* factory2 = nullptr;
+
+    HRESULT hr = m_pDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+    if (SUCCEEDED(hr))
+        hr = dxgiDevice->GetParent(IID_PPV_ARGS(&adapter));
+    if (SUCCEEDED(hr))
+        hr = adapter->GetParent(IID_PPV_ARGS(&factory2));
+
+    auto releaseDxgi = [&]() {
+        if (factory2) factory2->Release();
+        if (adapter) adapter->Release();
+        if (dxgiDevice) dxgiDevice->Release();
+    };
+
+    if (FAILED(hr) || !factory2) {
+        releaseDxgi();
+        Diagnostics::Error("Overlay DirectComposition failed to query IDXGIFactory2: hr=0x%08lx.", hr);
+        return false;
+    }
+
+    IDXGISwapChain1* swapChain1 = nullptr;
+    const DXGI_FORMAT candidateFormats[] = {
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
+    HRESULT createHr = E_FAIL;
+    for (DXGI_FORMAT format : candidateFormats) {
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.Format = format;
+        desc.Stereo = FALSE;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = 2;
+        desc.Scaling = DXGI_SCALING_STRETCH;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+        desc.Flags = 0;
+
+        createHr = factory2->CreateSwapChainForComposition(m_pDevice, &desc, nullptr, &swapChain1);
+        if (SUCCEEDED(createHr) && swapChain1)
+            break;
+        swapChain1 = nullptr;
+    }
+    releaseDxgi();
+
+    if (FAILED(createHr) || !swapChain1) {
+        Diagnostics::Error("Overlay CreateSwapChainForComposition failed: hr=0x%08lx.", createHr);
+        return false;
+    }
+
+    auto cleanupOnFail = [&]() {
+        ReleaseRenderTarget(renderTargetView);
+        ReleaseCanvasCompositionResources(dcompTarget, dcompVisual);
+        if (swapChain1) {
+            swapChain1->Release();
+            swapChain1 = nullptr;
+        }
+        *swapChain = nullptr;
+    };
+
+    if (!CreateRenderTarget(swapChain1, renderTargetView)) {
+        Diagnostics::Error("Overlay DirectComposition failed to create render target view.");
+        cleanupOnFail();
+        return false;
+    }
+
+    hr = m_dcompDevice->CreateTargetForHwnd(hWnd, TRUE, dcompTarget);
+    if (FAILED(hr) || !*dcompTarget) {
+        Diagnostics::Error("Overlay DirectComposition CreateTargetForHwnd failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
+
+    hr = m_dcompDevice->CreateVisual(dcompVisual);
+    if (FAILED(hr) || !*dcompVisual) {
+        Diagnostics::Error("Overlay DirectComposition CreateVisual failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
+
+    hr = (*dcompVisual)->SetContent(swapChain1);
+    if (FAILED(hr)) {
+        Diagnostics::Error("Overlay DirectComposition SetContent failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
+
+    hr = (*dcompTarget)->SetRoot(*dcompVisual);
+    if (FAILED(hr)) {
+        Diagnostics::Error("Overlay DirectComposition SetRoot failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
+
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    m_pContext->OMSetRenderTargets(1, renderTargetView, nullptr);
+    m_pContext->ClearRenderTargetView(*renderTargetView, clearColor);
+    m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
+    swapChain1->Present(0, 0);
+
+    hr = m_dcompDevice->Commit();
+    if (FAILED(hr)) {
+        Diagnostics::Error("Overlay DirectComposition Commit failed: hr=0x%08lx.", hr);
+        cleanupOnFail();
+        return false;
+    }
+
+    *swapChain = swapChain1;
+    return true;
+}
+
+bool Overlay::RebindCanvasImGuiWindow(HWND hWnd) {
+    if (!m_canvasContext || !hWnd)
+        return true;
+
+    ImGuiContext* previousContext = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(m_canvasContext);
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.BackendPlatformUserData)
+        ImGui_ImplWin32_Shutdown();
+    const bool ok = ImGui_ImplWin32_Init(hWnd);
+    ImGui::SetCurrentContext(previousContext);
+    return ok;
+}
+
+bool Overlay::ApplyPendingCanvasModeChange() {
+    m_canvasModeChangePending = false;
+    const bool targetTransparent = m_desiredCanvasTransparentBackground;
+    if (m_canvasTransparentBackground == targetTransparent)
+        return true;
+    if (!m_canvasHWnd || !m_pDevice || !m_pContext) {
+        m_canvasTransparentBackground = targetTransparent;
+        return true;
+    }
+
+    HWND newCanvasHWnd = CreateCanvasWindow(targetTransparent, GetModuleHandleW(nullptr));
+    if (!newCanvasHWnd) {
+        Diagnostics::Error("Overlay background mode change failed to create canvas window; keeping previous mode.");
+        m_desiredCanvasTransparentBackground = m_canvasTransparentBackground;
+        OW::Config::overlayTransparentBackground = m_canvasTransparentBackground;
+        return false;
+    }
+
+    IDXGISwapChain* newSwapChain = nullptr;
+    ID3D11RenderTargetView* newRtv = nullptr;
+    IDCompositionTarget* newDcompTarget = nullptr;
+    IDCompositionVisual* newDcompVisual = nullptr;
+    UINT newSwapChainFlags = 0;
+    bool newAllowTearing = false;
+
+    bool created = false;
+    if (targetTransparent) {
+        created = CreateCanvasCompositionSurface(
+            newCanvasHWnd, m_canvasWidth, m_canvasHeight,
+            &newSwapChain, &newRtv, &newDcompTarget, &newDcompVisual);
+    } else {
+        created = CreateSwapChainForWindow(
+            newCanvasHWnd, m_canvasWidth, m_canvasHeight, true,
+            &newSwapChain, &newSwapChainFlags, &newAllowTearing, false) &&
+            CreateRenderTarget(newSwapChain, &newRtv);
+        if (created) {
+            const float clearColor[4] = { 1.0f / 255, 1.0f / 255, 1.0f / 255, 1.0f };
+            m_pContext->OMSetRenderTargets(1, &newRtv, nullptr);
+            m_pContext->ClearRenderTargetView(newRtv, clearColor);
+            m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
+            newSwapChain->Present(0, 0);
+        }
+    }
+
+    if (!created) {
+        ReleaseRenderTarget(&newRtv);
+        ReleaseCanvasCompositionResources(&newDcompTarget, &newDcompVisual);
+        if (newSwapChain)
+            newSwapChain->Release();
+        m_recreatingCanvasWindow = true;
+        DestroyWindow(newCanvasHWnd);
+        m_recreatingCanvasWindow = false;
+        m_desiredCanvasTransparentBackground = m_canvasTransparentBackground;
+        OW::Config::overlayTransparentBackground = m_canvasTransparentBackground;
+        Diagnostics::Error("Overlay background mode change failed; keeping the previous mode.");
+        return false;
+    }
+
+    if (!RebindCanvasImGuiWindow(newCanvasHWnd)) {
+        RebindCanvasImGuiWindow(m_canvasHWnd);
+        ReleaseRenderTarget(&newRtv);
+        ReleaseCanvasCompositionResources(&newDcompTarget, &newDcompVisual);
+        if (newSwapChain)
+            newSwapChain->Release();
+        m_recreatingCanvasWindow = true;
+        DestroyWindow(newCanvasHWnd);
+        m_recreatingCanvasWindow = false;
+        m_desiredCanvasTransparentBackground = m_canvasTransparentBackground;
+        OW::Config::overlayTransparentBackground = m_canvasTransparentBackground;
+        Diagnostics::Error("Overlay background mode change failed to rebind ImGui window; keeping the previous mode.");
+        return false;
+    }
 
     m_pContext->OMSetRenderTargets(0, nullptr, nullptr);
     ReleaseRenderTarget(&m_canvasRenderTargetView);
+    ReleaseCanvasCompositionResources(&m_dcompTarget, &m_dcompVisual);
     if (m_canvasSwapChain) {
         m_canvasSwapChain->Release();
         m_canvasSwapChain = nullptr;
     }
-    m_canvasSwapChainFlags = 0;
-    m_canvasAllowTearing = false;
-    if (!CreateSwapChainForWindow(m_canvasHWnd, m_canvasWidth, m_canvasHeight,
-            !m_canvasTransparentBackground, &m_canvasSwapChain, &m_canvasSwapChainFlags,
-            &m_canvasAllowTearing, m_canvasTransparentBackground))
-        return false;
-    return CreateRenderTarget(m_canvasSwapChain, &m_canvasRenderTargetView);
+
+    HWND oldCanvasHWnd = m_canvasHWnd;
+    m_canvasHWnd = newCanvasHWnd;
+    m_canvasSwapChain = newSwapChain;
+    m_canvasRenderTargetView = newRtv;
+    m_dcompTarget = newDcompTarget;
+    m_dcompVisual = newDcompVisual;
+    m_canvasSwapChainFlags = newSwapChainFlags;
+    m_canvasAllowTearing = newAllowTearing;
+    m_canvasTransparentBackground = targetTransparent;
+
+    if (!m_minimizedToTaskbar) {
+        ShowWindow(m_canvasHWnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(m_canvasHWnd, HWND_TOPMOST, m_canvasX, m_canvasY,
+                     static_cast<int>(m_canvasWidth), static_cast<int>(m_canvasHeight),
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        DWORD foregroundPid = 0;
+        if (HWND foreground = GetForegroundWindow())
+            GetWindowThreadProcessId(foreground, &foregroundPid);
+        if (foregroundPid == GetCurrentProcessId()) {
+            SetWindowsTopmost(true);
+        } else if (IsWindowVisibleAndRestored(m_menuHWnd) &&
+                   (GetWindowLongPtrW(m_menuHWnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+            SetWindowPos(m_menuHWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
+    m_recreatingCanvasWindow = true;
+    DestroyWindow(oldCanvasHWnd);
+    m_recreatingCanvasWindow = false;
+
+    m_lastCanvasBoundsRefreshMs = 0;
+    m_forceCanvasRender = true;
+    Diagnostics::Info("Overlay background mode switched to %s.",
+                      m_canvasTransparentBackground ? "transparent (DirectComposition)" : "opaque black");
+    return true;
 }
 
 bool Overlay::SetCanvasTransparentBackground(bool enabled) {
-    if (m_canvasTransparentBackground == enabled)
+    m_desiredCanvasTransparentBackground = enabled;
+    if (!m_canvasHWnd || !m_pDevice) {
+        m_canvasTransparentBackground = enabled;
+        m_canvasModeChangePending = false;
+        return true;
+    }
+
+    m_canvasModeChangePending = (m_desiredCanvasTransparentBackground != m_canvasTransparentBackground);
+    if (!m_canvasModeChangePending)
         return true;
 
-    const bool previous = m_canvasTransparentBackground;
-    m_canvasTransparentBackground = enabled;
-    ApplyCanvasWindowStyle();
-    if (RecreateCanvasSwapChain())
+    // Never destroy or recreate HWND / DXGI SwapChain synchronously while inside
+    // RenderMenu() / RenderCanvas(); apply cleanly between frames in Overlay::Run().
+    if (m_inFrame)
         return true;
 
-    m_canvasTransparentBackground = previous;
-    ApplyCanvasWindowStyle();
-    RecreateCanvasSwapChain();
-    Diagnostics::Error("Overlay background mode change failed; keeping the previous mode.");
-    return false;
+    return ApplyPendingCanvasModeChange();
 }
 
 bool Overlay::CreateSwapChainForWindow(HWND hWnd, UINT width, UINT height, bool allowTearingPreferred,
@@ -1101,6 +1470,8 @@ void Overlay::UpdateSwapChainSizes() {
             if (ResizeSwapChain(m_canvasSwapChain, &m_canvasRenderTargetView, width, height, m_canvasSwapChainFlags)) {
                 m_canvasWidth = width;
                 m_canvasHeight = height;
+                if (m_canvasTransparentBackground && m_dcompDevice)
+                    m_dcompDevice->Commit();
                 Diagnostics::RecordOverlayCanvasFrame(m_canvasWidth, m_canvasHeight, 0.0f, 0.0f, true);
             }
         }
@@ -1124,6 +1495,13 @@ void Overlay::UpdateSwapChainSizes() {
 void Overlay::RenderCanvas(std::function<void()> renderCallback) {
     if (m_minimizedToTaskbar || !m_canvasContext || !m_canvasRenderTargetView || !m_canvasSwapChain)
         return;
+
+    struct ScopedFrameFlag {
+        bool& flag;
+        bool previous;
+        explicit ScopedFrameFlag(bool& target) : flag(target), previous(target) { flag = true; }
+        ~ScopedFrameFlag() { flag = previous; }
+    } frameGuard(m_inFrame);
 
     OW::BeginScreenSizeFrame();
     const auto t0 = std::chrono::steady_clock::now();
@@ -1179,6 +1557,13 @@ void Overlay::RenderMenu() {
     if (m_minimizedToTaskbar || !OW::Config::Menu || !m_menuContext ||
         !m_menuRenderTargetView || !m_menuSwapChain || !IsWindowVisibleAndRestored(m_menuHWnd))
         return;
+
+    struct ScopedFrameFlag {
+        bool& flag;
+        bool previous;
+        explicit ScopedFrameFlag(bool& target) : flag(target), previous(target) { flag = true; }
+        ~ScopedFrameFlag() { flag = previous; }
+    } frameGuard(m_inFrame);
 
     ImGui::SetCurrentContext(m_menuContext);
     ImGui::GetStyle().FontScaleDpi=GetDpiForWindow(m_menuHWnd)/96.f;

@@ -53,6 +53,17 @@ namespace Render {
 
     IconManager* GetIconManager();
 
+    // ---- Coordinate & Resolution Scaling Helpers ----
+
+    ImVec2 CanvasSize();
+    float CanvasUiScale();
+    float SourceUiScale();
+    float ScaleX();
+    float ScaleY();
+    float ScaleUniform();
+    ImVec2 ToCanvas(const Vector2& point);
+    ImVec2 ToCanvas(const ImVec2& point);
+
     // ---- Drawing Primitives ----
     // All drawing goes through ImGui foreground draw lists.
 
@@ -78,6 +89,7 @@ namespace Render {
 
     void DrawStrokeText(const ImVec2& pos, ImU32 color, const char* text, float fontSize = 15.0f);
     void DrawText(const ImVec2& pos, ImU32 color, const char* text, float fontSize = 15.0f);
+    void DrawCanvasText(const ImVec2& canvasPos, ImU32 color, const char* text, float canvasFontSize = 15.0f);
 
     void DrawString(const Vector2& pos, const Color& color, const char* text);
 

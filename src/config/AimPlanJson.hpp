@@ -1,5 +1,6 @@
 #pragma once
 #include "Game/AimPlan.hpp"
+#include <string_view>
 #include <type_traits>
 #pragma push_macro("min")
 #pragma push_macro("max")
@@ -165,10 +166,58 @@ inline Value MotionJson(const Motion& m,Allocator& a) {
     Put(s,"soft_lock_delay_ms",m.shuwu.soft_lock_delay_ms,a);
     v.AddMember("shuwu",s,a); return v;
 }
+inline int ParseRuleMeasure(const Value& v) {
+    if (v.IsInt64()) return int(v.GetInt64());
+    if (v.IsString()) {
+        const std::string_view name(v.GetString(), v.GetStringLength());
+        if (name == "hero") return static_cast<int>(RuleMeasure::Hero);
+        if (name == "full_health") return static_cast<int>(RuleMeasure::FullHealth);
+        if (name == "visible") return static_cast<int>(RuleMeasure::Visible);
+        if (name == "health") return static_cast<int>(RuleMeasure::Health);
+        if (name == "distance") return static_cast<int>(RuleMeasure::Distance);
+        if (name == "angle") return static_cast<int>(RuleMeasure::Angle);
+    }
+    return 0;
+}
+inline void ReadRules(const Value& v, const char* key, std::vector<SelectionRule>& dst, bool& found) {
+    found = false;
+    if (!v.IsObject() || !v.HasMember(key) || !v[key].IsArray()) return;
+    found = true;
+    dst.clear();
+    for (const auto& x : v[key].GetArray()) {
+        if (dst.size() >= kMaxSelectionRules) break;
+        if (!x.IsObject()) continue;
+        SelectionRule r{};
+        if (x.HasMember("measure")) r.measure = ParseRuleMeasure(x["measure"]);
+        else Read(x, "predicate", r.measure);
+        ReadIds(x, "heroes", r.heroes);
+        Read(x, "minValue", r.minValue); Read(x, "maxValue", r.maxValue);
+        Read(x, "lo", r.minValue); Read(x, "hi", r.maxValue);
+        NormalizeRule(r);
+        dst.push_back(std::move(r));
+    }
+}
+inline void PutRules(Value& v, const char* key, const std::vector<SelectionRule>& rules, Allocator& a) {
+    Value list(rapidjson::kArrayType);
+    for (const auto& r : rules) {
+        Value x(rapidjson::kObjectType);
+        Put(x, "measure", r.measure, a);
+        PutIds(x, "heroes", r.heroes, a);
+        Put(x, "minValue", r.minValue, a);
+        Put(x, "maxValue", r.maxValue, a);
+        list.PushBack(x, a);
+    }
+    Value k; k.SetString(key, a); v.AddMember(k, list, a);
+}
 inline Plan ReadPlan(const Value& v) {
     Plan p; if(!v.IsObject()) return p;
     auto& s=p.selection;
     Read(v,"mode",s.mode); Read(v,"predicate",s.predicate); ReadIds(v,"heroes",s.heroes);
+    bool hasOnlyRules = false, hasPreferRules = false;
+    ReadRules(v, "onlyRules", s.onlyRules, hasOnlyRules);
+    ReadRules(v, "preferRules", s.preferRules, hasPreferRules);
+    if (hasOnlyRules && s.onlyRules.empty() && s.mode == 2) s.mode = 0;
+    if (hasPreferRules && s.preferRules.empty() && s.mode == 1) s.mode = 0;
     Read(v,"angleWeight",s.angleWeight); Read(v,"distanceWeight",s.distanceWeight); Read(v,"healthWeight",s.healthWeight);
     Read(v,"minHealth",s.minHealth); Read(v,"maxHealth",s.maxHealth);
     Read(v,"overrideMotion",p.overrideMotion); if(v.HasMember("motion")) p.motion=ReadMotion(v["motion"]);
@@ -187,7 +236,9 @@ inline Plan ReadPlan(const Value& v) {
 }
 inline Value PlanJson(const Plan& input,Allocator& a) {
     Plan p=input; Normalize(p); Value v(rapidjson::kObjectType); const auto& s=p.selection;
-    Put(v,"version",1,a); Put(v,"mode",s.mode,a); Put(v,"predicate",s.predicate,a); PutIds(v,"heroes",s.heroes,a);
+    Put(v,"version",2,a); Put(v,"mode",s.mode,a); Put(v,"predicate",s.predicate,a); PutIds(v,"heroes",s.heroes,a);
+    if (!s.onlyRules.empty()) PutRules(v,"onlyRules",s.onlyRules,a);
+    if (!s.preferRules.empty()) PutRules(v,"preferRules",s.preferRules,a);
     Put(v,"angleWeight",s.angleWeight,a); Put(v,"distanceWeight",s.distanceWeight,a); Put(v,"healthWeight",s.healthWeight,a);
     Put(v,"minHealth",s.minHealth,a); Put(v,"maxHealth",s.maxHealth,a); Put(v,"overrideMotion",p.overrideMotion,a);
     v.AddMember("motion",MotionJson(p.motion,a),a);

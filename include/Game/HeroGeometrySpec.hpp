@@ -29,6 +29,21 @@ bool ContinuousTrajectoryIntersectsHitbox(const ProjectileTrajectory& trajectory
 const HeroGeometrySpec* ResolveHeroGeometrySpec(uint64_t heroId);
 const BoneHitboxSpec* ResolveBoneHitboxSpec(uint64_t heroId, int boneId);
 float ResolveBoneHitboxRadius(uint64_t heroId, int boneId, float fallbackRadius);
+float EffectiveExpandedHitboxRadius(float shapeRadius,
+                                    float projectileRadius,
+                                    float hitboxScalePercent);
+// Bounded reverse-lateral safety margin offset applied only to the desired
+// steering aim point (never to actual Hitbox contact geometry).
+// Returns a world-space offset opposite to the target's lateral motion,
+// bounded within half of the scaled effective radius and within the lateral
+// lead displacement. Returns zero for stationary or purely radial motion.
+Vector3 ComputeReverseLateralAimOffset(const Vector3& camera,
+                                       const Vector3& rawAimPoint,
+                                       const Vector3& predictedAimPoint,
+                                       const Vector3& targetVelocity,
+                                       float effectiveHitRadius,
+                                       float projectileRadius,
+                                       float hitboxScalePercent);
 float ResolveEffectiveHitWindow(uint64_t heroId,
                                 int boneId,
                                 const WeaponSpec* weapon,

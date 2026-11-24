@@ -181,6 +181,14 @@ namespace OW {
         Vector3 previous_head_pos{};
         Vector3 previous_velocity{};
         Vector3 previous_pos{};
+        Vector3 previous_stable_velocity{};
+        uint64_t previous_stable_velocity_time_us = 0;
+        uint32_t previous_stable_velocity_tick_ms = 0;
+        bool has_previous_stable_velocity = false;
+        Vector3 stable_velocity{};
+        uint64_t stable_velocity_time_us = 0;
+        uint32_t stable_velocity_tick_ms = 0;
+        bool has_stable_velocity = false;
         Vector3 previous_neck_pos{};
         Vector3 previous_chest_pos{};
         std::array<Vector3, 18> previous_skeleton_bones{};

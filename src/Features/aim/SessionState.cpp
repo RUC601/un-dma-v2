@@ -40,6 +40,7 @@ namespace AimbotDetail {
         state.trackingTargetActorKey = 0;
         state.trackingTargetMissingSinceTick = 0;
         state.trackingInDeadzone = false;
+        state.hitboxMotionAssist.Reset();
         OW::ResetAimStartLimiter(state.trackingStartLimiter);
     }
 

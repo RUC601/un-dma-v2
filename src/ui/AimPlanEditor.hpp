@@ -99,19 +99,88 @@ inline bool HealthLimits(OW::Config::HeroPreset& preset) {
     return changed;
 }
 
+inline bool SelectionRuleList(const char* sectionLabel,
+                              const char* tooltipText,
+                              const char* addButtonLabel,
+                              const char* idPrefix,
+                              std::vector<AimPlan::SelectionRule>& rules) {
+    static const char* measures[] = {
+        "Selected heroes", "Full health", "Visible",
+        "Health range", "Distance range", "Angle range"
+    };
+    bool changed = false;
+    ImGui::PushID(idPrefix);
+    SettingRow(sectionLabel);
+    if (ImGui::SmallButton(L(addButtonLabel)) && rules.size() < AimPlan::kMaxSelectionRules) {
+        AimPlan::SelectionRule rule{};
+        rule.measure = static_cast<int>(AimPlan::RuleMeasure::Hero);
+        rules.push_back(std::move(rule));
+        changed = true;
+    }
+    SettingTooltip(L(tooltipText));
+    int removeIndex = -1;
+    for (size_t i = 0; i < rules.size(); ++i) {
+        auto& rule = rules[i];
+        ImGui::PushID(static_cast<int>(i));
+        SettingRow("Rule condition");
+        PushControlWidth();
+        const int previousMeasure = rule.measure;
+        if (UISelect("##measure", &rule.measure, measures, IM_ARRAYSIZE(measures))) {
+            if (rule.measure != previousMeasure) {
+                rule.heroes.clear();
+                rule.minValue = 0.0f;
+                rule.maxValue = 0.0f;
+            }
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+        if (rule.measure == static_cast<int>(AimPlan::RuleMeasure::Hero)) {
+            changed |= Heroes("##ruleHeroes", rule.heroes);
+        } else if (rule.measure == static_cast<int>(AimPlan::RuleMeasure::Health)) {
+            changed |= Float("Minimum HP", "##ruleMinHp", rule.minValue, 0.0f, 2000.0f, " HP");
+            changed |= Float("Maximum HP (0 = any)", "##ruleMaxHp", rule.maxValue, 0.0f, 2000.0f, " HP");
+        } else if (rule.measure == static_cast<int>(AimPlan::RuleMeasure::Distance)) {
+            changed |= Float("Min Distance", "##ruleMinDist", rule.minValue, 0.0f, 500.0f, " m");
+            changed |= Float("Max Distance (0 = any)", "##ruleMaxDist", rule.maxValue, 0.0f, 500.0f, " m");
+        } else if (rule.measure == static_cast<int>(AimPlan::RuleMeasure::Angle)) {
+            changed |= Float("Min Angle", "##ruleMinAngle", rule.minValue, 0.0f, 180.0f, " deg");
+            changed |= Float("Max Angle (0 = any)", "##ruleMaxAngle", rule.maxValue, 0.0f, 180.0f, " deg");
+        }
+        if (ImGui::SmallButton(L("Remove rule")))
+            removeIndex = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (removeIndex >= 0) {
+        rules.erase(rules.begin() + removeIndex);
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 inline bool Policy(OW::Config::HeroPreset& preset,
                    bool weightedRanking = true,
                    bool includeHealthLimits = true) {
     auto& p=preset.aimPlan; auto& s=p.selection; bool changed=false;
-    static const char* modes[]={"Any","Prefer","Only"};
-    static const char* predicates[]={"Selected heroes","Full health","Visible"};
-    SettingRow("Target preference"); PushControlWidth(); changed|=UISelect("##preference",&s.mode,modes,3); ImGui::PopItemWidth();
-    if (s.mode != 0) SettingTooltip(L(s.mode == 2
-        ? "Only: no match means no target. An empty hero set selects nobody."
-        : "Prefer: matching valid targets rank first, otherwise use the rest. An active minimum lock expires first."));
-    if(s.mode) {
-        SettingRow("Preference condition"); PushControlWidth(); changed|=UISelect("##predicate",&s.predicate,predicates,3); ImGui::PopItemWidth();
-        if(s.predicate==0) changed|=Heroes("##policyHeroes",s.heroes);
+    AimPlan::MaterializeLegacyRules(s);
+    AimPlan::Normalize(p);
+    bool rulesChanged = false;
+    rulesChanged |= SelectionRuleList(
+        "Only rules",
+        "Only: target must satisfy every Only rule. An empty hero rule selects nobody.",
+        "Add Only rule",
+        "onlyRules",
+        s.onlyRules);
+    rulesChanged |= SelectionRuleList(
+        "Prefer rules",
+        "Prefer: targets matching any Prefer rule rank ahead of others. An active minimum lock expires first.",
+        "Add Prefer rule",
+        "preferRules",
+        s.preferRules);
+    if (rulesChanged) {
+        AimPlan::SyncLegacySelectionSummary(s);
+        AimPlan::Normalize(p);
+        changed = true;
     }
     if (includeHealthLimits)
         changed |= HealthLimits(preset);

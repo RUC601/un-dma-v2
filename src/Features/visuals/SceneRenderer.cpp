@@ -53,20 +53,25 @@ namespace {
             lastTick = now; lastReads = reads;
         }
         const auto settings=V2::HeroSettings::Snapshot();const auto& display=settings->display;
-        const float scale=display.infoScale,font=12*scale,lineHeight=14*scale;
-        const float originX=10+OW::OverlayStatus::Position(display.infoX,CanvasWidth(),222*scale),originY=10+OW::OverlayStatus::Position(display.infoY,CanvasHeight(),196*scale);
-        ImGui::GetForegroundDrawList()->PushClipRect(ImVec2(originX,originY), ImVec2(originX+222*scale,originY+196*scale), true);
+        const ImVec2 canvasSize = Render::CanvasSize();
+        const float canvasW = canvasSize.x > 0.0f ? canvasSize.x : CanvasWidth();
+        const float canvasH = canvasSize.y > 0.0f ? canvasSize.y : CanvasHeight();
+        const auto placement = OW::OverlayStatus::ComputeOverlayInfoPlacement(
+            canvasW, canvasH, display.infoScale, display.infoX, display.infoY);
+        ImGui::GetForegroundDrawList()->PushClipRect(
+            ImVec2(placement.originX, placement.originY),
+            ImVec2(placement.originX + placement.width, placement.originY + placement.height), true);
         const char* title = "Unleashed ";
 
-        Render::DrawText(ImVec2(originX,originY), IM_COL32_WHITE, title, 13.5f*scale);
-        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(13.5f*scale, FLT_MAX, 0, title).x;
+        Render::DrawCanvasText(ImVec2(placement.originX, placement.originY), IM_COL32_WHITE, title, placement.titleFont);
+        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(placement.titleFont, FLT_MAX, 0, title).x;
         char text[96]{};
         std::snprintf(text, sizeof(text), "[%.0f]", Diagnostics::RenderFps());
-        Render::DrawText(ImVec2(originX+titleWidth,originY), IM_COL32(100,240,115,255), text, 13.5f*scale);
-        float y=originY+18*scale;
+        Render::DrawCanvasText(ImVec2(placement.originX + titleWidth, placement.originY), IM_COL32(100,240,115,255), text, placement.titleFont);
+        float y = placement.originY + placement.titleGap;
         auto line = [&](const std::string& value) {
-            Render::DrawText(ImVec2(originX,y), IM_COL32(225,230,239,240), value.c_str(), font);
-            y += lineHeight;
+            Render::DrawCanvasText(ImVec2(placement.originX, y), IM_COL32(225,230,239,240), value.c_str(), placement.bodyFont);
+            y += placement.lineHeight;
         };
         line("Players: " + std::to_string(entities.size()));
         std::snprintf(text, sizeof(text), "Reads: %.0f/s", readsPerSecond);
@@ -111,9 +116,11 @@ namespace {
             return;
 
         const Diagnostics::StatusSnapshot snapshot = Diagnostics::Snapshot();
-        constexpr float x = 10.0f;
-        constexpr float fontSize = 13.0f;
-        float y = 10.0f;
+        const float uiScale = Render::CanvasUiScale();
+        const float x = 10.0f * uiScale;
+        const float fontSize = 13.0f * uiScale;
+        const float lineStep = 16.0f * uiScale;
+        float y = 10.0f * uiScale;
 
         const ImU32 okColor = IM_COL32(120, 255, 160, 235);
         const ImU32 warnColor = IM_COL32(255, 215, 90, 235);
@@ -121,8 +128,8 @@ namespace {
         const ImU32 textColor = IM_COL32(230, 235, 245, 235);
 
         auto drawLine = [&](ImU32 color, const char* text) {
-            Render::DrawText(ImVec2(x, y), color, text, fontSize);
-            y += 16.0f;
+            Render::DrawCanvasText(ImVec2(x, y), color, text, fontSize);
+            y += lineStep;
         };
 
         char line[160] = {};
@@ -139,11 +146,12 @@ namespace {
             snapshot.viewMatrixResolved && snapshot.viewMatrixValid ? "VM: valid" : "VM: zero/invalid");
 
         const ImGuiIO& io = ImGui::GetIO();
-        std::snprintf(line, sizeof(line), "Scale: src %.0fx%.0f canvas %.0fx%.0f fps %.0f",
+        std::snprintf(line, sizeof(line), "Scale: src %.0fx%.0f canvas %.0fx%.0f hud %.2fx fps %.0f",
             OW::ScreenWidth(),
             OW::ScreenHeight(),
             io.DisplaySize.x,
             io.DisplaySize.y,
+            uiScale,
             io.Framerate);
         drawLine(textColor, line);
 
@@ -290,13 +298,14 @@ namespace {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         const ImVec2 viewportPos = viewport ? viewport->Pos : ImVec2(0.0f, 0.0f);
         const ImVec2 viewportSize = viewport ? viewport->Size : ImGui::GetIO().DisplaySize;
-        const float maxWidth = (std::max)(360.0f, viewportSize.x - 32.0f);
-        const float logWidth = (std::min)(980.0f, maxWidth);
-        const float maxHeight = (std::max)(120.0f, viewportSize.y * 0.28f);
-        const float logHeight = (std::min)(260.0f, maxHeight);
+        const float uiScale = OW::OverlayStatus::ResolutionScale(viewportSize.x, viewportSize.y);
+        const float maxWidth = (std::max)(360.0f * uiScale, viewportSize.x - 32.0f * uiScale);
+        const float logWidth = (std::min)(980.0f * uiScale, maxWidth);
+        const float maxHeight = (std::max)(120.0f * uiScale, viewportSize.y * 0.28f);
+        const float logHeight = (std::min)(260.0f * uiScale, maxHeight);
 
         ImGui::SetNextWindowPos(
-            ImVec2(viewportPos.x + viewportSize.x * 0.5f, viewportPos.y + viewportSize.y - 24.0f),
+            ImVec2(viewportPos.x + viewportSize.x * 0.5f, viewportPos.y + viewportSize.y - 24.0f * uiScale),
             ImGuiCond_Always,
             ImVec2(0.5f, 1.0f));
         ImGui::SetNextWindowBgAlpha(0.72f);
@@ -306,6 +315,7 @@ namespace {
             ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoSavedSettings;
 
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * uiScale);
         if (ImGui::Begin("Diagnostic Log", nullptr, flags)) {
             ImGui::Text("Lines: %zu / %zu", lines.size(), Diagnostics::GetLogLineCapacity());
             ImGui::SameLine();
@@ -332,6 +342,7 @@ namespace {
             ImGui::EndChild();
         }
         ImGui::End();
+        ImGui::PopFont();
     }
 
     static DirectX::XMMATRIX ToDirectXMatrix(const OW::Matrix& matrix)
@@ -614,9 +625,10 @@ namespace {
             return false;
         const float radius = ringProjection.radius;
 
-        const float thickness = active
+        const float uiScale = Render::SourceUiScale();
+        const float thickness = (active
             ? (std::max)(style.thickness + 0.8f, 2.0f)
-            : style.thickness;
+            : style.thickness) * uiScale;
         const Render::Color color = ToRenderColor(style.color);
         if (style.lineStyle == 1)
             DrawDashedCircle(center, radius, color, thickness);
@@ -626,13 +638,14 @@ namespace {
         if (style.showLabel && label && *label) {
             constexpr float kPi = 3.14159265358979323846f;
             const float angle = -0.25f * kPi;
-            const float labelX = std::clamp(center.X + std::cos(angle) * radius + 6.0f,
-                                            4.0f,
-                                            (std::max)(4.0f, width - 92.0f));
-            const float labelY = std::clamp(center.Y + std::sin(angle) * radius - 7.0f,
-                                            4.0f,
-                                            (std::max)(4.0f, height - 18.0f));
-            Render::DrawText(ImVec2(labelX, labelY), color.ToImU32(), label, active ? 14.0f : 13.0f);
+            const float pad = 4.0f * uiScale;
+            const float labelX = std::clamp(center.X + std::cos(angle) * radius + 6.0f * uiScale,
+                                            pad,
+                                            (std::max)(pad, width - 92.0f * uiScale));
+            const float labelY = std::clamp(center.Y + std::sin(angle) * radius - 7.0f * uiScale,
+                                            pad,
+                                            (std::max)(pad, height - 18.0f * uiScale));
+            Render::DrawText(ImVec2(labelX, labelY), color.ToImU32(), label, (active ? 14.0f : 13.0f) * uiScale);
         }
 
         return true;
@@ -710,7 +723,7 @@ namespace {
                 OW::Config::FovRingStyleFor(OW::Config::FovRingSlotKind::Aim, slotIndex),
                 OW::Config::FovRingSlotKind::Aim,
                 slotIndex);
-            DrawDashedCircle(center, radius, ToRenderColor(style.color), (std::max)(1.0f, style.thickness));
+            DrawDashedCircle(center, radius, ToRenderColor(style.color), (std::max)(1.0f, style.thickness) * Render::SourceUiScale());
             drewAny = true;
         }
         return drewAny;
@@ -806,23 +819,39 @@ namespace {
         if (!OW::Config::crosscircle)
             return;
 
-        const float width = CanvasWidth();
-        const float height = CanvasHeight();
+        const ImVec2 canvasSize = Render::CanvasSize();
+        const float width = canvasSize.x > 0.0f ? canvasSize.x : CanvasWidth();
+        const float height = canvasSize.y > 0.0f ? canvasSize.y : CanvasHeight();
         if (width <= 0.0f || height <= 0.0f)
             return;
 
+        ImDrawList* draw = ImGui::GetForegroundDrawList();
+        if (!draw)
+            return;
+
         const auto settings=V2::HeroSettings::Snapshot();
-        const auto& crosshair=settings->display.crosshair;
+        auto crosshair=settings->display.crosshair;
+        const float uiScale = OW::OverlayStatus::ResolutionScale(width, height);
+        crosshair.size *= uiScale;
+        crosshair.thickness *= uiScale;
+        crosshair.gap *= uiScale;
+        crosshair.dotSize *= uiScale;
+        crosshair.outlineThickness *= uiScale;
+        crosshair.offsetX *= uiScale;
+        crosshair.offsetY *= uiScale;
+
         const float centerX=width*.5f+crosshair.offsetX,centerY=height*.5f+crosshair.offsetY;
         auto drawPass=[&](const ImVec4& color,float thickness,float expand){
-            const Render::Color renderColor=ToRenderColor(color);
+            const ImU32 renderColor=ImGui::ColorConvertFloat4ToU32(color);
             V2::VisualSettings::ForEachCrosshairPrimitive(crosshair,centerX,centerY,[&](const V2::VisualSettings::CrosshairPrimitive& primitive){
-                if(primitive.kind==V2::VisualSettings::CrosshairPrimitiveKind::Line)
-                    Render::DrawLine(OW::Vector2(primitive.x1,primitive.y1),OW::Vector2(primitive.x2,primitive.y2),renderColor,thickness);
-                else if(primitive.filled)
-                    Render::DrawFilledCircle(OW::Vector2(primitive.x1,primitive.y1),primitive.radius+expand,renderColor,48);
-                else
-                    Render::DrawCircle(OW::Vector2(primitive.x1,primitive.y1),primitive.radius,renderColor,48,thickness);
+                if(primitive.kind==V2::VisualSettings::CrosshairPrimitiveKind::Line) {
+                    draw->AddLine(ImVec2(primitive.x1,primitive.y1),ImVec2(primitive.x2,primitive.y2),renderColor,thickness);
+                    Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Line);
+                } else if(primitive.filled) {
+                    draw->AddCircleFilled(ImVec2(primitive.x1,primitive.y1),primitive.radius+expand,renderColor,48);
+                } else {
+                    draw->AddCircle(ImVec2(primitive.x1,primitive.y1),primitive.radius,renderColor,48,thickness);
+                }
             });
         };
         if(crosshair.outline&&crosshair.outlineThickness>0)drawPass(crosshair.outlineColor,crosshair.thickness+2*crosshair.outlineThickness,crosshair.outlineThickness);
@@ -838,25 +867,34 @@ namespace {
         if (entitySnapshot.empty() || localSnapshot.PlayerHealth <= 0.0f)
             return;
 
-        const float width = CanvasWidth();
-        const float height = CanvasHeight();
+        const ImVec2 canvasSize = Render::CanvasSize();
+        const float width = canvasSize.x > 0.0f ? canvasSize.x : CanvasWidth();
+        const float height = canvasSize.y > 0.0f ? canvasSize.y : CanvasHeight();
         if (width <= 0.0f || height <= 0.0f)
+            return;
+
+        ImDrawList* draw = ImGui::GetForegroundDrawList();
+        if (!draw)
             return;
 
         const auto visual=V2::HeroSettings::Snapshot();
         const auto& radar=visual->display.radar;
-        const float radius=(std::min)(radar.radius,(std::min)(width,height)*.5f-2);
-        const float centerX = radius + OW::OverlayStatus::Position(OW::Config::radarPosX,width,2*radius);
-        const float centerY = radius + OW::OverlayStatus::Position(OW::Config::radarPosY,height,2*radius);
-        const OW::Vector2 center(centerX, centerY);
-        const Render::Color border(170, 180, 192, 110);
-        const Render::Color background(18,20,25,int(radar.backgroundAlpha*255));
+        const auto placement = OW::OverlayStatus::ComputeRadarPlacement(
+            width, height, radar.radius, radar.markerSize,
+            OW::Config::radarPosX, OW::Config::radarPosY);
+        const float radius = placement.radius;
+        const float uiScale = placement.uiScale;
+        const ImVec2 center(placement.centerX, placement.centerY);
+        const ImU32 border = IM_COL32(170, 180, 192, 110);
+        const ImU32 background = IM_COL32(18, 20, 25, int(radar.backgroundAlpha * 255));
+        const ImU32 gridColor = IM_COL32(255, 255, 255, 55);
 
-        Render::DrawFilledCircle(center, radius, background, 72);
-        Render::DrawCircle(center, radius, border, 72, 1.0f);
-        Render::DrawLine(OW::Vector2(center.X - radius, center.Y), OW::Vector2(center.X + radius, center.Y), Render::Color(255, 255, 255, 55), 1.0f);
-        Render::DrawLine(OW::Vector2(center.X, center.Y - radius), OW::Vector2(center.X, center.Y + radius), Render::Color(255, 255, 255, 55), 1.0f);
-        Render::DrawFilledCircle(center, 3.0f, Render::Color(120, 255, 120, 220), 20);
+        draw->AddCircleFilled(center, radius, background, 72);
+        draw->AddCircle(center, radius, border, 72, 1.0f * uiScale);
+        draw->AddLine(ImVec2(center.x - radius, center.y), ImVec2(center.x + radius, center.y), gridColor, 1.0f * uiScale);
+        draw->AddLine(ImVec2(center.x, center.y - radius), ImVec2(center.x, center.y + radius), gridColor, 1.0f * uiScale);
+        Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Line, 2);
+        draw->AddCircleFilled(center, 3.0f * uiScale, IM_COL32(120, 255, 120, 220), 20);
 
         OW::Matrix renderViewMatrix{}, renderViewMatrixXor{};
         OW::GetLiveViewMatricesSnapshot(renderViewMatrix, renderViewMatrixXor);
@@ -879,29 +917,32 @@ namespace {
             float rz = -(dx * sinYaw + dz * cosYaw) * scale;
 
             const float len = std::sqrt(rx * rx + rz * rz);
-            const float maxLen = (std::max)(0.0f, radius-radar.markerSize*.5f-2);
+            const float maxLen = (std::max)(0.0f, radius - placement.markerSize * 0.5f - 2.0f * uiScale);
             if (len > maxLen && len > 0.001f) {
                 const float k = maxLen / len;
                 rx *= k;
                 rz *= k;
             }
 
-            const OW::Vector2 point(center.X + rx, center.Y + rz);
+            const ImVec2 point(center.x + rx, center.y + rz);
             const Render::Color entityColor=ToRenderColor(entity.Team?radar.enemy:radar.ally);
-            if (OW::Config::radarline)
-                Render::DrawLine(center, point, Render::Color(entityColor.R, entityColor.G, entityColor.B, 90), 1.0f);
+            if (OW::Config::radarline) {
+                draw->AddLine(center, point, IM_COL32(entityColor.R, entityColor.G, entityColor.B, 90), 1.0f * uiScale);
+                Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Line);
+            }
             const ImU32 markerColor=ImGui::ColorConvertFloat4ToU32(entity.Team?radar.enemy:radar.ally);
-            DrawHeroRadarMarker(entity, point.X, point.Y, markerColor,radar.markerSize/18.f);
+            DrawHeroRadarMarker(entity, point.x, point.y, markerColor, placement.markerSize / 18.0f);
         }
     }
 
-    static void DrawWorldObjectIcon(int type, const ImVec2& center, float size, ImU32 color) {
+    static void DrawWorldObjectIcon(int type, const ImVec2& canvasCenter, float canvasSize, ImU32 color, float uiScale) {
         auto* draw=ImGui::GetForegroundDrawList();
         const auto& objectType=V2::WorldObjects::kObjects[type];
         if(objectType.group==V2::WorldObjects::Group::Health) {
-            const float arm=size*.4f,bar=(std::max)(1.f,size*.13f);
-            draw->AddRectFilled(ImVec2(center.x-arm,center.y-bar),ImVec2(center.x+arm,center.y+bar),color);
-            draw->AddRectFilled(ImVec2(center.x-bar,center.y-arm),ImVec2(center.x+bar,center.y+arm),color);
+            const float arm=canvasSize*.4f,bar=(std::max)(1.f * uiScale,canvasSize*.13f);
+            draw->AddRectFilled(ImVec2(canvasCenter.x-arm,canvasCenter.y-bar),ImVec2(canvasCenter.x+arm,canvasCenter.y+bar),color);
+            draw->AddRectFilled(ImVec2(canvasCenter.x-bar,canvasCenter.y-arm),ImVec2(canvasCenter.x+bar,canvasCenter.y+arm),color);
+            Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::FilledRect, 2);
             return;
         }
         if(objectType.iconHero[0] && objectType.iconName[0]) {
@@ -913,15 +954,19 @@ namespace {
                     texture=manager->GetIcon(key);
                 }
                 if(texture) {
-                    Render::DrawIcon(texture,ImVec2(center.x-size*.5f,center.y-size*.5f),ImVec2(size,size),color);
+                    draw->AddImage(reinterpret_cast<ImTextureID>(texture),
+                        ImVec2(canvasCenter.x-canvasSize*.5f,canvasCenter.y-canvasSize*.5f),
+                        ImVec2(canvasCenter.x+canvasSize*.5f,canvasCenter.y+canvasSize*.5f),
+                        ImVec2(0.0f,0.0f),ImVec2(1.0f,1.0f),color);
+                    Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Icon);
                     return;
                 }
             }
         }
-        const float radius=(std::max)(3.f,size*.3f);
-        const ImVec2 corners[]{ImVec2(center.x,center.y-radius),ImVec2(center.x+radius,center.y),
-            ImVec2(center.x,center.y+radius),ImVec2(center.x-radius,center.y)};
-        draw->AddPolyline(corners,4,color,ImDrawFlags_Closed,1.5f);
+        const float radius=(std::max)(3.f * uiScale,canvasSize*.3f);
+        const ImVec2 corners[]{ImVec2(canvasCenter.x,canvasCenter.y-radius),ImVec2(canvasCenter.x+radius,canvasCenter.y),
+            ImVec2(canvasCenter.x,canvasCenter.y+radius),ImVec2(canvasCenter.x-radius,canvasCenter.y)};
+        draw->AddPolyline(corners,4,color,ImDrawFlags_Closed,1.5f * uiScale);
     }
 
     static void DrawHealthPacks(const std::vector<OW::hpanddy>& objects) {
@@ -929,6 +974,9 @@ namespace {
         if(!world.enabled)return;
         OW::Matrix view{},camera{};OW::GetLiveViewMatricesSnapshot(view,camera);
         const auto local=OW::SnapshotLocalEntity();const uint32_t now=GetTickCount();
+        const float uiScale = Render::CanvasUiScale();
+        const float iconSize = world.iconSize * uiScale;
+        const float fontSize = world.size * uiScale;
         for(const auto& object:objects) {
             const int type=V2::VisualSettings::ObjectIndex(object.entityid);
             if(type<0||!world.types[type]||object.scene_generation!=OW::EntitySceneGeneration()||
@@ -944,9 +992,10 @@ namespace {
             const float distance=local.pos.DistTo(position);
             if(world.maxDistance>0&&distance>world.maxDistance)continue;
             OW::Vector2 screen{};if(!view.WorldToScreen(position,&screen,OW::Vector2(CanvasWidth(),CanvasHeight())))continue;
+            const ImVec2 canvasPos = Render::ToCanvas(screen);
             const auto color=ImGui::ColorConvertFloat4ToU32(world.colors[type]);auto* draw=ImGui::GetForegroundDrawList();
-            if(world.box)draw->AddRect(ImVec2(screen.X-world.iconSize*.5f,screen.Y-world.iconSize*.5f),ImVec2(screen.X+world.iconSize*.5f,screen.Y+world.iconSize*.5f),color,2,0,1.5f);
-            if(world.icon)DrawWorldObjectIcon(type,ImVec2(screen.X,screen.Y),world.iconSize,color);
+            if(world.box)draw->AddRect(ImVec2(canvasPos.x-iconSize*.5f,canvasPos.y-iconSize*.5f),ImVec2(canvasPos.x+iconSize*.5f,canvasPos.y+iconSize*.5f),color,2.0f * uiScale,0,1.5f * uiScale);
+            if(world.icon)DrawWorldObjectIcon(type,canvasPos,iconSize,color,uiScale);
             std::string label=world.name?UI::UiLabel(objectType.name,OW::Config::uiLanguage==1):"";
             if(world.distance)label+=(label.empty()?"":" ")+std::to_string(int(distance))+" m";
             const bool healthFresh=statusFresh&&object.health_known&&std::isfinite(object.health)&&
@@ -955,12 +1004,14 @@ namespace {
                 char healthText[48]{};std::snprintf(healthText,sizeof(healthText),"%.0f / %.0f",object.health,object.health_max);
                 label+=(label.empty()?"":" ")+std::string(healthText);
             }
-            if(!label.empty())Render::DrawStrokeText(ImVec2(screen.X+(world.icon||world.box?world.iconSize*.5f+5:0),screen.Y-world.size*.5f),color,label.c_str(),world.size);
+            if(!label.empty())Render::DrawCanvasText(ImVec2(canvasPos.x+(world.icon||world.box?iconSize*.5f+5.0f*uiScale:0),canvasPos.y-fontSize*.5f),color,label.c_str(),fontSize);
             if(world.health&&healthFresh) {
-                const float width=(std::max)(24.f,world.iconSize),left=screen.X-width*.5f;
-                const float top=screen.Y+(world.icon||world.box?world.iconSize*.5f:world.size*.5f)+4;
-                draw->AddRectFilled(ImVec2(left-1,top-1),ImVec2(left+width+1,top+4),IM_COL32(0,0,0,190),1);
-                draw->AddRectFilled(ImVec2(left,top),ImVec2(left+width*std::clamp(object.health/object.health_max,0.f,1.f),top+3),color);
+                const float width=(std::max)(24.f * uiScale,iconSize),left=canvasPos.x-width*.5f;
+                const float top=canvasPos.y+(world.icon||world.box?iconSize*.5f:fontSize*.5f)+4.0f*uiScale;
+                const float pad = (std::max)(1.0f, 1.0f * uiScale);
+                const float barH = (std::max)(2.0f, 3.0f * uiScale);
+                draw->AddRectFilled(ImVec2(left-pad,top-pad),ImVec2(left+width+pad,top+barH+pad),IM_COL32(0,0,0,190),1.0f*uiScale);
+                draw->AddRectFilled(ImVec2(left,top),ImVec2(left+width*std::clamp(object.health/object.health_max,0.f,1.f),top+barH),color);
             }
         }
     }

@@ -90,6 +90,7 @@ inline bool PresentEntityContinuityCompatible(const OW::c_entity& previous,
 
 inline void AttachPresentPreviousRawSample(OW::c_entity& entity,
                                            const OW::c_entity& previous) {
+    entity.previous_sample_time_us = previous.sample_time_us;
     entity.previous_render_sample_tick_ms = EntityRawSampleTickMs(previous);
     entity.render_sample_tick_ms = EntityRawSampleTickMs(entity);
     entity.has_previous_render_sample = entity.previous_render_sample_tick_ms != 0 &&
@@ -98,6 +99,10 @@ inline void AttachPresentPreviousRawSample(OW::c_entity& entity,
     entity.previous_head_pos = previous.head_pos;
     entity.previous_velocity = previous.velocity;
     entity.previous_pos = previous.pos;
+    entity.previous_stable_velocity = previous.stable_velocity;
+    entity.previous_stable_velocity_time_us = previous.stable_velocity_time_us;
+    entity.previous_stable_velocity_tick_ms = previous.stable_velocity_tick_ms;
+    entity.has_previous_stable_velocity = previous.has_stable_velocity;
     entity.previous_neck_pos = previous.neck_pos;
     entity.previous_chest_pos = previous.chest_pos;
     entity.previous_skeleton_bones = previous.skeleton_bones;
@@ -109,12 +114,18 @@ inline void AttachPresentPreviousRawSample(OW::c_entity& entity,
 inline OW::c_entity PreparePresentEntitySample(const OW::c_entity& source,
                                                const OW::c_entity* previousRaw) {
     OW::c_entity entity = source;
+    entity.previous_sample_time_us = 0;
     entity.render_sample_tick_ms = EntityRawSampleTickMs(source);
     entity.has_previous_render_sample = false;
+    entity.previous_stable_velocity = {};
+    entity.previous_stable_velocity_time_us = 0;
+    entity.previous_stable_velocity_tick_ms = 0;
+    entity.has_previous_stable_velocity = false;
 
     if (previousRaw && PresentEntityContinuityCompatible(*previousRaw, entity))
         AttachPresentPreviousRawSample(entity, *previousRaw);
 
+    OW::Motion::UpdateEntityStableVelocity(entity);
     return entity;
 }
 

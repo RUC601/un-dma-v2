@@ -210,6 +210,19 @@ struct PredictedEntryEvaluation {
 
 using ResolveFovForDistanceFn = float (*)(float fixedFovDeg, float distance);
 
+inline float BestFiniteFovScore(float lhs, float rhs)
+{
+    const bool lhsFinite = std::isfinite(lhs);
+    const bool rhsFinite = std::isfinite(rhs);
+    if (lhsFinite && rhsFinite)
+        return (std::min)(lhs, rhs);
+    if (lhsFinite)
+        return lhs;
+    if (rhsFinite)
+        return rhs;
+    return (std::numeric_limits<float>::max)();
+}
+
 inline bool EvaluateCandidateFov(const RuntimeContext& context,
                                  const Vector3& rawAimPoint,
                                  const Vector3& finalAimPoint,
@@ -231,11 +244,20 @@ inline bool EvaluateCandidateFov(const RuntimeContext& context,
     outEvaluation.effectiveFovDeg = resolveFov
         ? resolveFov(fixedFovDeg, outEvaluation.distance)
         : std::clamp(fixedFovDeg, 0.0f, kMaxFovAngleDeg);
-    return IsWithinFovDeg(
+    float rawScoreDeg = (std::numeric_limits<float>::max)();
+    float aimScoreDeg = (std::numeric_limits<float>::max)();
+    const bool rawInside = IsWithinFovDeg(
+        context,
+        rawAimPoint,
+        outEvaluation.effectiveFovDeg,
+        &rawScoreDeg);
+    const bool aimInside = IsWithinFovDeg(
         context,
         finalAimPoint,
         outEvaluation.effectiveFovDeg,
-        &outEvaluation.scoreDeg);
+        &aimScoreDeg);
+    outEvaluation.scoreDeg = BestFiniteFovScore(rawScoreDeg, aimScoreDeg);
+    return rawInside || aimInside;
 }
 
 inline bool EvaluateCandidateFovWithPredictedEntry(
@@ -264,11 +286,20 @@ inline bool EvaluateCandidateFovWithPredictedEntry(
     outEvaluation.effectiveFovDeg = resolveFov
         ? resolveFov(fixedFovDeg, outEvaluation.distance)
         : std::clamp(fixedFovDeg, 0.0f, kMaxFovAngleDeg);
-    outEvaluation.currentlyInside = IsWithinFovDeg(
+    float rawScoreDeg = (std::numeric_limits<float>::max)();
+    float aimScoreDeg = (std::numeric_limits<float>::max)();
+    const bool rawInside = IsWithinFovDeg(
+        context,
+        rawAimPoint,
+        outEvaluation.effectiveFovDeg,
+        &rawScoreDeg);
+    const bool aimInside = IsWithinFovDeg(
         context,
         currentAimPoint,
         outEvaluation.effectiveFovDeg,
-        &outEvaluation.currentScoreDeg);
+        &aimScoreDeg);
+    outEvaluation.currentScoreDeg = BestFiniteFovScore(rawScoreDeg, aimScoreDeg);
+    outEvaluation.currentlyInside = rawInside || aimInside;
     if (outEvaluation.currentlyInside) {
         outEvaluation.projectedScoreDeg = outEvaluation.currentScoreDeg;
         outEvaluation.acceptedAimPoint = currentAimPoint;
@@ -282,19 +313,49 @@ inline bool EvaluateCandidateFovWithPredictedEntry(
         std::isfinite(maxOutsideDeg) ? maxOutsideDeg : 0.0f,
         0.0f,
         30.0f);
-    if (outEvaluation.currentScoreDeg >
-        outEvaluation.effectiveFovDeg + outsideMargin + kFovComparisonEpsilon) {
+    const float maxEntryStartDeg =
+        outEvaluation.effectiveFovDeg + outsideMargin + kFovComparisonEpsilon;
+    const Vector3 projectedRawPoint =
+        rawAimPoint + (projectedAimPoint - currentAimPoint);
+    float projectedRawScoreDeg = (std::numeric_limits<float>::max)();
+    float projectedAimScoreDeg = (std::numeric_limits<float>::max)();
+
+    const bool rawProjectedAccepted =
+        std::isfinite(rawScoreDeg) &&
+        rawScoreDeg <= maxEntryStartDeg &&
+        IsFiniteVector(projectedRawPoint) &&
+        IsWithinFovDeg(
+            context,
+            projectedRawPoint,
+            outEvaluation.effectiveFovDeg,
+            &projectedRawScoreDeg) &&
+        projectedRawScoreDeg < rawScoreDeg - kFovComparisonEpsilon;
+
+    const bool aimProjectedAccepted =
+        std::isfinite(aimScoreDeg) &&
+        aimScoreDeg <= maxEntryStartDeg &&
+        IsWithinFovDeg(
+            context,
+            projectedAimPoint,
+            outEvaluation.effectiveFovDeg,
+            &projectedAimScoreDeg) &&
+        projectedAimScoreDeg < aimScoreDeg - kFovComparisonEpsilon;
+
+    if (!rawProjectedAccepted && !aimProjectedAccepted) {
+        outEvaluation.projectedScoreDeg = BestFiniteFovScore(
+            projectedRawScoreDeg,
+            projectedAimScoreDeg);
         return false;
     }
 
-    const bool projectedInside = IsWithinFovDeg(
-        context,
-        projectedAimPoint,
-        outEvaluation.effectiveFovDeg,
-        &outEvaluation.projectedScoreDeg);
-    if (!projectedInside ||
-        outEvaluation.projectedScoreDeg >= outEvaluation.currentScoreDeg - kFovComparisonEpsilon) {
-        return false;
+    if (rawProjectedAccepted && aimProjectedAccepted) {
+        outEvaluation.projectedScoreDeg = (std::min)(
+            projectedRawScoreDeg,
+            projectedAimScoreDeg);
+    } else if (rawProjectedAccepted) {
+        outEvaluation.projectedScoreDeg = projectedRawScoreDeg;
+    } else {
+        outEvaluation.projectedScoreDeg = projectedAimScoreDeg;
     }
 
     outEvaluation.acceptedAimPoint = projectedAimPoint;

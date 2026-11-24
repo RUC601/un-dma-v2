@@ -162,7 +162,10 @@ inline float EstimateAimSettleTimeMs(const AimSettleEstimateInput& input)
     if (!std::isfinite(errorRad) || errorRad <= kLeadSettleEpsilonRad)
         return 0.0f;
 
-    const int method = std::clamp(input.method, 0, 5);
+    // Keep the estimator aligned with all ten motion methods (0..9).
+    // Previously clamping to 0..5 folded methods 6..9 (Hybrid, Shuwu,
+    // Response Curve, Koi) into method 5 (Constant angular speed).
+    const int method = std::clamp(input.method, 0, AimPlan::kMotionMethodCount - 1);
     const float slotScale = std::isfinite(input.slotSpeedScale)
         ? std::clamp(input.slotSpeedScale, 0.0f, 2.0f)
         : 0.0f;
@@ -184,7 +187,25 @@ inline float EstimateAimSettleTimeMs(const AimSettleEstimateInput& input)
         return ClampLeadDelayMs(estimateMs, kLeadMaxSettleMs);
     }
 
-    const float effectiveStep = std::clamp(slotScale * methodScale, 0.0f, 1.0f);
+    const float configuredStep = std::clamp(slotScale * methodScale, 0.0f, 1.0f);
+    float methodStep = configuredStep;
+    switch (method) {
+    case 6: // Hybrid PID has velocity and braking state; use a bounded conservative step.
+        methodStep *= 0.55f;
+        break;
+    case 7: // Shuwu's virtual-unit controller converges through accepted feedback.
+        methodStep *= 0.25f;
+        break;
+    case 8: // Response curves can be shallow near zero depending on preset control points.
+        methodStep *= 0.20f;
+        break;
+    case 9: // Koi removes roughly 10% of remaining error per reference step at 100%.
+        methodStep *= 0.10f;
+        break;
+    default:
+        break;
+    }
+    const float effectiveStep = std::clamp(methodStep, 0.0f, 1.0f);
     if (effectiveStep <= 0.0001f)
         return kLeadMaxSettleMs;
     if (effectiveStep >= 0.9999f)

@@ -267,15 +267,20 @@ void DrawMiscGeneralPage() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", T(UiText::TooltipMinimizeOverlay));
 
-        SettingRow(L("Transparent background"));
-        bool transparentBackground = OW::Config::overlayTransparentBackground;
-        if (UICheckbox("##overlayTransparentBackground", &transparentBackground)) {
+        SettingRow(L("Overlay background mode"));
+        PushControlWidth();
+        const char* bgModes[] = { "Opaque black", "Transparent background" };
+        int bgMode = OW::Config::overlayTransparentBackground ? 1 : 0;
+        if (UISelect("##overlayBackgroundMode", &bgMode, bgModes, 2)) {
+            const bool transparentBackground = (bgMode == 1);
             if (!g_Overlay.SetCanvasTransparentBackground(transparentBackground))
-                transparentBackground = g_Overlay.IsCanvasTransparentBackground();
-            OW::Config::overlayTransparentBackground = transparentBackground;
+                OW::Config::overlayTransparentBackground = g_Overlay.IsCanvasTransparentBackground();
+            else
+                OW::Config::overlayTransparentBackground = transparentBackground;
         }
+        ImGui::PopItemWidth();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Transparent mode shows the game through empty canvas pixels and may reduce canvas throughput."));
+            ImGui::SetTooltip("%s", L("Opaque black keeps a solid black canvas for fusers and maximum FPS. Transparent background uses DirectComposition so the desktop and underlying windows show through empty canvas pixels while HUD and boxes draw normally."));
 
         SettingRow(L("Overlay frame limit"));
         PushControlWidth();
@@ -1003,6 +1008,15 @@ void DrawMiscScreenPage() {
         ImGui::InputInt("##localScreenHeight", &localHeight, 0, 0,
                         ImGuiInputTextFlags_ReadOnly);
         ImGui::PopItemWidth();
+
+        const float hudAutoScale = OW::OverlayStatus::ResolutionScale(
+            static_cast<float>(localWidth), static_cast<float>(localHeight));
+        SettingRow(OW::Config::uiLanguage == 1 ? "HUD 基准缩放" : "HUD layout scale");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%.2fx (%dx%d -> 1080p)", hudAutoScale, localWidth, localHeight);
+        SettingTooltip(OW::Config::uiLanguage == 1
+            ? "以 1920x1080 为 1.00x 基准，在 2K/4K 画布上自动保持一致的 HUD 与 ESP 排布比例。"
+            : "Relative to the 1920x1080 (1.00x) baseline so 2K/4K canvases keep consistent HUD and ESP proportions.");
 
         SettingRow(T(UiText::DmaWidth));
         PushControlWidth();

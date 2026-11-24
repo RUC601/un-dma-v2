@@ -53,7 +53,7 @@ namespace Render {
         return ImGui::GetForegroundDrawList();
     }
 
-    static ImVec2 CanvasSize() {
+    ImVec2 CanvasSize() {
         const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
         if (displaySize.x > 0.0f && displaySize.y > 0.0f)
             return displaySize;
@@ -68,25 +68,34 @@ namespace Render {
         return OW::ScreenHeight() > 0.0f ? OW::ScreenHeight() : CanvasSize().y;
     }
 
-    static float ScaleX() {
+    float CanvasUiScale() {
+        const ImVec2 canvas = CanvasSize();
+        return OW::OverlayStatus::ResolutionScale(canvas.x, canvas.y);
+    }
+
+    float SourceUiScale() {
+        return OW::OverlayStatus::ResolutionScale(SourceWidth(), SourceHeight());
+    }
+
+    float ScaleX() {
         return CanvasSize().x / SourceWidth();
     }
 
-    static float ScaleY() {
+    float ScaleY() {
         return CanvasSize().y / SourceHeight();
     }
 
-    static float ScaleUniform() {
+    float ScaleUniform() {
         const float sx = ScaleX();
         const float sy = ScaleY();
         return (sx + sy) * 0.5f;
     }
 
-    static ImVec2 ToCanvas(const Vector2& point) {
+    ImVec2 ToCanvas(const Vector2& point) {
         return ImVec2(point.X * ScaleX(), point.Y * ScaleY());
     }
 
-    static ImVec2 ToCanvas(const ImVec2& point) {
+    ImVec2 ToCanvas(const ImVec2& point) {
         return ImVec2(point.x * ScaleX(), point.y * ScaleY());
     }
 
@@ -137,14 +146,15 @@ namespace Render {
 
         uint64_t lineCount = 8;
         if (((outlineColor >> IM_COL32_A_SHIFT) & 0xFF) != 0) {
-            d->AddLine(ImVec2(x, y), ImVec2(x, y + lineH), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x, y), ImVec2(x + lineW, y), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x + w - lineW, y), ImVec2(x + w, y), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x + w, y), ImVec2(x + w, y + lineH), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x, y + h - lineH), ImVec2(x, y + h), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x, y + h), ImVec2(x + lineW, y + h), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x + w - lineW, y + h), ImVec2(x + w, y + h), outlineColor, 3.0f);
-            d->AddLine(ImVec2(x + w, y + h - lineH), ImVec2(x + w, y + h), outlineColor, 3.0f);
+            const float outlineWidth = (std::max)(thickness + 1.5f * CanvasUiScale(), 3.0f * CanvasUiScale());
+            d->AddLine(ImVec2(x, y), ImVec2(x, y + lineH), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x, y), ImVec2(x + lineW, y), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x + w - lineW, y), ImVec2(x + w, y), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x + w, y), ImVec2(x + w, y + lineH), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x, y + h - lineH), ImVec2(x, y + h), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x, y + h), ImVec2(x + lineW, y + h), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x + w - lineW, y + h), ImVec2(x + w, y + h), outlineColor, outlineWidth);
+            d->AddLine(ImVec2(x + w, y + h - lineH), ImVec2(x + w, y + h), outlineColor, outlineWidth);
             lineCount += 8;
         }
 
@@ -240,6 +250,14 @@ namespace Render {
         const ImVec2 p = ToCanvas(pos);
         const float scaledFontSize = fontSize * ScaleUniform();
         d->AddText(nullptr, scaledFontSize, p, color, text);
+        Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Text);
+    }
+
+    void DrawCanvasText(const ImVec2& canvasPos, ImU32 color, const char* text, float canvasFontSize) {
+        ImDrawList* d = DL();
+        if (!d || !text) return;
+
+        d->AddText(nullptr, canvasFontSize, canvasPos, color, text);
         Diagnostics::RecordRenderPrimitive(Diagnostics::RenderPrimitiveKind::Text);
     }
 

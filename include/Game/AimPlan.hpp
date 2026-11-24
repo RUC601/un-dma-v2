@@ -12,6 +12,8 @@ namespace OW::AimPlan {
 inline constexpr int kMotionMethodCount = 10;
 inline constexpr int kMaxGroups = 12;
 inline constexpr int kMaxHeroes = 64;
+inline constexpr int kMaxSelectionRules = 8;
+inline constexpr int kRuleMeasureCount = 6;
 inline float Finite(float v, float fallback, float lo, float hi) {
     return (std::clamp)(std::isfinite(v) ? v : fallback, lo, hi);
 }
@@ -46,10 +48,41 @@ struct Motion {
     koi::ShuwuConfig shuwu{};
     bool operator==(const Motion&) const = default;
 };
+enum class RuleMeasure : int {
+    Hero = 0,
+    FullHealth = 1,
+    Visible = 2,
+    Health = 3,
+    Distance = 4,
+    Angle = 5,
+};
+struct SelectionRule {
+    // measure: 0=Hero, 1=FullHealth, 2=Visible, 3=Health, 4=Distance, 5=Angle.
+    int measure = 0;
+    std::vector<uint64_t> heroes;
+    // Inclusive range for Health (HP), Distance (m), or Angle (deg).
+    // maxValue <= 0 means unlimited upper bound.
+    float minValue = 0.0f, maxValue = 0.0f;
+    bool operator==(const SelectionRule&) const = default;
+};
+struct RuleObservation {
+    uint64_t hero = 0;
+    float hp = 0.0f;
+    float maxHp = 0.0f;
+    bool visible = false;
+    float distance = std::numeric_limits<float>::quiet_NaN();
+    float angleDeg = std::numeric_limits<float>::quiet_NaN();
+};
 struct Selection {
+    // Legacy single-rule fields retained for migration/compatibility.
     // mode: Any / Prefer / Only. Predicate: hero set / full HP / visible.
     int mode = 0, predicate = 0;
     std::vector<uint64_t> heroes;
+    // Multi-condition rules:
+    // - onlyRules: hard eligibility (ALL rules must match).
+    // - preferRules: ranking priority (ANY matching rule ranks ahead).
+    std::vector<SelectionRule> onlyRules;
+    std::vector<SelectionRule> preferRules;
     float angleWeight = 1, distanceWeight = 0, healthWeight = 0;
     // HP is absolute effective HP. An upper bound of zero is unlimited.
     float minHealth = 0, maxHealth = 0;
@@ -110,12 +143,103 @@ inline bool PredicateMatches(const Selection& p, uint64_t hero, float hp, float 
     default: return Contains(p.heroes,hero);
     }
 }
+inline bool IsSpatialRule(const SelectionRule& r) {
+    return r.measure == static_cast<int>(RuleMeasure::Distance) ||
+        r.measure == static_cast<int>(RuleMeasure::Angle);
+}
+inline bool RangePasses(float value, float lo, float hi) {
+    return std::isfinite(value) && value >= lo && (hi <= 0.0f || value <= hi);
+}
+inline bool RuleMatches(const SelectionRule& r, const RuleObservation& obs) {
+    switch (r.measure) {
+    case static_cast<int>(RuleMeasure::Hero):
+        return Contains(r.heroes, obs.hero);
+    case static_cast<int>(RuleMeasure::FullHealth):
+        return std::isfinite(obs.hp) && std::isfinite(obs.maxHp) &&
+            obs.maxHp > 0.0f && obs.hp >= obs.maxHp - 0.01f;
+    case static_cast<int>(RuleMeasure::Visible):
+        return obs.visible;
+    case static_cast<int>(RuleMeasure::Health):
+        return RangePasses(obs.hp, r.minValue, r.maxValue);
+    case static_cast<int>(RuleMeasure::Distance):
+        return RangePasses(obs.distance, r.minValue, r.maxValue);
+    case static_cast<int>(RuleMeasure::Angle):
+        return RangePasses(obs.angleDeg, r.minValue, r.maxValue);
+    default:
+        return false;
+    }
+}
+inline bool HasOnlyFilter(const Selection& p) {
+    return !p.onlyRules.empty() || p.mode == 2;
+}
+inline bool HasPreferFilter(const Selection& p) {
+    return !p.preferRules.empty() || p.mode == 1;
+}
+inline void SyncLegacySelectionSummary(Selection& s) {
+    if (!s.onlyRules.empty()) {
+        s.mode = 2;
+        if (s.onlyRules[0].measure <= 2) {
+            s.predicate = s.onlyRules[0].measure;
+            s.heroes = s.predicate == 0 ? s.onlyRules[0].heroes : std::vector<uint64_t>{};
+        } else {
+            s.predicate = 0;
+            s.heroes.clear();
+        }
+    } else if (!s.preferRules.empty()) {
+        s.mode = 1;
+        if (s.preferRules[0].measure <= 2) {
+            s.predicate = s.preferRules[0].measure;
+            s.heroes = s.predicate == 0 ? s.preferRules[0].heroes : std::vector<uint64_t>{};
+        } else {
+            s.predicate = 0;
+            s.heroes.clear();
+        }
+    } else {
+        s.mode = 0;
+        s.predicate = 0;
+        s.heroes.clear();
+    }
+}
 inline bool HealthPasses(float hp,float lo,float hi) {
     return std::isfinite(hp) && hp>=lo && (hi<=0 || hp<=hi);
 }
+inline bool EligiblePreGeometry(const Selection& p,const Effective& e,uint64_t hero,float hp,float maxHp,bool visible) {
+    if (!HealthPasses(hp,e.overrideLimits?e.limits.minHealth:p.minHealth,e.overrideLimits?e.limits.maxHealth:p.maxHealth))
+        return false;
+    if (!p.onlyRules.empty()) {
+        const RuleObservation obs{hero, hp, maxHp, visible};
+        for (const auto& r : p.onlyRules) {
+            if (!IsSpatialRule(r) && !RuleMatches(r, obs))
+                return false;
+        }
+        return true;
+    }
+    return p.mode != 2 || PredicateMatches(p, hero, hp, maxHp, visible);
+}
+inline bool Eligible(const Selection& p,const Effective& e,const RuleObservation& obs) {
+    if (!HealthPasses(obs.hp,e.overrideLimits?e.limits.minHealth:p.minHealth,e.overrideLimits?e.limits.maxHealth:p.maxHealth))
+        return false;
+    if (!p.onlyRules.empty()) {
+        for (const auto& r : p.onlyRules) {
+            if (!RuleMatches(r, obs))
+                return false;
+        }
+        return true;
+    }
+    return p.mode != 2 || PredicateMatches(p, obs.hero, obs.hp, obs.maxHp, obs.visible);
+}
 inline bool Eligible(const Selection& p,const Effective& e,uint64_t hero,float hp,float maxHp,bool visible) {
-    return HealthPasses(hp,e.overrideLimits?e.limits.minHealth:p.minHealth,e.overrideLimits?e.limits.maxHealth:p.maxHealth) &&
-        (p.mode!=2 || PredicateMatches(p,hero,hp,maxHp,visible));
+    return EligiblePreGeometry(p, e, hero, hp, maxHp, visible);
+}
+inline bool Preferred(const Selection& p, const RuleObservation& obs) {
+    if (!p.preferRules.empty()) {
+        for (const auto& r : p.preferRules) {
+            if (RuleMatches(r, obs))
+                return true;
+        }
+        return false;
+    }
+    return p.mode == 1 && PredicateMatches(p, obs.hero, obs.hp, obs.maxHp, obs.visible);
 }
 inline float Score(int priority,const Selection& p,float angle,float distance,float hp,
                    float maxHp,float commonFov,float commonDistance) {
@@ -187,12 +311,58 @@ inline void NormalizeIds(std::vector<uint64_t>& ids) {
     ids.erase(std::remove(ids.begin(),ids.end(),0),ids.end());
     std::sort(ids.begin(),ids.end()); ids.erase(std::unique(ids.begin(),ids.end()),ids.end());
 }
+inline void NormalizeRule(SelectionRule& r) {
+    r.measure = (std::clamp)(r.measure, 0, kRuleMeasureCount - 1);
+    if (r.measure == static_cast<int>(RuleMeasure::Hero)) {
+        NormalizeIds(r.heroes);
+        r.minValue = 0.0f;
+        r.maxValue = 0.0f;
+    } else {
+        r.heroes.clear();
+        if (r.measure == static_cast<int>(RuleMeasure::Health)) {
+            r.minValue = Finite(r.minValue, 0.0f, 0.0f, 100000.0f);
+            r.maxValue = Finite(r.maxValue, 0.0f, 0.0f, 100000.0f);
+            if (r.maxValue > 0.0f) r.maxValue = (std::max)(r.minValue, r.maxValue);
+        } else if (r.measure == static_cast<int>(RuleMeasure::Distance)) {
+            r.minValue = Finite(r.minValue, 0.0f, 0.0f, 500.0f);
+            r.maxValue = Finite(r.maxValue, 0.0f, 0.0f, 500.0f);
+            if (r.maxValue > 0.0f) r.maxValue = (std::max)(r.minValue, r.maxValue);
+        } else if (r.measure == static_cast<int>(RuleMeasure::Angle)) {
+            r.minValue = Finite(r.minValue, 0.0f, 0.0f, 180.0f);
+            r.maxValue = Finite(r.maxValue, 0.0f, 0.0f, 180.0f);
+            if (r.maxValue > 0.0f) r.maxValue = (std::max)(r.minValue, r.maxValue);
+        } else {
+            r.minValue = 0.0f;
+            r.maxValue = 0.0f;
+        }
+    }
+}
+inline void MaterializeLegacyRules(Selection& s) {
+    if (s.onlyRules.empty() && s.mode == 2) {
+        SelectionRule legacy{};
+        legacy.measure = (std::clamp)(s.predicate, 0, 2);
+        if (legacy.measure == 0) legacy.heroes = s.heroes;
+        NormalizeRule(legacy);
+        s.onlyRules.push_back(std::move(legacy));
+    }
+    if (s.preferRules.empty() && s.mode == 1) {
+        SelectionRule legacy{};
+        legacy.measure = (std::clamp)(s.predicate, 0, 2);
+        if (legacy.measure == 0) legacy.heroes = s.heroes;
+        NormalizeRule(legacy);
+        s.preferRules.push_back(std::move(legacy));
+    }
+}
 inline void Normalize(Plan& p) {
     auto& s=p.selection; s.mode=(std::clamp)(s.mode,0,2); s.predicate=(std::clamp)(s.predicate,0,2);
     NormalizeIds(s.heroes); s.angleWeight=Finite(s.angleWeight,1,0,100);
     s.distanceWeight=Finite(s.distanceWeight,0,0,100); s.healthWeight=Finite(s.healthWeight,0,0,100);
     s.minHealth=Finite(s.minHealth,0,0,100000); s.maxHealth=Finite(s.maxHealth,0,0,100000);
     if(s.maxHealth>0) s.maxHealth=(std::max)(s.minHealth,s.maxHealth);
+    if (s.onlyRules.size() > kMaxSelectionRules) s.onlyRules.resize(kMaxSelectionRules);
+    if (s.preferRules.size() > kMaxSelectionRules) s.preferRules.resize(kMaxSelectionRules);
+    for (auto& r : s.onlyRules) NormalizeRule(r);
+    for (auto& r : s.preferRules) NormalizeRule(r);
     NormalizeMotion(p.motion);
     if(p.groups.size()>kMaxGroups) p.groups.resize(kMaxGroups);
     std::vector<uint64_t> seen, ids;
