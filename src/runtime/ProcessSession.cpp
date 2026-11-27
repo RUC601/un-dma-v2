@@ -410,6 +410,7 @@ void StartProcessConnectionThread()
 
         DWORD lastAttemptTick = 0;
         DmaDeviceRecovery::HealthFailures healthFailures;
+        DmaDeviceRecovery::TargetImageRecovery imageRecovery;
         while (g_ProcessConnectionThreadRunning.load(std::memory_order_acquire)) {
             const bool cacheRefreshRequest = OW::ProcessConnection::ConsumeCacheRefreshRequest();
             const bool manualRequest = OW::ProcessConnection::ConsumeReconnectRequest() || cacheRefreshRequest;
@@ -423,6 +424,7 @@ void StartProcessConnectionThread()
                     healthFailures.Observe(mem.CheckSessionHealth()))) {
                 const auto result = RebuildDmaDeviceSession(rebuildRequest);
                 healthFailures.Reset();
+                imageRecovery.Reset();
                 lastAttemptTick = GetTickCount();
                 if (result == DmaDeviceRecovery::Result::Stopping)
                     break;
@@ -430,6 +432,7 @@ void StartProcessConnectionThread()
             }
 
             if (!mem.IsDmaInitialized()) {
+                imageRecovery.Reset();
                 if (manualRequest || scanDue) {
                     OW::ProcessConnection::SetStatus(false, true, 0, 0, "Connecting DMA device...");
                     const bool configReady = mem.LoadDmaDeviceConfig();
@@ -446,18 +449,38 @@ void StartProcessConnectionThread()
             }
 
             if (manualRequest) {
+                imageRecovery.Reset();
                 TryConnectTargetProcess(true, true);
                 lastAttemptTick = now;
             } else if (!OW::ProcessConnection::IsConnected()) {
                 if (scanDue) {
-                    TryConnectTargetProcess(false, false);
+                    const bool connected = TryConnectTargetProcess(false, false);
+                    if (imageRecovery.ObserveReconnectResult(connected)) {
+                        Diagnostics::Warn("Target image remained unreadable after cache refresh/CR3 reconnect; rebuilding DMA session.");
+                        const auto result = RebuildDmaDeviceSession(false);
+                        healthFailures.Reset();
+                        lastAttemptTick = GetTickCount();
+                        if (result == DmaDeviceRecovery::Result::Stopping)
+                            break;
+                        continue;
+                    }
                     lastAttemptTick = now;
                 }
             } else if (scanDue) {
-                if(g_Workers.Failed() || !OW::RuntimeWorkersRunning())
+                if(g_Workers.Failed() || !OW::RuntimeWorkersRunning()) {
+                    imageRecovery.Reset();
                     MarkProcessDisconnected("Runtime worker failed; reconnecting");
-                else if (!mem.CheckAttachedProcessAlive())
+                } else if (!mem.CheckAttachedProcessAlive()) {
+                    imageRecovery.Reset();
                     MarkProcessDisconnected("Target lifetime changed or unreadable; reconnecting");
+                } else if (imageRecovery.ObserveAttachedImageReadable(mem.CheckAttachedImageReadable())) {
+                    Diagnostics::Warn(
+                        "Target user-mode image unreadable for %u consecutive checks (pid=%d base=0x%llX); refreshing VMM cache and reconnecting.",
+                        DmaDeviceRecovery::TargetImageRecovery::kUnreadableThreshold,
+                        OW::ProcessConnection::ConnectedPid(),
+                        static_cast<unsigned long long>(OW::SDK->dwGameBase));
+                    MarkProcessDisconnected("Target memory unreadable (DTB/CR3 stale); reconnecting");
+                }
                 lastAttemptTick = now;
             }
 

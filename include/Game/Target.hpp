@@ -126,6 +126,47 @@ namespace OW {
         return enabled;
     }
 
+    // Sample visibility on every hot scatter batch (8B/entity, zero extra round trips)
+    // so triggerbot/aimbot do not sit behind a 16-31ms corner-peek visibility blind spot.
+    inline bool HotVisibilityEveryCycleEnabled()
+    {
+        static const bool enabled =
+            ReadPresentEnvFlagState("UN_DMA_HOT_VISIBILITY_EVERY_CYCLE", 1) == 1;
+        return enabled;
+    }
+
+    // Compensate triggerbot hit tests for short DMA-to-consume sample age using live velocity.
+    inline bool TriggerSampleCompensationEnabled()
+    {
+        static const bool enabled =
+            ReadPresentEnvFlagState("UN_DMA_TRIGGER_SAMPLE_COMP", 1) == 1;
+        return enabled;
+    }
+
+    inline Vector3 TriggerSampleAgeDisplacement(const c_entity& entity, uint64_t nowUs) noexcept
+    {
+        if (!TriggerSampleCompensationEnabled() || entity.sample_time_us == 0 || nowUs <= entity.sample_time_us)
+            return {};
+        const Vector3 velocity = entity.velocity;
+        if (!std::isfinite(velocity.X) || !std::isfinite(velocity.Y) || !std::isfinite(velocity.Z))
+            return {};
+        const float speed = velocity.Size();
+        if (!std::isfinite(speed) || speed <= 0.05f || speed > 35.0f)
+            return {};
+        float leadSeconds = static_cast<float>(nowUs - entity.sample_time_us) / 1000000.0f;
+        leadSeconds = std::clamp(leadSeconds, 0.0f, 0.025f);
+        if (leadSeconds <= 0.0f)
+            return {};
+        Vector3 offset = velocity * leadSeconds;
+        constexpr float kMaxTriggerSampleOffsetMeters = 0.20f;
+        const float offsetLength = offset.Size();
+        if (!std::isfinite(offsetLength) || offsetLength <= 0.0001f)
+            return {};
+        if (offsetLength > kMaxTriggerSampleOffsetMeters)
+            offset = offset * (kMaxTriggerSampleOffsetMeters / offsetLength);
+        return offset;
+    }
+
     inline DWORD PresentEntityHz()
     {
         static const DWORD hz = ReadPresentEnvDword("UN_DMA_ENTITY_PRESENT_HZ", 120, 30, 144);
@@ -1958,6 +1999,7 @@ namespace OW {
         const ProjectileRuntimeSpec projectileSpec =
             TargetingDetail::ResolveProjectileRuntimeSpec(weaponSpec, localEntity, secondary);
         const float hitboxScale = secondary ? Config::hitbox2 : Config::View_hitbox();
+        const uint64_t triggerNowUs = RuntimeTrace::NowUs();
         float bestNormalizedScore = (std::numeric_limits<float>::max)();
 
         if (fovContext.valid) {
@@ -1974,6 +2016,7 @@ namespace OW {
                     !entity.SameTeamAs(localEntity)) {
                     continue;
                 }
+                const Vector3 sampleDisplacement = TriggerSampleAgeDisplacement(entity, triggerNowUs);
 
                 const Vector3 distanceAnchor = !TargetingDetail::IsZeroVector(entity.chest_pos)
                     ? entity.chest_pos
@@ -2005,7 +2048,7 @@ namespace OW {
                         projectileSpec,
                         resolvedPrediction,
                         secondary);
-                    const Vector3 aimPoint = lead.finalAimPoint;
+                    const Vector3 aimPoint = lead.finalAimPoint + sampleDisplacement;
                     if (TargetingDetail::IsZeroVector(aimPoint) ||
                         !TargetingDetail::IsFiniteVector(aimPoint))
                         continue;
@@ -2035,7 +2078,7 @@ namespace OW {
                         const auto hitWindowInput = MakeNativeHitWindowInput(lead, weaponSpec->aimClass, hitboxScale);
                         // Use the crosshair direction and preserve range for projectile flight time.
                         nativeScore = NativeHitWindowScore(entity, boneId, now, fovContext.camera,
-                            fovContext.forward * distance, hitWindowInput);
+                            fovContext.forward * distance, hitWindowInput, sampleDisplacement);
                     }
                     if (weaponSpec && NativeHitboxSampleUsable(entity, now) && !nativeScore)
                         continue;

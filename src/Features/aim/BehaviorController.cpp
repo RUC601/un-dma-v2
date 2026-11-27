@@ -3051,9 +3051,10 @@ namespace AimbotDetail {
 
         if (!armed) return;
 
-        // 2. Optional reload gate. Refresh at a bounded rate because the
-        // general local-skill cache rotates this state too slowly for reloads.
-        if (OW::Config::ShouldBlockTriggerForReload(
+        // 2. Optional reload gate. Only hit DMA when the user actually enabled
+        // disable-while-reloading; otherwise keep the trigger lane completely DMA-free.
+        if (disableWhileReloading &&
+            OW::Config::ShouldBlockTriggerForReload(
                 disableWhileReloading,
                 RefreshTriggerReloadingState())) {
             static DWORD lastReloadBlockLogTickPrimary = 0;
@@ -3164,6 +3165,23 @@ namespace AimbotDetail {
             return;
         }
         lastFireTick = GetTickCount();
+    }
+
+    inline bool WaitForAimbotFrameOrTimeout(DWORD fallbackMs) {
+        HANDLE handles[2] = { OW::RuntimeWorkersStopEvent(), OW::AimFramePublishedEvent() };
+        if (!handles[0] || !handles[1])
+            return OW::RuntimeWorkerSleep(fallbackMs);
+        const DWORD waitResult = WaitForMultipleObjects(2, handles, FALSE, fallbackMs);
+        return waitResult != WAIT_OBJECT_0 && OW::RuntimeWorkersRunning();
+    }
+
+    inline void RunConfiguredTriggerbots(float origin_sens) {
+        if (!OW::Config::View_triggerbot() && !OW::Config::View_triggerbot2())
+            return;
+        ScopedIndependentAimSelection independentSelection;
+        ScopedHeroTriggerPresetOverride triggerPresetOverride;
+        if (OW::Config::View_triggerbot()) RunTriggerbot(false, origin_sens);
+        if (OW::Config::View_triggerbot2()) RunTriggerbot(true, origin_sens);
     }
 
     inline bool ShouldYieldToSecondaryAim() {
@@ -3385,6 +3403,8 @@ namespace AimbotDetail {
                !OW::ShouldBlockForActiveSequence(ExecutionSource::GlobalAim)) {
             OW::consumerFrame=OW::SnapshotFrame();
             synchronizeHeldFireState();
+            if (!fireHeld)
+                RunConfiguredTriggerbots(origin_sens);
             const OW::AimStartLimiterProfile startLimiterProfile =
                 OW::Config::ResolveAimStartLimiterProfile(behavior);
             if (!startLimiterProfile.enabled && state.trackingStartLimiter.started)
@@ -3462,7 +3482,7 @@ namespace AimbotDetail {
                     } else if (!holdThisTick) {
                         releaseHeldFire();
                     }
-                    OW::RuntimeWorkerSleep(1);
+                    if (!WaitForAimbotFrameOrTimeout(1)) break;
                     RunAutoScaleFov();
                     if (ShouldYieldToSecondaryAim()) break;
                     continue;
@@ -3613,7 +3633,7 @@ namespace AimbotDetail {
             if (!holdThisTick)
                 releaseHeldFire();
 
-            OW::RuntimeWorkerSleep(1);
+            if (!WaitForAimbotFrameOrTimeout(1)) break;
             RunAutoScaleFov();
             if (ShouldYieldToSecondaryAim()) break;
         }
@@ -4847,7 +4867,9 @@ void aimbot_thread() {
             }
 
             AimbotDetail::RunAimbotTickWithHeroPreset(state, origin_sens);
-            OW::RuntimeWorkerSleep(2);
+            if (!AimbotDetail::WaitForAimbotFrameOrTimeout(2)) {
+                break;
+            }
         }
         AimbotDetail::ObserveReleaseFireInput(state,true);
         AimbotDetail::ReleaseKeepFiringOutput(state, "worker_stopped");

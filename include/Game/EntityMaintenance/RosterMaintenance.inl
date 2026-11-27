@@ -168,11 +168,14 @@
     auto publishRosterSnapshot = [&](DWORD now,
                                      size_t heroChanged,
                                      std::vector<OW::c_entity>& published,
-                                     Diagnostics::EntityLifecycleStats* lifecycleStats = nullptr) {
+                                     Diagnostics::EntityLifecycleStats* lifecycleStats = nullptr,
+                                     bool collectPublished = true) {
         Diagnostics::RosterStats rosterStats{};
         rosterStats.heroChanged = heroChanged;
-        published.clear();
-        published.reserve(entityRoster.size());
+        if (collectPublished) {
+            published.clear();
+            published.reserve(entityRoster.size());
+        }
 
         for (auto it = entityRoster.begin(); it != entityRoster.end();) {
             RosterEntry& rosterEntry = *it->second;
@@ -225,6 +228,9 @@
                 const auto address=rosterEntity.address;
                 componentBaseCache.erase(address);dynamicEntityCache.erase(address);
                 discoveryAttemptTicks.erase(address);
+                std::erase_if(retiredActors, [&](const auto& retiredPair) {
+                    return retiredPair.second.replacedByAddress == address;
+                });
                 Diagnostics::Info("Entity seat expired: reason=no_actual_discovery_13000ms address=0x%llX.",address);
                 it = entityRoster.erase(it);
                 rosterStats.expired++;
@@ -296,21 +302,25 @@
                 break;
             }
 
-            rosterEntity.published_tick_ms = now;
-            rosterEntity.publish_sequence=entityPublishSequence;
-            const float traceEntity[]={rosterEntity.pos.X,rosterEntity.pos.Y,rosterEntity.pos.Z,
-                float(rosterEntity.roster_state),float(rosterEntity.Alive),
-                float(rosterEntity.read_completed_tick_ms-rosterEntity.read_started_tick_ms)};
-            RuntimeTrace::Emit(RuntimeTrace::EntityPublish,rosterEntity.address,rosterEntity.actor_generation,
-                rosterEntity.anchor_sample_tick_ms,entityPublishSequence,traceEntity,6);
-            published.push_back(rosterEntity);
+            if (collectPublished) {
+                rosterEntity.published_tick_ms = now;
+                rosterEntity.publish_sequence=entityPublishSequence;
+                const float traceEntity[]={rosterEntity.pos.X,rosterEntity.pos.Y,rosterEntity.pos.Z,
+                    float(rosterEntity.roster_state),float(rosterEntity.Alive),
+                    float(rosterEntity.read_completed_tick_ms-rosterEntity.read_started_tick_ms)};
+                RuntimeTrace::Emit(RuntimeTrace::EntityPublish,rosterEntity.address,rosterEntity.actor_generation,
+                    rosterEntity.anchor_sample_tick_ms,entityPublishSequence,traceEntity,6);
+                published.push_back(rosterEntity);
+            }
             ++it;
         }
 
-        std::sort(published.begin(), published.end(),
-            [](const OW::c_entity& lhs, const OW::c_entity& rhs) {
-                return lhs.roster_key < rhs.roster_key;
-            });
+        if (collectPublished) {
+            std::sort(published.begin(), published.end(),
+                [](const OW::c_entity& lhs, const OW::c_entity& rhs) {
+                    return lhs.roster_key < rhs.roster_key;
+                });
+        }
 
         return rosterStats;
     };

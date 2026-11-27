@@ -1,8 +1,8 @@
-        auto retireObservedBody = [&](const OW::c_entity& value) {
+        auto retireObservedBody = [&](const OW::c_entity& value, uint64_t replacedBy = 0) {
             OW::BlockEntityBody(value.address,processLoopTick);
             OW::TargetingDetail::InvalidateTargetBody(value.address,value.roster_key,value.actor_generation);
             {std::lock_guard<std::mutex> lock(OW::entityBodyValidityMutex);OW::entityBodyAuthorities.erase(value.address);}
-            retiredActors[value.address]={value.match_id,value.LinkParent,false,OW::EntityBodyAbsenceRevision(value.address)};
+            retiredActors[value.address]={value.match_id,value.LinkParent,false,OW::EntityBodyAbsenceRevision(value.address),replacedBy,value.roster_key};
             componentBaseCache.erase(value.address);dynamicEntityCache.erase(value.address);
         };
         // A trusted death is independent of position, bones and optional health pools.

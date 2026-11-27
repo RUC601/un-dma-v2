@@ -9,6 +9,7 @@
 #include <vector>
 #include <utility>
 #include <unordered_map>
+#include <Windows.h>
 #include "Game/EntityRegistry.hpp"
 #include "Game/EntityRosterPolicy.hpp"
 #include "Utils/ProcessConnection.hpp"
@@ -189,11 +190,30 @@ inline bool RuntimeWorkersRunning() noexcept
     return runtimeWorkersRunning.load(std::memory_order_acquire);
 }
 
+inline HANDLE RuntimeWorkersStopEvent() noexcept
+{
+    struct EventOwner {
+        HANDLE handle = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        ~EventOwner() {
+            if (handle)
+                CloseHandle(handle);
+        }
+    };
+    static EventOwner eventOwner{};
+    return eventOwner.handle;
+}
+
 inline void SetRuntimeWorkersRunning(bool running)
 {
     {
         std::lock_guard<std::mutex> lock(runtimeWorkerWaitMutex);
         runtimeWorkersRunning.store(running, std::memory_order_release);
+    }
+    if (HANDLE stopEvent = RuntimeWorkersStopEvent()) {
+        if (running)
+            ResetEvent(stopEvent);
+        else
+            SetEvent(stopEvent);
     }
     if (!running)
         runtimeWorkerWaitCondition.notify_all();

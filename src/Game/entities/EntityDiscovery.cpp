@@ -5,6 +5,36 @@
 #include <memory>
 
 namespace {
+struct ScopedScatterHandle {
+    VMMDLL_SCATTER_HANDLE handle = nullptr;
+    ScopedScatterHandle() = default;
+    ScopedScatterHandle(const ScopedScatterHandle&) = delete;
+    ScopedScatterHandle& operator=(const ScopedScatterHandle&) = delete;
+    ScopedScatterHandle(ScopedScatterHandle&& other) noexcept : handle(other.handle) {
+        other.handle = nullptr;
+    }
+    ScopedScatterHandle& operator=(ScopedScatterHandle&& other) noexcept {
+        if (this != &other) {
+            Reset();
+            handle = other.handle;
+            other.handle = nullptr;
+        }
+        return *this;
+    }
+    ~ScopedScatterHandle() { Reset(); }
+    void Reset() {
+        if (handle) {
+            mem.CloseScatterHandle(handle);
+            handle = nullptr;
+        }
+    }
+    VMMDLL_SCATTER_HANDLE Ensure() {
+        if (!handle)
+            handle = mem.CreateScatterHandle();
+        return handle;
+    }
+};
+
 struct DiscoveryState {
     std::unique_ptr<OW::EntityScanTask> scan;
     OW::EntityTopologySample topology;
@@ -33,6 +63,15 @@ struct DiscoveryState {
     uint8_t positiveCursor=0;
     uint64_t positiveAttempts=0,positiveIndexAttempts=0,positiveAccepted=0;
     std::chrono::steady_clock::time_point started;
+    ScopedScatterHandle positiveHeaderScatter;
+    void ClosePositiveScatter() { positiveHeaderScatter.Reset(); }
+    VMMDLL_SCATTER_HANDLE EnsurePositiveScatter() { return positiveHeaderScatter.Ensure(); }
+    void ResetForContext(uint64_t nextEpoch, uint64_t nextScene, const OW::EntityRegistry::Snapshot& nextRegistry) {
+        *this = DiscoveryState{};
+        epoch = nextEpoch;
+        scene = nextScene;
+        registry = nextRegistry;
+    }
 };
 
 bool PublishDiscovery(DiscoveryState& state,
@@ -151,10 +190,11 @@ static void AdvancePositiveDiscovery(DiscoveryState& state,DWORD now) {
     const auto parents=state.positive.NextHeaders(headerBatch);
     struct Header {std::array<uint8_t,44> bytes{};DWORD actual=0;bool prepared=false;};
     std::array<Header,headerBatch> headers{};
-    const auto handle=mem.CreateScatterHandle();if(!handle)return;
+    const auto handle=state.EnsurePositiveScatter();if(!handle)return;
     for(size_t i=0;i<parents.size();++i)headers[i].prepared=mem.AddScatterReadRequest(handle,
         parents[i]+0x110,headers[i].bytes.data(),headers[i].bytes.size(),&headers[i].actual);
-    const bool executed=mem.ExecuteReadScatter(handle);mem.CloseScatterHandle(handle);
+    const bool executed=mem.ExecuteReadScatter(handle);
+    if(!executed)state.ClosePositiveScatter();
     if(!OW::AcceptEntityRegistry(state.registry))return;
     for(size_t i=0;i<parents.size();++i) {
         OW::EntityDiscovery::PositiveCandidates::Fingerprint value;
@@ -170,7 +210,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     const auto scene=OW::EntitySceneGeneration();
     const auto registry=OW::RefreshEntityRegistry(false);
     if(state.epoch!=epoch || state.scene!=scene || state.registry.generation!=registry.snapshot.generation) {
-        state=DiscoveryState{};state.epoch=epoch;state.scene=scene;state.registry=registry.snapshot;
+        state.ResetForContext(epoch, scene, registry.snapshot);
     }
     if(!registry.available)return;
     const DWORD now=static_cast<DWORD>(OW::EntityRegistryNowMs());
@@ -183,9 +223,10 @@ static void AdvanceDiscovery(DiscoveryState& state) {
     if(local.LinkParent && local.AngleBase && local.connection_epoch==epoch && local.scene_generation==scene)
         state.localLink=local.LinkParent;
     const auto work=state.workSchedule.Select(
-        state.localLink && state.topology.complete &&
+        state.localLink && (state.topology.complete || (currentMapProfile && state.positive.Contains(state.localLink))) &&
             (!state.lastLocalProbe || now-state.lastLocalProbe>=50),
-        !state.knownLinks.empty() && now-state.lastKnownProbe>=32 && state.topology.complete,
+        !state.knownLinks.empty() && now-state.lastKnownProbe>=32 &&
+            (state.topology.complete || (currentMapProfile && !state.positive.members.empty())),
         state.scan || state.pairCursor<state.pendingPairs.size() || !state.lastScan || now-state.lastScan>=250,
         currentMapProfile && OW::DynamicEntityRegistryEnabled() &&
             (state.positiveTableReading || !state.positiveTableTick || now-state.positiveTableTick>=250 ||
@@ -201,14 +242,28 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         if(local.HasUsableBody(now,scene))
             hotActors.push_back({local.address,local.LinkParent,local.HeroID,local.match_id,local.anchor_sample_tick_ms});
         bool complete=false;
-        auto pairs=OW::ProbePriorityActor(state.localLink,state.topology,true,&bindings,&complete,&proofs,nullptr,&hotActors,true);
+        const bool localInScanTopology = state.topology.complete &&
+            std::binary_search(state.topology.members.begin(),state.topology.members.end(),state.localLink);
+        const bool useLocalPositive = !localInScanTopology && currentMapProfile && state.positive.Contains(state.localLink);
+        OW::EntityTopologySample localPositiveTopology;
+        if (useLocalPositive) {
+            localPositiveTopology.root = state.registry.root;
+            localPositiveTopology.registry = state.registry;
+            localPositiveTopology.complete = true;
+            localPositiveTopology.member_ids_complete = state.positive.FreshMemberIds(now, localPositiveTopology.member_ids);
+            localPositiveTopology.members = state.positive.members;
+        }
+        auto pairs=OW::ProbePriorityActor(
+            state.localLink,
+            useLocalPositive ? localPositiveTopology : state.topology,
+            true,&bindings,&complete,&proofs,nullptr,&hotActors,true,useLocalPositive);
         for(const auto& proof:proofs)if(proof.address!=state.lastLocalIdentity.address ||
             proof.match!=state.lastLocalIdentity.match || proof.hero!=state.lastLocalIdentity.hero) {
             Diagnostics::Info("[V2-LOCAL-PROBE] actor=0x%llX link=0x%llX hero=0x%llX match=%u binding_complete=%d",
                 proof.address,proof.link,proof.hero,proof.match,int(complete));
             state.lastLocalIdentity=proof;
         }
-        if(!pairs.empty())PublishDiscovery(state,std::move(pairs),std::move(proofs),false,complete,std::move(bindings));
+        if(!pairs.empty())PublishDiscovery(state,std::move(pairs),std::move(proofs),false,complete,std::move(bindings),false,useLocalPositive);
         state.lastLocalProbe=static_cast<DWORD>(OW::EntityRegistryNowMs());
         return;
     }
@@ -233,19 +288,26 @@ static void AdvanceDiscovery(DiscoveryState& state) {
         // During respawn the old UID index can still point at an intact corpse.
         // Consult the controller's current map before that cached index, then
         // retain the probe's exact life/identity and final-map checks.
-        const bool currentMap=recovery[selected] && currentMapProfile;
+        const bool inScanTopology = state.topology.complete &&
+            std::binary_search(state.topology.members.begin(),state.topology.members.end(),parent);
+        const bool currentMap=(recovery[selected] || !inScanTopology) && currentMapProfile;
         OW::EntityTopologySample recoveryTopology;
-        const bool freshRecoveryIndex=currentMap && state.positive.Contains(parent) &&
+        const bool positiveMember = currentMap && state.positive.Contains(parent);
+        const bool freshRecoveryIndex = positiveMember &&
             state.positive.FreshMemberIds(now,recoveryTopology.member_ids);
-        if(freshRecoveryIndex) {
+        // Newly spawned controllers discovered via positive scans may not exist
+        // in the older full-scan topology yet; keep renewing them through their
+        // live current map so their seats cannot expire before the full scan ends.
+        const bool usePositiveTopology = freshRecoveryIndex || (!inScanTopology && positiveMember);
+        if(usePositiveTopology) {
             recoveryTopology.root=state.registry.root;recoveryTopology.registry=state.registry;
-            recoveryTopology.complete=true;recoveryTopology.member_ids_complete=true;
+            recoveryTopology.complete=true;recoveryTopology.member_ids_complete=freshRecoveryIndex;
             recoveryTopology.members=state.positive.members;
         }
-        auto pairs=OW::ProbePriorityActor(parent,freshRecoveryIndex?recoveryTopology:state.topology,true,
-            &bindings,&complete,&proofs,nullptr,&hotActors,currentMap,freshRecoveryIndex);
+        auto pairs=OW::ProbePriorityActor(parent,usePositiveTopology?recoveryTopology:state.topology,true,
+            &bindings,&complete,&proofs,nullptr,&hotActors,currentMap,usePositiveTopology);
         if(!pairs.empty())PublishDiscovery(state,std::move(pairs),std::move(proofs),false,complete,
-            std::move(bindings),false,freshRecoveryIndex);
+            std::move(bindings),false,usePositiveTopology);
         return;
     }
     if(state.pairCursor<state.pendingPairs.size()) {
@@ -330,7 +392,7 @@ static void AdvanceDiscovery(DiscoveryState& state) {
             PublishDiscovery(state,verified,proofs,false,false,{},true,true);
         } else {
             auto member=state.topology;member.members={parent};
-            if(OW::AuditEntityScene(member)!=OW::EntityRosterPolicy::SceneAudit::Empty)
+            if(OW::AuditEntityScene(member,&OW::entityScanHeaders)!=OW::EntityRosterPolicy::SceneAudit::Empty)
                 state.bindingsComplete=false;
         }
         return;

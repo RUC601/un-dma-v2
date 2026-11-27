@@ -209,21 +209,6 @@ void DrawMiscOutputPage() {
                 gameSensitivityReadMessage.c_str());
         }
 
-        SettingRow(T(UiText::HostDpiDma));
-        PushControlWidth();
-        float detectedHostDpi = OW::Config::hostMouseDpiAutoDetected
-            ? OW::Config::detectedHostMouseDpi
-            : 0.0f;
-        ImGui::InputFloat("##HostDpiDisplay", &detectedHostDpi, 0.0f, 0.0f, "%.0f",
-                          ImGuiInputTextFlags_ReadOnly);
-        ImGui::PopItemWidth();
-
-        SettingRow(T(UiText::MouseDpi));
-        PushControlWidth();
-        ImGui::InputFloat("##MouseDpi", &OW::Config::hostMouseDpi,
-                          0.0f, 0.0f, "%.0f");
-        ImGui::PopItemWidth();
-
         convSnapshot = OW::Config::ReadOutputConversionSnapshot();
         SettingRow(T(UiText::ReferenceGameSens));
         const float useCurrentButtonWidth = 88.0f;

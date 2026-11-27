@@ -40,9 +40,12 @@ void entity_thread() {
     const bool coldTopologyScanEnabled=V2::Acquisition::kColdTopology;
     Diagnostics::Info("UNDMA V2: unified acquisition, compact hot fields, resumable discovery, UN feature settings retained.");
     const auto entityProcessPeriod = V2::Acquisition::Period();
+    const DWORD nativeHitboxShapeCacheMs = OW::NativeHitboxes::ShapeCacheMs();
+    const bool hotVisibilityEveryCycle = OW::HotVisibilityEveryCycleEnabled();
     auto nextProcessTick = std::chrono::steady_clock::now();
-    Diagnostics::Info("UNDMA V2 acquisition target=%d Hz period_ms=%.7f.",
-        V2::Acquisition::kTargetHz, std::chrono::duration<double,std::milli>(entityProcessPeriod).count());
+    Diagnostics::Info("UNDMA V2 acquisition target=%d Hz period_ms=%.7f native_hitbox_shape_cache_ms=%lu hot_visibility_every_cycle=%d.",
+        V2::Acquisition::kTargetHz, std::chrono::duration<double,std::milli>(entityProcessPeriod).count(),
+        static_cast<unsigned long>(nativeHitboxShapeCacheMs), hotVisibilityEveryCycle ? 1 : 0);
     bool lastCriticalBatchFusionActive = OW::CriticalBatchFusionActive();
     uint64_t lastConnectionEpoch = OW::ProcessConnection::ConnectionEpoch();
     uint64_t processRegistryGeneration=0;
@@ -463,6 +466,15 @@ void entity_thread() {
     std::vector<HotFieldBatchItem> hotFieldBatchStorage;
     std::unordered_map<uint64_t,size_t> hotFieldBatchIndex;
     std::unordered_map<uint64_t,uint64_t> successfulSamples;
+    std::unordered_set<uint64_t> rawScanSeenComponents;
+    std::unordered_set<uint64_t> scheduledRawComponents;
+    std::unordered_set<uint64_t> scanMissHotReadComponents;
+    std::unordered_set<uint64_t> scanMissHotReadSucceededComponents;
+    std::unordered_set<uint64_t> hotScatterPages;
+    std::unordered_map<uint64_t, const OW::c_entity*> previousEntityByAddress;
+    std::unordered_map<uint64_t, const OW::c_entity*> previousEntityByRosterKey;
+    std::unordered_map<uint64_t, RosterEntry*> rosterByAddress;
+    std::vector<uint8_t> needsReconciliation;
     auto measurementStart=std::chrono::steady_clock::now();
     size_t measuredCycles=0; double hotTotalMs=0, hotMaxMs=0;
 
@@ -634,18 +646,20 @@ void entity_thread() {
             cycleMemberPairs=raw_entities;
             for(const auto& pair:raw_entities)if(pair.first)latestCompleteActorMembers.insert(pair.first);
         }
-        std::unordered_set<uint64_t> rawScanSeenComponents{};
-        std::unordered_set<uint64_t> scheduledRawComponents{};
-        rawScanSeenComponents.reserve(raw_entities.size() * 2 + 16);
+        rawScanSeenComponents.clear();
+        scheduledRawComponents.clear();
+        if (rawScanSeenComponents.bucket_count() < raw_entities.size() * 2 + 16)
+            rawScanSeenComponents.reserve(raw_entities.size() * 2 + 16);
         rawScanSeenComponents.insert(consumedActualMembers.begin(),consumedActualMembers.end());
-        scheduledRawComponents.reserve(raw_entities.size() * 2 + 16);
+        if (scheduledRawComponents.bucket_count() < raw_entities.size() * 2 + 16)
+            scheduledRawComponents.reserve(raw_entities.size() * 2 + 16);
         for (const auto& rawPair : raw_entities) {
             if (rawPair.first != 0) {
                 scheduledRawComponents.insert(rawPair.first);
             }
         }
-        std::unordered_set<uint64_t> scanMissHotReadComponents{};
-        std::unordered_set<uint64_t> scanMissHotReadSucceededComponents{};
+        scanMissHotReadComponents.clear();
+        scanMissHotReadSucceededComponents.clear();
         resetRosterCycleFlags();
         // Maintain deadlines before any potentially slow read, including empty/unavailable scans.
         std::vector<OW::c_entity> maintainedEntities;
@@ -869,8 +883,9 @@ void entity_thread() {
         localStats.cameraZCm = std::isfinite(cameraLocation.Z) ? static_cast<int>(cameraLocation.Z * 100.0f) : 0;
 
         constexpr uint64_t kScatterPageMask = ~0xFFFull;
-        std::unordered_set<uint64_t> hotScatterPages{};
-        hotScatterPages.reserve(raw_entities.size() * 4);
+        hotScatterPages.clear();
+        if (hotScatterPages.bucket_count() < raw_entities.size() * 4)
+            hotScatterPages.reserve(raw_entities.size() * 4);
 #include "Game/EntityMaintenance/HotRead.inl"
 
         const auto objectSettings=V2::HeroSettings::Snapshot();
@@ -993,12 +1008,14 @@ void entity_thread() {
         // Also log entity MatchIds for cross-reference on first detailed cycle
         static bool matchIdLogEnabled = true;
 
-        std::unordered_map<uint64_t, const OW::c_entity*> previousEntityByAddress;
-        std::unordered_map<uint64_t, const OW::c_entity*> previousEntityByRosterKey;
+        previousEntityByAddress.clear();
+        previousEntityByRosterKey.clear();
         {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.previousIndexMs);
-            previousEntityByAddress.reserve(previous_entities.size());
-            previousEntityByRosterKey.reserve(previous_entities.size());
+            if (previousEntityByAddress.bucket_count() < previous_entities.size())
+                previousEntityByAddress.reserve(previous_entities.size());
+            if (previousEntityByRosterKey.bucket_count() < previous_entities.size())
+                previousEntityByRosterKey.reserve(previous_entities.size());
             for (const OW::c_entity& previous : previous_entities) {
                 if (previous.address)
                     previousEntityByAddress.emplace(previous.address, &previous);
@@ -1089,7 +1106,8 @@ void entity_thread() {
                      processLoopTick - cached.heroUpdateTick >= OW::kEntityHeroIntervalMs);
                 const bool scatterVisibility =
                     activeOffsetsForHotBatch.VisibilityValueOffset != 0 &&
-                    cached.visibility != 0 && cached.visibilitySample.Due(processLoopTick);
+                    cached.visibility != 0 &&
+                    (hotVisibilityEveryCycle || cached.visibilitySample.Due(processLoopTick));
                 const uint64_t visibilityValueAddress = scatterVisibility
                     ? cached.visibility + activeOffsetsForHotBatch.VisibilityValueOffset
                     : 0;
@@ -1153,7 +1171,7 @@ void entity_thread() {
                             const bool ok=mem.ReadFreshExact(at,data,size);
                             if(!ok)++pipelineStats.hotGeometryLayoutFailures;
                             return ok;
-                        });
+                        }, processLoopTick);
                 }
                 if(item.skeletonPrepared && skeleton.bonesBase) {
                     std::array<int,19> indices{}; size_t count=0;
@@ -1199,16 +1217,20 @@ void entity_thread() {
                 }
                 if(nativeGeometry) {
                     auto& capture=item.nativeHitboxes;
-                    capture.Reset(cached.nativeHitboxLayout);
+                    const bool rereadShapes = !cached.nativeHitboxLayout.ShapesCacheFresh(
+                        processLoopTick, nativeHitboxShapeCacheMs);
+                    capture.Reset(cached.nativeHitboxLayout, rereadShapes);
                     if(capture.prepared) {
                         const auto request=[&](uint64_t at,void* data,size_t size,DWORD& bytes) {
                             if(!extraRequest(item,at,data,size,bytes))capture.prepared=false;
                         };
                         request(cached.velocity+0xC8,&capture.observedRoot,8,capture.rootBytes);
                         request(capture.layout.root,capture.observedHeader.data(),48,capture.headerBytes);
-                        request(capture.layout.spheres,capture.spheres.data(),capture.spheres.size(),capture.sphereBytes);
-                        request(capture.layout.capsules,capture.capsules.data(),capture.capsules.size(),capture.capsuleBytes);
-                        pipelineStats.hotGeometryShapeBytes+=capture.spheres.size()+capture.capsules.size();
+                        if (!capture.usedCachedShapes) {
+                            request(capture.layout.spheres,capture.spheres.data(),capture.spheres.size(),capture.sphereBytes);
+                            request(capture.layout.capsules,capture.capsules.data(),capture.capsules.size(),capture.capsuleBytes);
+                            pipelineStats.hotGeometryShapeBytes+=capture.spheres.size()+capture.capsules.size();
+                        }
                     }
                 } else if(item.skeletonPrepared && ModelHitboxRuntimeEnabled() && OW::ModelShapes::Supported(cached.heroId) &&
                    skeleton.valid && skeleton.shapeModelIndex>=0 && skeleton.shapeMaxIndex>=0 && skeleton.shapeMaxIndex<skeleton.boneCount) {
@@ -1238,6 +1260,13 @@ void entity_thread() {
 #include "Game/EntityMaintenance/ObservedDeath.inl"
 
         auto publishHotActors=[&]() {
+        rosterByAddress.clear();
+        if (rosterByAddress.bucket_count() < entityRoster.size() * 2 + 16)
+            rosterByAddress.reserve(entityRoster.size() * 2 + 16);
+        for (const auto& [rosterKey, rosterPtr] : entityRoster) {
+            if (rosterPtr && rosterPtr->entity.address)
+                rosterByAddress[rosterPtr->entity.address] = rosterPtr.get();
+        }
         size_t hotUpdated=0;
         for(auto& item:hotFieldBatchItems) {
             const auto rejectHot=[&](uint64_t reason) {
@@ -1257,11 +1286,13 @@ void entity_thread() {
                 cached.entity.team_known=false;
                 componentBaseCache.erase(cachedIt);rejectHot(7);continue;
             }
-            auto rosterIt=std::find_if(entityRoster.begin(),entityRoster.end(),[&](const auto& p) {
-                return p.second->entity.address==item.componentParent && p.second->entity.LinkParent==item.linkParent;
-            });
-            if(rosterIt==entityRoster.end()){rejectHot(8);continue;}
-            auto& entry=*rosterIt->second;
+            auto rosterLookup = rosterByAddress.find(item.componentParent);
+            if (rosterLookup == rosterByAddress.end() ||
+                rosterLookup->second->entity.LinkParent != item.linkParent) {
+                rejectHot(8);
+                continue;
+            }
+            auto& entry = *rosterLookup->second;
             OW::c_entity next=entry.entity;
             cached.ApplyBases(next);
             const auto* discovery=cycleDiscoveries.Find(next.address,next.LinkParent,GetTickCount());
@@ -1336,7 +1367,7 @@ void entity_thread() {
                         item.geometryPoses,nativeModel,cached.skeletonCache.shapeMapped);
                 }
                 if(item.nativeHitboxes.Complete()) {
-                    if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount))cached.nativeHitboxLayout={};
+                    if(!item.nativeHitboxes.RefreshBindings(cached.nativeHitboxLayout,cached.skeletonCache.boneCount,processLoopTick))cached.nativeHitboxLayout={};
                     else if(item.nativeHitboxes.layout.boneIndices!=cached.nativeHitboxLayout.boneIndices)++pipelineStats.hotGeometryBindingChanges;
                     if(!next.native_hitboxes.Matches(next.VelocityBase,next.skeleton_revision))++pipelineStats.hotGeometryRejectedSamples;
                 }
@@ -1485,7 +1516,7 @@ void entity_thread() {
                 const auto found=componentBaseCache.find(item.componentParent);
                 if(found==componentBaseCache.end() || found->second->linkParent!=item.linkParent)continue;
                 const auto& cached=*found->second;
-                if(cached.rotation) {
+                if(item.rotationGuard.beforePrepared && cached.rotation) {
                     guardQueued=true;
                     item.rotationGuard.afterPrepared=prepareSkeletonScatter(hotGuardScatter,
                         OW::Skeleton::AddressOffset(cached.rotation,offset::RotationBase_Sub1),
@@ -1525,7 +1556,8 @@ void entity_thread() {
                 item.skeletonBefore.executed=ok;
                 item.skeletonAfter.executed=guardOk;
                 const auto found=componentBaseCache.find(item.componentParent);
-                if(found!=componentBaseCache.end() && found->second->linkParent==item.linkParent) {
+                if(item.rotationGuard.beforePrepared &&
+                   found!=componentBaseCache.end() && found->second->linkParent==item.linkParent) {
                     // New/moved rotation leaves become eligible on the next hot
                     // batch; never follow the new pointer synchronously here.
                     const bool leafKnown=item.rotationGuard.Stable() && OW::IsPlausibleUserPointer(item.rotationGuard.after);
@@ -1572,7 +1604,7 @@ void entity_thread() {
         size_t maintenanceVisited=0;
 #include "Game/EntityMaintenance/Bootstrap.inl"
         if(bootstrapFirst && (!hasActiveHotBatch || maintenanceBudgetUs > 0))runBootstrapBatch();
-        std::vector<uint8_t> needsReconciliation(raw_entities.size(),0);
+        needsReconciliation.assign(raw_entities.size(),0);
         for(size_t n=0;n<raw_entities.size();++n) {
             const auto [address,link]=raw_entities[n];
             const auto* proof=cycleDiscoveries.Find(address,link,GetTickCount());
@@ -3162,14 +3194,18 @@ void entity_thread() {
         size_t published_count = 0;
         {
             ScopedPipelinePhaseTimer phaseTimer(pipelineStats.phase.publishMs);
-            ++entityPublishSequence;
+            if (!hotFramePublished)
+                ++entityPublishSequence;
             rosterStats =
                 publishRosterSnapshot(
                     GetTickCount(),
                     heroChangedThisCycle,
                     published_entities,
-                    &lifecycleStats);
-            published_count = published_entities.size();
+                    &lifecycleStats,
+                    !hotFramePublished);
+            published_count = hotFramePublished
+                ? (rosterStats.fresh + rosterStats.dead + rosterStats.missing)
+                : published_entities.size();
             if (!hotFramePublished && !OW::TargetingDetail::TryPublishEntitySnapshots(
                     std::move(published_entities),
                     std::move(hpdy_entities),

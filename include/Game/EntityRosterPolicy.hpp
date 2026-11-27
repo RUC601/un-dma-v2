@@ -249,8 +249,11 @@ inline SameParticipantObservationAction ResolveSameParticipantObservation(
     if (membershipKnown && !sameActor && !existingMember && incomingMember && incomingFresh)
         return SameParticipantObservationAction::ReplaceExisting;
     // A current controller map can supersede a stale missing/dead body even
-    // when the last complete membership snapshot still contains that address.
-    if (currentMapProof && !existingFresh && incomingFresh && membershipKnown && existingMember)
+    // when the last complete membership snapshot still contains that address,
+    // but a simultaneous foreign controller (e.g. killcam/replay clone) must
+    // still pass verified dead-participant replacement instead of hijacking.
+    if (currentMapProof && !existingFresh && incomingFresh && membershipKnown && existingMember &&
+        (sameController || !incomingMember))
         return SameParticipantObservationAction::ReplaceExisting;
     if(sameController)return incomingPaired ? SameParticipantObservationAction::ReplaceExisting : SameParticipantObservationAction::KeepExisting;
     if(deadReplacement.Verified())return SameParticipantObservationAction::ReplaceExisting;

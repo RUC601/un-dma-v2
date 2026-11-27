@@ -33,13 +33,30 @@ namespace OW {
     inline std::mutex consumptionFrameMutex;
     inline std::shared_ptr<const ConsumptionFrame> consumptionFrame=std::make_shared<ConsumptionFrame>();
     inline thread_local std::shared_ptr<const ConsumptionFrame> consumerFrame;
+
+    inline HANDLE AimFramePublishedEvent() noexcept {
+        struct EventOwner {
+            HANDLE handle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            ~EventOwner() {
+                if (handle)
+                    CloseHandle(handle);
+            }
+        };
+        static EventOwner eventOwner{};
+        return eventOwner.handle;
+    }
+
     inline std::shared_ptr<const ConsumptionFrame> SnapshotFrame() {
         std::lock_guard<std::mutex> lock(consumptionFrameMutex);
         return consumptionFrame;
     }
     inline void PublishFrame(std::shared_ptr<const ConsumptionFrame> frame) {
-        std::lock_guard<std::mutex> lock(consumptionFrameMutex);
-        consumptionFrame=std::move(frame);
+        {
+            std::lock_guard<std::mutex> lock(consumptionFrameMutex);
+            consumptionFrame=std::move(frame);
+        }
+        if (HANDLE aimEvent = AimFramePublishedEvent())
+            SetEvent(aimEvent);
     }
     struct ScopedConsumptionFrame {
         std::shared_ptr<const ConsumptionFrame> previous=consumerFrame;

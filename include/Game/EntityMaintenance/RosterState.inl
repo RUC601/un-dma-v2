@@ -7,7 +7,7 @@
     std::unordered_map<uint64_t,DWORD> discoveryAttemptTicks;
     bool missingTransitionNeedsScan=false;
     uint64_t actorGenerationSequence = 0, entityPublishSequence = 0;
-    struct RetiredActor {uint32_t matchId=0;uint64_t link=0;bool absent=false;uint64_t absenceRevision=0;};
+    struct RetiredActor {uint32_t matchId=0;uint64_t link=0;bool absent=false;uint64_t absenceRevision=0;uint64_t replacedByAddress=0;uint64_t rosterKey=0;};
     std::unordered_map<uint64_t,RetiredActor> retiredActors;
     std::unordered_set<uint64_t> latestCompleteActorMembers;
     bool completeActorMembershipKnown=false;

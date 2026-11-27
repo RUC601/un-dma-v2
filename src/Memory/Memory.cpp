@@ -379,11 +379,13 @@ static unsigned char abort2[4] = { 0x10, 0x00, 0x10, 0x00 };
 bool Memory::SetFPGA()
 {
 	ULONG64 qwID = 0, qwVersionMajor = 0, qwVersionMinor = 0;
-	if (!VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_FPGA_ID, &qwID) ||
-		!VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_VERSION_MAJOR, &qwVersionMajor) ||
-		!VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_VERSION_MINOR, &qwVersionMinor))
+	const bool hasId = VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_FPGA_ID, &qwID) != FALSE;
+	const bool hasMajor = VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_VERSION_MAJOR, &qwVersionMajor) != FALSE;
+	const bool hasMinor = VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_VERSION_MINOR, &qwVersionMinor) != FALSE;
+	if (!hasId || !hasMajor || !hasMinor)
 	{
-		LOG("[WARN] FPGA metadata query failed. Proceeding with limited diagnostics.\n");
+		LOG("[WARN] FPGA metadata query failed (id_ok=%d major_ok=%d minor_ok=%d). Proceeding with limited diagnostics.\n",
+			hasId ? 1 : 0, hasMajor ? 1 : 0, hasMinor ? 1 : 0);
 		return false;
 	}
 
@@ -396,7 +398,7 @@ bool Memory::SetFPGA()
         ULONG64 deviceHandle = 0;
         if (!VMMDLL_ConfigGet(vHandle, VMMDLL_OPT_CORE_LEECHCORE_HANDLE, &deviceHandle) || !deviceHandle)
 		{
-			LOG("[ERROR] Failed to create FPGA configuration handle.\n");
+			LOG("[WARN] FPGA configuration handle unavailable; skipping PCIe register flag reset and continuing with the initialized transport.\n");
 			return false;
 		}
 
@@ -521,17 +523,14 @@ bool Memory::InitDma(DmaDeviceType deviceType, bool memMap, bool debug)
 	if (m_deviceConfig.IsFpga())
 	{
 		ULONG64 FPGA_ID = 0, DEVICE_ID = 0;
-		VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_FPGA_ID, &FPGA_ID);
-		VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_DEVICE_ID, &DEVICE_ID);
-		LOG("[INFO] FPGA identifier: %llu\n", FPGA_ID);
-		LOG("[INFO] Device identifier: %llu\n", DEVICE_ID);
+		const bool hasFpgaId = VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_FPGA_ID, &FPGA_ID) != FALSE;
+		const bool hasDeviceId = VMMDLL_ConfigGet(this->vHandle, LC_OPT_FPGA_DEVICE_ID, &DEVICE_ID) != FALSE;
+		LOG("[INFO] FPGA identifier: %llu (ok=%d)\n", FPGA_ID, hasFpgaId ? 1 : 0);
+		LOG("[INFO] Device identifier: %llu (ok=%d)\n", DEVICE_ID, hasDeviceId ? 1 : 0);
 
 		if (!this->SetFPGA())
 		{
-			LOG("[ERROR] FPGA configuration step failed.\n");
-			VMMDLL_Close(this->vHandle);
-			this->vHandle = nullptr;
-			return false;
+			LOG("[WARN] Optional FPGA configuration step unavailable; continuing with the initialized transport.\n");
 		}
 	}
 	else
@@ -802,6 +801,33 @@ bool Memory::CheckAttachedProcessAlive() const
 	ProcessLifetime::Sample sample;
 	return PROCESS_INITIALIZED && ReadProcessLifetime(current_process.eprocess, sample) &&
 		sample.Alive(current_process.PID, current_process.created);
+}
+
+bool Memory::CheckAttachedImageReadable() const
+{
+	auto session = AcquireSession();
+	if (!session || !vHandle || m_cancelPending.load(std::memory_order_acquire))
+		return false;
+	uint64_t base = 0;
+	DWORD pid = 0;
+	{
+		std::lock_guard<std::recursive_mutex> processLock(m_processInfoMutex);
+		if (!PROCESS_INITIALIZED || !current_process.PID || !current_process.base_address)
+			return false;
+		base = current_process.base_address;
+		pid = current_process.PID;
+	}
+	IMAGE_DOS_HEADER dos{};
+	DWORD actual = 0;
+	const bool ok = VMMDLL_MemReadEx(
+		vHandle,
+		pid,
+		base,
+		reinterpret_cast<PBYTE>(&dos),
+		sizeof(dos),
+		&actual,
+		VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_NOPAGING | VMMDLL_FLAG_NOPAGING_IO) != FALSE;
+	return ok && actual == sizeof(dos) && dos.e_magic == IMAGE_DOS_SIGNATURE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1161,6 +1187,12 @@ bool Memory::FixCr3()
 	if (this->vHandle)
 		VMMDLL_ConfigSet(this->vHandle, VMMDLL_OPT_REFRESH_ALL, 1);
 
+	if (canAccessProbeModules(current_process.PID))
+		return true;
+
+	// Clear any stale manual DTB override before retrying the kernel DTB.
+	VMMDLL_ConfigSet(this->vHandle, VMMDLL_OPT_PROCESS_DTB | current_process.PID, 0);
+	VMMDLL_ConfigSet(this->vHandle, VMMDLL_OPT_REFRESH_ALL, 1);
 	if (canAccessProbeModules(current_process.PID))
 		return true;
 

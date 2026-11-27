@@ -17,7 +17,19 @@ struct PositiveCandidates {
         bool operator==(const Fingerprint&) const = default;
         bool Has(uint32_t type) const { return type/64<types.size() && (types[type/64]&(uint64_t{1}<<(type%64))); }
     };
-    struct Entry { Fingerprint value{}; uint32_t attempted=0; bool known=false,accepted=false; uint32_t observed=0; };
+    struct Entry {
+        Fingerprint value{};
+        uint32_t attempted=0;
+        bool known=false,accepted=false;
+        uint32_t observed=0;
+        uint8_t failStreak=0;
+    };
+    static constexpr uint32_t RetryBackoffMs(uint8_t failStreak) noexcept {
+        if (failStreak <= 1) return 250;
+        if (failStreak == 2) return 1000;
+        if (failStreak == 3) return 4000;
+        return 10000;
+    }
     std::vector<uint64_t> members;
     std::unordered_map<uint64_t,Entry> entries;
     std::deque<uint64_t> urgent, probes;
@@ -60,11 +72,12 @@ struct PositiveCandidates {
         }
         auto& entry=entries[address];
         if(!entry.known || entry.value!=value) {
-            entry={value,0,true,false};
+            entry={value,0,true,false,0,0};
         }
         entry.observed=now;
+        const uint32_t retryMs = RetryBackoffMs(entry.failStreak);
         if(value.match && (value.Has(linkType)||value.Has(heroType)) && !entry.accepted &&
-            (!entry.attempted || uint32_t(now-entry.attempted)>=250) && probeSet.insert(address).second)
+            (!entry.attempted || uint32_t(now-entry.attempted)>=retryMs) && probeSet.insert(address).second)
             probes.push_back(address);
     }
     bool FreshMemberIds(uint32_t now,std::vector<std::pair<uint64_t,uint32_t>>& ids) const {
@@ -87,6 +100,7 @@ struct PositiveCandidates {
     void FinishProbe(uint64_t address,bool accepted,uint32_t now) {
         if(auto found=entries.find(address);found!=entries.end()) {
             found->second.attempted=now;found->second.accepted=accepted;
+            found->second.failStreak = accepted ? 0 : (found->second.failStreak < 4 ? uint8_t(found->second.failStreak + 1) : uint8_t{4});
         }
     }
 };

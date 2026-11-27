@@ -106,6 +106,7 @@ public:
 	DmaSessionAccess::Activity SessionActivity() const { return m_sessionAccess.Inspect(); }
 	bool CheckSessionHealth() const;
 	bool CheckAttachedProcessAlive() const;
+	bool CheckAttachedImageReadable() const;
 	// Only with runtime workers drained: this refresh may block all DMA reads.
 	bool RefreshProcessMetadata(const char* reason) const;
 	bool IsDmaInitialized() const { return DMA_INITIALIZED.load(std::memory_order_acquire); }

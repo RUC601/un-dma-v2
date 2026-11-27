@@ -132,8 +132,6 @@ static constexpr UiTextPair kUiText[] = {
     { "Current Game Sens", "当前游戏灵敏度" },
     { "Auto Read Game Sens", "自动读取游戏灵敏度" },
     { "Read", "读取" },
-    { "Host DPI (DMA)", "主机 DPI (DMA)" },
-    { "Mouse DPI", "鼠标 DPI" },
     { "Reference Game Sens", "校准参考灵敏度" },
     { "Use Current", "用当前值" },
     { "Auto Sens Scale", "自动灵敏度缩放" },

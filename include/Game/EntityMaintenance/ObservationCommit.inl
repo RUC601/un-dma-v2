@@ -137,10 +137,46 @@
                 }
                 const auto retiredIt=retiredActors.find(entity.address);
                 if(retiredIt!=retiredActors.end()) {
-                    if(!liveBindingConfirmed && !OW::EntityRosterPolicy::CanReturnRetiredActor(
+                    bool vacantLiveRecovery = false;
+                    if (!liveBindingConfirmed &&
+                        existingRosterIt == entityRoster.end() &&
+                        entity.Alive &&
+                        entity.PlayerHealth > 0.0f &&
+                        latestCompleteActorMembers.contains(entity.address) &&
+                        retiredIt->second.replacedByAddress != 0) {
+                        const bool successorStillSeated = std::any_of(
+                            entityRoster.begin(), entityRoster.end(),
+                            [&](const auto& pair) {
+                                return pair.second &&
+                                    pair.second->entity.address == retiredIt->second.replacedByAddress;
+                            });
+                        if (!successorStillSeated) {
+                            if (OW::offset::Active().componentTransform == OW::offset::ComponentTransformMode::Cn155284) {
+                                uint32_t mappedUid = 0;
+                                const uint64_t mappedByUnique = entity.LinkBase
+                                    ? OW::ResolveCnLinkTargetMapBase(entity.LinkBase, OW::offset::Link_UniqueId, &mappedUid)
+                                    : 0;
+                                bool liveMapped = mappedByUnique == entity.address && mappedUid == entity.match_id;
+                                if (!liveMapped && entity.LinkBase) {
+                                    mappedUid = 0;
+                                    const uint64_t mappedByTarget = OW::ResolveCnLinkTargetMapBase(
+                                        entity.LinkBase, OW::offset::Link_TargetId, &mappedUid);
+                                    liveMapped = mappedByTarget == entity.address && mappedUid == entity.match_id;
+                                }
+                                vacantLiveRecovery = liveMapped;
+                            } else {
+                                vacantLiveRecovery = true;
+                            }
+                        }
+                    }
+                    if(!liveBindingConfirmed && !vacantLiveRecovery && !OW::EntityRosterPolicy::CanReturnRetiredActor(
                         retiredIt->second.matchId==entity.match_id && retiredIt->second.link==entity.LinkParent,
                         retiredIt->second.absent || OW::EntityBodyAbsenceRevision(entity.address)>retiredIt->second.absenceRevision,
                         latestCompleteActorMembers.contains(entity.address))){rejectAdmission(2,"retired_body_unconfirmed");continue;}
+                    if (vacantLiveRecovery) {
+                        Diagnostics::Info("[V2-RETIRED-RECOVERY] actor=0x%llX link=0x%llX match=%u replaced_by=0x%llX",
+                            entity.address, entity.LinkParent, entity.match_id, retiredIt->second.replacedByAddress);
+                    }
                     retiredActors.erase(retiredIt);
                 }
                 entity.connection_epoch=connectionEpoch;
@@ -188,7 +224,7 @@
                 if(old && !sameLifetime) {
                     const auto oldAddress=old->address,oldGeneration=old->actor_generation;
                     if(oldAddress!=entity.address) {
-                        retireObservedBody(*old);
+                        retireObservedBody(*old, entity.address);
                         if(deadReplacement.Verified())Diagnostics::Info("[V2-DEAD-PARTICIPANT-REPLACEMENT] old=0x%llX actor=0x%llX generation=%llu",
                             oldAddress,entity.address,entity.actor_generation);
                     }

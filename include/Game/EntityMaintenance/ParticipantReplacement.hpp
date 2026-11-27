@@ -55,10 +55,14 @@ struct ParticipantReplacementVerifier {
         if(!ReadCurrent(incoming,incomingControllerUid,incomingLabel,registry,scene,true,clock,map,failure))return {};
         // The map context is the current controller parent. A respawn or
         // component relocation can legitimately give the successor a new
-        // controller, so it must not equal the predecessor's saved context.
-        // ReadCurrent already proves that the successor's map resolves to its
-        // own controller and actor pair.
-        if(map.context!=saved.context && map.context!=incoming.LinkParent)
+        // controller within the same world (saved.owner), or relocate the owner
+        // while keeping the same controller context. A foreign killcam/replay
+        // clone has both a new controller context AND a different world owner
+        // and must never hijack a live-match dead seat.
+        const bool sameContext = map.context == saved.context;
+        const bool sameWorldNewController = map.context == incoming.LinkParent &&
+            (!saved.owner || map.owner == saved.owner);
+        if(!sameContext && !sameWorldNewController)
             return fail("replacement_context_changed");
         if(!AuthorityCurrent(previous,registry,scene,true))return fail("previous_death_superseded");
         return Proof{true};

@@ -3713,48 +3713,77 @@ namespace {
         return value >= 0 && value <= AsheAmmoClipSize();
     }
 
+    bool TryReadRawSkillListHeader(uint64_t skillBase, uint64_t& rawList, uint32_t& rawSize)
+    {
+        __try {
+            const uint64_t skillContainer = SDK->RPM<uint64_t>(skillBase + 0x1848);
+            if (!skillContainer)
+                return false;
+
+            rawList = SDK->RPM<uint64_t>(skillContainer + 0x10);
+            rawSize = SDK->RPM<uint32_t>(skillContainer + 0x18);
+            return rawList != 0 && rawSize > 0 && rawSize <= 512;
+        } __except (1) {
+            return false;
+        }
+    }
+
+    bool TryReadRawSkillListBytes(uint64_t rawList, uint8_t* dst, size_t byteCount)
+    {
+        __try {
+            return SDK->read_range(rawList, dst, byteCount);
+        } __except (1) {
+            return false;
+        }
+    }
+
     int ReadRawSkillListAmmoValue(uint64_t skillBase, uint16_t wantedId)
     {
         if (!SDK || !skillBase)
             return -1;
 
-        __try {
-            const uint64_t skillContainer = SDK->RPM<uint64_t>(skillBase + 0x1848);
-            if (!skillContainer)
-                return -1;
+        uint64_t rawList = 0;
+        uint32_t rawSize = 0;
+        if (!TryReadRawSkillListHeader(skillBase, rawList, rawSize))
+            return -1;
 
-            const uint64_t rawList = SDK->RPM<uint64_t>(skillContainer + 0x10);
-            const uint32_t rawSize = SDK->RPM<uint32_t>(skillContainer + 0x18);
-            if (!rawList || rawSize == 0 || rawSize > 512)
-                return -1;
+        constexpr int kOffsets[] = { 0x30, 0x34, 0x38, 0x3C, 0x40, 0x48, 0x50, 0x60 };
+        constexpr size_t kEntryStride = 0x80;
+        const size_t byteCount = static_cast<size_t>(rawSize) * kEntryStride;
+        thread_local std::vector<uint8_t> tableBytes;
+        tableBytes.resize(byteCount);
+        if (!TryReadRawSkillListBytes(rawList, tableBytes.data(), byteCount))
+            return -1;
 
-            constexpr int kOffsets[] = { 0x30, 0x34, 0x38, 0x3C, 0x40, 0x48, 0x50, 0x60 };
-            int zeroCandidate = -1;
-            for (uint32_t index = 0; index < rawSize; ++index) {
-                const uint64_t entry = rawList + static_cast<uint64_t>(index) * 0x80;
-                if (SDK->RPM<uint16_t>(entry) != wantedId)
-                    continue;
+        int zeroCandidate = -1;
+        for (uint32_t index = 0; index < rawSize; ++index) {
+            const uint8_t* entryBytes = tableBytes.data() + static_cast<size_t>(index) * kEntryStride;
+            uint16_t entryId = 0;
+            std::memcpy(&entryId, entryBytes, sizeof(entryId));
+            if (entryId != wantedId)
+                continue;
 
-                for (const int offset : kOffsets) {
-                    const int floatValue = RoundedAmmoValue(SDK->RPM<float>(entry + offset));
-                    if (IsClipAmmoCandidate(floatValue)) {
-                        if (floatValue > 0)
-                            return floatValue;
-                        zeroCandidate = 0;
-                    }
+            for (const int offset : kOffsets) {
+                float rawFloat = 0.0f;
+                std::memcpy(&rawFloat, entryBytes + offset, sizeof(rawFloat));
+                const int floatValue = RoundedAmmoValue(rawFloat);
+                if (IsClipAmmoCandidate(floatValue)) {
+                    if (floatValue > 0)
+                        return floatValue;
+                    zeroCandidate = 0;
+                }
 
-                    const int intValue = SDK->RPM<int>(entry + offset);
-                    if (IsClipAmmoCandidate(intValue)) {
-                        if (intValue > 0)
-                            return intValue;
-                        zeroCandidate = 0;
-                    }
+                int rawInt = 0;
+                std::memcpy(&rawInt, entryBytes + offset, sizeof(rawInt));
+                const int intValue = rawInt;
+                if (IsClipAmmoCandidate(intValue)) {
+                    if (intValue > 0)
+                        return intValue;
+                    zeroCandidate = 0;
                 }
             }
-            return zeroCandidate;
-        } __except (1) {
-            return -1;
         }
+        return zeroCandidate;
     }
 
     AmmoGuardSample TryReadLocalAmmoRemaining(const c_entity& local)
