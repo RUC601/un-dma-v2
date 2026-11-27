@@ -1422,57 +1422,164 @@ namespace OW { namespace Config {
     inline int calibrationStabilityWaitMs = 50;      // Wait time before/after move for stable read
     inline int calibrationSampleCount = 3;           // Number of calibration samples to average
 
-    inline float OutputBaseCountsPerRadian()
+    // Leaf mutex protecting calibration/sensitivity conversion fields; never acquire Config::mutex while held.
+    inline std::mutex outputCalibrationMutex;
+
+    struct OutputConversionSnapshot {
+        float baseYaw = 100.0f;
+        float basePitch = 100.0f;
+        float sensitivityScale = 1.0f;
+        float yawCountsPerRadian = 100.0f;
+        float pitchCountsPerRadian = 100.0f;
+        float effectiveGameSensitivity = 15.0f;
+        float manualGameSensitivity = 15.0f;
+        float detectedGameSensitivity = 0.0f;
+        float referenceGameSensitivity = 15.0f;
+        bool autoReadGameMouseSensitivity = false;
+        bool gameMouseSensitivityAutoDetected = false;
+        bool autoScaleByGameSensitivity = false;
+    };
+
+    inline OutputConversionSnapshot ReadOutputConversionSnapshot()
     {
-        return calibratedCountsPerRadian > 0.0f
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        OutputConversionSnapshot snapshot;
+        snapshot.baseYaw = calibratedCountsPerRadian > 0.0f
             ? std::clamp(calibratedCountsPerRadian, 0.1f, 20000.0f)
             : std::clamp(outputCountsPerRadian, 0.1f, 20000.0f);
-    }
-
-    inline float OutputPitchBaseCountsPerRadian()
-    {
-        return calibratedPitchCountsPerRadian > 0.0f
+        snapshot.basePitch = calibratedPitchCountsPerRadian > 0.0f
             ? std::clamp(calibratedPitchCountsPerRadian, 0.1f, 20000.0f)
-            : OutputBaseCountsPerRadian();
-    }
-
-    inline float OutputGameSensitivityScale()
-    {
-        const float effectiveGameSensitivity =
+            : snapshot.baseYaw;
+        snapshot.manualGameSensitivity = gameMouseSensitivity;
+        snapshot.detectedGameSensitivity = detectedGameMouseSensitivity;
+        snapshot.referenceGameSensitivity = referenceGameSensitivity;
+        snapshot.autoReadGameMouseSensitivity = autoReadGameMouseSensitivity;
+        snapshot.gameMouseSensitivityAutoDetected = gameMouseSensitivityAutoDetected;
+        snapshot.autoScaleByGameSensitivity = autoScaleByGameSensitivity;
+        snapshot.effectiveGameSensitivity =
             (autoReadGameMouseSensitivity &&
              gameMouseSensitivityAutoDetected &&
              std::isfinite(detectedGameMouseSensitivity) &&
              detectedGameMouseSensitivity > 0.0f)
                 ? detectedGameMouseSensitivity
                 : gameMouseSensitivity;
-        if (!autoScaleByGameSensitivity ||
-            !std::isfinite(effectiveGameSensitivity) ||
-            !std::isfinite(referenceGameSensitivity) ||
-            effectiveGameSensitivity <= 0.0f ||
-            referenceGameSensitivity <= 0.0f) {
-            return 1.0f;
+        if (autoScaleByGameSensitivity &&
+            std::isfinite(snapshot.effectiveGameSensitivity) &&
+            std::isfinite(referenceGameSensitivity) &&
+            snapshot.effectiveGameSensitivity > 0.0f &&
+            referenceGameSensitivity > 0.0f) {
+            snapshot.sensitivityScale = referenceGameSensitivity / snapshot.effectiveGameSensitivity;
         }
-        return referenceGameSensitivity / effectiveGameSensitivity;
+        snapshot.yawCountsPerRadian = snapshot.baseYaw * snapshot.sensitivityScale;
+        snapshot.pitchCountsPerRadian = snapshot.basePitch * snapshot.sensitivityScale;
+        return snapshot;
+    }
+
+    inline void SetAutoDetectedGameMouseSensitivity(float sensitivity, bool detected)
+    {
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        if (detected && std::isfinite(sensitivity) && sensitivity >= 0.01f && sensitivity <= 100.0f) {
+            detectedGameMouseSensitivity = sensitivity;
+            gameMouseSensitivityAutoDetected = true;
+        } else {
+            detectedGameMouseSensitivity = 0.0f;
+            gameMouseSensitivityAutoDetected = false;
+        }
+    }
+
+    inline void SetManualGameMouseSensitivity(float sensitivity)
+    {
+        if (!std::isfinite(sensitivity))
+            return;
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        gameMouseSensitivity = std::clamp(sensitivity, 0.01f, 100.0f);
+    }
+
+    inline void SetReferenceGameSensitivity(float sensitivity)
+    {
+        if (!std::isfinite(sensitivity))
+            return;
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        referenceGameSensitivity = std::clamp(sensitivity, 0.01f, 100.0f);
+    }
+
+    inline void SetAutoReadGameMouseSensitivity(bool enabled)
+    {
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        autoReadGameMouseSensitivity = enabled;
+        if (!enabled) {
+            detectedGameMouseSensitivity = 0.0f;
+            gameMouseSensitivityAutoDetected = false;
+        }
+    }
+
+    inline void SetAutoScaleByGameSensitivity(bool enabled)
+    {
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        autoScaleByGameSensitivity = enabled;
+    }
+
+    inline float OutputBaseCountsPerRadian()
+    {
+        return ReadOutputConversionSnapshot().baseYaw;
+    }
+
+    inline void CommitCalibratedCountsPerRadian(
+        float yaw,
+        float pitch,
+        float referenceSensitivity,
+        bool calibrateBothAxes = true)
+    {
+        if (!std::isfinite(yaw) || yaw <= 0.0f)
+            return;
+        const float clampedYaw = std::clamp(yaw, 0.1f, 20000.0f);
+        const float clampedPitch =
+            (calibrateBothAxes && std::isfinite(pitch) && pitch > 0.0f &&
+             std::fabs(pitch - yaw) / yaw > 0.05f)
+                ? std::clamp(pitch, 0.1f, 20000.0f)
+                : 0.0f;
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        outputCountsPerRadian = clampedYaw;
+        calibratedCountsPerRadian = clampedYaw;
+        calibratedPitchCountsPerRadian = clampedPitch;
+        if (std::isfinite(referenceSensitivity) && referenceSensitivity > 0.0f)
+            referenceGameSensitivity = std::clamp(referenceSensitivity, 0.01f, 100.0f);
+    }
+
+    inline void ApplyManualBaseCountsPerRadian(float value)
+    {
+        if (!std::isfinite(value))
+            return;
+        const float clamped = std::clamp(value, 0.1f, 20000.0f);
+        std::lock_guard<std::mutex> lock(outputCalibrationMutex);
+        outputCountsPerRadian = clamped;
+        calibratedCountsPerRadian = 0.0f;
+        calibratedPitchCountsPerRadian = 0.0f;
+    }
+
+    inline float OutputPitchBaseCountsPerRadian()
+    {
+        return ReadOutputConversionSnapshot().basePitch;
+    }
+
+    inline float OutputGameSensitivityScale()
+    {
+        return ReadOutputConversionSnapshot().sensitivityScale;
     }
 
     inline float EffectiveGameMouseSensitivity()
     {
-        return (autoReadGameMouseSensitivity &&
-                gameMouseSensitivityAutoDetected &&
-                std::isfinite(detectedGameMouseSensitivity) &&
-                detectedGameMouseSensitivity > 0.0f)
-            ? detectedGameMouseSensitivity
-            : gameMouseSensitivity;
+        return ReadOutputConversionSnapshot().effectiveGameSensitivity;
     }
 
     inline float OutputYawCountsPerRadian()
     {
-        return OutputBaseCountsPerRadian() * OutputGameSensitivityScale();
+        return ReadOutputConversionSnapshot().yawCountsPerRadian;
     }
 
     inline float OutputPitchCountsPerRadian()
     {
-        return OutputPitchBaseCountsPerRadian() * OutputGameSensitivityScale();
+        return ReadOutputConversionSnapshot().pitchCountsPerRadian;
     }
 
     // ---- Mouse movement splitting ----

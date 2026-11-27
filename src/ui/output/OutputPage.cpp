@@ -96,33 +96,83 @@ void DrawMiscOutputPage() {
 
         SettingRow(T(UiText::BaseCountsRad));
         PushControlWidth();
-        ImGui::InputFloat("##CountsPerRadian", &OW::Config::outputCountsPerRadian,
-                          1.0f, 10.0f, "%.1f");
+        float baseCountsPerRadian = OW::Config::OutputBaseCountsPerRadian();
+        const bool baseCountsChanged = ImGui::InputFloat(
+            "##CountsPerRadian", &baseCountsPerRadian, 1.0f, 10.0f, "%.1f");
+        if (ImGui::IsItemDeactivatedAfterEdit() ||
+            (baseCountsChanged && !ImGui::IsItemActive())) {
+            OW::Config::ApplyManualBaseCountsPerRadian(baseCountsPerRadian);
+        }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Manual device relative mouse counts per radian. Calibration overrides this value until calibration is cleared."));
+            ImGui::SetTooltip("%s", L("Device relative mouse counts per radian. Calibration updates this value directly; editing it manually clears the previous calibration."));
         ImGui::PopItemWidth();
 
+        if (OW::Config::ReadOutputConversionSnapshot().autoReadGameMouseSensitivity)
+            OW::RefreshAutoGameMouseSensitivity();
+
+        auto convSnapshot = OW::Config::ReadOutputConversionSnapshot();
         SettingRow(T(UiText::CurrentGameSens));
-        PushControlWidth();
-        ImGui::InputFloat("##GameSens", &OW::Config::gameMouseSensitivity,
-                          0.0f, 0.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("Manual current in-game sensitivity. Auto-read uses a separate runtime value and falls back to this when unavailable."));
-        ImGui::PopItemWidth();
+        {
+            const bool autoReadActive =
+                convSnapshot.autoReadGameMouseSensitivity &&
+                convSnapshot.gameMouseSensitivityAutoDetected &&
+                std::isfinite(convSnapshot.detectedGameSensitivity) &&
+                convSnapshot.detectedGameSensitivity > 0.0f;
+            const char* sourceTag = autoReadActive
+                ? (OW::Config::uiLanguage == 1 ? "DMA 实时" : "DMA live")
+                : (convSnapshot.autoReadGameMouseSensitivity
+                    ? (OW::Config::uiLanguage == 1 ? "手动回退" : "Manual fallback")
+                    : nullptr);
+            if (sourceTag) {
+                const float tagWidth = ImGui::CalcTextSize(sourceTag).x + 8.0f;
+                const float tagSpacing = ImGui::GetStyle().ItemSpacing.x;
+                const float sensWidth = MaxFloat(
+                    80.0f,
+                    ImGui::GetContentRegionAvail().x - tagWidth - tagSpacing - kControlRightPadding);
+                ImGui::PushItemWidth(sensWidth);
+            } else {
+                PushControlWidth();
+            }
+            if (autoReadActive) {
+                float liveSensitivity = convSnapshot.effectiveGameSensitivity;
+                ImGui::InputFloat("##GameSensLive", &liveSensitivity,
+                                  0.0f, 0.0f, "%.2f",
+                                  ImGuiInputTextFlags_ReadOnly);
+            } else {
+                float manualSensitivity = convSnapshot.manualGameSensitivity;
+                const bool manualChanged = ImGui::InputFloat("##GameSens", &manualSensitivity,
+                                  0.0f, 0.0f, "%.2f");
+                if (ImGui::IsItemDeactivatedAfterEdit() ||
+                    (manualChanged && !ImGui::IsItemActive())) {
+                    OW::Config::SetManualGameMouseSensitivity(manualSensitivity);
+                }
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", L("Current in-game sensitivity used for scaling and calibration. Shows live DMA value when Auto Read is active; otherwise editable manually."));
+            ImGui::PopItemWidth();
+            if (sourceTag) {
+                ImGui::SameLine();
+                ImGui::TextColored(
+                    autoReadActive ? ImVec4(0.30f, 0.90f, 0.45f, 1.0f)
+                                   : ImVec4(0.65f, 0.65f, 0.70f, 1.0f),
+                    "%s",
+                    sourceTag);
+            }
+        }
 
         SettingRow(T(UiText::AutoReadGameSens));
-        if (UICheckbox("##AutoReadGameSens", &OW::Config::autoReadGameMouseSensitivity)) {
+        bool autoReadEnabled = convSnapshot.autoReadGameMouseSensitivity;
+        if (UICheckbox("##AutoReadGameSens", &autoReadEnabled)) {
+            OW::Config::SetAutoReadGameMouseSensitivity(autoReadEnabled);
             gameSensitivityReadMessage.clear();
-            if (OW::Config::autoReadGameMouseSensitivity) {
+            if (autoReadEnabled) {
                 gameSensitivityReadOk = OW::RefreshAutoGameMouseSensitivity(true);
+                const auto refreshed = OW::Config::ReadOutputConversionSnapshot();
                 char buffer[96] = {};
                 std::snprintf(buffer, sizeof(buffer),
                     gameSensitivityReadOk ? "live %.2f" : "not available",
-                    OW::Config::detectedGameMouseSensitivity);
+                    refreshed.detectedGameSensitivity);
                 gameSensitivityReadMessage = buffer;
-            } else {
-                OW::Config::detectedGameMouseSensitivity = 0.0f;
-                OW::Config::gameMouseSensitivityAutoDetected = false;
             }
         }
         if (ImGui::IsItemHovered())
@@ -134,19 +184,17 @@ void DrawMiscOutputPage() {
             gameSensitivityReadOk = OW::TryReadGameMouseSensitivity(detectedSensitivity, &sourceObject);
             char buffer[128] = {};
             if (gameSensitivityReadOk) {
-                if (OW::Config::autoReadGameMouseSensitivity) {
-                    OW::Config::detectedGameMouseSensitivity = detectedSensitivity;
-                    OW::Config::gameMouseSensitivityAutoDetected = true;
+                if (autoReadEnabled) {
+                    OW::Config::SetAutoDetectedGameMouseSensitivity(detectedSensitivity, true);
                 } else {
-                    OW::Config::gameMouseSensitivity = detectedSensitivity;
-                    OW::Config::gameMouseSensitivityAutoDetected = false;
-                    OW::Config::detectedGameMouseSensitivity = 0.0f;
+                    OW::Config::SetManualGameMouseSensitivity(detectedSensitivity);
+                    OW::Config::SetAutoDetectedGameMouseSensitivity(0.0f, false);
                 }
                 std::snprintf(buffer, sizeof(buffer), "read %.2f", detectedSensitivity);
                 Diagnostics::Aim("game_sens.manual_read value=%.6f object=0x%llX autoRead=%d",
                     detectedSensitivity,
                     static_cast<unsigned long long>(sourceObject),
-                    OW::Config::autoReadGameMouseSensitivity ? 1 : 0);
+                    autoReadEnabled ? 1 : 0);
             } else {
                 std::snprintf(buffer, sizeof(buffer), "read failed");
             }
@@ -160,18 +208,6 @@ void DrawMiscOutputPage() {
                 "%s",
                 gameSensitivityReadMessage.c_str());
         }
-        if (OW::Config::autoReadGameMouseSensitivity)
-            OW::RefreshAutoGameMouseSensitivity();
-
-        SettingRow(T(UiText::EffectiveGameSens));
-        PushControlWidth();
-        float effectiveGameSensitivity = OW::Config::EffectiveGameMouseSensitivity();
-        ImGui::InputFloat("##EffectiveGameSens", &effectiveGameSensitivity,
-                          0.0f, 0.0f, "%.2f",
-                          ImGuiInputTextFlags_ReadOnly);
-        ImGui::PopItemWidth();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("The sensitivity value currently used by Auto Sens Scale. It is DMA-read when auto-read succeeds, otherwise manual."));
 
         SettingRow(T(UiText::HostDpiDma));
         PushControlWidth();
@@ -188,6 +224,7 @@ void DrawMiscOutputPage() {
                           0.0f, 0.0f, "%.0f");
         ImGui::PopItemWidth();
 
+        convSnapshot = OW::Config::ReadOutputConversionSnapshot();
         SettingRow(T(UiText::ReferenceGameSens));
         const float useCurrentButtonWidth = 88.0f;
         const float useCurrentSpacing = ImGui::GetStyle().ItemSpacing.x;
@@ -195,18 +232,25 @@ void DrawMiscOutputPage() {
             80.0f,
             ImGui::GetContentRegionAvail().x - useCurrentButtonWidth - useCurrentSpacing - kControlRightPadding);
         ImGui::PushItemWidth(referenceWidth);
-        ImGui::InputFloat("##ReferenceGameSens", &OW::Config::referenceGameSensitivity,
+        float referenceSensitivity = convSnapshot.referenceGameSensitivity;
+        const bool referenceChanged = ImGui::InputFloat("##ReferenceGameSens", &referenceSensitivity,
                           0.0f, 0.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit() ||
+            (referenceChanged && !ImGui::IsItemActive())) {
+            OW::Config::SetReferenceGameSensitivity(referenceSensitivity);
+        }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", L("The in-game sensitivity used when Base Counts/Rad or calibration was measured."));
+            ImGui::SetTooltip("%s", L("The in-game sensitivity used when Base Counts/Rad or calibration was measured. Used only when Auto Sens Scale is enabled."));
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button(T(UiText::UseCurrent), ImVec2(useCurrentButtonWidth, ControlHeight()))) {
-            OW::Config::referenceGameSensitivity = OW::Config::EffectiveGameMouseSensitivity();
+            OW::Config::SetReferenceGameSensitivity(OW::Config::EffectiveGameMouseSensitivity());
         }
 
         SettingRow(T(UiText::AutoSensScale));
-        UICheckbox("##AutoScaleGameSens", &OW::Config::autoScaleByGameSensitivity);
+        bool autoScaleEnabled = convSnapshot.autoScaleByGameSensitivity;
+        if (UICheckbox("##AutoScaleGameSens", &autoScaleEnabled))
+            OW::Config::SetAutoScaleByGameSensitivity(autoScaleEnabled);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", L("Scales device counts by reference game sensitivity divided by current game sensitivity."));
 
@@ -264,6 +308,8 @@ void DrawMiscOutputPage() {
             if (ImGui::Button(OW::Config::calibrationInProgress ? T(UiText::Calibrating) : T(UiText::Calibrate),
                               ImVec2(72.0f, ControlHeight()))) {
                 if (!OW::Config::calibrationInProgress) {
+                    if (OW::Config::autoReadGameMouseSensitivity)
+                        OW::RefreshAutoGameMouseSensitivity(true);
                     const float result = OW::CalibrateSensitivity();
                     calibrationFailed = !(result > 0.0f);
                     calibrationStatus = L(calibrationFailed

@@ -1,5 +1,6 @@
 #pragma once
 #include "game/entities/RegistryResolver.hpp"
+#include "Game/CalibrationPolicy.hpp"
 #include "Game/RegionalLayout.hpp"
 #include "Game/SkillRead.hpp"
 #include "memory/PeSections.hpp"
@@ -534,7 +535,7 @@ namespace OW {
     // =========================================================================
 
     inline bool IsPlausibleSensitivity(float value) {
-        return value > 0.0f && value < 100.0f;
+        return IsPlausibleUserGameSensitivity(value);
     }
 
     inline bool IsPlausibleUserPointer(uint64_t value) {
@@ -913,19 +914,25 @@ namespace OW {
     }
 
     inline bool TryReadSensitivityFromObject(uint64_t object, float& value) {
+        value = 0.0f;
         if (!IsPlausibleUserPointer(object))
             return false;
 
-        const float sensitivity = SDK->RPM<float>(object + offset::Sensitivity);
-        if (!IsPlausibleSensitivity(sensitivity))
+        const float normalized = SDK->RPM<float>(object + offset::Sensitivity);
+        float userSensitivity = 0.0f;
+        if (!NormalizeSingletonGameSensitivity(
+                normalized,
+                offset::Sensitivity_NormalizedToUserScale,
+                userSensitivity)) {
             return false;
+        }
 
         const float sensX = SDK->RPM<float>(object + offset::SensX_Scale);
         const float sensY = SDK->RPM<float>(object + offset::SensY_Scale);
         if (!std::isfinite(sensX) || !std::isfinite(sensY))
             return false;
 
-        value = sensitivity;
+        value = userSensitivity;
         return true;
     }
 
@@ -966,12 +973,15 @@ namespace OW {
             return false;
 
         const float normalized = SDK->RPM<float>(object + offset::Sensitivity);
-        if (!std::isfinite(normalized) || normalized < 0.0001f || normalized > 1.0f)
+        float userSensitivity = 0.0f;
+        if (!NormalizeSingletonGameSensitivity(
+                normalized,
+                offset::Sensitivity_NormalizedToUserScale,
+                userSensitivity)) {
             return false;
+        }
 
-        value = normalized * offset::Sensitivity_NormalizedToUserScale;
-        if (!IsPlausibleSensitivity(value))
-            return false;
+        value = userSensitivity;
 
         if (sourceObject)
             *sourceObject = object;

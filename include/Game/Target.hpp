@@ -176,11 +176,12 @@ namespace OW {
     // =========================================================================
 
     inline float ResolveCalibrationReferenceGameSensitivity(float referenceOverride = 0.0f) {
-        if (std::isfinite(referenceOverride) && referenceOverride > 0.0f)
-            return referenceOverride;
-        if (std::isfinite(Config::gameMouseSensitivity) && Config::gameMouseSensitivity > 0.0f)
-            return Config::gameMouseSensitivity;
-        return Config::referenceGameSensitivity;
+        const auto snapshot = Config::ReadOutputConversionSnapshot();
+        return ResolveCalibrationReferenceSensitivity(
+            referenceOverride,
+            snapshot.effectiveGameSensitivity,
+            snapshot.manualGameSensitivity,
+            snapshot.referenceGameSensitivity);
     }
 
     struct CalibrationOutputCleanup {
@@ -269,10 +270,7 @@ namespace OW {
         if (measurement)
             *measurement = {yaw, calibrateBothAxes ? pitch : yaw, referenceSensitivity};
         else {
-            Config::calibratedCountsPerRadian = yaw;
-            Config::calibratedPitchCountsPerRadian = calibrateBothAxes && std::fabs(pitch - yaw) / yaw > 0.05f
-                ? pitch : 0.0f;
-            Config::referenceGameSensitivity = referenceSensitivity;
+            Config::CommitCalibratedCountsPerRadian(yaw, pitch, referenceSensitivity, calibrateBothAxes);
         }
         std::printf("[CALIBRATE] Result: yaw=%.1f pitch=%.1f counts/rad refGameSens=%.3f\n",
             yaw, calibrateBothAxes ? pitch : yaw, referenceSensitivity);
@@ -331,10 +329,7 @@ namespace OW {
             return 0.0f;
         }
         // No intermediate sample changed persistent settings; publish the paired mean once.
-        Config::calibratedCountsPerRadian = result.yaw;
-        Config::calibratedPitchCountsPerRadian = std::fabs(result.pitch - result.yaw) / result.yaw > 0.05f
-            ? result.pitch : 0.0f;
-        Config::referenceGameSensitivity = result.referenceSensitivity;
+        Config::CommitCalibratedCountsPerRadian(result.yaw, result.pitch, result.referenceSensitivity, true);
         std::printf("[CALIBRATE] Averaged %d valid paired samples: yaw=%.1f pitch=%.1f counts/rad refGameSens=%.3f\n",
             validSamples, result.yaw, result.pitch, result.referenceSensitivity);
         return result.yaw;

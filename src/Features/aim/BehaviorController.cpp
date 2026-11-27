@@ -22,35 +22,33 @@ namespace OW {
 bool RefreshAutoGameMouseSensitivity(bool force) {
     static DWORD lastRefreshTick = 0;
 
-    if (!OW::Config::autoReadGameMouseSensitivity) {
-        OW::Config::detectedGameMouseSensitivity = 0.0f;
-        OW::Config::gameMouseSensitivityAutoDetected = false;
+    const auto prev = OW::Config::ReadOutputConversionSnapshot();
+    if (!prev.autoReadGameMouseSensitivity) {
+        OW::Config::SetAutoDetectedGameMouseSensitivity(0.0f, false);
         return false;
     }
 
     const DWORD now = GetTickCount();
     if (!force && lastRefreshTick != 0 && now - lastRefreshTick < 1000)
-        return OW::Config::gameMouseSensitivityAutoDetected;
+        return prev.gameMouseSensitivityAutoDetected;
     lastRefreshTick = now;
 
     float sensitivity = 0.0f;
     uint64_t sourceObject = 0;
     if (!OW::TryReadGameMouseSensitivity(sensitivity, &sourceObject)) {
-        if (OW::Config::gameMouseSensitivityAutoDetected) {
+        if (prev.gameMouseSensitivityAutoDetected) {
             Diagnostics::Aim("game_sens.auto_read lost previous=%.6f manual=%.6f",
-                OW::Config::detectedGameMouseSensitivity,
-                OW::Config::gameMouseSensitivity);
+                prev.detectedGameSensitivity,
+                prev.manualGameSensitivity);
         }
-        OW::Config::detectedGameMouseSensitivity = 0.0f;
-        OW::Config::gameMouseSensitivityAutoDetected = false;
+        OW::Config::SetAutoDetectedGameMouseSensitivity(0.0f, false);
         return false;
     }
 
     const bool changed =
-        !OW::Config::gameMouseSensitivityAutoDetected ||
-        std::fabs(OW::Config::detectedGameMouseSensitivity - sensitivity) > 0.001f;
-    OW::Config::detectedGameMouseSensitivity = sensitivity;
-    OW::Config::gameMouseSensitivityAutoDetected = true;
+        !prev.gameMouseSensitivityAutoDetected ||
+        std::fabs(prev.detectedGameSensitivity - sensitivity) > 0.001f;
+    OW::Config::SetAutoDetectedGameMouseSensitivity(sensitivity, true);
     if (changed) {
         Diagnostics::Aim("game_sens.auto_read value=%.6f object=0x%llX source=globaladmin_singleton_0x6",
             sensitivity,

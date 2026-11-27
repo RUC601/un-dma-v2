@@ -2092,16 +2092,17 @@ bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehav
     return changed;
 }
 
-bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone) {
+bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone, const char* noneText) {
     if (!OW::Config::FindDynamicFovPreset(*presetId))
         *presetId = -1;
 
     bool changed = false;
-    const char* preview = DynamicFovPresetPreview(*presetId, allowNone ? L("Fixed FOV") : L("Select Preset"));
+    const char* resolvedNoneText = (noneText && *noneText) ? noneText : "Fixed FOV";
+    const char* preview = DynamicFovPresetPreview(*presetId, allowNone ? L(resolvedNoneText) : L("Select Preset"));
     if (BeginControlCombo(label, preview)) {
         if (allowNone) {
             const bool noneSelected = *presetId < 0;
-            if (ImGui::Selectable(L("Fixed FOV"), noneSelected)) {
+            if (ImGui::Selectable(L(resolvedNoneText), noneSelected)) {
                 *presetId = -1;
                 changed = true;
             }

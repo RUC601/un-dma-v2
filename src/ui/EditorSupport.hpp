@@ -261,7 +261,7 @@ OW::Config::AimBehaviorPreset CaptureBehaviorPresetFromCurrent(int behavior,
                                                                       const char* name);
 bool UISelectAimMethodPreset(const char* label, int* presetId, int filterMethod);
 bool UISelectAimBehaviorPreset(const char* label, int* presetId, int filterBehavior, const char* noneText="Class Default");
-bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone);
+bool UISelectDynamicFovPreset(const char* label, int* presetId, bool allowNone, const char* noneText = "Fixed FOV");
 void ApplyAimBehaviorToHeroPreset(OW::Config::HeroPreset& preset, int behavior);
 void UIDisabledSelect(const char* label, const char* previewText = nullptr);
 bool UIAttackActionSelect(const char* label, int* action, uint64_t heroId, int scopeFilter = -1);

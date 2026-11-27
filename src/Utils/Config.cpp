@@ -66,6 +66,7 @@ namespace OW { namespace Config {
     namespace {
         OutputDeviceProfile CaptureOutputDeviceProjection()
         {
+            std::lock_guard<std::mutex> calLock(outputCalibrationMutex);
             OutputDeviceProfile profile;
             profile.port = outputComPort;
             profile.instanceId = outputSerialInstanceId;
@@ -80,6 +81,7 @@ namespace OW { namespace Config {
 
         void ApplyOutputDeviceProjection(const OutputDeviceProfile& profile)
         {
+            std::lock_guard<std::mutex> calLock(outputCalibrationMutex);
             std::snprintf(outputComPort, sizeof(outputComPort), "%s", profile.port.c_str());
             std::snprintf(outputSerialInstanceId, sizeof(outputSerialInstanceId), "%s", profile.instanceId.c_str());
             outputCountsPerRadian = profile.countsPerRadian;
@@ -6851,20 +6853,23 @@ namespace OW { namespace Config {
             ClampSetting("kmboxInputDelayMs", outputInputDelayMs, 0, 20, kDefaultOutputInputDelayMs);
             ClampSetting("manualScreenWidth", manualScreenWidth, 0, 16384, 1920);
             ClampSetting("manualScreenHeight", manualScreenHeight, 0, 16384, 1080);
-            ClampFloatSetting("kmboxCountsPerRadian", outputCountsPerRadian, 0.1f, 20000.0f, 100.0f);
-            ClampFloatSetting("gameMouseSensitivity", gameMouseSensitivity, 0.01f, 100.0f, 15.0f);
-            ClampFloatSetting("referenceGameSensitivity", referenceGameSensitivity, 0.01f, 100.0f, 15.0f);
-            if (!autoReadGameMouseSensitivity) {
-                detectedGameMouseSensitivity = 0.0f;
-                gameMouseSensitivityAutoDetected = false;
-            } else if (!std::isfinite(detectedGameMouseSensitivity) ||
-                       detectedGameMouseSensitivity <= 0.0f ||
-                       detectedGameMouseSensitivity >= 100.0f) {
-                detectedGameMouseSensitivity = 0.0f;
-                gameMouseSensitivityAutoDetected = false;
+            {
+                std::lock_guard<std::mutex> calLock(outputCalibrationMutex);
+                ClampFloatSetting("kmboxCountsPerRadian", outputCountsPerRadian, 0.1f, 20000.0f, 100.0f);
+                ClampFloatSetting("gameMouseSensitivity", gameMouseSensitivity, 0.01f, 100.0f, 15.0f);
+                ClampFloatSetting("referenceGameSensitivity", referenceGameSensitivity, 0.01f, 100.0f, 15.0f);
+                if (!autoReadGameMouseSensitivity) {
+                    detectedGameMouseSensitivity = 0.0f;
+                    gameMouseSensitivityAutoDetected = false;
+                } else if (!std::isfinite(detectedGameMouseSensitivity) ||
+                           detectedGameMouseSensitivity < 0.01f ||
+                           detectedGameMouseSensitivity > 100.0f) {
+                    detectedGameMouseSensitivity = 0.0f;
+                    gameMouseSensitivityAutoDetected = false;
+                }
+                ClampFloatSetting("calibratedCountsPerRadian", calibratedCountsPerRadian, 0.0f, 20000.0f, 0.0f);
+                ClampFloatSetting("calibratedPitchCountsPerRadian", calibratedPitchCountsPerRadian, 0.0f, 20000.0f, 0.0f);
             }
-            ClampFloatSetting("calibratedCountsPerRadian", calibratedCountsPerRadian, 0.0f, 20000.0f, 0.0f);
-            ClampFloatSetting("calibratedPitchCountsPerRadian", calibratedPitchCountsPerRadian, 0.0f, 20000.0f, 0.0f);
             ClampFloatSetting("hostMouseDpi", hostMouseDpi, 100.0f, 64000.0f, kDefaultHostMouseDpi);
             const float baseCountsPerRadian = OutputBaseCountsPerRadian();
             const float yawCountsPerRadian = OutputYawCountsPerRadian();

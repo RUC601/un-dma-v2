@@ -118,7 +118,6 @@ enum class UiText : size_t {
     CurrentGameSens,
     AutoReadGameSens,
     ReadGameSens,
-    EffectiveGameSens,
     HostDpiDma,
     MouseDpi,
     ReferenceGameSens,

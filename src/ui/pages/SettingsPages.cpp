@@ -815,14 +815,20 @@ void DrawMiscDynamicFovPage() {
     UIGroupBox("Dynamic FOV Presets");
     {
         static int selectedPresetId = -1;
+        static bool initializedSelection = false;
         static int lastPresetId = -2;
         static char presetName[64] = "Dynamic FOV";
         static OW::Config::DynamicFovPreset draft{};
         static uint64_t lastProfileGeneration = 0;
         const auto generation = OW::Config::configLoadGeneration.load(std::memory_order_acquire);
-        if (generation != lastProfileGeneration) {
+        if (!initializedSelection || generation != lastProfileGeneration) {
+            if (!OW::Config::FindDynamicFovPreset(selectedPresetId)) {
+                const auto& presets = OW::Config::Read_dynamicFovPresets();
+                selectedPresetId = presets.empty() ? -1 : presets.front().id;
+            }
             lastPresetId = -2;
             lastProfileGeneration = generation;
+            initializedSelection = true;
         }
 
         const OW::Config::DynamicFovPreset* selectedPreset =
@@ -840,7 +846,7 @@ void DrawMiscDynamicFovPage() {
 
         SettingRow("Preset");
         PushControlWidth();
-        if (UISelectDynamicFovPreset("##miscDynamicFovPreset", &selectedPresetId, true)) {
+        if (UISelectDynamicFovPreset("##miscDynamicFovPreset", &selectedPresetId, true, "New preset")) {
             selectedPreset = OW::Config::FindDynamicFovPreset(selectedPresetId);
             if (selectedPreset) {
                 draft = *selectedPreset;
@@ -908,6 +914,7 @@ void DrawMiscDynamicFovPage() {
             OW::Config::View_dynamicFovPresets().push_back(preset);
             selectedPresetId = preset.id;
             lastPresetId = -2;
+            selectedPreset = nullptr;
         }
 
         if (selectedPreset) {

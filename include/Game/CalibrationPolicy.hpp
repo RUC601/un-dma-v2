@@ -50,6 +50,45 @@ struct CalibrationMeasurement {
     float referenceSensitivity = 0.0f;
 };
 
+inline bool IsPlausibleUserGameSensitivity(float value) noexcept
+{
+    return std::isfinite(value) && value >= 0.01f && value <= 100.0f;
+}
+
+inline bool NormalizeSingletonGameSensitivity(
+    float normalized,
+    float normalizedToUserScale,
+    float& userSensitivity) noexcept
+{
+    userSensitivity = 0.0f;
+    if (!std::isfinite(normalized) || normalized < 0.0001f || normalized > 1.0f ||
+        !std::isfinite(normalizedToUserScale) || normalizedToUserScale <= 0.0f) {
+        return false;
+    }
+    const float scaled = normalized * normalizedToUserScale;
+    if (!IsPlausibleUserGameSensitivity(scaled))
+        return false;
+    userSensitivity = scaled;
+    return true;
+}
+
+inline float ResolveCalibrationReferenceSensitivity(
+    float referenceOverride,
+    float effectiveSensitivity,
+    float manualSensitivity,
+    float storedReferenceSensitivity) noexcept
+{
+    if (referenceOverride != 0.0f)
+        return IsPlausibleUserGameSensitivity(referenceOverride) ? referenceOverride : 0.0f;
+    if (IsPlausibleUserGameSensitivity(effectiveSensitivity))
+        return effectiveSensitivity;
+    if (IsPlausibleUserGameSensitivity(manualSensitivity))
+        return manualSensitivity;
+    return IsPlausibleUserGameSensitivity(storedReferenceSensitivity)
+        ? storedReferenceSensitivity
+        : 0.0f;
+}
+
 inline float CalibrationCountsPerRadian(int counts, float before, float after) noexcept
 {
     if (counts <= 0 || !std::isfinite(before) || !std::isfinite(after))

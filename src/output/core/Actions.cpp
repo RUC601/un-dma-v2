@@ -143,19 +143,20 @@ namespace OW {
         }
 
         {
-            const float baseCountsPerRadian = Config::OutputBaseCountsPerRadian();
-            const float syncScale = Config::OutputGameSensitivityScale();
-            float sensitivity = Config::OutputYawCountsPerRadian();
-            float pitchSensitivity = Config::OutputPitchCountsPerRadian();
+            const auto conversion = Config::ReadOutputConversionSnapshot();
+            const float baseCountsPerRadian = conversion.baseYaw;
+            const float syncScale = conversion.sensitivityScale;
+            float sensitivity = conversion.yawCountsPerRadian;
+            float pitchSensitivity = conversion.pitchCountsPerRadian;
 
             if (!std::isfinite(sensitivity) || sensitivity <= 0.0f) {
                 Diagnostics::Aim("mouse.convert warning invalid_counts_per_rad computed=%.9f fallback=%.9f autoScale=%d gameSens=%.9f effectiveGameSens=%.9f refSens=%.9f pitchCountsPerRad=%.9f",
                     sensitivity,
                     baseCountsPerRadian,
-                    Config::autoScaleByGameSensitivity ? 1 : 0,
-                    Config::gameMouseSensitivity,
-                    Config::EffectiveGameMouseSensitivity(),
-                    Config::referenceGameSensitivity,
+                    conversion.autoScaleByGameSensitivity ? 1 : 0,
+                    conversion.manualGameSensitivity,
+                    conversion.effectiveGameSensitivity,
+                    conversion.referenceGameSensitivity,
                     pitchSensitivity);
                 sensitivity = baseCountsPerRadian;
                 pitchSensitivity = sensitivity;
@@ -177,7 +178,7 @@ namespace OW {
                 if (ConvertPurePixelErrorToCounts(
                         quantization.screenErrorPixels,
                         quantization.pureCountsPerPixel,
-                        Config::EffectiveGameMouseSensitivity(),
+                        conversion.effectiveGameSensitivity,
                         pixelCounts)) {
                     scaledYaw = pixelCounts.X;
                     scaledPitch = pixelCounts.Y * pitchScale;
@@ -188,7 +189,7 @@ namespace OW {
                         quantization.screenErrorPixels.Y,
                         quantization.pureCountsPerPixel.X,
                         quantization.pureCountsPerPixel.Y,
-                        Config::EffectiveGameMouseSensitivity());
+                        conversion.effectiveGameSensitivity);
                 }
             }
             const float fallbackScaledYaw =
